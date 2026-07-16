@@ -93,6 +93,13 @@ async function click(element) {
   });
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; });
+  return { promise, resolve, reject };
+}
+
 describe("scene run cancellation client", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -507,6 +514,52 @@ describe("SceneRunJobControl", () => {
     expect(result.draft.length).toBeGreaterThan(0);
   });
 
+  it("hydrates a no-content budget checkpoint with its durable author instruction", async () => {
+    const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    const authorNote = "保留第一人称视角，并延续上一版的人物动机。";
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => {
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          scene_run_state: {
+            scene_status: "bundle_built",
+            lifecycle_budget: {
+              baseline_tokens: 7200,
+              recommended_topup_tokens: 7200,
+            },
+          },
+        });
+      }
+      return baseGet(url, options);
+    });
+
+    const restored = await mod.scnHydrateFromBackend("ch01s1", {
+      terminalJob: {
+        job_id: "job-no-content-budget",
+        scene_id: "s1",
+        status: "blocked",
+        current_step: "style_running",
+        error_code: "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
+        error_text: "scene token budget exhausted before dispatch",
+        author_note: authorNote,
+      },
+    });
+
+    expect(restored).toMatchObject({
+      state: "queued",
+      draft: [],
+      authorNote,
+      recoveredWithoutDraft: true,
+      budgetBlock: {
+        code: "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
+        currentStep: "style_running",
+        topup: { extra_tokens: 7200 },
+      },
+      gate: { canArchive: false, blockReason: "lifecycle_budget" },
+    });
+    expect(restored.error).toContain("尚未产出正文");
+  });
+
   it("topups only the exhausted lifecycle dimension through the audited author route", async () => {
     const { mod, client } = await loadSceneRun();
     client.apiPost.mockResolvedValue({ scene_token_budget: 41040 });
@@ -555,6 +608,51 @@ describe("SceneRunJobControl", () => {
       "/api/v1/scenes/s1/run/jobs",
       { run_policy: "strict", resume_budget: true },
     );
+  });
+
+  it("preserves the complete author instruction when resuming a budget-blocked checkpoint", async () => {
+    const { mod, client } = await loadSceneRun();
+    const authorNote = "保留此前的叙事视角，不要重置人物动机。".repeat(30);
+    client.apiPost.mockImplementation((url) => {
+      if (url === "/api/v1/scenes/s1/run/jobs") {
+        return Promise.resolve({ job_id: "job-resume-note", scene_id: "s1", status: "completed" });
+      }
+      return Promise.resolve({});
+    });
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v1/scenes/s1/workbench") {
+        return Promise.resolve({
+          style_draft: { content: "潮水退去。\n她留下了证词。" },
+          scene_run_state: { scene_status: "near_final" },
+        });
+      }
+      return baseGet(url);
+    });
+
+    await mod.scnRun(
+      { sid: "ch01s1", kind: "主动场景" },
+      authorNote,
+      "",
+      { resumeBudget: true },
+    );
+
+    expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v1/scenes/s1/run/jobs",
+      { run_policy: "strict", author_note: authorNote, resume_budget: true },
+    );
+  });
+
+  it("rejects an overlong author instruction instead of silently truncating it", async () => {
+    const { mod, client } = await loadSceneRun();
+
+    await expect(mod.scnRun(
+      { sid: "ch01s1", kind: "主动场景" },
+      "改".repeat(2001),
+      "",
+    )).rejects.toMatchObject({ code: "AUTHOR_NOTE_TOO_LONG" });
+
+    expect(client.apiPost.mock.calls.filter(([url]) => url === "/api/v1/scenes/s1/run/jobs")).toEqual([]);
   });
 
   it("projects a server-archived completed run as archived instead of a blocked ready state", async () => {
@@ -832,8 +930,9 @@ describe("SceneRunJobControl", () => {
         job_id: "job-scene-a",
         scene_id: "s1",
         status: aReads === 1 ? "running" : terminal,
-      });
     });
+  });
+
     const baseGet = client.apiGet.getMockImplementation();
     client.apiGet.mockImplementation((url, options) => {
       if (url === "/api/v1/scenes/s1/workbench") {
@@ -866,6 +965,77 @@ describe("SceneRunJobControl", () => {
     if (expectReview) {
       expect(view.host.querySelector(".scn2-review")).toBeTruthy();
     }
+  });
+
+  it("restores a fresh-browser no-content budget block and resumes with the original author instruction", async () => {
+    const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    const authorNote = "保留此前完整的作者指令，不要重置叙事视角。".repeat(12);
+    window.__scnEnqueue = { sid: "ch01s1" };
+    client.getLatestSceneRunJob.mockResolvedValue({
+      job_id: "job-fresh-budget",
+      scene_id: "s1",
+      status: "blocked",
+      current_step: "style_running",
+      error_code: "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
+      error_text: "scene token budget exhausted before dispatch",
+      author_note: authorNote,
+    });
+    let resumed = false;
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => {
+      if (url === "/api/v1/scenes/s1/workbench") {
+        if (resumed) {
+          return Promise.resolve({
+            style_draft: { content: "潮水退去。\n她留下了证词。" },
+            scene_run_state: { scene_status: "near_final" },
+          });
+        }
+        return Promise.resolve({
+          scene_run_state: {
+            scene_status: "bundle_built",
+            lifecycle_budget: {
+              baseline_tokens: 6800,
+              recommended_topup_tokens: 6800,
+            },
+          },
+        });
+      }
+      return baseGet(url, options);
+    });
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, options) => {
+      if (url === "/api/v1/scenes/s1/budget/topup") return Promise.resolve({});
+      if (url === "/api/v1/scenes/s1/run/jobs") {
+        resumed = true;
+        return Promise.resolve({
+          job_id: "job-fresh-budget-resumed",
+          scene_id: "s1",
+          status: "completed",
+        });
+      }
+      return basePost(url, body, options);
+    });
+    const page = await import("./ws-scene.jsx");
+    const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
+
+    await vi.waitFor(() => {
+      expect(view.host.textContent).toContain("尚未产出正文");
+      expect(view.host.querySelector('[data-testid="scene-budget-topup"]')).toBeTruthy();
+      expect(mod.scnRunLoad("ch01s1")).toMatchObject({
+        state: "queued",
+        authorNote,
+        budgetBlock: { code: "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED" },
+      });
+    }, T);
+
+    await click(view.host.querySelector('[data-testid="scene-budget-topup"]'));
+    await vi.waitFor(() => {
+      expect(client.apiPost).toHaveBeenCalledWith(
+        "/api/v1/scenes/s1/run/jobs",
+        { run_policy: "strict", author_note: authorNote, resume_budget: true },
+        expect.objectContaining({ signal: expect.anything() }),
+      );
+    }, T);
   });
 
   it("clears stale running immediately while completed workbench recovery is still pending", async () => {
@@ -948,6 +1118,338 @@ describe("SceneRunJobControl", () => {
     }, T);
     expect(mod.scnRunLoad("ch01s1")).toMatchObject({ state: cachedState });
     expect(mod.scnRunLoad("ch01s1").draft.length).toBeGreaterThan(0);
+  });
+
+  it("真实起草台发现作者正文时打开差异决策，默认焦点落在“保存为候选”且不归档", async () => {
+    const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    const cached = {
+      ...mod.scnQC([{ id: "p1", beat: "goal", text: "AI 写下了另一种开场。" }], false),
+      state: "ready", progress: 1, attempt: 1, attempts: [], cost: [], log: [],
+    };
+    mod.scnRunSave("ch01s1", cached);
+    window.__scnEnqueue = { sid: "ch01s1" };
+    window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>作者亲写的开场。</p>");
+    client.getLatestSceneRunJob.mockRejectedValue(Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }));
+    const page = await import("./ws-scene.jsx");
+    const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
+
+    await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-archive"]')).toBeTruthy(), T);
+    await click(view.host.querySelector('[data-testid="scene-archive"]'));
+    const dialog = document.body.querySelector(".scn-adopt-dialog");
+    expect(dialog).toBeTruthy();
+    expect(dialog.textContent).toContain("作者当前稿");
+    expect(dialog.textContent).toContain("AI 候选稿");
+    const safe = dialog.querySelector('[data-testid="scene-save-candidate"]');
+    const overwrite = dialog.querySelector('[data-testid="scene-confirm-overwrite"]');
+    await vi.waitFor(() => expect(document.activeElement).toBe(safe), T);
+    expect(overwrite.disabled).toBe(true);
+
+    await click(safe);
+    await vi.waitFor(() => expect(document.body.querySelector(".scn-adopt-dialog")).toBeNull(), T);
+    expect(client.apiPost.mock.calls.filter(([url]) => /adopt-current/.test(url))).toEqual([]);
+    expect(window.localStorage.getItem(window.wsKey("wr-doc:ch01s1"))).toBe("<p>作者亲写的开场。</p>");
+    expect(window.WrRecovery.list()).toEqual([expect.objectContaining({ type: "candidate", source: "ai" })]);
+    expect(view.host.textContent).toContain("作者正文没有被改动");
+  });
+
+  it("真实起草台收到内容安全 409 后逐项确认，并只携 exact code 重试归档", async () => {
+    const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    const cached = {
+      ...mod.scnQC([{ id: "p1", beat: "goal", text: "角色只有16岁，段落明确描写两人的性行为。" }], false),
+      state: "ready", progress: 1, attempt: 1, attempts: [], cost: [], log: [],
+    };
+    mod.scnRunSave("ch01s1", cached);
+    window.__scnEnqueue = { sid: "ch01s1" };
+    client.getLatestSceneRunJob.mockRejectedValue(
+      Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
+    );
+    const reviewError = Object.assign(new Error("review required"), {
+      code: "CONTENT_SAFETY_REVIEW_REQUIRED",
+      status: 409,
+      details: {
+        final_text_gate: {
+          content_safety: {
+            findings: [{
+              code: "sexual_content_with_minor_indicators",
+              review_required: true,
+              acknowledged: false,
+              severity: "high",
+              confidence: "heuristic",
+              message: "核对人物年龄与叙事目的。",
+              evidence_terms: ["age:16", "性行为"],
+            }],
+            limitations: ["启发式不能判断完整语境。"],
+          },
+        },
+      },
+    });
+    const basePost = client.apiPost.getMockImplementation();
+    const adoptBodies = [];
+    client.apiPost.mockImplementation((url, body, options) => {
+      if (!/\/api\/v1\/scenes\/s1\/adopt-current$/.test(url)) {
+        return basePost(url, body, options);
+      }
+      adoptBodies.push(body);
+      return body.accepted_warning_codes.length
+        ? Promise.resolve({ scene_status: "archived" })
+        : Promise.reject(reviewError);
+    });
+    const page = await import("./ws-scene.jsx");
+    const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
+
+    await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-archive"]')).toBeTruthy(), T);
+    await click(view.host.querySelector('[data-testid="scene-archive"]'));
+    await vi.waitFor(() => expect(document.body.querySelector(".wr-safety-dialog")).toBeTruthy(), T);
+    const dialog = document.body.querySelector(".wr-safety-dialog");
+    expect(dialog.textContent).toContain("sexual_content_with_minor_indicators");
+    const confirm = dialog.querySelector('[data-testid="content-safety-confirm"]');
+    expect(confirm.disabled).toBe(true);
+
+    await click(dialog.querySelector('input[type="checkbox"]'));
+    expect(confirm.disabled).toBe(false);
+    await click(confirm);
+
+    await vi.waitFor(() => expect(document.body.querySelector(".wr-safety-dialog")).toBeNull(), T);
+    expect(adoptBodies).toEqual([
+      { accepted_warning_codes: [] },
+      { accepted_warning_codes: ["sexual_content_with_minor_indicators"] },
+    ]);
+    expect(view.host.textContent).toContain("已归档并写入正文文档");
+  });
+
+  it("持久化运行记录保留预算续跑所需的原作者指令", async () => {
+    const { mod } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    const authorNote = "保留原视角与人物动机。";
+
+    mod.scnRunSave("ch01s1", {
+      state: "queued",
+      draft: [],
+      metrics: [],
+      alignment: [],
+      log: [],
+      attempts: [],
+      budgetBlock: { code: "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED" },
+      authorNote,
+    });
+
+    expect(mod.scnRunLoad("ch01s1")).toMatchObject({ authorNote });
+  });
+
+  it("退回重写在界面上明确提示 2000 字上限，超限时不提交也不截断", async () => {
+    const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    const cached = {
+      ...mod.scnQC([{ id: "p1", beat: "goal", text: "潮水退去，她留下了证词。" }], false),
+      state: "ready", progress: 1, attempt: 1, attempts: [], cost: [], log: [],
+    };
+    mod.scnRunSave("ch01s1", cached);
+    window.__scnEnqueue = { sid: "ch01s1" };
+    client.getLatestSceneRunJob.mockRejectedValue(
+      Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
+    );
+    const page = await import("./ws-scene.jsx");
+    const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
+    await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-archive"]')).toBeTruthy(), T);
+    const rework = Array.from(view.host.querySelectorAll("button"))
+      .find(button => button.textContent.includes("退回重写"));
+    await click(rework);
+    const textarea = view.host.querySelector(".scn2-rework-input");
+    const overlong = "改".repeat(2001);
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(textarea, overlong);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    expect(textarea.value).toBe(overlong);
+    expect(textarea.getAttribute("aria-invalid")).toBe("true");
+    expect(view.host.querySelector('[role="alert"]')?.textContent).toContain("不会静默截断");
+    const submit = Array.from(view.host.querySelectorAll("button"))
+      .find(button => button.textContent.includes("确认退回重写"));
+    expect(submit.disabled).toBe(true);
+    expect(client.apiPost.mock.calls.filter(([url]) => /\/run\/jobs$/.test(url))).toEqual([]);
+  });
+
+  it("补齐声线卡等待期间切换场景，自动续跑仍显式绑定原目标场景", async () => {
+    const { client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT], catalog: [TWO_SCENE_CHAP] });
+    window.localStorage.setItem(window.wsKey("scn-run:ch01s1"), JSON.stringify({
+      state: "queued", progress: 0, draft: [], metrics: [], alignment: [], cost: [], log: [], attempts: [],
+      error: "缺少 POV 声线卡", needsCards: true,
+    }));
+    window.__scnEnqueue = { sids: ["ch01s1", "ch01s2"] };
+    client.getLatestSceneRunJob.mockRejectedValue(
+      Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
+    );
+    const cards = deferred();
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, options = {}) => {
+      if (url === "/api/v1/scenes/s1/preflight/create-cards") return cards.promise;
+      if (/\/api\/v1\/scenes\/s1\/run\/jobs$/.test(url)) {
+        return new Promise((resolve, reject) => {
+          void resolve;
+          options.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+        });
+      }
+      return basePost(url, body, options);
+    });
+    const page = await import("./ws-scene.jsx");
+    const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
+    await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-create-cards"]')).toBeTruthy(), T);
+
+    await click(view.host.querySelector('[data-testid="scene-create-cards"]'));
+    const rowB = Array.from(view.host.querySelectorAll(".scn2-qrow")).find(row => row.textContent.includes("回潮"));
+    await click(rowB);
+    await act(async () => { cards.resolve({ created: [{ dependency_type: "voice_profile" }] }); await Promise.resolve(); });
+
+    await vi.waitFor(() => expect(client.apiPost.mock.calls.some(([url]) => url === "/api/v1/scenes/s1/run/jobs")).toBe(true), T);
+    expect(client.apiPost.mock.calls.some(([url]) => url === "/api/v1/scenes/s2/run/jobs")).toBe(false);
+    expect(view.host.querySelector(".scn2-qrow.is-active")?.textContent).toContain("回潮");
+  });
+
+  it("追加预算等待期间切换场景，续跑仍绑定原场景和原作者指令", async () => {
+    const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT], catalog: [TWO_SCENE_CHAP] });
+    const authorNote = "保留第一场的限知视角";
+    mod.scnRunSave("ch01s1", {
+      state: "queued", progress: 0, draft: [], metrics: [], alignment: [], cost: [], log: [], attempts: [],
+      authorNote,
+      budgetBlock: {
+        code: "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
+        label: "本场 token 生命周期预算已到派发边界",
+        topup: { extra_tokens: 6400 },
+      },
+    });
+    window.__scnEnqueue = { sids: ["ch01s1", "ch01s2"] };
+    client.getLatestSceneRunJob.mockRejectedValue(
+      Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
+    );
+    const topup = deferred();
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, options = {}) => {
+      if (url === "/api/v1/scenes/s1/budget/topup") return topup.promise;
+      if (/\/api\/v1\/scenes\/s1\/run\/jobs$/.test(url)) {
+        return new Promise((resolve, reject) => {
+          void resolve;
+          options.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+        });
+      }
+      return basePost(url, body, options);
+    });
+    const page = await import("./ws-scene.jsx");
+    const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
+    await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-budget-topup"]')).toBeTruthy(), T);
+
+    await click(view.host.querySelector('[data-testid="scene-budget-topup"]'));
+    const rowB = Array.from(view.host.querySelectorAll(".scn2-qrow")).find(row => row.textContent.includes("回潮"));
+    await click(rowB);
+    await act(async () => { topup.resolve({}); await Promise.resolve(); });
+
+    await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v1/scenes/s1/run/jobs",
+      { run_policy: "strict", author_note: authorNote, resume_budget: true },
+      expect.objectContaining({ signal: expect.anything() }),
+    ), T);
+    expect(client.apiPost.mock.calls.some(([url]) => url === "/api/v1/scenes/s2/run/jobs")).toBe(false);
+  });
+
+  it("归档预检同步防双击，切换场景后不弹出旧场景的作者稿决策", async () => {
+    const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT], catalog: [TWO_SCENE_CHAP] });
+    const ready = (text) => ({
+      ...mod.scnQC([{ id: "p1", beat: "goal", text }], false),
+      state: "ready", progress: 1, attempt: 1, attempts: [], cost: [], log: [],
+    });
+    mod.scnRunSave("ch01s1", ready("第一场 AI 稿。"));
+    mod.scnRunSave("ch01s2", ready("第二场 AI 稿。"));
+    window.__scnEnqueue = { sids: ["ch01s1", "ch01s2"] };
+    window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>第一场作者稿。</p>");
+    client.getLatestSceneRunJob.mockRejectedValue(
+      Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
+    );
+    const hydration = deferred();
+    const hydrateSpy = vi.spyOn(window.WrDocs, "hydrate").mockImplementation((sid) => (
+      sid === "ch01s1" ? hydration.promise : Promise.resolve(null)
+    ));
+    const page = await import("./ws-scene.jsx");
+    const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
+    await vi.waitFor(() => expect(view.host.querySelector('[data-testid="scene-archive"]')).toBeTruthy(), T);
+
+    await click(view.host.querySelector('[data-testid="scene-archive"]'));
+    await vi.waitFor(() => {
+      const button = view.host.querySelector('[data-testid="scene-archive"]');
+      expect(button.disabled).toBe(true);
+      expect(button.textContent).toContain("正在核对作者稿");
+    }, T);
+    await click(view.host.querySelector('[data-testid="scene-archive"]'));
+    expect(hydrateSpy.mock.calls.filter(([sid]) => sid === "ch01s1")).toHaveLength(1);
+
+    const rowB = Array.from(view.host.querySelectorAll(".scn2-qrow")).find(row => row.textContent.includes("回潮"));
+    await click(rowB);
+    await act(async () => { hydration.resolve(null); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(document.body.querySelector(".scn-adopt-dialog")).toBeNull();
+    expect(view.host.querySelector(".scn2-qrow.is-active")?.textContent).toContain("回潮");
+    expect(client.apiPost.mock.calls.filter(([url]) => /adopt-current/.test(url))).toEqual([]);
+  });
+
+  it("演示 ready/archived 全程只读，不暴露伪归档、重写或深改动作", async () => {
+    const { client } = await loadSceneRun({ projects: [DEFAULT_PROJECT] });
+    const go = vi.fn();
+    const page = await import("./ws-scene.jsx");
+    const view = await renderRunJobControl(page.WsScene, { go, t: {} });
+    const rowByTitle = (title) => Array.from(view.host.querySelectorAll(".scn2-qrow"))
+      .find(row => row.textContent.includes(title));
+
+    await click(rowByTitle("亮起来的感应灯"));
+    expect(view.host.querySelector('[data-testid="scene-demo-readonly"]')?.textContent).toContain("不可伪归档、重写或送深改");
+    expect(view.host.querySelector('[data-testid="scene-archive"]')).toBeNull();
+    expect(Array.from(view.host.querySelectorAll("button")).some(button => /退回重写|送写作台深改/.test(button.textContent))).toBe(false);
+
+    await click(rowByTitle("三号档案箱"));
+    expect(view.host.querySelector('[data-testid="scene-demo-readonly"]')?.textContent).toContain("未写入真实作品");
+    expect(view.host.textContent).toContain("演示归档快照 · 完全只读");
+    expect(Array.from(view.host.querySelectorAll("button")).some(button => /在成稿中心查看|送写作台深改/.test(button.textContent))).toBe(false);
+    expect(client.apiPost.mock.calls.filter(([url]) => /adopt-current|run\/jobs/.test(url))).toEqual([]);
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it("尝试历史只把复盘意见加入当前稿重写，不宣称恢复历史正文 base", async () => {
+    const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
+    mod.scnRunSave("ch01s1", {
+      ...mod.scnQC([{ id: "p1", beat: "goal", text: "当前复核稿。" }], false),
+      state: "ready", progress: 1, attempt: 2, cost: [], log: [],
+      attempts: [
+        { n: 2, time: "本次 · 待裁决", result: "待裁决", tone: "gold", note: "当前稿" },
+        { n: 1, time: "昨日", result: "质检阻断", tone: "rose", note: "视角泄漏", cmp: { verdict: "第 1 次尝试存在视角泄漏。" } },
+      ],
+    });
+    window.__scnEnqueue = { sid: "ch01s1" };
+    client.getLatestSceneRunJob.mockRejectedValue(
+      Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
+    );
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, options = {}) => {
+      if (/\/api\/v1\/scenes\/s1\/run\/jobs$/.test(url)) {
+        return new Promise((resolve, reject) => {
+          void resolve;
+          options.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+        });
+      }
+      return basePost(url, body, options);
+    });
+    const page = await import("./ws-scene.jsx");
+    const view = await renderRunJobControl(page.WsScene, { go: vi.fn(), t: {} });
+    await vi.waitFor(() => expect(view.host.querySelector(".scn2-try-view")).toBeTruthy(), T);
+
+    await click(view.host.querySelector(".scn2-try-view"));
+    expect(view.host.querySelector(".scn2-cmp")?.textContent).toContain("不包含可恢复的历史正文快照");
+    expect(view.host.querySelector('[data-testid="scene-attempt-rewrite"]')?.textContent).toContain("参考该版复盘意见重写");
+    await click(view.host.querySelector('[data-testid="scene-attempt-rewrite"]'));
+
+    await vi.waitFor(() => expect(client.apiPost.mock.calls.some(([url]) => url === "/api/v1/scenes/s1/run/jobs")).toBe(true), T);
+    const [, body] = client.apiPost.mock.calls.find(([url]) => url === "/api/v1/scenes/s1/run/jobs");
+    expect(body.author_note).toContain("参考第 1 次尝试的复盘意见重写");
+    expect(body.author_note).toContain("不恢复该版正文，以当前稿为输入");
+    expect(body.author_note).not.toContain("为基础重写");
+    expect(body).not.toHaveProperty("previous_draft");
   });
 
   it("stops the real page progress timer and scnRun polling after unmount", async () => {
@@ -1148,12 +1650,169 @@ describe("scnAdoptToDoc（归档单入口：先后端、后本地）", () => {
     expect(Object.keys(window.localStorage).filter(k => k.includes("wr-doc:ch01s1"))).toEqual([]);
   });
 
+  it("内容安全 409 保留结构化错误，并仅把当前 exact finding codes 传回服务端", async () => {
+    const { mod, client } = await loadWithCatalog();
+    const reviewError = Object.assign(new Error("review required"), {
+      code: "CONTENT_SAFETY_REVIEW_REQUIRED",
+      status: 409,
+      details: {
+        final_text_gate: {
+          content_safety: {
+            findings: [{
+              code: "sexual_content_with_minor_indicators",
+              review_required: true,
+              acknowledged: false,
+            }],
+          },
+        },
+      },
+    });
+    client.apiPost.mockImplementation((url, body) => {
+      if (!/\/adopt-current$/.test(url)) return Promise.resolve({});
+      if (!body.accepted_warning_codes.length) return Promise.reject(reviewError);
+      return Promise.resolve({ scene_status: "archived" });
+    });
+
+    const blocked = await mod.scnAdoptToDoc("ch01s1", DRAFT);
+    expect(blocked).toMatchObject({ ok: false, error: reviewError });
+    expect(client.apiPost).toHaveBeenNthCalledWith(
+      client.apiPost.mock.calls.findIndex(([url]) => /\/adopt-current$/.test(url)) + 1,
+      "/api/v1/scenes/s1/adopt-current",
+      { accepted_warning_codes: [] },
+    );
+
+    const accepted = await mod.scnAdoptToDoc("ch01s1", DRAFT, null, {
+      acceptedWarningCodes: ["sexual_content_with_minor_indicators"],
+    });
+    expect(accepted.ok).toBe(true);
+    expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v1/scenes/s1/adopt-current",
+      { accepted_warning_codes: ["sexual_content_with_minor_indicators"] },
+    );
+  });
+
+  it("内容安全复核重试复用已验证的作者稿备份，不制造重复副本", async () => {
+    const { mod, client } = await loadWithCatalog();
+    const key = window.wsKey("wr-doc:ch01s1");
+    window.localStorage.setItem(key, "<p>作者亲写的正文。</p>");
+    const reviewError = Object.assign(new Error("review required"), {
+      code: "CONTENT_SAFETY_REVIEW_REQUIRED",
+      status: 409,
+      details: { final_text_gate: { content_safety: { findings: [] } } },
+    });
+    client.apiPost.mockImplementation((url, body) => {
+      if (!/\/adopt-current$/.test(url)) return Promise.resolve({});
+      return body.accepted_warning_codes.length
+        ? Promise.resolve({ scene_status: "archived" })
+        : Promise.reject(reviewError);
+    });
+
+    const blocked = await mod.scnAdoptToDoc("ch01s1", DRAFT, null, {
+      mode: "overwrite",
+      confirmed: true,
+    });
+    expect(blocked).toMatchObject({
+      ok: false,
+      authorBackup: expect.objectContaining({ type: "backup", durable: true }),
+    });
+    expect(window.WrRecovery.list()).toHaveLength(1);
+
+    const accepted = await mod.scnAdoptToDoc("ch01s1", DRAFT, null, {
+      mode: "overwrite",
+      confirmed: true,
+      authorBackupId: blocked.authorBackup.id,
+      acceptedWarningCodes: ["sexual_content_with_minor_indicators"],
+    });
+    expect(accepted.ok).toBe(true);
+    expect(window.WrRecovery.list()).toHaveLength(1);
+  });
+
   it("目录未同步到后端（无 backendId）：不静默装成功", async () => {
     const { mod } = await loadSceneRun({ catalog: [] });
     const cat = await import("./ws-catalog.jsx");
     await vi.waitFor(() => expect(cat.WsCatalog.ready()).toBe(true), T);
     const result = await mod.scnAdoptToDoc("ch99s9", DRAFT);
     expect(result.ok).toBe(false);
+  });
+
+  it("已有作者稿时可默认保存为候选：不调用归档、不覆盖正文", async () => {
+    const { mod, client } = await loadWithCatalog();
+    const key = window.wsKey("wr-doc:ch01s1");
+    window.localStorage.setItem(key, "<p>作者亲写的正文。</p>");
+
+    const result = await mod.scnAdoptToDoc("ch01s1", DRAFT);
+
+    expect(result).toMatchObject({ ok: true, archived: false, mode: "candidate" });
+    expect(window.localStorage.getItem(key)).toBe("<p>作者亲写的正文。</p>");
+    expect(client.apiPost.mock.calls.filter(([url]) => /adopt-current/.test(url))).toEqual([]);
+    expect(window.WrRecovery.list()).toEqual([
+      expect.objectContaining({ sid: "ch01s1", type: "candidate", source: "ai" }),
+    ]);
+  });
+
+  it("调用层只声明 overwrite 但没有显式确认时也 fail closed", async () => {
+    const { mod, client } = await loadWithCatalog();
+    const key = window.wsKey("wr-doc:ch01s1");
+    window.localStorage.setItem(key, "<p>作者亲写的正文。</p>");
+
+    const result = await mod.scnAdoptToDoc("ch01s1", DRAFT, null, { mode: "overwrite" });
+
+    expect(result).toMatchObject({ ok: false, confirmationRequired: true });
+    expect(window.localStorage.getItem(key)).toBe("<p>作者亲写的正文。</p>");
+    expect(window.WrRecovery.list()).toEqual([]);
+    expect(client.apiPost.mock.calls.filter(([url]) => /adopt-current/.test(url))).toEqual([]);
+  });
+
+  it("采用预检会先水合服务器作者稿：即使本机无缓存也不得直接覆盖", async () => {
+    const { mod, client } = await loadWithCatalog();
+    client.apiPost.mockImplementation((url) => {
+      if (/\/author-drafts\/scene\/s1\/ensure$/.test(url)) {
+        return Promise.resolve({ draft: { draft_id: "d-server", revision_no: 7, content: "<p>另一台设备写下的作者稿。</p>" } });
+      }
+      return Promise.resolve({});
+    });
+
+    const preview = await mod.scnPrepareAdoption("ch01s1", DRAFT);
+
+    expect(preview.hasReal).toBe(true);
+    expect(preview.existing).toBe("<p>另一台设备写下的作者稿。</p>");
+    expect(preview.diff.dels).toBeGreaterThan(0);
+  });
+
+  it("明确覆盖时先持久备份作者稿，再归档并写入 AI 稿", async () => {
+    const { mod, client } = await loadWithCatalog();
+    const key = window.wsKey("wr-doc:ch01s1");
+    window.localStorage.setItem(key, "<p>作者亲写的正文。</p>");
+    client.apiPost.mockImplementation((url) => {
+      if (/\/adopt-current$/.test(url)) return Promise.resolve({ scene_status: "archived" });
+      return Promise.resolve({});
+    });
+
+    const result = await mod.scnAdoptToDoc("ch01s1", DRAFT, null, { mode: "overwrite", confirmed: true });
+
+    expect(result).toMatchObject({ ok: true, archived: true, authorBackup: expect.objectContaining({ durable: true }) });
+    expect(window.WrRecovery.list()).toEqual([
+      expect.objectContaining({ type: "backup", html: "<p>作者亲写的正文。</p>" }),
+    ]);
+    expect(window.localStorage.getItem(key)).toContain("潮水退去，她看清了闸门上的名字");
+    expect(client.apiPost.mock.calls.some(([url]) => /adopt-current$/.test(url))).toBe(true);
+  });
+
+  it("覆盖前备份触发 quota 时 fail-safe：阻止归档，作者稿保持不变", async () => {
+    const { mod, client } = await loadWithCatalog();
+    const key = window.wsKey("wr-doc:ch01s1");
+    window.localStorage.setItem(key, "<p>作者亲写的正文。</p>");
+    const originalSetItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function quotaForBackup(storageKey, value) {
+      if (String(storageKey).startsWith("wr-recovery:v1:")) throw new DOMException("full", "QuotaExceededError");
+      return originalSetItem.call(this, storageKey, value);
+    });
+
+    const result = await mod.scnAdoptToDoc("ch01s1", DRAFT, null, { mode: "overwrite", confirmed: true });
+
+    expect(result).toMatchObject({ ok: false, backupFailed: true });
+    expect(window.localStorage.getItem(key)).toBe("<p>作者亲写的正文。</p>");
+    expect(client.apiPost.mock.calls.filter(([url]) => /adopt-current/.test(url))).toEqual([]);
   });
 });
 

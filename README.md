@@ -1,169 +1,75 @@
-# 雪花法驱动小说系统
+# AI 小说创作系统
 
-这是当前仓库唯一保留的项目说明。
+这是一个面向单机、单作者工作流的长篇小说创作系统。正式界面是 `frontend-react/` 的 React 工作台；旧 `frontend/` 仅用于兼容回归。
 
-系统主线已经升级为“雪花法驱动”：你提供小说大纲和可选参考书，系统先按雪花法逐层生成候选，作者逐层确认，再把已确认的场景列表和场景规划整理成章节结构草案。当前 `雪花工作台` 前端覆盖项目创建、十步雪花、场景急救、章节结构草案整理和结构确认；逐章运行、终稿批准和更细的运行证据仍是后续支撑接口/高级链路能力。`写作房间` 保留为小范围人工修改工具；旧的大纲驱动页和深改台下沉到高级模式，不再作为普通作家模式的主流程。
+当前产品主线是：新建作品 → 雪花十步构思 → 物化章节与场景 → 逐场 AI 起草或人工写作 → 作者复核并提升权威正文。系统提供长篇契约、连续性检查、内容与来源安全提示、LLM 额度、后台任务恢复和审计证据，但不应被理解为多用户 SaaS、生产级高可用服务或自动出版裁决器。
 
-## 当前入口
+## 当前界面与能力边界
 
-前端默认进入 `雪花工作台`。
+启动后默认进入 `主页`，不是雪花页。作家模式的日常入口包括：
 
-作家模式只保留：
+- `主页`、`流程`：查看当前作品和下一步。
+- `构思`：真实项目创建、雪花十步、场景急救、结构物化与回流。
+- `写作`：人工编辑、AI 候选、草稿保存、内容安全复核和权威正文提升。
+- `风格`：上传参考书并学习抽象风格画像。
+- `待办`、`资料`：处理人工决策与故事资料。
 
-- `雪花工作台`：创建小说项目，逐步确认十步雪花，做场景急救，整理章节结构草案，并确认生成 `ChapterGoal` / `SceneCard` 的结构基础。
-- `小修写作`：进入当前章节或场景的正文小修。
-- `参考书学习`：导入参考书、学习抽象风格画像、绑定 ready 画像到项目。
-- `待处理建议`：处理中途异常、QC 阻塞、参考安全风险和其他需要作者决策的建议。
+切到高级模式后会显示 `章节编排`、`AI 起草台`、`成稿中心`、`长篇控制塔`、质量/盲评和运维工具。
 
-高级模式保留全部后台工具，包括章节编排、运行场景、成稿中心、深改台、长篇控制、文学质检、索引、知识、导入导出和系统配置。
+当前需要特别区分：
 
-## 首次使用最短路径
+- 新建作品、雪花步骤保存/批准、结构物化、逐场 AI 起草、草稿同步和权威正文提升都有真实后端链路。
+- `潮汐档案` 的结构控制塔和部分装饰数据是演示内容；控制塔只对该演示作品开放，真实作品不会混入其剧情种子。
+- 离线演示必须由用户显式选择，并标记为演示来源；它不是供应商真实生成结果。
+- 高级 `章节编排` 的 `运行本章` 会启动持久化章节任务、轮询真实进度，并明确展示阻断、失败与模型未配置状态；它不会静默切到离线演示。
+- `成稿中心` 的终稿批准必须先显式确认已通读当前服务端正文，随后依次写入正文哈希确认和项目级 `approve-final`。目录不能直接伪造 `approved`；重开终稿必须填写原因，并由服务端级联撤销受影响的后续批准。
 
-1. 准备依赖：后端使用 Python 3.12，前端使用 Node/npm；首次运行前在 `frontend` 下执行 `npm install`。
-2. 迁移数据库：进入 `backend` 后执行 `python -m alembic upgrade head`。
-3. 如需清空旧作者态数据，先执行 `python -m novel_system.tools.reset_author_state` 查看 dry-run，再执行 `python -m novel_system.tools.reset_author_state --execute --yes`。
-4. 回到仓库根目录执行 `.\start-dev.cmd`，打开前端 `http://127.0.0.1:5173`。
-5. 在左侧 `界面模式` 选择 `作家`，进入默认的 `雪花工作台`。
-6. 点击 `项目 / 新建`，填写标题、题材、目标章节数/字数，并粘贴故事起始大纲。
-7. 在 `规划` 模式中逐步 `生成候选`、编辑、`保存步骤`、`确认步骤`。
-8. 完成 `场景列表` 和 `场景规划` 后进入 `急救`，生成急救建议，按 `合格 / 需修改 / 废除重写` 修正并保存。
-9. 回到 `规划`，在 `整理章节结构` 中点击 `整理成章节结构`，检查章节计划后点击 `确认结构`。
-10. 如需正文小修、参考画像或人工决策，分别进入 `小修写作`、`参考书学习`、`待处理建议`。逐章运行与终稿批准可走已保留的支撑接口或高级链路，不是当前雪花页的直接按钮。
+## 本地快速启动
 
-## 标准流程
-
-1. 在 `雪花工作台` 创建项目，普通作家模式只创建 `snowflake` 项目。
-2. 粘贴小说大纲，可选填写标题、题材、目标字数、章节数。
-3. 如需参考书，先在 `参考书学习` 导入、学习，并把 `ready` 状态画像绑定到项目。
-4. 在 `雪花工作台` 逐步生成、编辑并确认十步雪花：读者定位、一句话概括、一段话概括、角色摘要表、一页梗概、角色背景故事、长篇大纲、角色全档案、场景列表、场景规划。
-5. 雪花步骤允许带原因跳过；整理章节结构前，`读者定位`、`一句话概括`、`一段话概括`、`场景列表`、`场景规划` 是硬性检查项，其余角色/长纲步骤会以预警形式提示。
-6. 在工作台中完成 `场景急救`，把场景标记为 `合格 / 需修改 / 废除重写`。
-7. 点击 `整理成章节结构`，系统把已确认的场景列表和场景规划转成待确认结构计划。
-8. 在工作台中确认结构计划，系统创建 `ChapterGoal` 和 `SceneCard`，并把主动场景的 `Goal / Conflict / Setback` 或反应场景的 `Reaction / Dilemma / Decision` 写入场景戏剧卡。
-9. 后续逐章运行、终稿批准和章节级审核包由保留的项目支撑接口承担；当前 `雪花工作台` 前端不直接暴露 `运行本章` 或 `批准终稿` 按钮。
-10. 需要人工微调正文时进入 `小修写作`；需要处理异常、QC 或安全项时进入 `待处理建议`。
-
-v1 不一次性生成整本书，只做逐章推进。
-
-## 参考书边界
-
-参考书只用于生成抽象风格画像，例如节奏、句法、叙事手法、结构技巧和禁复刻规则。
-
-系统不得复制参考书原文表达、人物、设定、桥段、特殊意象或标志性句式。项目运行包只携带抽象画像和安全提示。
-
-## 项目接口
-
-雪花工作台主接口：
-
-- `POST /api/v2/projects`
-- `GET /api/v2/projects`
-- `GET /api/v2/projects/{project_id}/snowflake-workspace`
-- `POST /api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate`
-- `PATCH /api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}`
-- `POST /api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve`
-- `POST /api/v2/projects/{project_id}/snowflake-workspace/assistant`
-- `POST /api/v2/projects/{project_id}/snowflake-workspace/scene-triage/suggest`
-- `POST /api/v2/projects/{project_id}/snowflake-workspace/scene-triage`
-- `PATCH /api/v2/projects/{project_id}/snowflake-workspace/scenes/{scene_plan_id}`
-- `POST /api/v2/projects/{project_id}/snowflake-workspace/scene-triage/{triage_id}/apply`
-- `POST /api/v2/projects/{project_id}/snowflake-workspace/materialize`
-- `POST /api/v2/projects/{project_id}/snowflake-workspace/outline/approve`
-
-仍保留的支撑接口：
-
-- `GET /api/v1/projects/{project_id}/dashboard`
-- `POST /api/v1/projects/{project_id}/chapters/{chapter_id}/run-job`
-- `POST /api/v1/projects/{project_id}/chapters/{chapter_id}/run`
-- `GET /api/v1/chapters/{chapter_id}/run-status`
-- `GET /api/v1/chapter-manuscripts/{chapter_id}`
-- `POST /api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final`
-- `POST /api/v1/projects/{project_id}/reference-profiles`
-
-`写作总控` 现在是普通作者模式的结构确认后入口：雪花结构批准后进入项目 dashboard，按 `next_action` 启动后台章节起草、轮询运行进度、展示终稿审阅正文并批准当前章。LLM 未启用时，章节起草会被明确阻止，除非显式选择离线演示；离线演示内容会明确标记为演示来源，不当作真实正文来源。
-
-后端新增：
-
-- `StoryProject`
-- `OutlinePlan`
-- `SnowflakeArtifact`
-- `StoryCharacter`
-- `ProjectService`
-- `SnowflakeWorkspaceService`
-- `SnowflakeWorkspaceAssistantService`
-- `SnowflakeStepCatalog`
-- `ProjectChapterFlowService`
-- `reset_author_state` CLI
-
-章节和场景现在可以通过 nullable `project_id` / `outline_plan_id` 追踪项目归属。雪花整理出的场景会把 proactive 场景的 `Goal / Conflict / Setback` 或 reactive 场景的 `Reaction / Dilemma / Decision` 同步到 `SceneCard.writer_brief_json`。
-
-## 数据重置
-
-切换到新的雪花工作台前，推荐先执行一次作者态重置，清掉旧项目、旧雪花、旧章节运行产物和旧作者修订数据。
-
-先看 dry-run：
+依赖：Python 3.12、Node.js/npm。
 
 ```powershell
-cd backend
-python -m novel_system.tools.reset_author_state
-```
-
-确认后再真正执行：
-
-```powershell
-cd backend
-python -m novel_system.tools.reset_author_state --execute --yes
-```
-
-重置会删除：
-
-- `StoryProject / OutlinePlan / SnowflakeArtifact / StoryCharacter`
-- `ChapterGoal / SceneCard / ChapterState / SceneRunState`
-- 作者草稿、提案、结构候选、QC、自动重写、运行产物、审核项、索引作业和相关审计记录
-
-重置会保留：
-
-- `ReferenceBook / ReferenceBookSegment / ReferenceLearningRun / ReferenceLearningRound / ReferenceFinding / ReferenceProfile`
-- `SystemConfigSnapshot / SystemSecret`
-- `config/models.yaml` 与 `config/prompts.yaml`
-
-## 本地启动
-
-推荐使用根目录脚本：
-
-```powershell
+cd frontend-react
+npm install
+cd ..
 .\start-dev.cmd
 ```
 
-停止服务：
+启动脚本会先执行 `alembic upgrade head`，随后启动后端与 React 前端；默认也会补齐演示数据。默认地址：
+
+- React：`http://127.0.0.1:5174`
+- 后端：`http://127.0.0.1:8000`
+- 存活检查：`http://127.0.0.1:8000/live`
+- 就绪检查：`http://127.0.0.1:8000/ready`
+
+若端口被占用，脚本会选择可用端口，并把后端地址写入 `.codex-run/backend.url`。
 
 ```powershell
 .\stop-dev.cmd
-```
-
-重启服务：
-
-```powershell
 .\restart-dev.cmd
 ```
 
-默认地址：
+旧 Vue 界面不会默认启动。仅做兼容回归时使用：
 
-- 前端：`http://127.0.0.1:5173`
-- 后端：`http://127.0.0.1:8000`
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 -IncludeLegacyVue
+```
 
-如果后端端口被占用，脚本会选择下一个可用端口，并写入 `.codex-run/backend.url`。
+## 推荐创作路径
 
-本地首次切到新工作台时，推荐顺序：
+1. 从作品切换器选择 `新建作品`，填写标题、题材、目标字数/章节数和起始大纲。
+2. 进入 `构思`，逐步生成、编辑、保存并确认雪花十步。
+3. 完成场景列表与场景规划后运行场景急救，处理 `合格 / 需修改 / 废除重写`。
+4. 使用 `整理成章节结构` 将已确认内容物化为 `ChapterGoal` 与 `SceneCard`。
+5. 直接进入 `写作`、在 `AI 起草台` 逐场生成，或在高级 `章节编排` 中运行当前整章并观察持久化进度。
+6. 人工审阅 AI 候选；提升权威正文时按准确的内容安全发现码逐项确认。
+7. 在 `成稿中心` 通读当前服务端正文并批准终稿；需要重开时填写可审计原因。再到长篇控制塔检查契约、锚点、连续性和最终状态。文学质量提示始终需要作者判断。
 
-1. `cd backend`
-2. `python -m alembic upgrade head`
-3. `python -m novel_system.tools.reset_author_state`
-4. `python -m novel_system.tools.reset_author_state --execute --yes`
-5. 回到仓库根目录运行 `.\start-dev.cmd`
+雪花步骤允许带原因跳过，但读者定位、一句话概括、一段话概括、场景列表和场景规划是结构物化前的硬检查项。
 
-## 数据库迁移
+## 数据库与迁移
 
-代码依赖最新 Alembic 迁移。页面出现 `database operation failed` 时，优先检查数据库版本。
+当前代码要求 Alembic head `20260716_0073`。
 
 ```powershell
 cd backend
@@ -172,39 +78,71 @@ python -m alembic heads
 python -m alembic upgrade head
 ```
 
-## 代码入口
+`0073` 会把历史 LLM 审计中的提示词、草稿、模型输出和供应商错误正文改写为有界指纹；正文仍保留在各自权威业务表中。该脱敏不可逆，升级已有数据库前应先备份。若要先只统计历史审计风险：
 
-- 前端壳层：`frontend/src/App.vue`
-- 前端导航：`frontend/src/router.js`
-- 雪花工作台页：`frontend/src/views/SnowflakeWorkbenchView.vue`
-- 雪花工作台状态：`frontend/src/stores/snowflakeWorkbench.js`
-- 前端 API：`frontend/src/lib/api/`（域模块，通过 `index.js` 统一导出）
-- 后端应用：`backend/src/novel_system/api/app.py`
-- 项目接口：`backend/src/novel_system/api/routes/projects.py`
-- 雪花工作台接口：`backend/src/novel_system/api/routes/snowflake_workspace.py`
-- 项目服务：`backend/src/novel_system/services/projects.py`
-- 雪花工作台服务：`backend/src/novel_system/services/snowflake_workspace.py`
-- 重置工具：`backend/src/novel_system/tools/reset_author_state.py`
-- 数据模型：`backend/src/novel_system/db/models.py`
+```powershell
+python -m novel_system.tools.llm_audit_scrub --database .\novel_system.db --dry-run
+```
+
+升级后可做严格预检：
+
+```powershell
+python -m novel_system.tools.database_preflight .\novel_system.db --expected-revision 20260716_0073
+```
+
+`/live` 只表示进程存活；`/ready` 还会检查数据库连接、迁移版本和必需结构，部署探针应使用两者的不同语义。
+
+## 网络与令牌
+
+后端默认 `NOVEL_SYSTEM_LOCAL_ONLY=true`，只接受回环请求并拒绝转发头。若明确需要远程访问，必须同时设置：
+
+```powershell
+$env:NOVEL_SYSTEM_LOCAL_ONLY = "false"
+$env:NOVEL_SYSTEM_REMOTE_ACCESS_TOKEN = "使用足够长的随机值"
+$env:NOVEL_SYSTEM_CORS_ORIGINS = "https://你的前端域名"
+```
+
+`start-dev.cmd` 仍只监听 `127.0.0.1`；以上变量不会自动把端口暴露到网络。远程部署还需要单独配置监听地址或可信反向代理，并遵守运行安全文档中的边界。
+
+浏览器客户端通过 `X-Novel-Access-Token` 发送令牌；可用 `VITE_NOVEL_SYSTEM_ACCESS_TOKEN` 注入默认值，运行时值只保存在 `sessionStorage`。这是共享访问令牌，不是用户登录、RBAC 或租户隔离；构建进前端的值也不能视为对浏览器用户保密。
+
+完整的网络、额度、内容复核、路径导入和恢复边界见 [运行安全与资源边界](docs/runtime-safety.md)。长篇冻结与最终状态语义见 [长篇运行时契约与终稿状态](docs/longform-runtime-contract.md)。本轮整改与残余盲区见 [系统整改记录（2026-07-16）](docs/system-remediation-2026-07-16.md)。
+
+## 恢复与数据重置
+
+服务启动时会尝试恢复可安全重放的场景、章节、风格学习和验证后台任务；持久化租约用于避免重复接管。写作界面的 `同步与恢复中心` 会收集浏览器本地冲突稿、离线稿和配额失败稿，可比较、导出、重试或恢复。
+
+浏览器恢复记录不是服务端备份，清理站点数据、换浏览器/设备、无痕模式或存储配额耗尽都可能令其不可用。
+
+`reset_author_state` 会批量删除作者态项目与运行产物，不属于首次启动步骤。只有在已有数据库备份且确认要清空作者态时才执行：
+
+```powershell
+cd backend
+python -m novel_system.tools.reset_author_state
+python -m novel_system.tools.reset_author_state --execute --yes
+```
+
+第一条命令仅做 dry-run。
 
 ## 验证
 
-后端项目流：
-
 ```powershell
-python -m pytest backend/tests/test_snowflake_workspace_v2.py backend/tests/test_snowflake_planner.py backend/tests/test_reset_author_state.py
-```
-
-前端工作台和导航：
-
-```powershell
-cd frontend
-npx vitest run tests/snowflakeWorkbench.spec.js tests/workflowUx.spec.js
-```
-
-完整前端单测：
-
-```powershell
-cd frontend
+cd frontend-react
 npm run test
+npm run build
 ```
+
+```powershell
+cd backend
+python -m pytest -m "not chroma_integration"
+```
+
+关键代码入口：
+
+- 前端导航：`frontend-react/src/ws-app.jsx`
+- 雪花工作台：`frontend-react/src/ws-snow.jsx`
+- 写作与本地恢复：`frontend-react/src/ws-writer.jsx`、`frontend-react/src/wr-doc-store.jsx`
+- API 客户端：`frontend-react/src/lib/client.js`
+- 后端应用与健康检查：`backend/src/novel_system/api/app.py`
+- 场景执行与归档：`backend/src/novel_system/api/routes/scenes.py`
+- 长篇契约：`backend/src/novel_system/services/longform_tower.py`

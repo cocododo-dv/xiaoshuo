@@ -26,6 +26,7 @@ from novel_system.services.llm_accounting import (
     classify_advisory_failure,
     validate_product_call,
 )
+from novel_system.services.llm_audit import sanitize_audit_summary
 
 logger = logging.getLogger(__name__)
 
@@ -500,12 +501,14 @@ def llm_auto_critique(
         "should_rewrite": llm_should_rewrite,
         "issues": llm_issues,
     }
-    parent.response_payload_summary = {
-        **dict(parent.response_payload_summary or {}),
-        "auto_critique_parsed_llm_hash": critique_llm_contribution_hash(
-            llm_contribution
-        ),
-    }
+    parent.response_payload_summary = sanitize_audit_summary(
+        {
+            **dict(parent.response_payload_summary or {}),
+            "auto_critique_parsed_llm_hash": critique_llm_contribution_hash(
+                llm_contribution
+            ),
+        }
+    )
     session.commit()
 
     # Merge: rule-based first, then LLM (deduplicated by dimension)

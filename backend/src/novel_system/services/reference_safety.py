@@ -175,6 +175,7 @@ def build_reference_safety_profile(texts: list[str], *, profile_id: str, book_id
             *_distinctive_compound_terms(joined),
         ],
         limit=40,
+        min_cjk_chars=2,
     )
     distinctive_phrases = _distinctive_phrases(joined)
     scene_bridges = _scene_bridges(normalized_segments)
@@ -195,7 +196,28 @@ def build_reference_safety_profile(texts: list[str], *, profile_id: str, book_id
 
 def _proper_name_terms(text: str) -> list[str]:
     terms = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b", text)
-    cjk_terms = re.findall(r"[\u4e00-\u9fff]{2,6}(?:[·・][\u4e00-\u9fff]{2,6})?", text)
+    interpunct_names = re.findall(
+        r"[\u4e00-\u9fff]{1,6}(?:[·・][\u4e00-\u9fff]{1,6})+",
+        text,
+    )
+    quoted_names = re.findall(
+        r"[“‘「『\"]([\u4e00-\u9fff]{2,4})[”’」』\"]",
+        text,
+    )
+    # Chinese has no word boundaries.  A short surname-led token immediately
+    # followed by a speech/action particle is a conservative name signal and,
+    # unlike the old arbitrary 2-6 character chunking, does not turn every
+    # clause into a protected term.  The reluctant quantifier first tries a
+    # two-character name and expands to three only when the context requires it.
+    contextual_names = re.findall(
+        rf"([{CJK_SURNAME_CHARS}][\u4e00-\u9fff]{{1,2}}?)(?={CJK_NAME_CONTEXT})",
+        text,
+    )
+    cjk_terms = [
+        term
+        for term in [*interpunct_names, *quoted_names, *contextual_names]
+        if term not in CJK_NAME_STOPWORDS
+    ]
     return [*terms, *cjk_terms]
 
 
@@ -222,15 +244,44 @@ def _distinctive_phrases(text: str) -> list[str]:
             if any(part in COMMON_WORDS for part in phrase.split()):
                 continue
             phrases.append(phrase)
+    phrases.extend(_cjk_distinctive_phrases(text))
     return _unique(phrases, limit=40)
+
+
+def _cjk_distinctive_phrases(text: str) -> list[str]:
+    """Extract conservative exact-match Chinese phrase candidates.
+
+    Eight or more contiguous ideographs are long enough to avoid treating a
+    common two/four-character expression as a distinctive phrase.  Long
+    clauses are sampled in overlapping twelve-character windows so the output
+    remains bounded and useful for exact source-safety matching.
+    """
+    phrases: list[str] = []
+    clauses = re.split(r"[。！？!?；;：:\n]+", text)
+    for clause in clauses:
+        for sequence in re.findall(r"[\u4e00-\u9fff]{8,}", clause):
+            if len(sequence) <= 20:
+                phrases.append(sequence)
+                continue
+            window_size = 12
+            step = 6
+            for start in range(0, len(sequence) - window_size + 1, step):
+                phrases.append(sequence[start : start + window_size])
+                if len(phrases) >= 80:
+                    return phrases
+    return phrases
 
 
 def _scene_bridges(segments: list[str]) -> list[dict[str, Any]]:
     bridges: list[dict[str, Any]] = []
     for index, segment in enumerate(segments[:24]):
-        terms = _unique([*_proper_name_terms(segment), *_distinctive_compound_terms(segment)], limit=8)
+        terms = _unique(
+            [*_proper_name_terms(segment), *_distinctive_compound_terms(segment)],
+            limit=8,
+            min_cjk_chars=2,
+        )
         phrases = _distinctive_phrases(segment)[:8]
-        tokens = _unique([*terms, *phrases], limit=10)
+        tokens = _unique([*terms, *phrases], limit=10, min_cjk_chars=2)
         if len(tokens) < 2:
             continue
         bridges.append(
@@ -244,12 +295,14 @@ def _scene_bridges(segments: list[str]) -> list[dict[str, Any]]:
     return bridges
 
 
-def _unique(values: list[str], *, limit: int) -> list[str]:
+def _unique(values: list[str], *, limit: int, min_cjk_chars: int = 4) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
     for value in values:
         text = _compact_ws(value)
-        if len(text) < 4:
+        is_cjk = re.fullmatch(r"[\u4e00-\u9fff]+", text) is not None
+        minimum = min_cjk_chars if is_cjk else 4
+        if len(text) < minimum:
             continue
         key = text.lower()
         if key in seen:
@@ -281,4 +334,37 @@ COMMON_WORDS = {
     "said",
     "carried",
     "crossed",
+}
+
+
+CJK_SURNAME_CHARS = (
+    "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华"
+    "金魏陶姜戚谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花"
+    "方俞任袁柳酆鲍史唐费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于"
+    "时傅皮卞齐康伍余元卜顾孟平黄和穆萧尹姚邵湛汪祁毛禹狄米"
+    "贝明臧计伏成戴谈宋茅庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强"
+    "贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田樊胡凌霍虞万支"
+    "柯昝管卢莫经房裘缪干解应宗丁宣邓郁单杭洪包诸左石崔吉龚"
+    "程嵇邢滑裴陆荣翁荀羊惠甄曲家封芮羿储靳汲邴糜松井段富巫"
+    "乌焦巴弓牧隗山谷车侯宓蓬全郗班仰秋仲伊宫宁仇栾暴甘钭厉"
+    "戎祖武符刘景詹束龙叶幸司韶郜黎蓟薄印宿白怀蒲邰从鄂索咸"
+    "籍赖卓蔺屠蒙池乔阴胥能苍双闻莘党翟谭贡劳逄姬申扶堵冉宰"
+    "郦雍郤璩桑桂濮牛寿通边扈燕冀郏浦尚农温别庄晏柴瞿阎充慕"
+    "连茹习宦艾鱼容向古易慎戈廖庾终暨居衡步都耿满弘匡国文寇"
+    "广禄阙东欧殳沃利蔚越夔隆师巩厍聂晁勾敖融冷訾辛阚那简饶"
+    "空曾毋沙乜养鞠须丰巢关蒯相查后荆红游竺权逯盖益桓公"
+)
+
+CJK_NAME_CONTEXT = (
+    r"(?:说|问|答|道|看|望|走|来|去|把|将|向|在|从|与|和|却|又|便|仍|"
+    r"正|已|没|不|拿|推|抬|站|坐|笑|哭|喊|回|转|按|递|接|打开|关上)"
+)
+
+CJK_NAME_STOPWORDS = {
+    "白天",
+    "方向",
+    "高处",
+    "夏天",
+    "何时",
+    "平时",
 }

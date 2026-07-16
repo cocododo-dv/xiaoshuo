@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
@@ -10,6 +13,88 @@ from novel_system.services.canonical_manuscripts import CanonicalSceneService
 from novel_system.services.idempotency import execute_with_idempotency
 
 router = APIRouter(tags=["author-drafts"])
+
+INT64_MAX = (1 << 63) - 1
+MAX_DRAFT_CONTENT_CHARS = 2_000_000
+MAX_INSTRUCTION_CHARS = 8_000
+MAX_NOTE_CHARS = 4_000
+MAX_WARNING_CODES = 64
+
+Identifier = Annotated[str, Field(min_length=1, max_length=255)]
+OptionalIdentifier = Annotated[str, Field(max_length=255)]
+NoteText = Annotated[str, Field(max_length=MAX_NOTE_CHARS)]
+WarningCode = Annotated[str, Field(min_length=1, max_length=128)]
+
+
+class StrictAuthorDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class AuthorDraftSaveRequest(StrictAuthorDraftRequest):
+    content: str = Field(max_length=MAX_DRAFT_CONTENT_CHARS)
+    base_revision_no: int = Field(ge=1, le=INT64_MAX)
+    patch_id: OptionalIdentifier | None = None
+    revision_id: OptionalIdentifier | None = None
+    option_id: OptionalIdentifier | None = None
+    note: NoteText | None = None
+
+
+class CanonicalPromotionRequest(StrictAuthorDraftRequest):
+    # Keep these optional at the transport boundary so the domain service can
+    # retain its existing 400/409 error codes for omitted reconciliation data.
+    base_revision_no: int | None = Field(default=None, ge=1, le=INT64_MAX)
+    expected_current_final_scene_row_id: Identifier | None = None
+    narrative_effect: str | None = Field(default=None, max_length=64)
+    accepted_warning_codes: list[WarningCode] = Field(
+        default_factory=list,
+        max_length=MAX_WARNING_CODES,
+    )
+
+
+class ProposalTargetRangeRequest(StrictAuthorDraftRequest):
+    unit: str | None = Field(default=None, max_length=32)
+    start: int | None = Field(default=None, ge=0, le=MAX_DRAFT_CONTENT_CHARS)
+    end: int | None = Field(default=None, ge=0, le=MAX_DRAFT_CONTENT_CHARS)
+    source_excerpt: str | None = Field(default=None, max_length=100_000)
+    before_text: str | None = Field(default=None, max_length=100_000)
+    excerpt: str | None = Field(default=None, max_length=100_000)
+
+
+class ProposalGenerateRequest(StrictAuthorDraftRequest):
+    proposal_type: OptionalIdentifier | None = None
+    instruction: str | None = Field(default=None, max_length=MAX_INSTRUCTION_CHARS)
+    target_range: ProposalTargetRangeRequest | None = None
+    replacement_text: str | None = Field(default=None, max_length=MAX_DRAFT_CONTENT_CHARS)
+    proposal_kind: OptionalIdentifier | None = None
+    source_evaluation_id: OptionalIdentifier | None = None
+    proposal_source: OptionalIdentifier | None = None
+
+
+class ProposalGenerateSetRequest(StrictAuthorDraftRequest):
+    mode: str | None = Field(default=None, max_length=64)
+    instruction: str | None = Field(default=None, max_length=MAX_INSTRUCTION_CHARS)
+    target_range: ProposalTargetRangeRequest | None = None
+    source_evaluation_id: OptionalIdentifier | None = None
+
+
+class ScopedProposalApplyRequest(StrictAuthorDraftRequest):
+    proposal_id: OptionalIdentifier | None = None
+    apply_mode: str | None = Field(default=None, max_length=64)
+    note: NoteText | None = None
+    decision_reason: NoteText | None = None
+
+
+class ProposalApplyRequest(StrictAuthorDraftRequest):
+    apply_mode: str | None = Field(default=None, max_length=64)
+    note: NoteText | None = None
+    decision_reason: NoteText | None = None
+    affected_excerpt: str | None = Field(default=None, max_length=100_000)
+
+
+class ProposalRejectRequest(StrictAuthorDraftRequest):
+    note: NoteText | None = None
+    decision_reason: NoteText | None = None
+    rejected_ai_trace: str | None = Field(default=None, max_length=100_000)
 
 
 @router.get("/api/v1/author-drafts/{object_type}/{object_id}/current")
@@ -35,9 +120,18 @@ def ensure_blank_author_draft(object_type: str, object_id: str, request: Request
 
 
 @router.patch("/api/v1/author-drafts/{draft_id}")
-def save_author_draft(draft_id: str, payload: dict, request: Request, session: Session = Depends(get_session)):
+def save_author_draft(
+    draft_id: str,
+    payload: AuthorDraftSaveRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).save(draft_id, payload, actor_ref=actor_ref)
+    result = AuthorDraftService(session).save(
+        draft_id,
+        payload.model_dump(exclude_unset=True),
+        actor_ref=actor_ref,
+    )
     session.commit()
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
@@ -46,7 +140,7 @@ def save_author_draft(draft_id: str, payload: dict, request: Request, session: S
 def promote_author_draft_canonical(
     draft_id: str,
     request: Request,
-    payload: dict | None = None,
+    payload: CanonicalPromotionRequest | None = None,
     session: Session = Depends(get_session),
 ):
     """Promote one saved scene AuthorDraft revision into canonical FinalScene.
@@ -56,7 +150,7 @@ def promote_author_draft_canonical(
     """
 
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    body = payload or {}
+    body = payload.model_dump(exclude_unset=True) if payload is not None else {}
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
@@ -121,11 +215,12 @@ def get_author_draft_proposal_diff(
 def apply_author_draft_scoped_proposal(
     draft_id: str,
     request: Request,
-    payload: dict | None = None,
+    payload: ScopedProposalApplyRequest | None = None,
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).apply_proposal_to_draft(draft_id, payload or {}, actor_ref=actor_ref)
+    body = payload.model_dump(exclude_unset=True) if payload is not None else {}
+    result = AuthorDraftService(session).apply_proposal_to_draft(draft_id, body, actor_ref=actor_ref)
     session.commit()
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
@@ -134,11 +229,12 @@ def apply_author_draft_scoped_proposal(
 def generate_author_draft_proposal(
     draft_id: str,
     request: Request,
-    payload: dict | None = None,
+    payload: ProposalGenerateRequest | None = None,
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).generate_proposal(draft_id, payload or {}, actor_ref=actor_ref)
+    body = payload.model_dump(exclude_unset=True) if payload is not None else {}
+    result = AuthorDraftService(session).generate_proposal(draft_id, body, actor_ref=actor_ref)
     session.commit()
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
@@ -147,11 +243,12 @@ def generate_author_draft_proposal(
 def generate_author_draft_proposal_set(
     draft_id: str,
     request: Request,
-    payload: dict | None = None,
+    payload: ProposalGenerateSetRequest | None = None,
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).generate_proposal_set(draft_id, payload or {}, actor_ref=actor_ref)
+    body = payload.model_dump(exclude_unset=True) if payload is not None else {}
+    result = AuthorDraftService(session).generate_proposal_set(draft_id, body, actor_ref=actor_ref)
     session.commit()
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
@@ -160,11 +257,12 @@ def generate_author_draft_proposal_set(
 def apply_author_draft_proposal(
     proposal_id: str,
     request: Request,
-    payload: dict | None = None,
+    payload: ProposalApplyRequest | None = None,
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).apply_proposal(proposal_id, payload or {}, actor_ref=actor_ref)
+    body = payload.model_dump(exclude_unset=True) if payload is not None else {}
+    result = AuthorDraftService(session).apply_proposal(proposal_id, body, actor_ref=actor_ref)
     session.commit()
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
@@ -173,11 +271,12 @@ def apply_author_draft_proposal(
 def reject_author_draft_proposal(
     proposal_id: str,
     request: Request,
-    payload: dict | None = None,
+    payload: ProposalRejectRequest | None = None,
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).reject_proposal(proposal_id, payload or {}, actor_ref=actor_ref)
+    body = payload.model_dump(exclude_unset=True) if payload is not None else {}
+    result = AuthorDraftService(session).reject_proposal(proposal_id, body, actor_ref=actor_ref)
     session.commit()
     return ok(result, req_id=getattr(request.state, "request_id", None))
 

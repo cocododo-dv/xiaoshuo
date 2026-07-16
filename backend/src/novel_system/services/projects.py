@@ -6,7 +6,7 @@ import threading
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -728,6 +728,7 @@ class ProjectChapterFlowService:
         self.session.flush()
         run_result = ChapterRunnerService(self.session).run_full(chapter_id)
         if run_result.get("status") == "completed":
+            ChapterManuscriptService(self.session).require_complete(chapter_id)
             project.status = PROJECT_STATUS_CHAPTER_FINAL_REVIEW
         elif run_result.get("status") == "blocked":
             project.status = PROJECT_STATUS_CHAPTER_BLOCKED
@@ -740,15 +741,26 @@ class ProjectChapterFlowService:
             "review_packet": self.review_packet(project, chapter_id),
         }
 
-    def prepare_chapter_run_job(self, project_id: str, chapter_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        body = payload or {}
+    def prepare_chapter_run_job(
+        self,
+        project_id: str,
+        chapter_id: str,
+        *,
+        offline_demo: bool = False,
+    ) -> dict[str, Any]:
+        if type(offline_demo) is not bool:
+            raise DomainError(
+                "INVALID_CHAPTER_RUN_MODE",
+                "offline_demo must be a boolean",
+                status_code=400,
+            )
         project = ProjectService(self.session).require_project(project_id)
         self._require_project_chapter(project, chapter_id)
         if project.current_chapter_id != chapter_id:
             raise DomainError("PROJECT_CHAPTER_NOT_CURRENT", "only the current chapter can be run from project dashboard")
 
-        allow_demo = bool(body.get("allow_demo") or body.get("offline_demo"))
-        if not get_settings().llm_enabled and not allow_demo:
+        llm_enabled = get_settings().llm_enabled
+        if not llm_enabled and not offline_demo:
             raise DomainError(
                 "LLM_DISABLED_FOR_CHAPTER_RUN",
                 "LLM is disabled; enable a live model before starting chapter generation, or explicitly run an offline demo.",
@@ -765,12 +777,13 @@ class ProjectChapterFlowService:
 
         run_payload, should_start_worker = ChapterRunnerService(self.session).prepare_full_run(
             chapter_id,
-            offline_demo=allow_demo and not get_settings().llm_enabled,
+            offline_demo=offline_demo and not llm_enabled,
         )
         if run_payload.get("status") in {"pending", "running"}:
             project.status = PROJECT_STATUS_CHAPTER_RUNNING
             next_action = "view_chapter_progress"
         elif run_payload.get("status") == "completed":
+            ChapterManuscriptService(self.session).require_complete(chapter_id)
             project.status = PROJECT_STATUS_CHAPTER_FINAL_REVIEW
             next_action = "approve_chapter_final"
         elif run_payload.get("status") == "blocked":
@@ -797,12 +810,15 @@ class ProjectChapterFlowService:
         revision_notes = str(body.get("revision_notes") or "").strip()
         if len(revision_notes) > 2000:
             raise DomainError("CHAPTER_APPROVAL_NOTES_TOO_LONG", "revision_notes must be 2000 characters or fewer", status_code=400)
+        ChapterManuscriptService(self.session).require_complete(chapter_id)
         read_confirmation = self._require_current_read_confirmation(project, chapter_id)
 
         approved = list(project.approved_chapter_ids_json or [])
         if chapter_id not in approved:
             approved.append(chapter_id)
         project.approved_chapter_ids_json = approved
+        chapter = self._require_project_chapter(project, chapter_id)
+        chapter.state = "approved"
 
         next_chapter_id = self._next_chapter_id(project.project_id, chapter_id)
         if next_chapter_id:
@@ -840,12 +856,77 @@ class ProjectChapterFlowService:
             "approval_note": approval_note,
         }
 
+    def reopen_final(
+        self,
+        project_id: str,
+        chapter_id: str,
+        *,
+        reason: str,
+        actor_ref: str = "operator",
+    ) -> dict[str, Any]:
+        project = ProjectService(self.session).require_project(project_id)
+        self._require_project_chapter(project, chapter_id)
+        normalized_reason = str(reason or "").strip()
+        if not normalized_reason or len(normalized_reason) > 1000:
+            raise DomainError(
+                "CHAPTER_REOPEN_REASON_INVALID",
+                "reason must contain between 1 and 1000 characters",
+                status_code=400,
+            )
+
+        approved = list(project.approved_chapter_ids_json or [])
+        if chapter_id not in approved:
+            raise DomainError(
+                "CHAPTER_FINAL_NOT_APPROVED",
+                "only a project-approved chapter can be reopened",
+                status_code=409,
+                details={"chapter_id": chapter_id},
+            )
+
+        reopen_index = approved.index(chapter_id)
+        invalidated_chapter_ids = approved[reopen_index:]
+        project.approved_chapter_ids_json = approved[:reopen_index]
+        project.current_chapter_id = chapter_id
+        project.status = PROJECT_STATUS_CHAPTER_READY
+
+        for invalidated_id in invalidated_chapter_ids:
+            invalidated = self.session.get(ChapterGoal, invalidated_id)
+            if invalidated is None or invalidated.project_id != project.project_id:
+                continue
+            invalidated.state = "draft" if invalidated_id == chapter_id else "planned"
+
+        audit_payload = {
+            "project_id": project.project_id,
+            "chapter_id": chapter_id,
+            "reason": normalized_reason,
+            "invalidated_chapter_ids": invalidated_chapter_ids,
+            "remaining_approved_chapter_ids": list(project.approved_chapter_ids_json or []),
+            "actor_ref": actor_ref or "operator",
+        }
+        self.session.add(
+            OperationLog(
+                event_type="chapter_final_reopened",
+                object_type="chapter",
+                object_ref=chapter_id,
+                payload_json=audit_payload,
+            )
+        )
+        self.session.flush()
+        return {
+            "project": project_payload(project),
+            "reopened_chapter_id": chapter_id,
+            "invalidated_chapter_ids": invalidated_chapter_ids,
+            "reason": normalized_reason,
+            "actor_ref": actor_ref or "operator",
+        }
+
     def confirm_read(self, project_id: str, chapter_id: str, payload: dict[str, Any] | None = None, *, actor_ref: str = "operator") -> dict[str, Any]:
         body = payload or {}
         project = ProjectService(self.session).require_project(project_id)
         self._require_project_chapter(project, chapter_id)
         if project.current_chapter_id != chapter_id:
             raise DomainError("PROJECT_CHAPTER_NOT_CURRENT", "only the current chapter final can be confirmed", status_code=409)
+        ChapterManuscriptService(self.session).require_complete(chapter_id)
         packet = self.review_packet(project, chapter_id)
         if not packet or not packet.get("body_hash"):
             raise DomainError(
@@ -1037,14 +1118,24 @@ class ProjectChapterFlowService:
         rows = self.session.execute(
             select(OperationLog)
             .where(
-                OperationLog.event_type == "chapter_final_read_confirmed",
+                OperationLog.event_type.in_(("chapter_final_read_confirmed", "chapter_final_reopened")),
                 OperationLog.object_type == "chapter",
-                OperationLog.object_ref == chapter_id,
+                or_(
+                    OperationLog.object_ref == chapter_id,
+                    OperationLog.event_type == "chapter_final_reopened",
+                ),
             )
             .order_by(OperationLog.created_at.desc(), OperationLog.operation_id.desc())
         ).scalars().all()
         for row in rows:
             payload = dict(row.payload_json or {})
+            if row.event_type == "chapter_final_reopened":
+                if payload.get("project_id") != project_id:
+                    continue
+                invalidated_ids = list(payload.get("invalidated_chapter_ids") or [])
+                if chapter_id == row.object_ref or chapter_id in invalidated_ids:
+                    return None
+                continue
             if payload.get("project_id") != project_id or payload.get("chapter_id") != chapter_id:
                 continue
             if payload.get("body_hash") != body_hash:
@@ -1161,7 +1252,11 @@ class ProjectChapterFlowService:
             for row in self.session.execute(
                 select(ChapterGoal.chapter_id)
                 .where(ChapterGoal.project_id == project_id, ChapterGoal.trashed_flag == 0)
-                .order_by(ChapterGoal.chapter_id.asc())
+                .order_by(
+                    ChapterGoal.display_order.is_(None).asc(),
+                    ChapterGoal.display_order.asc(),
+                    ChapterGoal.chapter_id.asc(),
+                )
             ).all()
         ]
         try:
@@ -1199,6 +1294,7 @@ def _run_project_chapter_job_worker(project_id: str, chapter_id: str, job_id: st
         run_result = ChapterRunnerService(session).run_full(chapter_id)
         project = ProjectService(session).require_project(project_id)
         if run_result.get("status") == "completed":
+            ChapterManuscriptService(session).require_complete(chapter_id)
             project.status = PROJECT_STATUS_CHAPTER_FINAL_REVIEW
         elif run_result.get("status") == "blocked":
             project.status = PROJECT_STATUS_CHAPTER_BLOCKED
@@ -1209,6 +1305,11 @@ def _run_project_chapter_job_worker(project_id: str, chapter_id: str, job_id: st
         session.commit()
     except DomainError as exc:
         session.rollback()
+        # Startup recovery may be invoked concurrently by multiple ASGI
+        # workers.  Losing the durable chapter-job CAS is a benign duplicate
+        # dispatch and must never overwrite the winning worker with FAILED.
+        if exc.code in {"RUN_JOB_IN_PROGRESS", "RUN_JOB_NOT_CLAIMABLE"}:
+            return
         _mark_project_chapter_job_failed(job_id, project_id, chapter_id, exc.code, exc.message)
     except Exception as exc:  # pragma: no cover - defensive worker boundary
         session.rollback()

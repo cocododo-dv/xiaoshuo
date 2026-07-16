@@ -77,7 +77,12 @@ def update_chapter_contract(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = LongformTowerService(session).update_constraints(project_id, chapter_id, payload or {})
+    result = LongformTowerService(session).update_constraints(
+        project_id,
+        chapter_id,
+        payload or {},
+        actor_ref=_operator(request),
+    )
     session.commit()
     return ok(result, req_id=getattr(request.state, "request_id", None))
 

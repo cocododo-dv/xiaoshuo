@@ -368,4 +368,54 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     // 9 步 PATCH 后触发强制 hydrate → 捕获到最新 resync_status（若不强拉则永远是 0，可证伪）
     await vi.waitFor(() => expect(mod.SnowSync.resyncStatus("tide").pendingCount).toBe(1), T);
   });
+
+  it("断网导致 PATCH 失败：状态明确停在“仅本机”，重试成功后才标服务器已同步", async () => {
+    const { mod, client } = await loadSync({ snowflakeWorkspace: { ready_to_materialize: false, current_step_key: "book_brief", steps: [] } });
+    Object.defineProperty(window.navigator, "onLine", { configurable: true, value: false });
+    const offline = Object.assign(new Error("网络不可达"), { code: "NETWORK_ERROR" });
+    client.apiPatch.mockRejectedValue(offline);
+
+    saveCache({
+      drafts: {},
+      scaffolds: { audience: { genre: "悬疑", reader: "成年读者", pleasure: "追索", source: "旧案", exclude: "不猎奇", emotion: "压迫" } },
+      checks: {}, states: { audience: "active" },
+    });
+
+    await vi.waitFor(() => expect(mod.SnowSync.syncState("tide").phase).toBe("error"), T);
+    expect(mod.SnowSync.syncState("tide")).toMatchObject({
+      pendingSteps: expect.arrayContaining(["audience"]),
+      error: expect.objectContaining({ message: "网络不可达", offline: true, scope: "remote" }),
+    });
+
+    Object.defineProperty(window.navigator, "onLine", { configurable: true, value: true });
+    client.apiPatch.mockImplementation(async (url, body) => ({ step: { status: "pending_review", draft: body.draft, health: {}, completeness: {} } }));
+    await mod.SnowSync.retry("tide");
+    expect(mod.SnowSync.syncState("tide")).toMatchObject({ phase: "synced", pendingSteps: [], error: null });
+  });
+
+  it("approve 409 不再吞掉：记录待批准步骤，重试只要批准成功即可收敛", async () => {
+    const { mod, client } = await loadSync({ snowflakeWorkspace: { ready_to_materialize: false, current_step_key: "book_brief", steps: [] } });
+    client.apiPatch.mockImplementation(async (url, body) => ({ step: { status: "pending_review", draft: body.draft, health: {}, completeness: {} } }));
+    const cache = {
+      drafts: {},
+      scaffolds: { audience: { genre: "悬疑", reader: "成年读者", pleasure: "追索", source: "旧案", exclude: "不猎奇", emotion: "压迫" } },
+      checks: {}, states: { audience: "active" },
+    };
+    saveCache(cache);
+    await vi.waitFor(() => expect(mod.SnowSync.syncState("tide").phase).toBe("synced"), T);
+
+    const gate = Object.assign(new Error("前序闸门未满足"), { status: 409, code: "SNOWFLAKE_GATE_BLOCKED" });
+    client.apiPost.mockRejectedValue(gate);
+    saveCache({ ...cache, states: { audience: "done" } });
+    await vi.waitFor(() => expect(mod.SnowSync.syncState("tide").phase).toBe("error"), T);
+    expect(mod.SnowSync.syncState("tide")).toMatchObject({
+      pendingSteps: expect.arrayContaining(["audience"]),
+      failures: expect.arrayContaining([expect.objectContaining({ feKey: "audience", stage: "approve", code: "SNOWFLAKE_GATE_BLOCKED" })]),
+    });
+
+    client.apiPost.mockResolvedValue({ step: { status: "approved", draft: {}, health: {}, completeness: {} } });
+    await mod.SnowSync.retry("tide");
+    expect(mod.SnowSync.syncState("tide").phase).toBe("synced");
+    expect(client.apiPost.mock.calls.some(([url]) => String(url).endsWith("/steps/book_brief/approve"))).toBe(true);
+  });
 });

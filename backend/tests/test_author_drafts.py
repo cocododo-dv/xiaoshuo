@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from novel_system.db.session import SessionLocal
 from novel_system.db.models import (
     AuthorDraft,
     AuthorDraftEvent,
@@ -14,12 +17,14 @@ from novel_system.db.models import (
     FinalScene,
     LlmCall,
     PassagePatchCandidate,
+    ReviewItem,
     SceneCard,
     SceneRunState,
     StoryProject,
 )
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.author_drafts import AuthorDraftService
+from novel_system.services.errors import DomainError
 
 
 def test_scene_target_uses_scene_project_when_legacy_chapter_has_no_project(session) -> None:
@@ -240,6 +245,51 @@ def test_author_draft_save_uses_optimistic_locking(client, session) -> None:
     assert stale_save.json()["error"]["details"]["current_revision_no"] == 2
 
 
+def test_author_draft_save_uses_database_compare_and_swap(session) -> None:
+    project_id = "AD_CAS_PROJECT"
+    draft_id = "author_draft_cas"
+    session.add(StoryProject(project_id=project_id, title="CAS", outline_text=""))
+    session.add(
+        AuthorDraft(
+            draft_id=draft_id,
+            object_type="project",
+            object_id=project_id,
+            source_text_ref=f"project_discovery:{project_id}",
+            content="first",
+            revision_no=1,
+            status="current",
+        )
+    )
+    session.commit()
+
+    stale_session = SessionLocal()
+    winner_session = SessionLocal()
+    try:
+        cached = stale_session.get(AuthorDraft, draft_id)
+        assert cached is not None and cached.revision_no == 1
+        stale_session.commit()  # release the SQLite read transaction, keep identity-map state
+
+        saved = AuthorDraftService(winner_session).save(
+            draft_id,
+            {"content": "winner", "base_revision_no": 1},
+            actor_ref="winner",
+        )
+        winner_session.commit()
+        assert saved["draft"]["revision_no"] == 2
+
+        with pytest.raises(DomainError) as exc_info:
+            AuthorDraftService(stale_session).save(
+                draft_id,
+                {"content": "stale overwrite", "base_revision_no": 1},
+                actor_ref="stale",
+            )
+        assert exc_info.value.code == "AUTHOR_DRAFT_CONFLICT"
+        assert exc_info.value.details["current_revision_no"] == 2
+    finally:
+        stale_session.close()
+        winner_session.close()
+
+
 def test_generate_apply_and_reject_author_draft_proposals_without_overwriting_runtime(client, session) -> None:
     _create_chapter(client, "AD250", planned_scene_count=1)
     _create_scene(client, "AD250_SC01", chapter_id="AD250", scene_seq=1, is_chapter_last=1)
@@ -337,8 +387,8 @@ def test_generate_author_draft_proposal_uses_llm_call_and_preference_context(cli
             profile_id="author_pref_global_global_proposals",
             scope_type="global",
             scope_ref_id="global",
-            status="draft",
-            runtime_eligible=0,
+            status="approved",
+            runtime_eligible=1,
             summary_json={
                 "rejected_ai_traces": ["too generic"],
                 "accepted_by_type": {"passage_candidate": 1},
@@ -453,7 +503,7 @@ def test_generate_triaged_author_draft_proposals_and_records_decision_telemetry(
     assert events[0].payload_json["decision_reason"] == "动作比解释更清楚。"
     assert events[0].payload_json["proposal_source"] == "author_cockpit_triad"
     assert events[1].payload_json["rejected_ai_trace"] == "过度解释人物意识。"
-    preference = session.get(AuthorPreferenceProfile, "author_pref_global_global_proposals")
+    preference = session.query(AuthorPreferenceProfile).filter_by(scope_type="project").one()
     assert preference.summary_json["accepted_by_type"]["passage_candidate"] == 1
     assert preference.summary_json["rejected_by_type"]["language_candidate"] == 1
     assert "过度解释人物意识。" in preference.summary_json["rejected_ai_traces"]
@@ -477,7 +527,7 @@ def test_proposal_reject_with_note_updates_preference_profile_with_safe_labels(c
 
     assert response.status_code == 200, response.text
     session.expire_all()
-    profile = session.get(AuthorPreferenceProfile, "author_pref_global_global_proposals")
+    profile = session.query(AuthorPreferenceProfile).filter_by(scope_type="project").one()
     assert profile is not None
     summary = profile.summary_json
     assert "avoid_exposition" in summary["safe_preference_hints"]
@@ -535,10 +585,33 @@ def test_proposal_reject_prompt_injection_note_never_enters_prompt_raw(client, s
 
     assert response.status_code == 200, response.text
     prompt_text = json.dumps(captured["messages"], ensure_ascii=False)
-    assert "avoid_exposition" in prompt_text
-    assert "avoid_dialogue_style" in prompt_text
+    assert "avoid_exposition" not in prompt_text
+    assert "avoid_dialogue_style" not in prompt_text
     assert raw_note not in prompt_text
     assert "Ignore previous instructions" not in prompt_text
+
+    session.expire_all()
+    profile = session.query(AuthorPreferenceProfile).filter_by(scope_type="project").one()
+    assert profile.status == "draft"
+    assert profile.runtime_eligible == 0
+    review = session.get(ReviewItem, f"review_{profile.profile_id}")
+    assert review is not None
+    approval = client.post(
+        f"/api/v1/review-items/{review.review_id}/approve",
+        headers={"X-Idempotency-Key": "approve-project-proposal-preference"},
+    )
+    assert approval.status_code == 200, approval.text
+
+    approved_response = client.post(
+        f"/api/v1/author-drafts/{draft['draft_id']}/proposals/generate",
+        json={"proposal_type": "language_pass", "instruction": "Try after approval."},
+    )
+    assert approved_response.status_code == 200, approved_response.text
+    approved_prompt = json.dumps(captured["messages"], ensure_ascii=False)
+    assert "avoid_exposition" in approved_prompt
+    assert "avoid_dialogue_style" in approved_prompt
+    assert raw_note not in approved_prompt
+    assert "Ignore previous instructions" not in approved_prompt
 
 
 def test_chapter_author_draft_falls_back_to_assembled_scene_text_when_no_aggregate_exists(client, session) -> None:
@@ -554,6 +627,61 @@ def test_chapter_author_draft_falls_back_to_assembled_scene_text_when_no_aggrega
     draft = response.json()["data"]["draft"]
     assert draft["source_text_ref"] == "chapter_assembled:AD300"
     assert draft["content"] == "第一场。\n第二场。"
+
+
+def test_manual_rewrite_creates_scoped_preferences_only_after_review(client, session) -> None:
+    _create_chapter(client, "AD278", planned_scene_count=1)
+    _create_scene(client, "AD278_SC01", chapter_id="AD278", scene_seq=1, is_chapter_last=1)
+    scene = session.get(SceneCard, "AD278_SC01")
+    chapter = session.get(ChapterGoal, scene.chapter_id)
+    project = session.get(StoryProject, chapter.project_id)
+    project.genre = "都市悬疑"
+    before = (
+        "雨声一层层压在窗上。林野站在门边，反复解释昨夜发生的每一个细节。\n\n"
+        "他说明钥匙如何失踪，也说明走廊的灯为何熄灭，最后又把自己的猜测完整重复了一遍。\n\n"
+        "屋里的人没有打断他，只等着这段过长的陈述结束，然后才看向桌上的空信封。"
+    )
+    _finalize_scene(session, "AD278_SC01", "AD278", before)
+    draft = client.post("/api/v1/author-drafts/scene/AD278_SC01/ensure").json()["data"]["draft"]
+    after = (
+        "雨压着窗。林野把钥匙放上桌，水沿着袖口滴到木纹里。\n\n"
+        "“昨夜它不在我手里，也没有谁能替我证明。”\n\n"
+        "没人追问走廊为何熄灯。众人的目光越过他，落到空信封和断掉的封蜡上。\n\n"
+        "门外忽然响了一声金属轻碰。林野停住，没有再解释，只把手从钥匙旁慢慢收回。"
+    )
+
+    response = client.patch(
+        f"/api/v1/author-drafts/{draft['draft_id']}",
+        json={"content": after, "base_revision_no": draft["revision_no"]},
+    )
+
+    assert response.status_code == 200, response.text
+    session.expire_all()
+    profiles = (
+        session.query(AuthorPreferenceProfile)
+        .filter(AuthorPreferenceProfile.profile_id.like("%manual_edits"))
+        .order_by(AuthorPreferenceProfile.scope_type.asc())
+        .all()
+    )
+    assert {row.scope_type for row in profiles} == {"genre", "project"}
+    assert all(row.status == "draft" and row.runtime_eligible == 0 for row in profiles)
+    assert all(row.summary_json["safe_preference_hints"] for row in profiles)
+    assert before not in json.dumps([row.summary_json for row in profiles], ensure_ascii=False)
+
+    project_profile = next(row for row in profiles if row.scope_type == "project")
+    review = session.get(ReviewItem, f"review_{project_profile.profile_id}")
+    assert review is not None and review.status == "pending"
+    approval = client.post(
+        f"/api/v1/review-items/{review.review_id}/approve",
+        headers={"X-Idempotency-Key": "approve-manual-project-preference"},
+    )
+    assert approval.status_code == 200, approval.text
+    session.expire_all()
+    stored_draft = session.get(AuthorDraft, draft["draft_id"])
+    target = AuthorDraftService(session)._target_payload("scene", "AD278_SC01")
+    summary = AuthorDraftService(session)._proposal_preference_summary(stored_draft, target)
+    assert summary["safe_preference_hints"]
+    assert summary["scope_type"] == "project"
 
 
 def test_candidate_event_records_without_mutating_author_draft_content(client, session) -> None:

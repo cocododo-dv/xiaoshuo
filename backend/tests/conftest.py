@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Generator
 from pathlib import Path
@@ -28,6 +29,17 @@ def isolated_database(
     monkeypatch.setenv("NOVEL_SYSTEM_DATABASE_URL", f"sqlite:///{tmp_path / 'test.db'}")
     monkeypatch.setenv("NOVEL_SYSTEM_CHROMA_DIR", str(tmp_path / "chroma"))
     monkeypatch.setenv("NOVEL_SYSTEM_VECTOR_BACKEND", vector_backend)
+    # Path-import tests are isolated to the per-test temporary directory. In
+    # production this capability is disabled unless an operator configures one
+    # or more roots explicitly.
+    import_roots = [str(tmp_path), str(Path(__file__).resolve().parent)]
+    local_corpus = os.environ.get("NOVEL_SYSTEM_STYLE_REF_LOCAL_CORPUS", "").strip()
+    if local_corpus:
+        import_roots.append(str(Path(local_corpus).expanduser().resolve().parent))
+    monkeypatch.setenv(
+        "NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS",
+        os.pathsep.join(import_roots),
+    )
     from novel_system.db.session import reset_engine
 
     reset_engine()

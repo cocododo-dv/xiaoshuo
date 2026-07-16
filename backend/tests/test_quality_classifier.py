@@ -106,7 +106,8 @@ def test_llm_pronoun_drift_claim_downgrades_without_deterministic_detector() -> 
 
 # ---------- 确定性复核通过 → Q0/Q1 + verified_by ----------
 
-def test_source_leak_verified_by_deterministic_scan_blocks() -> None:
+def test_source_leak_verified_by_deterministic_scan_blocks(monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON", '["路明非"]')
     issue = classify_issue(
         {"issue_key": "source_leak_risk", "message": "命中保护词"},
         scene=_scene(),

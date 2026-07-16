@@ -23,6 +23,10 @@ from novel_system.db.models import (
     StagedBackfill,
     utcnow,
 )
+from novel_system.services.chapter_approval import (
+    approved_chapter_block,
+    is_chapter_approved,
+)
 from novel_system.services.errors import DomainError
 from novel_system.services.writer_review import (
     normalize_chapter_writer_brief,
@@ -69,7 +73,10 @@ class AuthorLifecycleService:
         chapter_state = self.session.get(ChapterState, chapter.chapter_id)
         active_scene_count = self._count_scenes(chapter.chapter_id, trashed_flag=0)
         trashed_scene_count = self._count_scenes(chapter.chapter_id, trashed_flag=1)
-        trash_block_reason = TRASH_BLOCK_REASON_HAS_TRASHED_SCENES if trashed_scene_count > 0 else None
+        if is_chapter_approved(self.session, chapter):
+            trash_block_reason = "已批准章节须先重新打开，才能移入回收站"
+        else:
+            trash_block_reason = TRASH_BLOCK_REASON_HAS_TRASHED_SCENES if trashed_scene_count > 0 else None
         return {
             "chapter_id": chapter.chapter_id,
             "planned_scene_count": chapter.planned_scene_count,
@@ -186,6 +193,16 @@ class AuthorLifecycleService:
             if scene.trashed_flag == 1:
                 continue
             chapter = self.require_active_chapter(scene.chapter_id)
+            approval_block = approved_chapter_block(
+                self.session,
+                chapter,
+                object_id_key="scene_id",
+                object_id=scene.scene_id,
+                operation="lifecycle.trash_scene",
+            )
+            if approval_block is not None:
+                blocked.append(approval_block)
+                continue
             scene.trashed_flag = 1
             scene.trashed_at = self._now()
             scene.trashed_by = actor_ref
@@ -218,6 +235,16 @@ class AuthorLifecycleService:
                     }
                 )
                 continue
+            approval_block = approved_chapter_block(
+                self.session,
+                chapter,
+                object_id_key="scene_id",
+                object_id=scene.scene_id,
+                operation="lifecycle.restore_scene",
+            )
+            if approval_block is not None:
+                blocked.append(approval_block)
+                continue
             scene.trashed_flag = 0
             scene.trashed_at = None
             scene.trashed_by = None
@@ -249,6 +276,17 @@ class AuthorLifecycleService:
                     }
                 )
                 continue
+            if chapter is not None:
+                approval_block = approved_chapter_block(
+                    self.session,
+                    chapter,
+                    object_id_key="scene_id",
+                    object_id=scene.scene_id,
+                    operation="lifecycle.purge_scene",
+                )
+                if approval_block is not None:
+                    blocked.append(approval_block)
+                    continue
             reason = self.scene_purge_block_reason(scene)
             if reason is not None:
                 blocked.append(
@@ -278,6 +316,16 @@ class AuthorLifecycleService:
                 blocked.append({"chapter_id": chapter_id, "code": "CHAPTER_NOT_FOUND", "message": "chapter not found"})
                 continue
             if chapter.trashed_flag == 1:
+                continue
+            approval_block = approved_chapter_block(
+                self.session,
+                chapter,
+                object_id_key="chapter_id",
+                object_id=chapter.chapter_id,
+                operation="lifecycle.trash_chapter",
+            )
+            if approval_block is not None:
+                blocked.append(approval_block)
                 continue
             if self._count_scenes(chapter_id, trashed_flag=1) > 0:
                 blocked.append(
@@ -311,6 +359,16 @@ class AuthorLifecycleService:
                 continue
             if chapter.trashed_flag == 0:
                 continue
+            approval_block = approved_chapter_block(
+                self.session,
+                chapter,
+                object_id_key="chapter_id",
+                object_id=chapter.chapter_id,
+                operation="lifecycle.restore_chapter",
+            )
+            if approval_block is not None:
+                blocked.append(approval_block)
+                continue
             chapter.trashed_flag = 0
             chapter.trashed_at = None
             chapter.trashed_by = None
@@ -335,6 +393,16 @@ class AuthorLifecycleService:
                 continue
             if chapter.trashed_flag == 0:
                 blocked.append({"chapter_id": chapter_id, "code": "CHAPTER_NOT_TRASHED", "message": "chapter is not in author trash"})
+                continue
+            approval_block = approved_chapter_block(
+                self.session,
+                chapter,
+                object_id_key="chapter_id",
+                object_id=chapter.chapter_id,
+                operation="lifecycle.purge_chapter",
+            )
+            if approval_block is not None:
+                blocked.append(approval_block)
                 continue
             reason = self.chapter_purge_block_reason(chapter)
             if reason is not None:

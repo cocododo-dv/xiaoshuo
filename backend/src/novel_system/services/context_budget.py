@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import copy
 import math
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Mapping
 
 from novel_system.services.hash_engine import normalize
+
+
+TOKEN_ESTIMATOR_VERSION = "cjk_aware_conservative_v1"
+STYLE_OBSERVATION_COMPRESSED_TOKENS = 48
+CONTINUITY_DIGEST_COMPRESSED_TOKENS = 24
 
 
 @dataclass(slots=True)
@@ -28,6 +34,7 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("scene_card", "Scene Card", ("scene_card",)),
     ("chapter_writer_brief", "Chapter Writer Brief", ("chapter_writer_brief",)),
     ("scene_writer_brief", "Scene Writer Brief", ("scene_writer_brief",)),
+    ("author_instruction", "Author Instruction", ("author_instruction",)),
     ("scene_blueprint", "Scene Literary Blueprint", ("scene_blueprint",)),
     ("character_pressure", "Character Pressure Blueprint", ("character_pressure", "character_pressure_blueprint")),
     ("chapter_story_architecture", "Chapter Story Architecture", ("chapter_story_architecture",)),
@@ -39,6 +46,8 @@ SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("pov_voice", "POV Voice", ("voice_card",)),
     ("style_profile", "Style Feature Contract", ("style_profile", "style_feature_contract")),
     ("author_preference_profile", "Author Preference Profile", ("author_preference_profile",)),
+    ("longform_anchors", "Long-form Canon Anchors", ("longform_anchors",)),
+    ("chapter_contract", "Dispatched Chapter Contract", ("chapter_contract",)),
     ("literary_freshness_budget", "Literary Freshness Budget", ("literary_freshness_budget",)),
     ("longform_structure_guidance", "Longform Structure Guidance", ("longform_structure_guidance",)),
     ("style_rules", "Style Rules", ("style_rule",)),
@@ -82,6 +91,7 @@ CONTINUITY_POLICY: list[str] = [
 TASK_KIND_POLICIES: dict[str, list[str]] = {
     "default": list(CONTINUITY_POLICY),
     "drafting": [
+        "preserve_author_instruction",
         "preserve_style_profile_author_preference_and_calibration",
         *CONTINUITY_POLICY,
     ],
@@ -123,6 +133,7 @@ def apply_context_budget(
     normalized_task_kind = task_kind if task_kind in TASK_KIND_POLICIES else "default"
     budget = {
         "target_input_tokens": max_input_tokens,
+        "token_estimator": TOKEN_ESTIMATOR_VERSION,
         "task_kind": normalized_task_kind,
         "estimated_input_tokens": 0,
         "remaining_input_tokens": 0,
@@ -291,10 +302,24 @@ def render_user_prompt(
 
 
 def estimate_tokens(text: str) -> int:
+    """Return a conservative, deterministic prompt-token estimate.
+
+    The previous ``len(text) / 4`` rule is a reasonable rough estimate for
+    English, but it under-counts Chinese/Japanese/Korean text by roughly four
+    times.  East-Asian wide characters (including CJK punctuation and most
+    emoji) are therefore charged as one token each, while the remaining text
+    keeps the established four-characters-per-token approximation.
+
+    This is deliberately a budgeting upper bound rather than a claim about a
+    provider's exact tokenizer.  Provider-reported usage remains authoritative
+    for accounting after the request completes.
+    """
     normalized_text = _normalize_text(text)
     if not normalized_text:
         return 0
-    return max(1, math.ceil(len(normalized_text) / 4))
+    wide_count = sum(1 for char in normalized_text if _is_wide_token_char(char))
+    compact_count = len(normalized_text) - wide_count
+    return max(1, wide_count + math.ceil(compact_count / 4))
 
 
 def _finalize_budget(
@@ -365,12 +390,11 @@ def _rendered_prompt_tokens(
 
 def _compress_style_observations(text: str) -> str:
     blocks = _split_blocks(text)
-    if len(blocks) > 3:
-        return "\n\n".join(blocks[:3])
-    tokens = _normalize_text(text).split()
-    if len(tokens) <= 24:
-        return _normalize_text(text)
-    return " ".join(tokens[:24]) + " ..."
+    candidate = "\n\n".join(blocks[:3]) if blocks else _normalize_text(text)
+    return _truncate_to_estimated_tokens(
+        candidate,
+        max_tokens=STYLE_OBSERVATION_COMPRESSED_TOKENS,
+    )
 
 
 def _compress_calibration_lines(text: str) -> str:
@@ -382,12 +406,11 @@ def _compress_calibration_lines(text: str) -> str:
 
 def _compress_continuity_digest(text: str) -> str:
     blocks = _split_blocks(text)
-    if len(blocks) > 1:
-        return "\n\n".join(blocks[:1])
-    tokens = _normalize_text(text).split()
-    if len(tokens) <= 12:
-        return _normalize_text(text)
-    return " ".join(tokens[:12]) + " ..."
+    candidate = blocks[0] if blocks else _normalize_text(text)
+    return _truncate_to_estimated_tokens(
+        candidate,
+        max_tokens=CONTINUITY_DIGEST_COMPRESSED_TOKENS,
+    )
 
 
 def _omit_section(section_lookup: Mapping[str, PromptSection], section_name: str) -> None:
@@ -420,3 +443,33 @@ def _apply_compressed_text(section: PromptSection, compressed_text: str) -> None
         return
     section.compressed_text = compressed_text
     section.status = "compressed"
+
+
+def _is_wide_token_char(char: str) -> bool:
+    """Whether a character should be budgeted as an approximately whole token."""
+    if not char or char.isspace():
+        return False
+    return unicodedata.east_asian_width(char) in {"W", "F"}
+
+
+def _truncate_to_estimated_tokens(text: str, *, max_tokens: int) -> str:
+    """Truncate mixed-language text without relying on whitespace tokenization."""
+    normalized = _normalize_text(text)
+    if not normalized or estimate_tokens(normalized) <= max_tokens:
+        return normalized
+
+    wide_units = 0
+    compact_units = 0
+    end = 0
+    for index, char in enumerate(normalized):
+        next_wide = wide_units + (1 if _is_wide_token_char(char) else 0)
+        next_compact = compact_units + (0 if _is_wide_token_char(char) else 1)
+        estimated = next_wide + math.ceil(next_compact / 4)
+        if estimated > max_tokens:
+            break
+        wide_units = next_wide
+        compact_units = next_compact
+        end = index + 1
+
+    clipped = normalized[:end].rstrip()
+    return f"{clipped} ..." if clipped else "..."

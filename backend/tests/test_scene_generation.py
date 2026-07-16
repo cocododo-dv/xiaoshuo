@@ -406,6 +406,29 @@ def test_bundle_and_style_prompt_include_only_approved_runtime_author_preference
     assert "author_preference_profile" in prompt_summary["token_budget"]["included_sections"]
 
 
+def test_author_instruction_is_frozen_into_bundle_and_reaches_neutral_prompt(session) -> None:
+    _seed_scene(session)
+    note = "把选择提前到第一段，结尾不要解释。"
+    bundle = BundleBuilder(session).build("CH100_SC01", author_note=note)
+
+    snapshot = bundle["snapshot"]
+    assert snapshot["inline_digests"]["author_instruction"] == note
+    assert snapshot["source_version_refs"]["author_instruction_hash"]
+    assert any(
+        item["slot"] == "author_instruction"
+        for item in snapshot["ordered_injections"]
+    )
+
+    fake_client = FakeSceneClient()
+    SceneGenerationService(session, llm_client=fake_client).generate_neutral_draft(
+        "CH100_SC01",
+        bundle,
+        author_note=note,
+    )
+    prompt_text = "\n".join(message["content"] for message in fake_client.requests[0].messages)
+    assert note in prompt_text
+
+
 def test_generate_style_draft_runs_one_de_template_pass_for_high_risk_anti_template(session) -> None:
     _seed_scene(session)
     bundle = {

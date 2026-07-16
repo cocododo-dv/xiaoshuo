@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import logging
 from typing import Any
 
 from sqlalchemy import delete, text
@@ -26,6 +27,9 @@ from novel_system.db.models import (
     StyleReferenceValidationReport,
     StyleRule,
 )
+
+
+_LOGGER = logging.getLogger(__name__)
 
 # 物化提升落库的运行时风格行（approve 时由 ReviewItem 提升而来，以 source_review_id 标记来源）。
 # 删书须按 source_review_id 一并清除，否则孤儿行仍 runtime-active 注入下游成稿。
@@ -75,7 +79,11 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
         for _pid in profile_ids:
             delete_rag_index(_pid)
     except Exception:  # noqa: BLE001
-        pass
+        _LOGGER.warning(
+            "Style-reference RAG cleanup degraded book_id=%s",
+            book_id,
+            exc_info=True,
+        )
 
     counts: dict[str, int] = {}
 
@@ -177,7 +185,11 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
 
         clear_plagiarism_corpus_cache()
     except Exception:  # noqa: BLE001 — 缓存清理失败不阻断删除
-        pass
+        _LOGGER.warning(
+            "Style-reference plagiarism cache cleanup degraded book_id=%s",
+            book_id,
+            exc_info=True,
+        )
     return counts
 
 

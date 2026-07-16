@@ -143,6 +143,37 @@ let WS_ACTIVE_ID = (() => {
 })();
 
 const wsSubs = new Set();
+const wsStatusSubs = new Set();
+const wsRemoteState = {
+  projects: { phase: "loading", error: null, updatedAt: null },
+  dashboards: {},
+};
+
+function wsErrorShape(error, fallback) {
+  return {
+    code: (error && error.code) || (error && error.status) || "NETWORK_ERROR",
+    message: (error && error.message) || fallback,
+    offline: typeof navigator !== "undefined" && navigator.onLine === false,
+  };
+}
+
+function wsStatusNotify() {
+  wsStatusSubs.forEach(fn => { try { fn(); } catch (e) {} });
+}
+
+function wsSetProjectsStatus(phase, error = null) {
+  const visibleError = phase === "loading" && error == null ? wsRemoteState.projects.error : error;
+  wsRemoteState.projects = { phase, error: visibleError, updatedAt: phase === "ready" ? Date.now() : wsRemoteState.projects.updatedAt };
+  wsStatusNotify();
+}
+
+function wsSetDashboardStatus(id, phase, error = null) {
+  if (!id) return;
+  const previous = wsRemoteState.dashboards[id] || {};
+  const visibleError = phase === "loading" && error == null ? previous.error || null : error;
+  wsRemoteState.dashboards[id] = { phase, error: visibleError, updatedAt: phase === "ready" ? Date.now() : previous.updatedAt || null };
+  wsStatusNotify();
+}
 
 function wsSaveCache() {
   try {
@@ -209,6 +240,7 @@ let wsRefreshing = null;
 async function wsRefresh() {
   if (wsRefreshing) return wsRefreshing;
   wsRefreshing = (async () => {
+    wsSetProjectsStatus("loading");
     try {
       const migrated = await wsMigrateLegacy();
       let data = await apiGet("/api/v2/projects");
@@ -222,8 +254,10 @@ async function wsRefresh() {
         wsNotify();
         wsLoadHome(WS_ACTIVE_ID);
       }
+      wsSetProjectsStatus("ready");
     } catch (e) {
       console.warn("[WsWorks] 拉取作品列表失败（保留本地缓存影子）:", e);
+      wsSetProjectsStatus("error", wsErrorShape(e, "作品列表暂时无法连接，当前显示本地缓存"));
     } finally {
       wsRefreshing = null;
     }
@@ -234,6 +268,7 @@ async function wsRefresh() {
 /* —— 当前作品的 dashboard → home + 派生字段 —— */
 async function wsLoadHome(id) {
   if (!id || id === "__loading__") return;
+  wsSetDashboardStatus(id, "loading");
   try {
     const d = await apiGet(`/api/v2/projects/${id}/dashboard`);
     const stats = (d && d.stats) || {};
@@ -246,8 +281,10 @@ async function wsLoadHome(id) {
     });
     wsSaveCache();
     wsNotify();
+    wsSetDashboardStatus(id, "ready");
   } catch (e) {
     console.warn("[WsWorks] 拉取 dashboard 失败:", e);
+    wsSetDashboardStatus(id, "error", wsErrorShape(e, "主页数据暂时无法连接，当前显示最近一次缓存"));
   }
 }
 
@@ -384,6 +421,18 @@ const WsWorks = {
     return true;
   },
   subscribe(fn) { wsSubs.add(fn); return () => wsSubs.delete(fn); },
+  subscribeStatus(fn) { wsStatusSubs.add(fn); return () => wsStatusSubs.delete(fn); },
+  status(id) {
+    const workId = id || WS_ACTIVE_ID;
+    return {
+      projects: { ...wsRemoteState.projects },
+      dashboard: { ...(wsRemoteState.dashboards[workId] || { phase: "idle", error: null, updatedAt: null }) },
+    };
+  },
+  retry(scope = "dashboard", id) {
+    if (scope === "projects") return wsRefresh();
+    return wsLoadHome(id || WS_ACTIVE_ID);
+  },
   /* —— FE-ALIGN 内部接缝（非契约面）：统计派生字段的只读注入 + 手动刷新 —— */
   __applyDerived(id, fields) {
     const allowed = {};
@@ -417,11 +466,16 @@ function useWorks() {
   React.useEffect(() => WsWorks.subscribe(() => force(n => n + 1)), []);
   return WsWorks.list();
 }
+function useWorksStatus(id) {
+  const [, force] = React.useState(0);
+  React.useEffect(() => WsWorks.subscribeStatus(() => force(n => n + 1)), []);
+  return WsWorks.status(id);
+}
 
 /* 启动即拉一次后端列表（缓存影子先行渲染） */
 wsRefresh();
 
-Object.assign(window, { WsWorks, useActiveWork, useWorks, wsKey });
+Object.assign(window, { WsWorks, useActiveWork, useWorks, useWorksStatus, wsKey });
 
 /* ESM 导出（window.* 赋值过渡期保留） */
-export { WsWorks, useActiveWork, useWorks, wsKey };
+export { WsWorks, useActiveWork, useWorks, useWorksStatus, wsKey };

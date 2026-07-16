@@ -187,6 +187,8 @@
 /* clickable status pills */
 .arr-pill-btn { background: transparent; border: 0; padding: 0; cursor: pointer; display: inline-flex; }
 .arr-pill-btn .pill { cursor: pointer; }
+.arr-pill-readonly { display: inline-flex; cursor: help; }
+.arr-pill-readonly .pill { cursor: help; }
 .arr-cyc { transition: transform var(--t-fast), filter var(--t-fast); }
 .arr-cyc:hover { filter: brightness(0.97) saturate(1.1); }
 .arr-cyc:active { transform: scale(0.94); }
@@ -215,6 +217,48 @@
 /* chapter delete (subtle until hovered) */
 .arr-del-ch { color: var(--ink-3); }
 .arr-del-ch:hover { color: var(--rose); background: var(--rose-wash); }
+
+/* chapter run — a compact, honest view onto the durable backend job */
+.arr-run-control { position: relative; display: inline-flex; }
+.arr-run-control > .btn[disabled] { cursor: wait; opacity: 0.72; }
+.arr-run-control[data-run-status="completed"] > .btn[disabled] { cursor: default; color: var(--sage); opacity: 1; }
+.arr-run-spin { animation: arrRunSpin 900ms linear infinite; }
+@keyframes arrRunSpin { to { transform: rotate(360deg); } }
+.arr-run-card {
+  position: absolute; z-index: 40; top: calc(100% + 11px); right: 0; width: min(340px, calc(100vw - 42px));
+  padding: 13px 14px 14px; border: 1px solid var(--line-2); border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--paper-0) 96%, transparent); box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(12px); color: var(--ink-2);
+}
+.arr-run-card::before {
+  content: ""; position: absolute; top: -5px; right: 25px; width: 8px; height: 8px;
+  border: solid var(--line-2); border-width: 1px 0 0 1px; background: var(--paper-0); transform: rotate(45deg);
+}
+.arr-run-card[data-tone="failed"], .arr-run-card[data-tone="blocked"] { border-color: color-mix(in srgb, var(--rose) 32%, var(--line-2)); }
+.arr-run-card[data-tone="completed"] { border-color: color-mix(in srgb, var(--sage) 34%, var(--line-2)); }
+.arr-run-card-head { display: flex; align-items: center; gap: 8px; min-height: 20px; }
+.arr-run-card-head strong { font-family: var(--font-serif); font-size: 13.5px; color: var(--ink-1); font-weight: 650; }
+.arr-run-state-icon { display: inline-grid; place-items: center; color: var(--gold); }
+.arr-run-card[data-tone="failed"] .arr-run-state-icon, .arr-run-card[data-tone="blocked"] .arr-run-state-icon { color: var(--rose); }
+.arr-run-card[data-tone="completed"] .arr-run-state-icon { color: var(--sage); }
+.arr-run-demo {
+  margin-left: 7px; padding: 1px 6px; border-radius: var(--r-pill); background: var(--gold-wash);
+  color: var(--gold); font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em;
+}
+.arr-run-close { margin-left: auto; display: inline-grid; place-items: center; padding: 3px; border: 0; border-radius: 5px; background: transparent; color: var(--ink-4); cursor: pointer; }
+.arr-run-close:hover { background: var(--paper-2); color: var(--ink-2); }
+.arr-run-card > p { margin: 7px 0 0; font-size: 11.5px; line-height: 1.65; color: var(--ink-3); }
+.arr-run-progress { margin-top: 10px; }
+.arr-run-progress-meta { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 5px; font-family: var(--font-mono); font-size: 10px; color: var(--ink-4); }
+.arr-run-progress-meta strong { color: var(--ink-2); }
+.arr-run-progress-track { display: block; height: 3px; overflow: hidden; border-radius: var(--r-pill); background: var(--paper-3); }
+.arr-run-progress-track i { display: block; height: 100%; border-radius: inherit; background: var(--sage); transition: width 240ms ease; }
+.arr-run-warning { color: var(--gold) !important; }
+.arr-run-actions { display: flex; justify-content: flex-end; margin-top: 11px; }
+.arr-auto-save { display: inline-flex; align-items: center; gap: 4px; color: var(--ink-4); font-size: 10.5px; white-space: nowrap; }
+.arr-auto-save svg { color: var(--sage); }
+.arr-locked-note { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--sage) 34%, var(--line-2)); border-radius: 8px; background: color-mix(in srgb, var(--sage) 7%, var(--paper-1)); color: var(--ink-2); font-size: 12px; line-height: 1.55; }
+.arr-locked-note svg { flex: 0 0 auto; color: var(--sage); }
 
 /* recycle empty state */
 .arr-recycle-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 34px 16px; text-align: center; color: var(--ink-4); font-size: 12.5px; }

@@ -16,6 +16,7 @@ from novel_system.db.models import (
     SceneRunState,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.errors import DomainError
 from novel_system.services.reference_safety import ReferenceSafetyService
 from novel_system.services.source_safety import source_profile_ids_from_snapshot
 from novel_system.services.writer_review import WriterReviewService
@@ -39,6 +40,7 @@ class ChapterManuscriptService:
         scene_states = self._scene_states(scenes)
         scene_entries = [self._scene_entry(scene, scene_states.get(scene.scene_id)) for scene in scenes]
         assembled = self._assembled_payload(scene_entries)
+        completion = self._completion_contract_from_assembled(assembled)
         aggregate = self._aggregate_payload(self._resolve_final_aggregate(chapter_id, chapter_state))
         source_safety_scan = ReferenceSafetyService(self.session).scan_runtime_text(
             [assembled["content"], aggregate["content"] if aggregate else ""],
@@ -56,10 +58,8 @@ class ChapterManuscriptService:
         return {
             "chapter": self.lifecycle.serialize_chapter(chapter),
             "chapter_state": self.lifecycle.serialize_chapter_state(chapter_state, chapter_id),
-            "completion_status": self._completion_status(
-                assembled["scene_count"],
-                assembled["generated_scene_count"],
-            ),
+            "completion_status": completion["completion_status"],
+            "missing_scene_ids": completion["missing_scene_ids"],
             "comparison_status": self._comparison_status(assembled["content"], aggregate),
             "assembled": assembled,
             "aggregate": aggregate,
@@ -68,6 +68,34 @@ class ChapterManuscriptService:
             "editorial_workspace": editorial_workspace,
             "scenes": scene_entries,
         }
+
+    def completion_contract(self, chapter_id: str) -> dict[str, Any]:
+        """Return the canonical FinalScene coverage used by every final gate."""
+
+        self.lifecycle.require_active_chapter(chapter_id)
+        scenes = self._active_scenes(chapter_id)
+        scene_states = self._scene_states(scenes)
+        scene_entries = [
+            self._scene_entry(scene, scene_states.get(scene.scene_id))
+            for scene in scenes
+        ]
+        return self._completion_contract_from_assembled(
+            self._assembled_payload(scene_entries)
+        )
+
+    def require_complete(self, chapter_id: str) -> dict[str, Any]:
+        contract = self.completion_contract(chapter_id)
+        if (
+            contract["completion_status"] != "complete"
+            or contract["missing_scene_ids"]
+        ):
+            raise DomainError(
+                "CHAPTER_CANONICAL_MANUSCRIPT_INCOMPLETE",
+                "every active scene must have non-empty canonical manuscript text before review or approval",
+                status_code=409,
+                details={"chapter_id": chapter_id, **contract},
+            )
+        return contract
 
     def _chapter_list_item(self, chapter: ChapterGoal) -> dict[str, Any]:
         chapter_state = self.session.get(ChapterState, chapter.chapter_id)
@@ -143,7 +171,7 @@ class ChapterManuscriptService:
                 missing_scene_ids.append(scene["scene_id"])
                 continue
             row = self.session.get(FinalScene, final_scene["row_id"])
-            if row is None:
+            if row is None or not str(row.content or "").strip():
                 missing_scene_ids.append(scene["scene_id"])
                 continue
             generated_contents.append(row.content or "")
@@ -277,6 +305,23 @@ class ChapterManuscriptService:
         if scene_count > 0 and generated_scene_count >= scene_count:
             return "complete"
         return "partial"
+
+    @classmethod
+    def _completion_contract_from_assembled(
+        cls,
+        assembled: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "completion_status": cls._completion_status(
+                int(assembled.get("scene_count") or 0),
+                int(assembled.get("generated_scene_count") or 0),
+            ),
+            "missing_scene_ids": list(assembled.get("missing_scene_ids") or []),
+            "scene_count": int(assembled.get("scene_count") or 0),
+            "generated_scene_count": int(
+                assembled.get("generated_scene_count") or 0
+            ),
+        }
 
     @staticmethod
     def _comparison_status(assembled_content: str, aggregate: dict[str, Any] | None) -> str:

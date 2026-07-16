@@ -10,6 +10,7 @@ from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.api.app import create_app
 from novel_system.db.models import LlmCall, LlmCallAttempt, SystemSecret
 from novel_system.services.settings_helpers import llm_generation_mode
+from novel_system.services.llm_audit import fingerprint_identifier
 from novel_system.services.llm_client import load_model_routing_config
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.settings import get_settings
@@ -100,7 +101,9 @@ def test_completion_probe_success_missing_usage_http_and_transport_are_accounted
         "failed",
         "failed",
     ]
-    assert calls[0].response_payload_summary["request_id"] == "req-actual"
+    assert calls[0].response_payload_summary["request_id"] == fingerprint_identifier(
+        "req-actual"
+    )
 
 
 def test_completion_probe_reservation_covers_real_provider_usage(client, session, monkeypatch) -> None:

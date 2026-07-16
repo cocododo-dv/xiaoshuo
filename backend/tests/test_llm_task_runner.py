@@ -28,6 +28,7 @@ from novel_system.services.llm_client import (
     TaskModelConfig,
 )
 from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
+from novel_system.services.llm_audit import fingerprint_identifier
 from novel_system.services.errors import DomainError
 from novel_system.services.llm_task_runner import (
     LLMNodeContinuityError,
@@ -1630,7 +1631,19 @@ def test_llm_node_runner_builds_request_and_persists_successful_call(session) ->
     assert stored_call.request_payload_summary["template_name"] == "neutral_draft"
     assert stored_call.request_payload_summary["token_budget"]["estimated_input_tokens"] > 0
     assert stored_call.request_payload_summary["bundle_id"] == "bundle_CH100_SC01"
-    assert stored_call.response_payload_summary["request_id"] == "resp_success"
+    assert stored_call.request_payload_summary["messages"]["count"] == 2
+    assert stored_call.request_payload_summary["messages"]["items"][1]["role"] == "user"
+    assert (
+        stored_call.request_payload_summary["messages"]["items"][1]["content"]["kind"]
+        == "text_fingerprint"
+    )
+    assert "Scene ID: CH100_SC01" not in json.dumps(
+        stored_call.request_payload_summary,
+        ensure_ascii=False,
+    )
+    assert stored_call.response_payload_summary["request_id"] == fingerprint_identifier(
+        "resp_success"
+    )
     assert stored_call.response_payload_summary["attempt_count"] == 2
     assert stored_call.response_payload_summary["max_retries"] == 3
     assert stored_call.response_payload_summary["retryable"] is False

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from novel_system.api.deps import get_session
 from novel_system.api.response import ok
 from novel_system.services import cost_aggregation
+from novel_system.services.llm_accounting import llm_quota_snapshot
 
 router = APIRouter(tags=["cost"])
 
@@ -29,4 +30,5 @@ def project_cost_summary(
         payload = {"level": "chapter", "summary": cost_aggregation.chapter_cost(session, chapter_id)}
     else:
         payload = {"level": "project", "summary": cost_aggregation.project_cost(session, project_id)}
+    payload["quota"] = llm_quota_snapshot(session, project_id=project_id)
     return ok(payload, req_id=getattr(request.state, "request_id", None))

@@ -28,11 +28,13 @@ describe("WsCost store（成本看板）", () => {
       summary: { total_cost: 1.23, currency: "USD", call_count: 3, is_estimate: true,
                  phase_breakdown: { candidate_generation: { cost: 1, share: 0.8 } },
                  judge_independence: { correlated_judge: false } },
+      quota: { daily_tokens: { used: 100, limit: 1000 }, period_timezone: "UTC" },
     });
     await mod.costLoad("P1");
     expect(client.apiGet).toHaveBeenCalledWith("/api/v2/projects/P1/cost-summary");
     expect(mod.csSnapshot().level).toBe("project");
     expect(mod.csSnapshot().summary.total_cost).toBe(1.23);
+    expect(mod.csSnapshot().quota.daily_tokens.limit).toBe(1000);
   });
 
   it("costLoad 场景下钻：带 scene_id 查询串", async () => {

@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 
 import pytest
+from sqlalchemy import select
 
 from novel_system.db.models import (
     AuthorDraft,
+    AttemptTracker,
     ChapterGoal,
     ChapterMemory,
     ChapterState,
@@ -128,6 +130,47 @@ def _promote(client, seeded: dict[str, str], *, key: str, **overrides):
         json=body,
         headers={"X-Idempotency-Key": f"canonical-promote-{key}"},
     )
+
+
+def test_content_safety_acknowledgement_is_rechecked_and_audited_at_archive(
+    client,
+    session,
+    monkeypatch,
+) -> None:
+    seeded = _seed_scene(
+        session,
+        "CONTENT_SAFETY",
+        draft_content="<p>角色只有16岁，段落明确描写两人的性行为。</p>",
+    )
+    monkeypatch.setattr(
+        "novel_system.services.final_text_gate.ReferenceSafetyService.scan_runtime_text",
+        lambda *args, **kwargs: {"safe": True, "matches": []},
+    )
+
+    blocked = _promote(client, seeded, key="content-safety-blocked")
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "CONTENT_SAFETY_REVIEW_REQUIRED"
+
+    accepted = _promote(
+        client,
+        seeded,
+        key="content-safety-accepted",
+        accepted_warning_codes=["sexual_content_with_minor_indicators"],
+    )
+    assert accepted.status_code == 200
+    final_id = accepted.json()["data"]["final_scene_row_id"]
+    attempt = session.execute(
+        select(AttemptTracker).where(
+            AttemptTracker.scene_id == seeded["scene_id"],
+            AttemptTracker.step == "archive",
+        )
+    ).scalars().all()[-1]
+    gate = attempt.details_json["final_text_gate"]
+    assert gate["content_hash"] == accepted.json()["data"]["content_hash"]
+    assert gate["content_safety"]["acknowledged_codes"] == [
+        "sexual_content_with_minor_indicators"
+    ]
+    assert final_id == attempt.details_json["final_scene_row_id"]
 
 
 def test_promote_scene_author_draft_rebuilds_canonical_chain_atomically_and_replays(client, session) -> None:

@@ -4,6 +4,7 @@ import hashlib
 import json
 import uuid
 from statistics import mean
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import select
@@ -19,8 +20,10 @@ from novel_system.db.models import (
     ReviewItem,
     SceneCard,
     SceneRunState,
+    StoryProject,
     WriterEvaluation,
 )
+from novel_system.services.author_preferences import merge_preference_summaries, safe_preference_summary_for_prompt
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_accounting import LLMCallContext
@@ -589,7 +592,7 @@ class WriterDeepReviewService:
     ) -> dict[str, Any]:
         target_text_ref = _optional_text(payload, "target_text_ref") or _optional_text(payload, "source_text_ref") or ""
         source_draft = self._source_draft(_optional_text(payload, "source_draft_id"))
-        preference = self._approved_runtime_preference_profile()
+        preference = self._approved_runtime_preference_profile(payload)
         snapshot = _passage_patch_snapshot(
             payload=payload,
             source_excerpt=source_excerpt,
@@ -648,15 +651,46 @@ class WriterDeepReviewService:
             return None
         return self.session.get(AuthorDraft, source_draft_id)
 
-    def _approved_runtime_preference_profile(self) -> AuthorPreferenceProfile | None:
-        return self.session.execute(
-            select(AuthorPreferenceProfile)
-            .where(
-                AuthorPreferenceProfile.status == "approved",
-                AuthorPreferenceProfile.runtime_eligible == 1,
+    def _approved_runtime_preference_profile(self, payload: dict[str, Any]) -> AuthorPreferenceProfile | None:
+        chapter_id = _optional_text(payload, "chapter_id")
+        scene_id = _optional_text(payload, "scene_id")
+        scene = self.session.get(SceneCard, scene_id) if scene_id else None
+        chapter = self.session.get(ChapterGoal, chapter_id or (scene.chapter_id if scene else ""))
+        project_id = (scene.project_id if scene else None) or (chapter.project_id if chapter else None)
+        project = self.session.get(StoryProject, project_id) if project_id else None
+        scopes: list[tuple[str, str]] = [("global", "global")]
+        genre = " ".join(str(project.genre or "").strip().lower().split()) if project else ""
+        if genre:
+            scopes.append(("genre", genre[:120]))
+        if project_id:
+            scopes.append(("project", project_id))
+        if chapter is not None:
+            scopes.append(("chapter", chapter.chapter_id))
+        rows: list[AuthorPreferenceProfile] = []
+        for scope_type, scope_ref_id in scopes:
+            rows.extend(
+                self.session.execute(
+                    select(AuthorPreferenceProfile)
+                    .where(
+                        AuthorPreferenceProfile.scope_type == scope_type,
+                        AuthorPreferenceProfile.scope_ref_id == scope_ref_id,
+                        AuthorPreferenceProfile.status == "approved",
+                        AuthorPreferenceProfile.runtime_eligible == 1,
+                    )
+                    .order_by(AuthorPreferenceProfile.updated_at.asc(), AuthorPreferenceProfile.profile_id.asc())
+                ).scalars().all()
             )
-            .order_by(AuthorPreferenceProfile.updated_at.desc(), AuthorPreferenceProfile.profile_id.desc())
-        ).scalars().first()
+        if not rows:
+            return None
+        summary: dict[str, Any] = {}
+        for row in rows:
+            summary = merge_preference_summaries(summary, row.summary_json or {})
+        # Keep the existing snapshot contract while avoiding mutation of any
+        # persisted profile as broader scopes are merged for this target.
+        return SimpleNamespace(
+            profile_id=rows[-1].profile_id,
+            summary_json=safe_preference_summary_for_prompt(summary),
+        )
 
     def _scene_source(self, scene: SceneCard) -> dict[str, Any]:
         author_draft = self._current_author_draft("scene", scene.scene_id)
@@ -1528,8 +1562,9 @@ def _preference_summary(rows: list[PassagePatchCandidate]) -> dict[str, list[str
                 preferred.append(f"偏好{category_label}：{row.revision_strategy or row.issue_dimension}。")
         elif row.author_decision == "rejected":
             rejected_categories.append(category_label)
-            note = row.author_decision_note or "保留作者原句，不把所有重复都视为错误。"
-            rejected.append(note if "保留" in note else f"保留原意：{note}")
+            # Free-form author notes are audit evidence, not prompt instructions.
+            # Convert the decision into a controlled label before publication.
+            rejected.append(f"保留作者原句；拒绝自动应用{category_label}。")
         ai_traces.extend(term for term in _repeated_ai_trace_terms(row.source_excerpt) if term not in ai_traces)
     return {
         "preferred_revision_moves": _dedupe(preferred),

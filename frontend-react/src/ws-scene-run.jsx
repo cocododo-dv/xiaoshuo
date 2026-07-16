@@ -3,6 +3,7 @@ import { I } from "./icons.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
 import { s2ExportState } from "./ws-snow.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
+import { WrDocVersions, WrRecovery } from "./wr-doc-store.jsx";
 import { cancelRunJob, getLatestSceneRunJob } from "./lib/client.js";
 
 /* global React, I */
@@ -17,7 +18,7 @@ import { cancelRunJob, getLatestSceneRunJob } from "./lib/client.js";
    · 持久化：每场的运行结果存 scn-run:sid（按作品隔离），刷新不丢
    ========================================================== */
 
-const SCN_RUN_FIELDS = ["state", "draft", "metrics", "alignment", "verdict", "log", "attempts", "attempt", "at", "words", "gate", "budgetBlock"];
+const SCN_RUN_FIELDS = ["state", "draft", "metrics", "alignment", "verdict", "log", "attempts", "attempt", "at", "words", "gate", "budgetBlock", "authorNote"];
 const scnRunKey = (sid) => (wsKey ? wsKey("scn-run:" + sid) : "scn-run:" + sid);
 const scnQueueKey = () => (wsKey ? wsKey("scn-queue:v1") : "scn-queue:v1");
 
@@ -647,7 +648,13 @@ async function scnRun(item, note, prevText, lifecycle = {}) { // eslint-disable-
   // 起草台是作者在场的交互式工作流：严格模式把 Q2 建议停在可采纳态，
   // 由“采纳并归档”留下明确接受记录；无 Q2 时后端仍可按契约自动完成。
   const body = { run_policy: (lifecycle && lifecycle.runPolicy) || "strict" };
-  if (note && String(note).trim()) body.author_note = String(note).trim().slice(0, 500);
+  const authorNote = note == null ? "" : String(note).trim();
+  if (Array.from(authorNote).length > 2000) {
+    const error = new Error("作者改写指令不能超过 2000 个字符，请精简后重试；系统没有截断或提交这段指令。");
+    error.code = "AUTHOR_NOTE_TOO_LONG";
+    throw error;
+  }
+  if (authorNote) body.author_note = authorNote;
   if (lifecycle && lifecycle.resumeBudget === true) body.resume_budget = true;
   try {
     job = await trackedPost(`/api/v1/scenes/${sceneId}/run/jobs`, body);
@@ -703,6 +710,7 @@ async function scnRun(item, note, prevText, lifecycle = {}) { // eslint-disable-
   // Wave 2：提取作者可见状态门（无法继续 vs 有稿建议修改），随运行记录持久化
   qc.gate = scnGateFrom(wb);
   qc.rewriteBrief = scnRewriteBriefFrom(wb);
+  qc.authorNote = authorNote;
   // reliable/无警告路径可能已经由后端原子归档。不能把 author_state=archived
   // 的 can_archive=false 误渲染成 Q0/Q1 阻断，也不能再展示待裁决按钮。
   qc.state = pipeState === "archived" ? "archived" : "ready";
@@ -753,13 +761,57 @@ async function scnHydrateFromBackend(sid, { signal, terminalJob } = {}) {
   const content = (wb && ((wb.final_scene && wb.final_scene.content)
     || (wb.style_draft && wb.style_draft.content)
     || (wb.neutral_draft && wb.neutral_draft.content))) || "";
-  if (!content.trim()) return null;
+  const budgetBlock = scnBudgetBlock(terminalJob, wb);
+  const authorNote = terminalJob && typeof terminalJob.author_note === "string"
+    ? terminalJob.author_note
+    : "";
+  const pipeState = (wb && wb.scene_run_state && wb.scene_run_state.scene_status) || "";
+  if (!content.trim()) {
+    // Fresh browsers have no local run cache. A budget-blocked job can stop
+    // before producing even a neutral draft, but its durable checkpoint and
+    // author instruction are still resumable. Return that recovery state
+    // instead of erasing the only UI path to an explicit top-up.
+    if (!budgetBlock) return null;
+    const now = new Date().toTimeString().slice(0, 8);
+    return {
+      state: "queued",
+      progress: 0,
+      draft: [],
+      metrics: [],
+      alignment: [],
+      attempts: [{
+        n: 1,
+        time: "后端恢复",
+        result: "等待追加预算",
+        tone: "gold",
+        note: authorNote ? "原作者指令已从任务恢复" : "持久化检查点可续跑",
+      }],
+      attempt: 1,
+      at: Date.now(),
+      words: 0,
+      gate: {
+        ...(scnGateFrom(wb) || { authorState: null, blocking: [], warnings: [], recommended: [] }),
+        canArchive: false,
+        blockReason: "lifecycle_budget",
+      },
+      budgetBlock,
+      authorNote,
+      error: `${budgetBlock.label}；尚未产出正文，检查点与原作者指令已保留。请追加预算后继续。`,
+      log: [{
+        t: now,
+        who: "pipeline",
+        text: `${budgetBlock.label}；尚未产出正文，检查点与原作者指令已从后端恢复`,
+      }],
+      cost: [],
+      recoveredWithoutDraft: true,
+      pipeState,
+    };
+  }
   const paras = content.split(/\n{2,}|\n/).map((x, i) => ({ id: "p" + (i + 1), beat: null, text: x.trim() })).filter(p => p.text);
   if (!paras.length) return null;
   const hit = WsCatalog ? WsCatalog.sceneById(sid) : null;
   const reactive = ((hit && hit.scene && hit.scene.kind) || "").includes("反应");
   const qc = scnQC(paras, reactive);
-  const pipeState = (wb && wb.scene_run_state && wb.scene_run_state.scene_status) || "";
   const done = !!(hit && hit.scene && hit.scene.state === "done") || pipeState === "archived";
   const now = new Date().toTimeString().slice(0, 8);
   qc.state = done ? "archived" : "ready";
@@ -767,7 +819,8 @@ async function scnHydrateFromBackend(sid, { signal, terminalJob } = {}) {
   qc.at = Date.now();
   qc.gate = scnGateFrom(wb);
   qc.rewriteBrief = scnRewriteBriefFrom(wb);
-  qc.budgetBlock = scnBudgetBlock(terminalJob, wb);
+  qc.authorNote = authorNote;
+  qc.budgetBlock = budgetBlock;
   if (qc.budgetBlock) {
     qc.gate = {
       ...(qc.gate || { authorState: null, blocking: [], warnings: [], recommended: [] }),
@@ -844,7 +897,40 @@ async function scnResumeAfterSelection(sid) {
    后端拒绝（无稿 NO_VALID_DRAFT / 来源安全 SOURCE_SAFETY_BLOCKED）时
    不动本地任何状态，faithful 返回失败原因。 ---- */
 function scnEscape(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
-async function scnAdoptToDoc(sid, draft, gate) {
+function scnDraftHTML(draft) {
+  return (draft || []).map(p => "<p>" + scnEscape((p.parts || []).map(x => x.text).join("")) + "</p>").join("");
+}
+function scnHTMLParas(raw) {
+  if (!raw) return [];
+  const node = document.createElement("div");
+  node.innerHTML = raw;
+  const items = [...node.querySelectorAll("p, li")].map(el => (el.textContent || "").trim()).filter(Boolean);
+  return items.length ? items : ((node.textContent || "").trim() ? [(node.textContent || "").trim()] : []);
+}
+function scnAdoptionPreview(sid, draft) {
+  const html = scnDraftHTML(draft);
+  const key = wsKey ? wsKey("wr-doc:" + sid) : "wr-doc:" + sid;
+  let existing = "";
+  try { existing = (WrRecovery && WrRecovery.current(sid)) || localStorage.getItem(key) || ""; } catch (e) {}
+  const hasReal = existing && existing.replace(/<[^>]+>/g, "").replace(/\s/g, "").length > 0 && !existing.includes("在这里开始写这一场");
+  return {
+    sid,
+    html,
+    existing,
+    hasReal: !!hasReal,
+    diff: WrDocVersions.diff(scnHTMLParas(existing), scnHTMLParas(html)),
+  };
+}
+async function scnPrepareAdoption(sid, draft) {
+  try { if (window.WrDocs && window.WrDocs.hydrate) await window.WrDocs.hydrate(sid); } catch (e) {
+    throw Object.assign(new Error("无法核对服务器上的作者稿，已停止采用；请检查网络后重试"), {
+      code: "AUTHOR_DRAFT_PREFLIGHT_FAILED",
+      cause: e,
+    });
+  }
+  return scnAdoptionPreview(sid, draft);
+}
+async function scnAdoptToDoc(sid, draft, gate, options = {}) {
   if (!sid || !WsCatalog) return { ok: false, reason: "没有场景卡" };
   // Wave 2（治理 §5.4）：只有真实 Q0/Q1 阻断归档——gate 前置拦截给即时反馈，
   // 后端 adopt-current 的 HARD_BLOCKED 409 仍是权威裁决（绕过前端也拦得住）。
@@ -852,14 +938,59 @@ async function scnAdoptToDoc(sid, draft, gate) {
     const keys = (gate.blocking || []).map(f => f.issue_key || f.kind).filter(Boolean).join("、");
     return { ok: false, reason: `存在已证实的硬问题（Q0/Q1${keys ? "：" + keys : ""}），暂不能归档——正文已保留，处理或重跑后再采纳` };
   }
-  const html = (draft || []).map(p => "<p>" + scnEscape(p.parts.map(x => x.text).join("")) + "</p>").join("");
+  const preview = await scnPrepareAdoption(sid, draft);
+  const html = preview.html;
   const text = (draft || []).map(p => p.parts.map(x => x.text).join("")).join("");
   const key = wsKey ? wsKey("wr-doc:" + sid) : "wr-doc:" + sid;
-  let existing = "";
-  try { existing = localStorage.getItem(key) || ""; } catch (e) {}
-  const hasReal = existing && existing.replace(/<[^>]+>/g, "").replace(/\s/g, "").length > 0 && !existing.includes("在这里开始写这一场");
-  if (hasReal && !window.confirm("这一场在写作器里已有正文。归档会覆盖现有正文（写作器的版本会丢失），确定继续？")) {
+  // API 层也采用安全默认：任何未声明模式的调用，只要检测到作者正文，
+  // 都先保存为候选。显式 overwrite 才可能进入覆盖路径，避免未来新增入口
+  // 绕过页面对话框后又退回旧的 confirm/直接覆盖行为。
+  const requestedMode = options.mode;
+  if (requestedMode && !["candidate", "overwrite", "legacy"].includes(requestedMode)) {
+    return { ok: false, reason: "未知的采用模式，已停止以保护作者稿" };
+  }
+  const mode = requestedMode || (preview.hasReal ? "candidate" : "overwrite");
+  if (mode === "candidate") {
+    const candidate = WrRecovery.createCandidate(sid, html, "AI 起草台候选；未覆盖作者当前正文，也未归档");
+    return {
+      ok: true,
+      archived: false,
+      mode: "candidate",
+      candidate,
+      warning: candidate.durable === false ? "浏览器空间不足，候选仅保留在本次会话，请立即导出" : null,
+    };
+  }
+  if (preview.hasReal && mode === "overwrite" && options.confirmed !== true) {
+    return {
+      ok: false,
+      reason: "需要先查看差异并明确确认覆盖；作者稿没有被改动",
+      confirmationRequired: true,
+    };
+  }
+  if (preview.hasReal && mode === "legacy" && !window.confirm("这一场在写作器里已有正文。继续会先自动备份作者稿，再用 AI 稿覆盖并归档。确定继续？")) {
     return { ok: false, reason: "已取消" };
+  }
+  let authorBackup = null;
+  if (preview.hasReal) {
+    try {
+      const currentWorkId = WsWorks ? WsWorks.activeId() : "";
+      authorBackup = options.authorBackupId
+        ? WrRecovery.list().find(item => (
+            item.id === options.authorBackupId
+            && item.type === "backup"
+            && item.source === "author"
+            && item.sid === sid
+            && item.workId === currentWorkId
+            && item.html === preview.existing
+            && item.durable !== false
+          )) || null
+        : null;
+      if (!authorBackup) {
+        authorBackup = WrRecovery.createBackup(sid, preview.existing, "AI 稿确认覆盖前自动备份作者正文");
+      }
+    } catch (error) {
+      return { ok: false, reason: (error && error.message) || "作者稿备份失败，已停止覆盖", backupFailed: true };
+    }
   }
   // 1) 后端归档单入口（先于一切本地写入）
   let sceneId = null;
@@ -867,16 +998,23 @@ async function scnAdoptToDoc(sid, draft, gate) {
   if (!sceneId) return { ok: false, reason: "这一场还没同步到后端目录——稍候片刻或刷新后重试" };
   try {
     const { apiPost } = await import("./lib/client.js");
-    await apiPost(`/api/v1/scenes/${sceneId}/adopt-current`, {});
+    await apiPost(`/api/v1/scenes/${sceneId}/adopt-current`, {
+      accepted_warning_codes: Array.isArray(options.acceptedWarningCodes)
+        ? options.acceptedWarningCodes
+        : [],
+    });
   } catch (e) {
     const code = (e && e.code) || "";
     const msg = (e && e.message) || String(e || "");
-    return { ok: false, reason: `后端归档未通过（${code || "网络错误"}）：${msg}` };
+    return { ok: false, reason: `后端归档未通过（${code || "网络错误"}）：${msg}`, error: e, authorBackup };
   }
   // 2) 归档成功 → 正文写穿 author-drafts 主路径（WrDocs 缓存+PATCH）
   try {
-    if (window.WrDocs) await window.WrDocs.save(sid, html);
-    else localStorage.setItem(key, html);
+    if (window.WrDocs) {
+      const authorDraftId = window.WrDocs.draftId ? await window.WrDocs.draftId(sid) : null;
+      if (authorDraftId) await window.WrDocs.save(sid, html);
+      else localStorage.setItem(key, html); // 兼容尚未启用 author-drafts 的旧项目
+    } else localStorage.setItem(key, html);
   } catch (e) { return { ok: false, reason: "写入失败" }; }
   const hit = WsCatalog.sceneById(sid);
   const prev = hit && typeof hit.scene.words === "number" ? hit.scene.words : 0;
@@ -891,9 +1029,9 @@ async function scnAdoptToDoc(sid, draft, gate) {
   try {
     const { apiGet } = await import("./lib/client.js");
     const status = await apiGet(`/api/v1/scenes/${sceneId}/status`);
-    return { ok: true, words: count, serverStatus: (status && status.scene_status) || "archived", authorState: status && status.author_state };
+    return { ok: true, archived: true, words: count, authorBackup, serverStatus: (status && status.scene_status) || "archived", authorState: status && status.author_state };
   } catch (e) {
-    return { ok: true, words: count, serverStatus: "archived" };
+    return { ok: true, archived: true, words: count, authorBackup, serverStatus: "archived" };
   }
 }
 
@@ -922,7 +1060,7 @@ function scnPickList(queuedSids) {
   } catch (e) { return []; }
 }
 
-Object.assign(window, { scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection });
+Object.assign(window, { scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { SceneRunJobControl, scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };
+export { SceneRunJobControl, scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };

@@ -24,6 +24,20 @@ class Settings:
     llm_auto_critique_enabled: bool = False
     # §2 opt-in: extract narrative events from finished prose (not just the spec).
     llm_event_extraction_enabled: bool = False
+    # Singleton-local hard fences. Zero disables only the optional money fence;
+    # token/request/concurrency defaults remain finite to prevent runaway loops.
+    llm_daily_token_limit: int = 1_000_000
+    llm_monthly_token_limit: int = 20_000_000
+    llm_project_daily_token_limit: int = 250_000
+    llm_daily_request_limit: int = 2_000
+    llm_max_concurrent_requests: int = 4
+    # Startup reconciliation only touches unowned, non-scene reservations
+    # older than this conservative TTL.  It must comfortably exceed normal
+    # provider retries so a live legacy request is not mistaken for a crash.
+    llm_reservation_recovery_ttl_seconds: int = 3_600
+    llm_daily_cost_limit_usd: float = 0.0
+    llm_input_cost_per_million_usd: float = 0.0
+    llm_output_cost_per_million_usd: float = 0.0
     admin_token: str | None = None
     config_secret: str | None = None
     auto_create_tables: bool = False
@@ -40,6 +54,16 @@ class Settings:
     )
     cors_allow_credentials: bool = True
     expose_error_detail: bool = False
+    # The desktop service is local-only by default. Remote access is an explicit
+    # deployment mode and must be protected by a shared access token.
+    local_only: bool = True
+    remote_access_token: str | None = None
+    # Server-side path imports are disabled unless one or more roots are listed.
+    # Browser uploads remain available and are the preferred import path.
+    style_reference_import_roots: tuple[Path, ...] = ()
+    # ``review`` prevents unattended archive for high-risk heuristic matches;
+    # ``audit`` records the same findings without blocking publication.
+    content_safety_mode: str = "review"
 
 
 def _get_bool_env(name: str, default: bool) -> bool:
@@ -66,9 +90,25 @@ def _get_float_env(name: str, default: float) -> float:
     if raw_value is None:
         return default
     try:
-        return float(raw_value)
+        value = float(raw_value)
     except ValueError as exc:
         raise ValueError(f"{name} must be a valid number") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return value
+
+
+def _get_positive_int_env(name: str, default: int) -> int:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
 
 
 def _get_list_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -77,6 +117,17 @@ def _get_list_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
         return default
     items = tuple(item.strip() for item in raw_value.split(",") if item.strip())
     return items or default
+
+
+def _get_path_list_env(name: str) -> tuple[Path, ...]:
+    raw_value = os.environ.get(name, "")
+    if not raw_value.strip():
+        return ()
+    return tuple(
+        Path(item.strip()).expanduser()
+        for item in raw_value.split(os.pathsep)
+        if item.strip()
+    )
 
 
 def get_settings(*, include_runtime_config: bool = True) -> Settings:
@@ -100,6 +151,31 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     llm_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_ENABLED", False)
     llm_auto_critique_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", False)
     llm_event_extraction_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", False)
+    llm_daily_token_limit = _get_positive_int_env("NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT", 1_000_000)
+    llm_monthly_token_limit = _get_positive_int_env("NOVEL_SYSTEM_LLM_MONTHLY_TOKEN_LIMIT", 20_000_000)
+    llm_project_daily_token_limit = _get_positive_int_env(
+        "NOVEL_SYSTEM_LLM_PROJECT_DAILY_TOKEN_LIMIT", 250_000
+    )
+    llm_daily_request_limit = _get_positive_int_env("NOVEL_SYSTEM_LLM_DAILY_REQUEST_LIMIT", 2_000)
+    llm_max_concurrent_requests = _get_positive_int_env("NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS", 4)
+    llm_reservation_recovery_ttl_seconds = _get_positive_int_env(
+        "NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS",
+        3_600,
+    )
+    llm_daily_cost_limit_usd = _get_float_env("NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD", 0.0)
+    llm_input_cost_per_million_usd = _get_float_env(
+        "NOVEL_SYSTEM_LLM_INPUT_COST_PER_MILLION_USD", 0.0
+    )
+    llm_output_cost_per_million_usd = _get_float_env(
+        "NOVEL_SYSTEM_LLM_OUTPUT_COST_PER_MILLION_USD", 0.0
+    )
+    if llm_daily_cost_limit_usd > 0 and max(
+        llm_input_cost_per_million_usd,
+        llm_output_cost_per_million_usd,
+    ) <= 0:
+        raise ValueError(
+            "NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD requires at least one configured token price"
+        )
     admin_token = os.environ.get("NOVEL_SYSTEM_ADMIN_TOKEN")
     config_secret = os.environ.get("NOVEL_SYSTEM_CONFIG_SECRET")
     auto_create_tables = _get_bool_env("NOVEL_SYSTEM_AUTO_CREATE_TABLES", False)
@@ -119,7 +195,14 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     )
     cors_allow_credentials = _get_bool_env("NOVEL_SYSTEM_CORS_ALLOW_CREDENTIALS", True)
     expose_error_detail = _get_bool_env("NOVEL_SYSTEM_EXPOSE_ERROR_DETAIL", False)
-    vector_store_dir.mkdir(parents=True, exist_ok=True)
+    local_only = _get_strict_bool_env("NOVEL_SYSTEM_LOCAL_ONLY", True)
+    remote_access_token = os.environ.get("NOVEL_SYSTEM_REMOTE_ACCESS_TOKEN") or None
+    style_reference_import_roots = _get_path_list_env(
+        "NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS"
+    )
+    content_safety_mode = os.environ.get("NOVEL_SYSTEM_CONTENT_SAFETY_MODE", "review").strip().lower()
+    if content_safety_mode not in {"review", "audit"}:
+        raise ValueError("NOVEL_SYSTEM_CONTENT_SAFETY_MODE must be review or audit")
     settings = Settings(
         database_url=database_url,
         vector_backend=vector_backend,
@@ -133,12 +216,25 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         llm_enabled=llm_enabled,
         llm_auto_critique_enabled=llm_auto_critique_enabled,
         llm_event_extraction_enabled=llm_event_extraction_enabled,
+        llm_daily_token_limit=llm_daily_token_limit,
+        llm_monthly_token_limit=llm_monthly_token_limit,
+        llm_project_daily_token_limit=llm_project_daily_token_limit,
+        llm_daily_request_limit=llm_daily_request_limit,
+        llm_max_concurrent_requests=llm_max_concurrent_requests,
+        llm_reservation_recovery_ttl_seconds=llm_reservation_recovery_ttl_seconds,
+        llm_daily_cost_limit_usd=llm_daily_cost_limit_usd,
+        llm_input_cost_per_million_usd=llm_input_cost_per_million_usd,
+        llm_output_cost_per_million_usd=llm_output_cost_per_million_usd,
         admin_token=admin_token,
         config_secret=config_secret,
         auto_create_tables=auto_create_tables,
         cors_origins=cors_origins,
         cors_allow_credentials=cors_allow_credentials,
         expose_error_detail=expose_error_detail,
+        local_only=local_only,
+        remote_access_token=remote_access_token,
+        style_reference_import_roots=style_reference_import_roots,
+        content_safety_mode=content_safety_mode,
     )
     if not include_runtime_config:
         return settings

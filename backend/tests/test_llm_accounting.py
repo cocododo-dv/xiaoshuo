@@ -4,6 +4,7 @@ import importlib
 import json
 import threading
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -255,7 +256,9 @@ def test_public_local_rejection_records_zero_child_parent_without_budget_charge(
     assert (parent.estimated_tokens, parent.reserved_tokens, parent.budget_charged_tokens) == (0, 0, 0)
     assert (parent.prompt_tokens, parent.completion_tokens, parent.total_tokens) == (0, 0, 0)
     assert parent.request_payload_summary["continuity_warning"]["requires_scene_split"] is True
-    assert parent.response_payload_summary == {"attempt_count": 0, "retryable": False}
+    assert parent.response_payload_summary["attempt_count"] == 0
+    assert parent.response_payload_summary["retryable"] is False
+    assert parent.response_payload_summary["_audit_schema_version"] == 2
     assert session.query(LlmCallAttempt).count() == 0
 
 
@@ -1473,6 +1476,232 @@ def test_token_budget_rejection_before_dispatch_has_no_post_attempt_or_charge(se
     assert parent.budget_charged_tokens == 0
 
 
+@pytest.mark.parametrize(
+    ("env_name", "error_code"),
+    [
+        ("NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT", "LLM_DAILY_TOKEN_LIMIT"),
+        ("NOVEL_SYSTEM_LLM_MONTHLY_TOKEN_LIMIT", "LLM_MONTHLY_TOKEN_LIMIT"),
+        ("NOVEL_SYSTEM_LLM_PROJECT_DAILY_TOKEN_LIMIT", "LLM_PROJECT_DAILY_TOKEN_LIMIT"),
+    ],
+)
+def test_global_token_quotas_reject_before_physical_provider_io(
+    session,
+    monkeypatch,
+    env_name: str,
+    error_code: str,
+) -> None:
+    accounting = _accounting_module()
+    monkeypatch.setenv(env_name, "1")
+
+    class QuotaClient(accounting.OnlineAccountedExecution):
+        physical_posts = 0
+
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            self.physical_posts += 1
+            raise AssertionError("quota rejection must happen before provider I/O")
+
+    client = QuotaClient()
+    with pytest.raises(accounting.LLMAccountingRejected) as exc_info:
+        accounting.execute_accounted_call(session, client, _request(), _context(accounting))
+
+    assert exc_info.value.code == error_code
+    assert client.physical_posts == 0
+    assert session.query(LlmCallAttempt).count() == 0
+    parent = session.query(LlmCall).one()
+    assert parent.accounting_status == "rejected"
+    assert parent.error_code == error_code
+    assert parent.budget_charged_tokens == 0
+
+
+def test_global_quotas_charge_terminal_provider_overage_at_actual_total_tokens(
+    session,
+    monkeypatch,
+) -> None:
+    accounting = _accounting_module()
+    now = datetime.now(UTC).isoformat()
+    parent = LlmCall(
+        llm_call_id="provider-overage-for-global-quota",
+        scope_type="project",
+        scope_id="project-1",
+        project_id="project-1",
+        node_id="neutral_draft",
+        step="draft",
+        prompt_tokens=200,
+        completion_tokens=50,
+        total_tokens=250,
+        estimated_tokens=10,
+        reserved_tokens=10,
+        budget_charged_tokens=10,
+        usage_is_estimate=False,
+        accounting_status="usage_exceeds_reservation",
+        request_dispatched_at=now,
+        settled_at=now,
+    )
+    session.add(parent)
+    session.add(
+        LlmCallAttempt(
+            attempt_id="provider-overage-attempt-for-global-quota",
+            llm_call_id=parent.llm_call_id,
+            provider_attempt_no=0,
+            dispatch_kind="initial",
+            request_max_output_tokens=50,
+            prompt_tokens=200,
+            completion_tokens=50,
+            total_tokens=250,
+            estimated_tokens=10,
+            reserved_tokens=10,
+            budget_charged_tokens=10,
+            usage_is_estimate=False,
+            accounting_status="usage_exceeds_reservation",
+            request_dispatched_at=now,
+            settled_at=now,
+        )
+    )
+    session.commit()
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT", "250")
+
+    snapshot = accounting.llm_quota_snapshot(session, project_id="project-1")
+
+    assert snapshot["daily_tokens"]["used"] == 250
+    assert snapshot["monthly_tokens"]["used"] == 250
+    assert snapshot["project_daily_tokens"]["used"] == 250
+    assert parent.budget_charged_tokens == 10  # scene-budget caliber remains bounded
+
+    class QuotaClient(accounting.OnlineAccountedExecution):
+        physical_posts = 0
+
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            self.physical_posts += 1
+            raise AssertionError("actual provider usage must reject before provider I/O")
+
+    client = QuotaClient()
+    with pytest.raises(accounting.LLMAccountingRejected) as exc_info:
+        accounting.execute_accounted_call(session, client, _request(), _context(accounting))
+
+    assert exc_info.value.code == "LLM_DAILY_TOKEN_LIMIT"
+    assert exc_info.value.details["used"] == 250
+    assert client.physical_posts == 0
+
+
+def test_daily_request_quota_counts_dispatched_attempts_and_rejects_next_call(
+    session,
+    monkeypatch,
+) -> None:
+    accounting = _accounting_module()
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_DAILY_REQUEST_LIMIT", "1")
+
+    class SuccessfulClient(accounting.OnlineAccountedExecution):
+        physical_posts = 0
+
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            self.physical_posts += 1
+            response = LLMResponse(
+                request_id=f"quota-{self.physical_posts}",
+                provider="fake",
+                model=request.model,
+                text="{}",
+                structured_output={},
+                response_format="json_object",
+                raw_response={"id": f"quota-{self.physical_posts}"},
+                usage={"input_tokens": 4, "output_tokens": 1, "total_tokens": 5},
+                raw_usage={"input_tokens": 4, "output_tokens": 1, "total_tokens": 5},
+                usage_present=True,
+                usage_complete=True,
+                finish_reason="stop",
+            )
+            accounting_hook.after_response(handle, request=request, response=response, latency_ms=1)
+            return response
+
+    client = SuccessfulClient()
+    accounting.execute_accounted_call(session, client, _request(), _context(accounting))
+    second_context = replace(
+        _context(accounting),
+        execution_id="execution-2",
+        execution_step_key="neutral_draft-2",
+    )
+    with pytest.raises(accounting.LLMAccountingRejected) as exc_info:
+        accounting.execute_accounted_call(session, client, _request(), second_context)
+
+    assert exc_info.value.code == "LLM_DAILY_REQUEST_LIMIT"
+    assert client.physical_posts == 1
+    assert session.query(LlmCallAttempt).count() == 1
+    assert session.query(LlmCall).filter_by(accounting_status="rejected").count() == 1
+
+
+def test_global_concurrency_quota_counts_open_reservations(session, monkeypatch) -> None:
+    accounting = _accounting_module()
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS", "1")
+    parent = LlmCall(
+        llm_call_id="existing-open-call",
+        scope_type="project",
+        scope_id="other-project",
+        node_id="neutral_draft",
+        step="draft",
+        project_id="other-project",
+        estimated_tokens=100,
+        reserved_tokens=100,
+        budget_charged_tokens=0,
+        accounting_status="reserved",
+    )
+    session.add(parent)
+    session.add(
+        LlmCallAttempt(
+            attempt_id="existing-open-attempt",
+            llm_call_id=parent.llm_call_id,
+            provider_attempt_no=0,
+            dispatch_kind="initial",
+            request_max_output_tokens=64,
+            estimated_tokens=100,
+            reserved_tokens=100,
+            budget_charged_tokens=0,
+            accounting_status="reserved",
+        )
+    )
+    session.commit()
+
+    class QuotaClient(accounting.OnlineAccountedExecution):
+        physical_posts = 0
+
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            self.physical_posts += 1
+            raise AssertionError("concurrency gate must reject before provider I/O")
+
+    client = QuotaClient()
+    with pytest.raises(accounting.LLMAccountingRejected) as exc_info:
+        accounting.execute_accounted_call(session, client, _request(), _context(accounting))
+
+    assert exc_info.value.code == "LLM_GLOBAL_CONCURRENCY_LIMIT"
+    assert client.physical_posts == 0
+    assert session.query(LlmCallAttempt).count() == 1
+
+
+def test_daily_money_quota_requires_prices_and_rejects_conservatively(session, monkeypatch) -> None:
+    accounting = _accounting_module()
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD", "0.000001")
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_INPUT_COST_PER_MILLION_USD", "10")
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_OUTPUT_COST_PER_MILLION_USD", "20")
+
+    class QuotaClient(accounting.OnlineAccountedExecution):
+        physical_posts = 0
+
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            self.physical_posts += 1
+            raise AssertionError("money gate must reject before provider I/O")
+
+    client = QuotaClient()
+    with pytest.raises(accounting.LLMAccountingRejected) as exc_info:
+        accounting.execute_accounted_call(session, client, _request(), _context(accounting))
+
+    assert exc_info.value.code == "LLM_DAILY_COST_LIMIT"
+    assert client.physical_posts == 0
+    assert session.query(LlmCallAttempt).count() == 0
+
+
 def test_business_attempt_budget_rejection_is_distinct_and_has_zero_provider_io(session) -> None:
     accounting = _accounting_module()
     scene_id = "scene-business-attempt-budget"
@@ -2152,7 +2381,8 @@ def test_usage_over_reservation_charges_actual_to_scene_and_blocks_later_dispatc
     parent = session.get(LlmCall, "overage-call")
     assert parent.accounting_status == "usage_exceeds_reservation"
     assert parent.error_code == "CALLER_SCHEMA_INVALID"
-    assert parent.response_payload_summary["postprocess_error"] == (
+    assert parent.response_payload_summary["postprocess_error"]["kind"] == "text_fingerprint"
+    assert parent.response_payload_summary["postprocess_error"]["char_count"] == len(
         "scene_text failed caller validation"
     )
 

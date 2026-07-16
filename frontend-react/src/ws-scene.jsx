@@ -1,12 +1,15 @@
 import React from "react";
+import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
 import { TweakRadio, TweakSection, TweakSlider, TweakToggle } from "./tweaks-panel.jsx";
 import { WsCatalog, WsDemoTag } from "./ws-catalog.jsx";
-import { SceneRunJobControl, scnQueueLoad, scnRunLoad, scnQueueSave, scnReQC, scnRun, scnCreateCards, scnTopupBudget, scnRunSave, scnAdoptToDoc, scnPickList, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
+import { SceneRunJobControl, scnQueueLoad, scnRunLoad, scnQueueSave, scnReQC, scnRun, scnCreateCards, scnTopupBudget, scnRunSave, scnAdoptToDoc, scnPrepareAdoption, scnPickList, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
+import { ContentSafetyReviewDialog, contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
 import { WsWorks } from "./ws-works.jsx";
 
 /* global React, I */
 const { useState: useSt8, useEffect: useEf8, useRef: useRef8, useMemo: useMemo8 } = React;
+const scnPortal = ReactDOM.createPortal;
 
 /* ==========================================================
    场景工作台 — Scene Workbench  (refactor v2)
@@ -190,7 +193,7 @@ const SC_DATA = {
   q5: {
     n: "CH 07 · SC 03", title: "三号档案箱 · 终稿", kind: "主动场景",
     state: "archived", stageIdx: 5, progress: 1, attempt: 3,
-    eta: null, elapsed: "—", model: "已写回章节场景卡",
+    eta: null, elapsed: "—", model: "演示归档样例 · 只读",
     archivedAt: "2026-05-17 09:05",
     draft: [
       { id: "p1", beat: "goal", parts: [{ text: "三号档案箱在地下室待了十一年，今天终于被搬上了修复台。林岑戴上手套，像迎接一位久别的客人。" }] },
@@ -209,10 +212,10 @@ const SC_DATA = {
     cost: [
       { k: "字数",  v: "1,690" },
       { k: "尝试",  v: "3 次" },
-      { k: "归档",  v: "writer_brief_json" },
+      { k: "状态",  v: "演示快照 · 未写入" },
     ],
     attempts: [
-      { n: 3, time: "05-17 09:05", result: "采纳归档", tone: "sage", note: "定稿写回场景卡" },
+      { n: 3, time: "05-17 09:05", result: "演示归档", tone: "sage", note: "只读快照，未写入真实作品" },
       { n: 2, time: "05-16 21:40", result: "退回重写", tone: "gold", note: "结尾六个数字要留白",
         cmp: { verdict: "作者退回第 2 版：结尾把六个数字直接念了出来，要求改成只留悬念。" } },
       { n: 1, time: "05-16 11:02", result: "质检阻断", tone: "rose", note: "信息密度过高",
@@ -297,11 +300,30 @@ function WsSceneDemo({ go, t, demo = true }) {
   const runAbortControllers = useRef8({});
   const runProgressTimers = useRef8({});
   const [pickedId, setPicked] = useSt8(() => (initRef.current.items[0] ? initRef.current.items[0].id : (demo ? "q1" : null)));
-  const [outcomes, setOutcomes] = useSt8({});           // 演示项 id → "archived"
   const [activeBeat, setActiveBeat] = useSt8(null);     // highlighted beat in draft
   const [logOpen, setLogOpen] = useSt8(false);
   const [compare, setCompare] = useSt8(null);           // attempt object being compared
+  const [adoptionDecision, setAdoptionDecision] = useSt8(null); // 作者稿存在时的安全采用决策
+  const [adoptionBusy, setAdoptionBusy] = useSt8("");
+  const [adoptionMessage, setAdoptionMessage] = useSt8("");
+  const [contentSafetyReview, setContentSafetyReview] = useSt8(null);
+  const [contentSafetyError, setContentSafetyError] = useSt8("");
   const [dxDone, setDxDone] = useSt8(() => ({ ...(window.__sceneDxDone || {}) }));  // scene n → adopted-issue count (深改回传)
+  const pickedIdRef = useRef8(pickedId);
+  pickedIdRef.current = pickedId;
+  const archiveUiEpoch = useRef8(0);
+  const archivePreviewLocks = useRef8(new Set());
+  const archiveCommitLocks = useRef8(new Set());
+  const [archivePreviewBusy, setArchivePreviewBusy] = useSt8(false);
+  const scenePageMounted = useRef8(true);
+
+  useEf8(() => {
+    scenePageMounted.current = true;
+    return () => {
+      scenePageMounted.current = false;
+      archiveUiEpoch.current += 1;
+    };
+  }, []);
 
   /* 场景切换或页面卸载只停止前端跟踪，不伪造后端取消；回到场景后由 latest 恢复。 */
   useEf8(() => () => {
@@ -487,7 +509,15 @@ function WsSceneDemo({ go, t, demo = true }) {
           if (e && e.code === "SCENE_RUN_UI_ABORTED") return;
         }
         if (hydrated) {
-          commit(previous => ({ ...previous, ...hydrated, error: null, needsCards: false }));
+          commit(previous => ({
+            ...previous,
+            ...hydrated,
+            // A no-draft budget checkpoint needs an explicit explanation next
+            // to its top-up action. Ordinary recovered manuscripts clear stale
+            // errors as before.
+            error: hydrated.recoveredWithoutDraft ? hydrated.error : null,
+            needsCards: false,
+          }));
           return;
         }
         const message = authoritativeStatus === "blocked"
@@ -518,8 +548,7 @@ function WsSceneDemo({ go, t, demo = true }) {
       : item
   )), [baseQueue, pickedId, authoritativeQueueState]);
   const rawState = queue.find(q => q.id === pickedId)?.state;
-  const isCard = !!(extras.find(x => x.id === pickedId));
-  const effState = (!isCard && outcomes[pickedId] === "archived") ? "archived" : rawState;
+  const effState = rawState;
   const renderState = authoritativeStatus === "queued"
     ? "queued"
     : (["running", "cancel_requested"].includes(authoritativeStatus) ? "running" : effState);
@@ -543,21 +572,30 @@ function WsSceneDemo({ go, t, demo = true }) {
       return merged;
     }
     const dx = dxDone[base.n];
-    const withDx = dx != null ? { ...base, dxCount: dx } : base;
-    return outcomes[pickedId] === "archived" ? { ...withDx, state: "archived", justArchived: true } : withDx;
-  }, [pickedId, outcomes, dxDone, extras, runs, tw.scnShort, tw.scnRepeat, tw.scnLong]);
+    return dx != null ? { ...base, dxCount: dx } : base;
+  }, [pickedId, dxDone, extras, runs, tw.scnShort, tw.scnRepeat, tw.scnLong]);
 
-  useEf8(() => { setActiveBeat(null); setLogOpen(rawState === "running" && tw.scnLog !== false); setCompare(null); }, [pickedId]);
+  useEf8(() => {
+    archiveUiEpoch.current += 1;
+    setArchivePreviewBusy(archivePreviewLocks.current.has(pickedId));
+    setAdoptionBusy(archiveCommitLocks.current.has(pickedId) ? "archive" : "");
+    setActiveBeat(null);
+    setLogOpen(rawState === "running" && tw.scnLog !== false);
+    setCompare(null);
+    setAdoptionDecision(null);
+    setAdoptionMessage("");
+    setContentSafetyReview(null);
+    setContentSafetyError("");
+  }, [pickedId]);
 
   const counts = useMemo8(() => {
     const c = { running: 0, queued: 0, ready: 0, archived: 0 };
-    queue.forEach(q => { c[(!extras.some(x => x.id === q.id) && outcomes[q.id] === "archived") ? "archived" : (q.state || "queued")]++; });
+    queue.forEach(q => { c[q.state || "queued"]++; });
     return c;
-  }, [outcomes, queue, extras]);
+  }, [queue]);
 
   /* —— 真·运行：起草 / 退回重写（同一条路，带指令） —— */
-  const startRun = async (note, options = {}) => {
-    const sc = sceneOfX(pickedId);
+  const startRun = async (sc, note, options = {}) => {
     if (!sc || !sc.fromCard) return;
     const id = sc.id;
     if (runAbortControllers.current[id]) runAbortControllers.current[id].abort();
@@ -565,11 +603,16 @@ function WsSceneDemo({ go, t, demo = true }) {
     const controller = new AbortController();
     runAbortControllers.current[id] = controller;
     const token = (runSeq.current[id] || 0) + 1; runSeq.current[id] = token;
+    const normalizedNote = note == null ? "" : String(note).trim();
+    if (Array.from(normalizedNote).length > 2000) {
+      setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), error: "作者改写指令不能超过 2000 个字符，请精简后重试；内容没有被静默截断。" } }));
+      return;
+    }
     const attempt = ((runs[id] && runs[id].attempt) || 0) + 1;
     const prevText = runs[id] && runs[id].draft ? runs[id].draft.map(p => p.parts.map(x => x.text).join("")).join("\n") : "";
     const t0 = new Date().toTimeString().slice(0, 8);
-    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", progress: 0.06, attempt, error: null, needsCards: false, budgetBlock: null,
-      log: [{ t: t0, who: "system", text: `预检通过 · 第 ${attempt} 次尝试${note ? " · 改写指令已附" : ""}` }, { t: t0, who: "sonnet", text: "起草进行中……整稿返回后过质检" }] } }));
+    setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "running", progress: 0.06, attempt, authorNote: normalizedNote, error: null, needsCards: false, budgetBlock: null,
+      log: [{ t: t0, who: "system", text: `预检通过 · 第 ${attempt} 次尝试${normalizedNote ? " · 改写指令已附" : ""}` }, { t: t0, who: "sonnet", text: "起草进行中……整稿返回后过质检" }] } }));
     const tick = setInterval(() => setRuns(m => {
       const cur = m[id];
       if (!cur || cur.state !== "running") { clearInterval(tick); return m; }
@@ -581,7 +624,7 @@ function WsSceneDemo({ go, t, demo = true }) {
       if (runProgressTimers.current[id] === tick) delete runProgressTimers.current[id];
     };
     try {
-      const res = await scnRun(sc, note, note ? prevText : "", {
+      const res = await scnRun(sc, normalizedNote, normalizedNote ? prevText : "", {
         signal: controller.signal,
         resumeBudget: options.resumeBudget === true,
         onJobCreated: (job, sceneId) => setObservedRunJob({ job, sceneId }),
@@ -591,8 +634,8 @@ function WsSceneDemo({ go, t, demo = true }) {
       setRuns(m => {
         const stamp = new Date().toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
         const prevAtt = ((m[id] && m[id].attempts) || []).map(a => a.time && a.time.startsWith("本次") ? { ...a, time: stamp, result: "退回重写", tone: "slate" } : a);
-        const attempts = [{ n: attempt, time: "本次 · 待裁决", result: "待裁决", tone: "gold", note: note ? "按指令改写" : "初稿", cmp: note ? { verdict: "作者改写指令：" + note } : undefined }, ...prevAtt].slice(0, 8);
-        const nr = { ...(m[id] || {}), ...res, state: res.state === "archived" ? "archived" : "ready", progress: 1, attempt, attempts, at: Date.now() };
+        const attempts = [{ n: attempt, time: "本次 · 待裁决", result: "待裁决", tone: "gold", note: normalizedNote ? "按指令改写" : "初稿", cmp: normalizedNote ? { verdict: "作者改写指令：" + normalizedNote } : undefined }, ...prevAtt].slice(0, 8);
+        const nr = { ...(m[id] || {}), ...res, authorNote: normalizedNote, state: res.state === "archived" ? "archived" : "ready", progress: 1, attempt, attempts, at: Date.now() };
         if (scnRunSave) scnRunSave(sc.sid, nr);
         return { ...m, [id]: nr };
       });
@@ -606,6 +649,7 @@ function WsSceneDemo({ go, t, demo = true }) {
       if (runAbortControllers.current[id] === controller) delete runAbortControllers.current[id];
     }
   };
+  const startSelectedRun = (note, options = {}) => startRun(sceneOfX(pickedId), note, options);
   // Fix C：一键补齐缺失的最小声线/关系卡(active)解阻预检，成功后自动续跑起草
   const createCards = async () => {
     const sc = sceneOfX(pickedId);
@@ -618,7 +662,7 @@ function WsSceneDemo({ go, t, demo = true }) {
       const res = await scnCreateCards(sc.sid);
       const made = ((res && res.created) || []).map(c => c.dependency_type).join("、") || "(已就绪)";
       setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), log: [...((m[id] || {}).log || []), { t: new Date().toTimeString().slice(0, 8), who: "system", text: `已补齐：${made} · 自动续跑起草` }] } }));
-      await startRun("");
+      await startRun(sc, "");
     } catch (e) {
       setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: "queued", progress: 0, error: (e && e.message) || "补齐声线卡失败，请重试", needsCards: false } }));
     }
@@ -645,28 +689,111 @@ function WsSceneDemo({ go, t, demo = true }) {
           return { ...m, [id]: next };
         });
       } else {
-        await startRun("", { resumeBudget: true });
+        await startRun(sc, current.authorNote || "", { resumeBudget: true });
       }
     } catch (e) {
       setRuns(m => ({ ...m, [id]: { ...(m[id] || {}), state: current.draft && current.draft.length ? "ready" : "queued", progress: 0, error: (e && e.message) || "追加预算失败，请重试", budgetBlock: current.budgetBlock } }));
     }
   };
+  const commitAdoption = async (sc, r, mode = "overwrite", options = {}) => {
+    if (!sc || archiveCommitLocks.current.has(sc.id)) return;
+    archiveCommitLocks.current.add(sc.id);
+    const epoch = archiveUiEpoch.current;
+    const isCurrentTarget = () => scenePageMounted.current && archiveUiEpoch.current === epoch && pickedIdRef.current === sc.id;
+    if (isCurrentTarget()) {
+      setAdoptionBusy(mode);
+      setAdoptionMessage("");
+    }
+    try {
+      // 归档单入口仍由后端裁决；若作者稿存在，overwrite 路径会先落一份持久本地备份。
+      const res = await scnAdoptToDoc(sc.sid, r.draft, r.gate, { mode, ...options });
+      if (!res.ok) {
+        const review = contentSafetyReviewFromError(res.error);
+        if (review) {
+          if (isCurrentTarget()) {
+            setAdoptionDecision(null);
+            setAdoptionMessage("");
+            setContentSafetyError("");
+            setContentSafetyReview({
+              review,
+              sc,
+              r,
+              mode,
+              options: {
+                ...options,
+                ...(res.authorBackup && res.authorBackup.id
+                  ? { authorBackupId: res.authorBackup.id }
+                  : {}),
+              },
+            });
+          }
+          return;
+        }
+        if (isCurrentTarget()) setAdoptionMessage(`采用未完成：${res.reason || "请稍后重试"}`);
+        return;
+      }
+      if (res.archived === false) {
+        if (isCurrentTarget()) {
+          setAdoptionDecision(null);
+          setAdoptionMessage(res.warning
+            ? `AI 稿没有覆盖作者正文；${res.warning}。请打开右下角“同步与恢复”。`
+            : "AI 稿已保存为候选，作者正文没有被改动。可在右下角“同步与恢复”继续比较或恢复。");
+        }
+        return;
+      }
+      const nr = { ...r, state: "archived", justArchived: true, archivedAt: new Date().toLocaleString("zh-CN") };
+      if (scenePageMounted.current) setRuns(m => ({ ...m, [sc.id]: nr }));
+      if (scnRunSave) scnRunSave(sc.sid, nr);
+      if (isCurrentTarget()) {
+        setRunJobRefreshTick(t => t + 1);
+        setAdoptionDecision(null);
+        setContentSafetyReview(null);
+        setContentSafetyError("");
+        setAdoptionMessage(res.authorBackup
+          ? "已归档；覆盖前的作者稿已自动放入“同步与恢复”。"
+          : "已归档并写入正文文档。");
+      }
+    } catch (error) {
+      const review = contentSafetyReviewFromError(error);
+      if (review) {
+        if (isCurrentTarget()) {
+          setAdoptionDecision(null);
+          setAdoptionMessage("");
+          setContentSafetyError("");
+          setContentSafetyReview({ review, sc, r, mode, options });
+        }
+      } else {
+        if (isCurrentTarget()) setAdoptionMessage(`采用未完成：${(error && error.message) || "请稍后重试"}`);
+      }
+    } finally {
+      archiveCommitLocks.current.delete(sc.id);
+      if (scenePageMounted.current && pickedIdRef.current === sc.id) setAdoptionBusy("");
+    }
+  };
   const onArchive = async () => {
     const sc = sceneOfX(pickedId);
-    if (sc && sc.fromCard) {
-      const r = runs[sc.id];
-      if (!r || !r.draft || r.state !== "ready") return;
-      // Wave 1 归档单入口：先后端 adopt-current 成功，本地才置 archived
-      // Wave 2：gate（作者可见状态门）随手递入——hard_blocked 前置拦截
-      const res = await scnAdoptToDoc(sc.sid, r.draft, r.gate);
-      if (!res.ok) { if (res.reason && res.reason !== "已取消") window.alert("归档失败：" + res.reason); return; }
-      const nr = { ...r, state: "archived", justArchived: true, archivedAt: new Date().toLocaleString("zh-CN") };
-      setRuns(m => ({ ...m, [sc.id]: nr }));
-      if (scnRunSave) scnRunSave(sc.sid, nr);
-      setRunJobRefreshTick(t => t + 1);
-      return;
+    if (!sc || !sc.fromCard) return;
+    const r = runs[sc.id];
+    if (!r || !r.draft || r.state !== "ready") return;
+    if (archivePreviewLocks.current.has(sc.id) || archiveCommitLocks.current.has(sc.id)) return;
+    const epoch = archiveUiEpoch.current;
+    const isCurrentTarget = () => scenePageMounted.current && archiveUiEpoch.current === epoch && pickedIdRef.current === sc.id;
+    archivePreviewLocks.current.add(sc.id);
+    if (isCurrentTarget()) setArchivePreviewBusy(true);
+    try {
+      const preview = await scnPrepareAdoption(sc.sid, r.draft);
+      if (!isCurrentTarget()) return;
+      if (preview.hasReal) {
+        setAdoptionDecision({ sc, r, preview });
+        return;
+      }
+      await commitAdoption(sc, r, "overwrite");
+    } catch (error) {
+      if (isCurrentTarget()) setAdoptionMessage((error && error.message) || "无法核对作者稿，已停止采用");
+    } finally {
+      archivePreviewLocks.current.delete(sc.id);
+      if (scenePageMounted.current && pickedIdRef.current === sc.id) setArchivePreviewBusy(false);
     }
-    setOutcomes(o => ({ ...o, [pickedId]: "archived" }));
   };
 
   /* 空队列（非演示作品）：引导入列 */
@@ -693,12 +820,12 @@ function WsSceneDemo({ go, t, demo = true }) {
       style={{ "--scn-font": (tw.scnFont || 16) + "px" }}>
       <SceneQueue
         queue={queue} sceneOfX={sceneOfX} demo={demo}
-        pickedId={pickedId} setPicked={setPicked} counts={counts} outcomes={outcomes} dxDone={dxDone}
+        pickedId={pickedId} setPicked={setPicked} counts={counts} dxDone={dxDone}
         onAdd={() => setPicker(true)}
       />
 
       <section className="scn2-stage" key={pickedId}>
-        <SceneHead scene={scene} state={renderState} hideAbort={scene.fromCard} onRerun={scene.fromCard ? () => startRun("") : null} />
+        <SceneHead scene={scene} state={renderState} hideAbort={scene.fromCard} onRerun={scene.fromCard ? () => startSelectedRun("") : null} />
         {scene.fromCard && activeBackendSceneId && (
           <SceneRunJobControl
             sceneId={activeBackendSceneId}
@@ -726,19 +853,152 @@ function WsSceneDemo({ go, t, demo = true }) {
             : renderState === "ready" && <ReviewStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} />}
           {renderState === "archived" && <ArchivedStage scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} />}
         </div>
-        <DecisionBar scene={scene} state={renderState} runJobStatus={authoritativeStatus} go={go} onArchive={onArchive} onRun={startRun} onCreateCards={createCards} onBudgetTopup={topupBudget} />
-        {compare && <AttemptCompare attempt={compare} scene={scene} onClose={() => setCompare(null)} />}
+        {adoptionMessage && (
+          <div className="scn2-adoption-message" role="status" aria-live="polite">
+            <I.ShieldCheck size={14} /> <span>{adoptionMessage}</span>
+            <button type="button" onClick={() => setAdoptionMessage("")} aria-label="关闭采用提示"><I.X size={12} /></button>
+          </div>
+        )}
+        <DecisionBar scene={scene} state={renderState} runJobStatus={authoritativeStatus} go={go} onArchive={onArchive} onRun={startSelectedRun} onCreateCards={createCards} onBudgetTopup={topupBudget} archiveBusy={archivePreviewBusy || Boolean(adoptionBusy)} />
+        {compare && <AttemptCompare attempt={compare} scene={scene} onClose={() => setCompare(null)}
+          onRewrite={scene.fromCard ? () => {
+            const attemptNo = compare.n || compare.attempt || "所选";
+            setCompare(null);
+            startSelectedRun(`参考第 ${attemptNo} 次尝试的复盘意见重写；不恢复该版正文，以当前稿为输入修正当前质检问题。`);
+          } : null} />}
       </section>
 
       <Evidence scene={scene} state={renderState} activeBeat={activeBeat} setActiveBeat={setActiveBeat} onView={setCompare} />
       {picker && <ScenePicker queued={extras.map(x => x.sid)} onPick={(sid) => { enqueueSid(sid); setPicker(false); }} onClose={() => setPicker(false)} />}
+      {adoptionDecision && scnPortal(
+        <AdoptionProtectDialog
+          decision={adoptionDecision}
+          busy={adoptionBusy}
+          message={adoptionMessage}
+          onClose={() => { if (!adoptionBusy) setAdoptionDecision(null); }}
+          onCandidate={() => commitAdoption(adoptionDecision.sc, adoptionDecision.r, "candidate")}
+          onOverwrite={() => commitAdoption(adoptionDecision.sc, adoptionDecision.r, "overwrite", { confirmed: true })}
+        />,
+        document.body,
+      )}
+      {contentSafetyReview && (
+        <ContentSafetyReviewDialog
+          review={contentSafetyReview.review}
+          busy={Boolean(adoptionBusy)}
+          error={contentSafetyError}
+          onCancel={() => {
+            if (!adoptionBusy) {
+              setContentSafetyReview(null);
+              setContentSafetyError("");
+            }
+          }}
+          onConfirm={async (acceptedWarningCodes) => {
+            const pending = contentSafetyReview;
+            if (!pending) return;
+            const expected = pending.review.findings.map(item => item.code);
+            if (acceptedWarningCodes.length !== expected.length || expected.some(code => !acceptedWarningCodes.includes(code))) {
+              setContentSafetyError("请逐项核对当前服务端返回的全部风险提示后再继续。");
+              return;
+            }
+            setContentSafetyError("");
+            await commitAdoption(pending.sc, pending.r, pending.mode, {
+              ...pending.options,
+              confirmed: true,
+              acceptedWarningCodes,
+            });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AdoptionProtectDialog({ decision, busy, message, onClose, onCandidate, onOverwrite }) {
+  const [confirmed, setConfirmed] = useSt8(false);
+  const dialogRef = useRef8(null);
+  const safeRef = useRef8(null);
+  const previousFocus = useRef8(null);
+  const busyRef = useRef8(busy);
+  busyRef.current = busy;
+  const preview = decision.preview || {};
+  const diff = preview.diff || { paras: [], adds: 0, dels: 0 };
+
+  useEf8(() => {
+    previousFocus.current = document.activeElement;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    requestAnimationFrame(() => safeRef.current?.focus());
+    const onKey = (event) => {
+      if (event.key === "Escape" && !busyRef.current) { event.preventDefault(); onClose(); return; }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const nodes = [...dialogRef.current.querySelectorAll('button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+      if (!nodes.length) return;
+      const first = nodes[0], last = nodes[nodes.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKey);
+      previousFocus.current?.focus?.();
+    };
+  }, []);
+
+  return (
+    <div className="scn-adopt-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+      <section ref={dialogRef} className="scn-adopt-dialog" role="dialog" aria-modal="true" aria-labelledby="scn-adopt-title">
+        <header className="scn-adopt-head">
+          <span className="scn-adopt-shield"><I.ShieldCheck size={19} /></span>
+          <div>
+            <div className="scn-adopt-eyebrow">AUTHOR COPY PROTECTION · 作者稿保护</div>
+            <h2 id="scn-adopt-title">写作器里已有作者正文</h2>
+            <p>AI 稿不会直接覆盖。先看差异，再选择把它保留为候选，或明确替换并归档。</p>
+          </div>
+          <button type="button" className="scn-adopt-close" onClick={onClose} disabled={!!busy} aria-label="关闭作者稿保护对话框"><I.X size={18} /></button>
+        </header>
+
+        <div className="scn-adopt-summary">
+          <span>对象 <b>{decision.sc.sid}</b></span>
+          <span className="is-del">作者稿将替换 {diff.dels} 句</span>
+          <span className="is-add">AI 稿新增 {diff.adds} 句</span>
+        </div>
+        <div className="scn-adopt-diff" aria-label="作者正文与 AI 稿差异">
+          <div className="scn-adopt-legend"><span className="is-del">作者当前稿</span><span className="is-add">AI 候选稿</span></div>
+          {diff.paras.length ? diff.paras.map((para, index) => (
+            <p key={`${para.p}-${index}`}>
+              {para.segs.map((seg, segIndex) => <span key={`${seg.t}-${segIndex}`} className={`is-${seg.t}`}>{seg.text}</span>)}
+            </p>
+          )) : <div className="scn-adopt-no-diff">两份正文内容一致；仍需由你决定是否归档。</div>}
+        </div>
+
+        <div className="scn-adopt-choices">
+          <section className="scn-adopt-choice is-safe">
+            <div><span className="scn-adopt-choice-mark"><I.FileText size={16} /></span><strong>保存为候选</strong><em>推荐 · 不改作者稿</em></div>
+            <p>AI 稿进入“同步与恢复”，之后可以继续比较、复制或恢复；当前正文与服务端归档状态都不变。</p>
+            <button ref={safeRef} type="button" className="btn btn-accent" onClick={onCandidate} disabled={!!busy} data-testid="scene-save-candidate">
+              <I.Save size={14} /> {busy === "candidate" ? "保存中…" : "保存为候选（推荐）"}
+            </button>
+          </section>
+          <section className="scn-adopt-choice is-overwrite">
+            <div><span className="scn-adopt-choice-mark"><I.AlertTriangle size={16} /></span><strong>替换并归档</strong><em>会改写作者稿</em></div>
+            <p>系统会先自动备份当前作者稿，再调用后端归档并写入 AI 稿。备份失败时覆盖会被阻止。</p>
+            <label className="scn-adopt-confirm"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> <span>我已查看差异，确认用 AI 稿替换当前正文</span></label>
+            <button type="button" className="btn btn-ghost scn-adopt-overwrite" onClick={onOverwrite} disabled={!confirmed || !!busy} data-testid="scene-confirm-overwrite">
+              <I.Check size={14} /> {busy === "overwrite" ? "备份并归档中…" : "确认覆盖并归档"}
+            </button>
+          </section>
+        </div>
+        <div className="scn-adopt-live" role="status" aria-live="polite">{message || "默认安全选项是保存为候选。"}</div>
+      </section>
     </div>
   );
 }
 
 /* ============================ Queue ============================ */
 
-function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, outcomes, dxDone, demo, onAdd }) {
+function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, dxDone, demo, onAdd }) {
+  const demoStateLabel = { running: "运行样例", queued: "排队样例", ready: "待审样例", archived: "归档样例" };
   return (
     <aside className="scn2-queue">
       <header className="scn2-queue-head">
@@ -757,7 +1017,7 @@ function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, outcomes, dx
       <ul className="scn2-queue-list">
         {queue.map(q => {
           const s = sceneOfX(q.id);
-          const st = outcomes[q.id] === "archived" ? "archived" : q.state;
+          const st = q.state;
           const active = pickedId === q.id;
           return (
             <li key={q.id}>
@@ -766,7 +1026,7 @@ function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, outcomes, dx
                 <div className="scn2-qrow-main">
                   <div className="scn2-qrow-top">
                     <span className="scn2-qrow-num">{s.n}</span>
-                    <span className={`scn2-chip s-${st}`}>{st === "running" && <span className="scn2-chip-pulse" />}{STATE_LABEL[st]}</span>
+                    <span className={`scn2-chip s-${st}`}>{st === "running" && <span className="scn2-chip-pulse" />}{!s.fromCard ? demoStateLabel[st] : STATE_LABEL[st]}</span>
                   </div>
                   <div className="scn2-qrow-title text-serif">{s.title}</div>
                   {dxDone && dxDone[s.n] != null && <span className="scn2-qrow-dx"><I.Microscope size={11} /> 已深改 · {dxDone[s.n]} 处</span>}
@@ -781,7 +1041,7 @@ function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, outcomes, dx
       </ul>
 
       <div className="scn2-queue-foot">
-        {demo && <button className="btn btn-ghost btn-sm" style={{ flex: 1 }} title="演示按钮">暂停队列</button>}
+        {demo && <button className="btn btn-ghost btn-sm" style={{ flex: 1 }} disabled title="演示队列是只读样例，不会启动后台任务">演示队列 · 只读</button>}
         <button className="btn btn-accent btn-sm" data-testid="scene-add" style={{ flex: 1 }} onClick={onAdd}><I.Plus size={13} /> 加入场景</button>
       </div>
     </aside>
@@ -800,6 +1060,9 @@ function QStat({ n, label, tone }) {
 /* ============================ Head ============================ */
 
 function SceneHead({ scene, state, onAbort, onRerun, hideAbort = false }) {
+  const stateLabel = scene.fromCard
+    ? STATE_LABEL[state]
+    : ({ running: "运行样例", queued: "排队样例", ready: "待审样例", archived: "归档样例" })[state];
   return (
     <header className="scn2-head">
       <div className="scn2-head-l">
@@ -809,23 +1072,23 @@ function SceneHead({ scene, state, onAbort, onRerun, hideAbort = false }) {
           <span>{scene.kind}</span>
           <span className={`scn2-state-tag tone-${STATE_TONE[state]}`}>
             {state === "running" && <span className="scn2-chip-pulse" />}
-            {STATE_LABEL[state]}
+            {stateLabel}
           </span>
         </div>
         <h1 className="scn2-head-title text-serif">{scene.title}</h1>
         <div className="scn2-head-sub">
           {state === "running" && <span>第 {scene.attempt} 次尝试 · 用时 {scene.elapsed} · 预计 {scene.eta} 后可裁决</span>}
-          {state === "ready"   && <span>第 {scene.attempt} 次尝试 · {scene.verdict?.words} 字 · {scene.model}</span>}
+          {state === "ready"   && <span>{scene.fromCard ? `第 ${scene.attempt} 次尝试 · ${scene.verdict?.words} 字 · ${scene.model}` : `演示待复核稿 · ${scene.verdict?.words || "—"} 字 · 只读`}</span>}
           {state === "queued"  && <span>预检就绪 · 目标 {scene.targetWords} 字</span>}
-          {state === "archived" && <span>{scene.justArchived ? "刚刚写回章节场景卡" : "已写回 · " + (scene.archivedAt || "")}</span>}
+          {state === "archived" && <span>{scene.fromCard ? (scene.justArchived ? "刚刚写回章节场景卡" : "已写回 · " + (scene.archivedAt || "")) : "演示归档状态 · 只读 · 未写入真实作品"}</span>}
         </div>
       </div>
       <div className="scn2-head-r">
-        {!scene.fromCard && <button className="btn btn-quiet btn-sm"><I.FileText size={13} /> 戏剧卡</button>}
-        {state === "running" && !hideAbort && (onAbort ? <button className="btn btn-ghost btn-sm" onClick={onAbort}>中止</button> : <button className="btn btn-ghost btn-sm">中止</button>)}
+        {!scene.fromCard && <button className="btn btn-quiet btn-sm" disabled title="演示场没有可编辑的真实场景卡"><I.FileText size={13} /> 演示戏剧卡</button>}
+        {state === "running" && !hideAbort && (onAbort ? <button className="btn btn-ghost btn-sm" onClick={onAbort}>中止</button> : <button className="btn btn-ghost btn-sm" disabled title="演示运行不可中止">演示运行</button>)}
         {(state === "running" || state === "ready") && (onRerun
           ? (state === "ready" && <button className="btn btn-ghost btn-sm" onClick={onRerun}><I.Refresh size={13} /> 重跑</button>)
-          : <button className="btn btn-ghost btn-sm"><I.Refresh size={13} /> 重跑</button>)}
+          : <button className="btn btn-ghost btn-sm" disabled title="演示稿不可提交真实重跑"><I.Refresh size={13} /> 演示稿</button>)}
       </div>
     </header>
   );
@@ -1144,6 +1407,11 @@ function ReviewStage({ scene, activeBeat, setActiveBeat }) {
 function ArchivedStage({ scene, activeBeat, setActiveBeat }) {
   return (
     <div className="scn2-review scn2-scroll">
+      {!scene.fromCard && (
+        <div className="scn2-archived-note">
+          <I.ShieldCheck size={15} /> 演示归档样例 · 仅展示终态界面，不代表已写入任何真实作品或正文
+        </div>
+      )}
       {scene.justArchived && (
         <div className="scn2-archived-note">
           <I.Check size={15} /> {scene.fromCard
@@ -1152,16 +1420,18 @@ function ArchivedStage({ scene, activeBeat, setActiveBeat }) {
         </div>
       )}
       <Draft scene={scene} activeBeat={activeBeat} setActiveBeat={setActiveBeat} />
-      <p className="scn2-draft-foot">定稿 · 只读 · 如需局部打磨请送写作台深改</p>
+      <p className="scn2-draft-foot">{scene.fromCard ? "定稿 · 只读 · 如需局部打磨请送写作台深改" : "演示归档快照 · 完全只读 · 不可归档、重写或送深改"}</p>
     </div>
   );
 }
 
 /* ============================ Decision bar ============================ */
 
-function DecisionBar({ scene, state, runJobStatus, go, onArchive, onRun, onCreateCards, onBudgetTopup }) {
+function DecisionBar({ scene, state, runJobStatus, go, onArchive, onRun, onCreateCards, onBudgetTopup, archiveBusy = false }) {
   const [rework, setRework] = useSt8(false);
   const [note, setNote] = useSt8("");
+  const normalizedNoteLength = Array.from(note.trim()).length;
+  const noteTooLong = normalizedNoteLength > 2000;
   useEf8(() => { setRework(false); setNote(""); }, [scene.id]);
 
   const toWriterDeep = () => {
@@ -1207,8 +1477,8 @@ function DecisionBar({ scene, state, runJobStatus, go, onArchive, onRun, onCreat
       <div className="scn2-decide">
         <div className="scn2-decide-sum"><I.Clock size={14} /> 预检就绪，可立即起草</div>
         <div className="scn2-decide-acts">
-          <button className="btn btn-quiet btn-sm">编辑戏剧卡</button>
-          <button className="btn btn-accent"><I.Play size={13} /> 开始运行</button>
+          <button className="btn btn-quiet btn-sm" disabled title="演示场没有真实场景卡">演示戏剧卡</button>
+          <button className="btn btn-accent" disabled title="这是只读演示样例；请从自己的目录加入场景"><I.Play size={13} /> 演示样例 · 只读</button>
         </div>
       </div>
     );
@@ -1225,6 +1495,17 @@ function DecisionBar({ scene, state, runJobStatus, go, onArchive, onRun, onCreat
     );
   }
 
+  if (!scene.fromCard && state === "archived") {
+    return (
+      <div className="scn2-decide is-done" data-testid="scene-demo-readonly">
+        <div className="scn2-decide-sum"><I.ShieldCheck size={14} /> 演示归档样例 · 完全只读 · 未写入真实作品</div>
+        <div className="scn2-decide-acts">
+          <button className="btn btn-ghost btn-sm" disabled title="从自己的章节目录加入场景后，才可运行和归档">演示状态 · 无持久化操作</button>
+        </div>
+      </div>
+    );
+  }
+
   if (state === "archived") {
     return (
       <div className="scn2-decide is-done">
@@ -1235,6 +1516,17 @@ function DecisionBar({ scene, state, runJobStatus, go, onArchive, onRun, onCreat
           )}
           <button className="btn btn-quiet btn-sm" onClick={() => go("manuscripts")}>在成稿中心查看</button>
           <button className="btn btn-ghost btn-sm" onClick={toWriterDeep}><I.Microscope size={13} /> 送写作台深改</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!scene.fromCard) {
+    return (
+      <div className="scn2-decide is-wait" data-testid="scene-demo-readonly">
+        <div className="scn2-decide-sum"><I.ShieldCheck size={14} /> 演示待复核稿 · 完全只读 · 不可伪归档、重写或送深改</div>
+        <div className="scn2-decide-acts">
+          <button className="btn btn-ghost btn-sm" disabled title="请从自己的章节目录加入真实场景">演示稿 · 无持久化操作</button>
         </div>
       </div>
     );
@@ -1306,10 +1598,20 @@ function DecisionBar({ scene, state, runJobStatus, go, onArchive, onRun, onCreat
             className="scn2-rework-input" rows={2}
             placeholder="写给模型的具体改写指令，例如：保留第 5 段的节奏，但把最后一句的比喻收得更克制…"
             value={note} onChange={e => setNote(e.target.value)}
+            aria-invalid={noteTooLong ? "true" : undefined}
+            aria-describedby="scene-author-note-limit"
           />
           <div className="scn2-rework-foot">
-            <span className="scn2-rework-hint">退回后将以同一场景卡重新生成，并保留为第 {scene.attempt + 1} 次尝试</span>
-            <button className="btn btn-accent btn-sm" onClick={() => { if (scene.fromCard && onRun) { onRun(note); setRework(false); } }} disabled={scene.fromCard && !note.trim()}><I.Refresh size={13} /> 确认退回重写</button>
+            <span
+              id="scene-author-note-limit"
+              className="scn2-rework-hint"
+              role={noteTooLong ? "alert" : undefined}
+            >
+              {noteTooLong
+                ? `作者指令 ${normalizedNoteLength} / 2000 字；请精简，系统不会静默截断。`
+                : `作者指令 ${normalizedNoteLength} / 2000 字 · 将保留为第 ${scene.attempt + 1} 次尝试`}
+            </span>
+            <button className="btn btn-accent btn-sm" onClick={() => { if (scene.fromCard && onRun) { onRun(note); setRework(false); } }} disabled={(scene.fromCard && !note.trim()) || noteTooLong}><I.Refresh size={13} /> 确认退回重写</button>
           </div>
         </div>
       )}
@@ -1325,9 +1627,10 @@ function DecisionBar({ scene, state, runJobStatus, go, onArchive, onRun, onCreat
             className="btn btn-accent"
             data-testid="scene-archive"
             onClick={onArchive}
-            disabled={gateBlocked || budgetBlocked}
-            title={budgetBlocked ? "生命周期预算阻断尚未解除，需显式追加后续跑" : (gateBlocked ? "存在已证实的 Q0/Q1 硬问题，暂不能归档（正文已保留）" : undefined)}
-          ><I.Check size={14} /> {budgetBlocked ? "需续跑完成" : (gateBlocked ? "需处理硬问题" : "采纳并归档")}</button>
+            disabled={gateBlocked || budgetBlocked || archiveBusy}
+            aria-busy={archiveBusy ? "true" : undefined}
+            title={archiveBusy ? "正在核对作者正文与归档状态，请稍候" : (budgetBlocked ? "生命周期预算阻断尚未解除，需显式追加后续跑" : (gateBlocked ? "存在已证实的 Q0/Q1 硬问题，暂不能归档（正文已保留）" : undefined))}
+          ><I.Check size={14} /> {archiveBusy ? "正在核对作者稿…" : (budgetBlocked ? "需续跑完成" : (gateBlocked ? "需处理硬问题" : "采纳并归档"))}</button>
         </div>
       </div>
     </div>
@@ -1371,7 +1674,12 @@ function Evidence({ scene, state, activeBeat, setActiveBeat, onView }) {
               return (
                 <li key={i}>
                   <button
+                    type="button"
                     className={`scn2-align-row st-${a.status} ${lit ? "is-lit" : ""} ${clickable ? "" : "is-static"}`}
+                    disabled={!clickable}
+                    aria-pressed={clickable ? lit : undefined}
+                    title={clickable ? "定位并高亮正文证据" : "暂无可定位的正文证据"}
+                    onClick={() => clickable && setActiveBeat(lit ? null : a.beat)}
                     onMouseEnter={() => clickable && setActiveBeat(a.beat)}
                     onMouseLeave={() => clickable && setActiveBeat(null)}
                   >
@@ -1450,16 +1758,16 @@ function Evidence({ scene, state, activeBeat, setActiveBeat, onView }) {
               <li><span>连带</span><strong>字数回写 + 场景卡置完成</strong></li>
             </React.Fragment>
           ) : (
-            <li><span>写入字段</span><strong className="tab-num">writer_brief_json</strong></li>
+            <li><span>数据</span><strong>演示快照 · 未写入真实作品</strong></li>
           )}
-          <li><span>策略</span><strong>{state === "archived" ? "已写入" : "裁决通过后写入"}</strong></li>
+          <li><span>策略</span><strong>{scene.fromCard ? (state === "archived" ? "已写入" : "裁决通过后写入") : "只读预览 · 无持久化操作"}</strong></li>
         </ul>
       </section>
     </aside>
   );
 }
 
-function AttemptCompare({ attempt, scene, onClose }) {
+function AttemptCompare({ attempt, scene, onClose, onRewrite }) {
   const cmp = attempt.cmp || {};
   return (
     <div className="scn2-cmp" role="dialog" aria-modal="true">
@@ -1474,6 +1782,10 @@ function AttemptCompare({ attempt, scene, onClose }) {
         </header>
 
         <div className="scn2-cmp-body scn2-scroll">
+          <div className="scn2-cmp-verdict">
+            <span className="scn2-cmp-vdot tone-slate" />
+            <p>这里只保留该次尝试的复盘摘要，不包含可恢复的历史正文快照。重写始终以当前稿为输入，仅把这份复盘意见加入作者指令。</p>
+          </div>
           {cmp.verdict && (
             <div className="scn2-cmp-verdict">
               <span className={`scn2-cmp-vdot tone-${attempt.tone}`} />
@@ -1502,7 +1814,7 @@ function AttemptCompare({ attempt, scene, onClose }) {
           {cmp.before && (
             <div className="scn2-cmp-diff">
               <div className="scn2-cmp-col is-before">
-                <div className="scn2-cmp-coltag">该版问题段 · #{attempt.n}</div>
+                <div className="scn2-cmp-coltag">该版留存的问题段摘要 · #{attempt.n}</div>
                 <p className="text-serif scn2-cmp-text">{cmp.before.text}</p>
                 {cmp.before.risk && <div className="scn2-cmp-risk"><I.AlertTriangle size={12} /> {cmp.before.risk}</div>}
               </div>
@@ -1521,10 +1833,13 @@ function AttemptCompare({ attempt, scene, onClose }) {
         </div>
 
         <footer className="scn2-cmp-foot">
-          <span className="scn2-cmp-hint">对照本次复核稿，决定是否回到该版重写</span>
+          <span className="scn2-cmp-hint">参考该版复盘意见重写；不会恢复或把历史版本当作真实 base</span>
           <div className="flex gap-2">
             <button className="btn btn-quiet btn-sm" onClick={onClose}>关闭</button>
-            <button className="btn btn-ghost btn-sm"><I.Refresh size={13} /> 以该版为基础重写</button>
+            <button className="btn btn-ghost btn-sm" data-testid="scene-attempt-rewrite" onClick={onRewrite} disabled={!onRewrite}
+              title={onRewrite ? "仅把该版复盘意见写入作者指令；真实输入仍是当前稿" : "演示尝试不可提交真实重跑"}>
+              <I.Refresh size={13} /> {onRewrite ? "参考该版复盘意见重写" : "演示版本 · 只读"}
+            </button>
           </div>
         </footer>
       </div>

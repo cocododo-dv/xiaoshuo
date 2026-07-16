@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
@@ -16,8 +17,16 @@ from novel_system.db.models import IdempotencyKey, OperationLog, ReviewItem, Sce
 from novel_system.services.database_errors import is_database_busy_error
 from novel_system.services.errors import DomainError
 from novel_system.services.human_review_support import structured_target
+from novel_system.services.llm_audit import (
+    AUDIT_SCHEMA_VERSION,
+    bounded_identifier,
+    json_fingerprint,
+)
 from novel_system.services.scene_run_checkpoint import idempotency_execution_id
 from novel_system.settings import get_settings
+
+
+logger = logging.getLogger(__name__)
 
 
 def utcnow() -> datetime:
@@ -38,7 +47,7 @@ def owner_lease_ttl_seconds() -> int:
         if value is not None:
             return max(1, int(value))
     except Exception:
-        pass
+        logger.warning("Failed to load configured idempotency lease TTL; using settings fallback", exc_info=True)
     return get_settings().idempotency_ttl_seconds
 
 
@@ -50,7 +59,7 @@ def owner_lease_grace_seconds() -> int:
         if value is not None:
             return max(1, int(value))
     except Exception:
-        pass
+        logger.warning("Failed to load configured idempotency heartbeat; using derived fallback", exc_info=True)
     return max(1, min(45, owner_lease_ttl_seconds() // 2))
 
 
@@ -265,7 +274,7 @@ def execute_with_idempotency(
                 "request_hash": request_hash,
                 "request_method": method.upper(),
                 "request_path_template": path_template,
-                "request_payload": payload or {},
+                **_operation_request_audit(payload),
                 "attempt_no": lease.attempt_no,
                 "worker_id": lease.worker_id,
                 "execution_id": lease.execution_id,
@@ -349,7 +358,21 @@ def execute_with_idempotency(
         raise
     except Exception as exc:
         _mark_owned_idempotency_failed(session, lease=lease, actor_ref=actor_ref)
-        raise DomainError("INTERNAL_ERROR", str(exc), status_code=500) from exc
+        logger.exception(
+            "Idempotent action failed key=%s request_hash=%s execution_id=%s",
+            lease.idempotency_key,
+            lease.request_hash,
+            lease.execution_id,
+        )
+        # Arbitrary provider/database exceptions can contain credentials, SQL,
+        # local paths, or manuscript excerpts. Keep the detail in server logs and
+        # return a stable, non-sensitive public message.
+        raise DomainError(
+            "INTERNAL_ERROR",
+            "internal operation failed",
+            status_code=500,
+            details={"retryable": False},
+        ) from exc
 
 
 def _invoke_idempotent_action(action: Callable[..., dict], lease: IdempotencyLease) -> dict:
@@ -539,11 +562,49 @@ def _build_operator_action_record(
             "summary": summary,
             "request_method": method.upper(),
             "request_path_template": path_template,
-            "request_payload": payload or {},
+            **_operation_request_audit(payload),
             "target_refs": target_refs,
             **extra_payload,
         },
     )
+
+
+def _operation_request_audit(payload: Any) -> dict[str, Any]:
+    """Keep request lineage without copying arbitrary request bodies into logs.
+
+    A bounded risk-confirmation reason remains readable because it is itself the
+    operator's audit attestation, not a manuscript recovery copy.
+    """
+
+    normalized = {} if payload is None else payload
+    result: dict[str, Any] = {
+        "_request_payload_audit_version": AUDIT_SCHEMA_VERSION,
+        "request_payload_summary": json_fingerprint(normalized),
+    }
+    if not isinstance(normalized, dict):
+        return result
+    recovery_payload: dict[str, Any] = {
+        key: bounded_identifier(normalized.get(key))
+        for key in ("review_id", "job_id")
+        if normalized.get(key) is not None
+    }
+    confirmation = normalized.get("risk_confirmation")
+    if isinstance(confirmation, dict):
+        reason = confirmation.get("reason")
+        if isinstance(reason, str) and reason.strip():
+            reason = reason.strip()
+            reason_cap = 512
+            recovery_payload["risk_confirmation"] = {
+                "acknowledged": confirmation.get("acknowledged") is True,
+                "reason": reason[:reason_cap],
+                "reason_sha256": hashlib.sha256(reason.encode("utf-8")).hexdigest(),
+                "reason_chars": len(reason),
+                "reason_truncated": len(reason) > reason_cap,
+                "severity": str(confirmation.get("severity") or "high")[:32],
+            }
+    if recovery_payload:
+        result["request_payload"] = recovery_payload
+    return result
 
 
 def _resolve_operator_action_outcome(

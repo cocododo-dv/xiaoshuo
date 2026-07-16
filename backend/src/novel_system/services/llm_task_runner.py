@@ -26,6 +26,11 @@ from novel_system.services.llm_client import (
     OnlineAccountedExecution,
     load_model_routing_config,
 )
+from novel_system.services.llm_audit import (
+    json_fingerprint,
+    sanitize_audit_summary,
+    text_fingerprint,
+)
 from novel_system.services.llm_node_registry import llm_node_route_fallbacks
 from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
@@ -133,10 +138,8 @@ def _renew_execution_owner(
     runtime.lease_renewer(lease_seconds=lease_seconds)
     return True
 
-# 审计 P-15：llm_calls 审计载荷的单段文本上限。完整 prompt 由 prompt_hash 留痕、
-# 生成正文由 SceneDraft/FinalScene 行持有——审计行只需可读证据，不承担全文存储。
-AUDIT_TEXT_CAP = 4000
-
+# Prompt/draft/output prose lives in its authoritative domain rows. LLM audit
+# rows retain bounded hashes, sizes, roles and structural fields only.
 CONTINUITY_BUDGET_ERROR_CODE = "CONTINUITY_BUDGET_EXCEEDED"
 CONTINUITY_BUDGET_MESSAGE = "Prompt still exceeds the safe continuity budget after deterministic compaction."
 SCENE_SPLIT_RECOMMENDATION = "Split the scene and retry generation with a smaller continuity scope."
@@ -394,8 +397,8 @@ class LLMNodeRunner:
         response_summary = {
             "request_id": response.request_id,
             "response_format": response.response_format,
-            # 生成正文的权威存储是 SceneDraft/FinalScene；审计行内的结构化输出做有界截断
-            "structured_output": _truncate_audit_payload(response.structured_output),
+            # SceneDraft/FinalScene own prose; the audit row stores a structural fingerprint.
+            "structured_output": json_fingerprint(response.structured_output),
             "attempt_count": response.attempt_count,
             "max_retries": response.max_retries,
             "retryable": response.retryable,
@@ -584,10 +587,7 @@ class LLMNodeRunner:
         summary = {
             "template_name": _template_name(prompt, request.node_id or "llm_node"),
             "template_version": _template_version(prompt),
-            "messages": [
-                {**message, "content": _truncate_audit_text(message.get("content"))}
-                for message in request.messages
-            ],
+            "messages": request.messages,
             "temperature": request.temperature,
             "max_output_tokens": request.max_output_tokens,
             "response_format": request.response_format,
@@ -605,9 +605,9 @@ class LLMNodeRunner:
         if source_draft_row_id is not None:
             summary["source_draft_row_id"] = source_draft_row_id
         if source_draft_content is not None:
-            # 全文由 SceneDraft 行持有（row_id 已在上一键留痕），审计行只存有界摘录
-            summary["source_draft_content"] = _truncate_audit_text(source_draft_content)
-        return summary
+            # The source row owns prose; the audit summary converts this to a fingerprint.
+            summary["source_draft_content"] = source_draft_content
+        return sanitize_audit_summary(summary)
 
     def _client(self, *, offline_client_factory: Callable[[], Any]) -> Any:
         if self._llm_client is not None:
@@ -962,14 +962,18 @@ class LLMNodeRunner:
         parent = self.session.get(LlmCall, llm_call_id)
         if parent is None:
             raise RuntimeError(f"accounted llm call {llm_call_id} disappeared after settlement")
-        parent.request_payload_summary = {
-            **dict(parent.request_payload_summary or {}),
-            **request_summary,
-        }
-        parent.response_payload_summary = {
-            **dict(parent.response_payload_summary or {}),
-            **response_summary,
-        }
+        parent.request_payload_summary = sanitize_audit_summary(
+            {
+                **dict(parent.request_payload_summary or {}),
+                **request_summary,
+            }
+        )
+        parent.response_payload_summary = sanitize_audit_summary(
+            {
+                **dict(parent.response_payload_summary or {}),
+                **response_summary,
+            }
+        )
         self.session.commit()
 
     def _retry_backoff_seconds(self) -> float:
@@ -986,20 +990,6 @@ class LLMNodeRunner:
         if self._provider_configs is None:
             self._provider_configs = load_llm_provider_runtime_configs()
         return self._provider_configs
-
-def _truncate_audit_text(value: Any) -> Any:
-    """审计 P-15：单段文本超上限则截断并加标记；非字符串原样返回。"""
-    if isinstance(value, str) and len(value) > AUDIT_TEXT_CAP:
-        return value[:AUDIT_TEXT_CAP] + f"…[audit truncated, total {len(value)} chars]"
-    return value
-
-
-def _truncate_audit_payload(payload: Any) -> Any:
-    """对结构化输出的字符串值做有界截断（浅一层即可——scene_text 等都在顶层）。"""
-    if isinstance(payload, dict):
-        return {key: _truncate_audit_text(value) for key, value in payload.items()}
-    return _truncate_audit_text(payload)
-
 
 def _requires_scene_split(continuity_warning: Any) -> bool:
     return isinstance(continuity_warning, dict) and bool(continuity_warning.get("requires_scene_split"))
@@ -1028,7 +1018,9 @@ def _error_summary(exc: Exception) -> dict[str, Any]:
     details = details if isinstance(details, dict) else {}
     retryable = bool(getattr(exc, "retryable", False))
     summary = {
-        "message": str(exc),
+        "error_type": exc.__class__.__name__,
+        "error_code": getattr(exc, "code", exc.__class__.__name__),
+        "message": text_fingerprint(str(exc)),
         "details": details,
         "retryable": retryable,
     }
@@ -1036,4 +1028,4 @@ def _error_summary(exc: Exception) -> dict[str, Any]:
         summary["attempt_count"] = details["attempt_count"]
     if "max_retries" in details:
         summary["max_retries"] = details["max_retries"]
-    return summary
+    return sanitize_audit_summary(summary)

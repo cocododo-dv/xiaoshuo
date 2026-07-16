@@ -21,6 +21,7 @@ from novel_system.services.llm_accounting import (
     execute_accounted_call,
     mark_postprocess_failure,
 )
+from novel_system.services.llm_audit import sanitize_audit_summary, text_fingerprint
 from novel_system.services.prompt_builder import PromptConfigurationError, load_prompt_templates
 from novel_system.services.snowflake_steps import (
     diagnose_scene_detail,
@@ -471,13 +472,15 @@ class SnowflakeWorkspaceLLMService:
             provider_options=getattr(task_config, "provider_options", {}),
             response_schema={"name": template.name, "schema": template.structured_schema},
         )
-        request_summary = {
-            "task_key": task_key,
-            "template_name": template.name,
-            "template_version": template.version,
-            "step_key": step_ref,
-            **normalize(prompt_payload),
-        }
+        request_summary = sanitize_audit_summary(
+            {
+                "task_key": task_key,
+                "template_name": template.name,
+                "template_version": template.version,
+                "step_key": step_ref,
+                **normalize(prompt_payload),
+            }
+        )
         try:
             response = execute_accounted_call(
                 self.session,
@@ -624,14 +627,18 @@ class SnowflakeWorkspaceLLMService:
         if parent is None:
             raise RuntimeError(f"accounted snowflake call {llm_call_id} is missing")
         parent.prompt_hash = prompt_hash
-        parent.request_payload_summary = {
-            **dict(parent.request_payload_summary or {}),
-            **request_summary,
-        }
-        parent.response_payload_summary = {
-            **dict(parent.response_payload_summary or {}),
-            **response_summary,
-        }
+        parent.request_payload_summary = sanitize_audit_summary(
+            {
+                **dict(parent.request_payload_summary or {}),
+                **request_summary,
+            }
+        )
+        parent.response_payload_summary = sanitize_audit_summary(
+            {
+                **dict(parent.response_payload_summary or {}),
+                **response_summary,
+            }
+        )
         self.session.commit()
 
 
@@ -1458,11 +1465,13 @@ def _error_summary(exc: Exception) -> dict[str, Any]:
     details = getattr(exc, "details", None)
     details = details if isinstance(details, dict) else {}
     retryable = bool(getattr(exc, "retryable", False))
-    return {
-        "message": str(exc),
+    return sanitize_audit_summary({
+        "error_type": exc.__class__.__name__,
+        "error_code": getattr(exc, "code", exc.__class__.__name__),
+        "message": text_fingerprint(str(exc)),
         "details": details,
         "retryable": retryable,
-    }
+    })
 
 
 def _llm_failure_message(exc: Exception, task_key: str) -> str:

@@ -276,6 +276,7 @@ function catSceneCreateBody(s, at) {
 /* ---- 缓存与装载 ---- */
 const catCache = {};       // workId → view chapters
 const catReadyMap = {};    // workId → API 已返回
+const catErrorMap = {};    // workId → 最近一次装载错误；区分“真空目录”和“请求失败”
 const catSubs = new Set();
 const catPendingCreates = {}; // slug/sid → 创建中的 Promise（后端 id 待回填）
 
@@ -289,6 +290,7 @@ function catFetch(workId, options) {
   const migrate = !options || options.migrate !== false;
   if (!workId || workId === "__loading__") return Promise.resolve();
   if (catFetching[workId]) return catFetching[workId];
+  delete catErrorMap[workId];
   catFetching[workId] = (async () => {
     try {
       let data = await apiGet(catApiBase(workId));
@@ -302,15 +304,20 @@ function catFetch(workId, options) {
       }
       catCache[workId] = chapters.map(catFromApiChapter);
       catReadyMap[workId] = true;
+      delete catErrorMap[workId];
       catNotify();
       catPushTotals();
       try { window.WrDocs && window.WrDocs.hydrateActive && window.WrDocs.hydrateActive(); } catch (e) {}
     } catch (e) {
+      catErrorMap[workId] = e instanceof Error ? e : new Error("章节目录加载失败");
       console.warn("[WsCatalog] 拉取目录失败:", e);
+      catNotify();
     } finally {
       delete catFetching[workId];
     }
   })();
+  // 新作品开始装载时立即通知订阅者清掉上一部作品的场景选择，避免跨作品串稿。
+  catNotify();
   return catFetching[workId];
 }
 
@@ -486,6 +493,22 @@ async function catDispatchDiff(workId, prev, next) {
       });
     }
   }
+  /* 章节拖拽过去只改了内存顺序，刷新即还原。顺序也是目录真相的一部分：
+     所有增删/重排操作完成后，再用完整的服务端 chapter_id 集合一次性落 display_order。
+     任何 id 无法解析都 fail-closed，避免把半份顺序写进后端。 */
+  const prevChapterOrder = prev.map((c) => c.id);
+  const nextChapterOrder = next.map((c) => c.id);
+  if (next.length && prevChapterOrder.join("|") !== nextChapterOrder.join("|")) {
+    ops.push(async () => {
+      const chapterIds = [];
+      for (const chapter of next) {
+        const chapterId = await catBackendChapterId(chapter.id);
+        if (!chapterId) throw new Error(`章节「${chapter.title || chapter.id}」尚未完成创建，顺序未保存。`);
+        chapterIds.push(chapterId);
+      }
+      await apiPost(`${catApiBase(workId)}/chapter-order`, { chapter_ids: chapterIds });
+    });
+  }
   if (!ops.length) return;
   try {
     for (const op of ops) await op();
@@ -501,17 +524,26 @@ const WsCatalog = {
   isEmpty() { return this.get().length === 0; },
   /* 目录是否已从后端装载（短暂为空数组时视图可区分 loading / 真空目录） */
   ready() { return !!catReadyMap[catActiveId()]; },
+  loadError() { return catErrorMap[catActiveId()] || null; },
   set(next) {
     const id = catActiveId();
+    if (!catReadyMap[id]) {
+      try { window.alert("章节目录尚未从服务端加载完成，本次修改未提交。请先重试加载目录。"); } catch (e) {}
+      if (!catFetching[id]) catFetch(id, { migrate: false });
+      return false;
+    }
     const prev = catLoad(id);
     catCache[id] = catStamp(Array.isArray(next) ? next : []);
     catNotify();
     catDispatchDiff(id, prev, catCache[id]);
+    return true;
   },
   /* 重置 = 丢弃本地缓存、以服务端为准重拉（demo 作品的种子由后端 seed 维护） */
   reset() {
     const id = catActiveId();
     delete catCache[id];
+    catReadyMap[id] = false;
+    delete catErrorMap[id];
     catFetch(id, { migrate: false });
     catNotify();
     return this.get();
@@ -590,7 +622,7 @@ const WsCatalog = {
      只有构思数据不足以出预览（09 还没有场）时才落到「只建章」的最后兜底——
      旧兜底每章只塞一个「开场」占位场，9/10 步的场景卡全部丢失，正是
      「物化出来的章是空壳、场孤立」的来源。 */
-  async adoptOutline(list) {
+  async adoptOutline(list, scaffoldsOverride = null) {
     if (window.SnowSync && window.SnowSync.readyToMaterialize()) {
       // 物化 + 批准大纲（两步），返回后端真实落库章节数；失败上抛由调用方诚实提示，
       // 不再回退 __adoptByDiff（那会经目录 POST 重复建章）。
@@ -599,7 +631,7 @@ const WsCatalog = {
     }
     try {
       const eng = window.s2Materialize;
-      const st = window.s2ExportState ? window.s2ExportState() : null;
+      const st = scaffoldsOverride ? { scaffolds: scaffoldsOverride } : (window.s2ExportState ? window.s2ExportState() : null);
       if (eng && st) {
         const preview = eng.preview(st.scaffolds || {});
         if (preview && preview.ok) {

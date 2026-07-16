@@ -18,6 +18,122 @@ const wrKeyOf = (sid) => (window.wsKey ? window.wsKey("wr-doc:" + sid) : "wr-doc
 // 重启浏览器即丢，下次水合会用服务端旧版静默覆盖较新的本地稿。标记跨会话存活，
 // 启动水合时据此走「冲突副本 + 作者选择」而不是静默覆盖。
 const wrPendingKeyOf = (sid) => (window.wsKey ? window.wsKey("wr-doc-pending:" + sid) : "wr-doc-pending:" + sid);
+const WR_RECOVERY_PREFIX = "wr-recovery:v1:";
+const volatileDocs = new Map();
+const volatileRecoveries = new Map();
+
+function activeWorkId() {
+  try { return (window.WsWorks && window.WsWorks.activeId && window.WsWorks.activeId()) || ""; } catch (e) { return ""; }
+}
+
+function isStorageQuotaError(error) {
+  return !!(error && (
+    error.name === "QuotaExceededError"
+    || error.name === "NS_ERROR_DOM_QUOTA_REACHED"
+    || error.code === 22
+    || error.code === 1014
+  ));
+}
+
+function storageFailure(error, message = "浏览器本地存储空间不足") {
+  return Object.assign(new Error(message), {
+    code: isStorageQuotaError(error) ? "LOCAL_STORAGE_QUOTA" : "LOCAL_STORAGE_UNAVAILABLE",
+    cause: error,
+  });
+}
+
+function notifyRecoveryChanged(entry, action = "changed") {
+  try {
+    window.dispatchEvent(new CustomEvent("ws:recovery-changed", { detail: { action, entry } }));
+  } catch (e) {}
+}
+
+function recoveryCreate({ sid, html, type = "conflict", reason = "", label = "", source = "writer", requireDurable = false } = {}) {
+  const createdAt = Date.now();
+  const id = `${createdAt.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const entry = {
+    id,
+    version: 1,
+    workId: activeWorkId(),
+    sid: sid || "",
+    type,
+    reason,
+    label: label || (sid ? `场景 ${sid}` : "未命名稿件"),
+    source,
+    createdAt,
+    html: String(html || ""),
+    durable: true,
+  };
+  try {
+    localStorage.setItem(WR_RECOVERY_PREFIX + id, JSON.stringify(entry));
+  } catch (error) {
+    entry.durable = false;
+    entry.storageError = storageFailure(error).code;
+    volatileRecoveries.set(id, entry);
+    notifyRecoveryChanged(entry, "created");
+    if (requireDurable) throw storageFailure(error, "本地备份空间不足，已停止覆盖；请先导出或清理恢复记录");
+    return entry;
+  }
+  notifyRecoveryChanged(entry, "created");
+  return entry;
+}
+
+function parseLegacyRecovery(key) {
+  if (!key || !key.includes(":conflict-")) return null;
+  const stamp = Number((key.match(/:conflict-(\d+)$/) || [])[1]) || Date.now();
+  const head = key.replace(/:conflict-\d+$/, "");
+  const match = /(?:^|:)wr-doc:([^:]+)(?:::([^:]+))?$/.exec(head);
+  if (!match) return null;
+  let html = "";
+  try { html = localStorage.getItem(key) || ""; } catch (e) {}
+  return {
+    id: "legacy:" + key,
+    version: 0,
+    storageKey: key,
+    workId: match[2] || "",
+    sid: match[1] || "",
+    type: "conflict",
+    reason: "旧版冲突副本",
+    label: `场景 ${match[1] || "未知"}`,
+    source: "writer",
+    createdAt: stamp,
+    html,
+    durable: true,
+  };
+}
+
+function recoveryList() {
+  const entries = new Map();
+  try {
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (key.startsWith(WR_RECOVERY_PREFIX)) {
+        try {
+          const value = JSON.parse(localStorage.getItem(key) || "null");
+          if (value && value.id) entries.set(value.id, { ...value, durable: true });
+        } catch (e) {}
+      } else {
+        const legacy = parseLegacyRecovery(key);
+        if (legacy) entries.set(legacy.id, legacy);
+      }
+    }
+  } catch (e) {}
+  volatileRecoveries.forEach((entry, id) => entries.set(id, entry));
+  return [...entries.values()].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+function recoveryRemove(id) {
+  const entry = recoveryList().find(item => item.id === id);
+  if (!entry) return false;
+  try {
+    if (entry.storageKey) localStorage.removeItem(entry.storageKey);
+    else localStorage.removeItem(WR_RECOVERY_PREFIX + id);
+  } catch (e) {}
+  volatileRecoveries.delete(id);
+  notifyRecoveryChanged(entry, "removed");
+  return true;
+}
 
 function pendingRead(sid) {
   try { return localStorage.getItem(wrPendingKeyOf(sid)); } catch (e) { return null; }
@@ -54,6 +170,8 @@ function meta(sid) {
     lastPromotedFinalSceneRowId: null,
     canonicalDirty: true,
     lastSaveError: null,
+    cacheError: null,
+    localDurable: true,
   });
 }
 
@@ -93,6 +211,8 @@ function stateSnapshot(sid) {
     lastPromotedRevisionNo: m.lastPromotedRevisionNo,
     lastPromotedFinalSceneRowId: m.lastPromotedFinalSceneRowId,
     lastSaveError: m.lastSaveError,
+    cacheError: m.cacheError,
+    localDurable: m.localDurable,
   };
 }
 
@@ -103,10 +223,36 @@ function notifyState(sid) {
 }
 
 function cacheRead(sid) {
-  try { return localStorage.getItem(wrKeyOf(sid)); } catch (e) { return null; }
+  const memoryKey = metaKeyOf(sid);
+  if (volatileDocs.has(memoryKey)) return volatileDocs.get(memoryKey);
+  try {
+    const value = localStorage.getItem(wrKeyOf(sid));
+    return value == null ? null : value;
+  } catch (e) {
+    return null;
+  }
+}
+
+// 恢复中心会同时列出多部作品的记录。查看另一部作品时，差异必须和
+// 那部作品自己的缓存比较，不能误拿当前作品的同名 sid 当基线。
+function cacheReadForWork(sid, workId) {
+  const currentWork = activeWorkId();
+  if (!workId || workId === currentWork) return cacheRead(sid);
+  const memoryKey = `${workId}::${sid}`;
+  if (volatileDocs.has(memoryKey)) return volatileDocs.get(memoryKey);
+  try {
+    const value = localStorage.getItem(`wr-doc:${sid}::${workId}`);
+    return value == null ? null : value;
+  } catch (e) { return null; }
 }
 function cacheWrite(sid, html) {
-  try { localStorage.setItem(wrKeyOf(sid), html); } catch (e) {}
+  volatileDocs.set(metaKeyOf(sid), html);
+  try {
+    localStorage.setItem(wrKeyOf(sid), html);
+    return { ok: true, error: null };
+  } catch (error) {
+    return { ok: false, error: storageFailure(error) };
+  }
 }
 
 function notifyLoaded(sid) {
@@ -156,16 +302,30 @@ async function hydrate(sid) {
       // Wave 1：上个会话保存失败留下的 pending 标记——本地较新稿不得被静默覆盖
       if (pendingRead(sid) != null) {
         if (cached != null && cached !== html) {
-          let backupKey = null;
-          try {
-            backupKey = `${wrKeyOf(sid)}:conflict-${Date.now()}`;
-            localStorage.setItem(backupKey, cached);
-          } catch (e3) { backupKey = null; }
+          const backup = recoveryCreate({
+            sid,
+            html: cached,
+            type: "conflict",
+            reason: "上次会话未同步，服务端已有不同版本",
+            label: `场景 ${sid} · 未同步本地稿`,
+          });
+          if (!backup.durable) {
+            // 配额不足时不能先覆盖再告诉作者“备份失败”。保留当前缓存为工作稿，
+            // 服务端版本已经在 m.serverContent，可待作者清理空间后比较/重试。
+            m.hydrated = true;
+            m.dirty = true;
+            m.localDurable = false;
+            m.cacheError = Object.assign(new Error("本地恢复空间不足，未覆盖你的本地稿"), { code: backup.storageError || "LOCAL_STORAGE_QUOTA" });
+            m.lastSaveError = m.cacheError;
+            try { window.alert("发现未同步的本地正文，但浏览器存储空间不足。系统没有覆盖本地稿；请打开“同步与恢复”导出内容或清理旧记录后重试。"); } catch (e2) {}
+            notifyState(sid);
+            return;
+          }
           pendingClear(sid);
           try {
             window.alert(
               "上次会话有未保存到服务端的本地正文，已加载服务端版本。" +
-              (backupKey ? `\n你的本地稿已备份到浏览器缓存（键：${backupKey}），可从中找回。` : "")
+              "\n你的本地稿已进入“同步与恢复”，可查看差异、恢复或导出。"
             );
           } catch (e2) {}
         } else {
@@ -173,7 +333,9 @@ async function hydrate(sid) {
         }
       }
       if (html && html !== cached) {
-        cacheWrite(sid, html);
+        const cachedResult = cacheWrite(sid, html);
+        m.localDurable = cachedResult.ok;
+        m.cacheError = cachedResult.error;
         notifyLoaded(sid);
       } else if (!html && cached == null) {
         // 服务端空白草稿：保持缓存为空（视图显示开场占位）
@@ -214,11 +376,23 @@ async function pushSave(sid, html) {
     if (e && e.code === "AUTHOR_DRAFT_CONFLICT") {
       // 服务端已被改（另一端保存）：以服务端为准重新水合。
       // 审计 P-12：覆盖前把本地未保存稿留一份副本，避免较新的本地编辑无痕丢失。
-      let backupKey = null;
-      try {
-        backupKey = `${wrKeyOf(sid)}:conflict-${Date.now()}`;
-        localStorage.setItem(backupKey, html);
-      } catch (e3) { backupKey = null; }
+      const backup = recoveryCreate({
+        sid,
+        html,
+        type: "conflict",
+        reason: "服务端在别处更新（409 冲突）",
+        label: `场景 ${sid} · 冲突本地稿`,
+      });
+      if (!backup.durable) {
+        // 无持久备份就不允许水合覆盖当前缓存；留在 dirty 状态供作者导出。
+        m.dirty = true;
+        m.localDurable = false;
+        m.cacheError = Object.assign(new Error("冲突稿无法持久备份，已停止覆盖"), { code: backup.storageError || "LOCAL_STORAGE_QUOTA" });
+        pendingWrite(sid);
+        try { window.alert("正文发生版本冲突，同时浏览器存储空间不足。系统已停止覆盖，本地稿仍在当前编辑器；请先导出或清理恢复记录。"); } catch (e2) {}
+        notifyState(sid);
+        throw e;
+      }
       m.draftId = null;
       m.hydrated = false;
       m.dirty = false;
@@ -227,12 +401,21 @@ async function pushSave(sid, html) {
       try {
         window.alert(
           "这份正文在别处被修改过，已加载服务端最新版本。" +
-          (backupKey ? `\n你本地未保存的内容已备份到浏览器缓存（键：${backupKey}），可从中找回。` : "")
+          "\n你本地未保存的内容已进入“同步与恢复”，可查看差异、恢复或导出。"
         );
       } catch (e2) {}
     } else {
       // Wave 1：非 409 失败留持久化标记——重启后水合据此走冲突副本而非静默覆盖
       pendingWrite(sid);
+      if (!m.localDurable) {
+        recoveryCreate({
+          sid,
+          html,
+          type: "unsynced",
+          reason: "断网或服务端保存失败；浏览器缓存也不可用",
+          label: `场景 ${sid} · 会话内未同步稿`,
+        });
+      }
       console.warn("[WrDocs] 正文保存失败（缓存已留底，下次保存重试）:", e);
     }
     notifyState(sid);
@@ -339,11 +522,19 @@ const WrDocs = {
     const m = meta(sid);
     return !m.hydrated;
   },
+  /* 显式等待服务端草稿水合；跨页面采用 AI 稿前用它确认作者正文是否已存在。 */
+  async hydrate(sid) {
+    if (!sid) return null;
+    await hydrate(sid);
+    return cacheRead(sid);
+  },
   /* 写：缓存即时落地，API 串行保存（按 sid 链式，避免乱序覆盖） */
   save(sid, html) {
     if (!sid) return Promise.reject(Object.assign(new Error("缺少场景标识"), { code: "AUTHOR_DRAFT_SCENE_REQUIRED" }));
-    cacheWrite(sid, html);
     const m = meta(sid);
+    const cached = cacheWrite(sid, html);
+    m.localDurable = cached.ok;
+    m.cacheError = cached.error;
     m.dirty = true;
     m.canonicalDirty = true;
     m.lastSaveError = null;
@@ -396,6 +587,97 @@ const WrDocs = {
   },
 };
 
-Object.assign(window, { WrDocs, WrDocVersions });
+function assertRecoveryWork(entry) {
+  const current = activeWorkId();
+  if (entry && entry.workId && current && entry.workId !== current) {
+    throw Object.assign(new Error("这份恢复稿属于另一部作品，请先切换到对应作品"), {
+      code: "RECOVERY_WORK_MISMATCH",
+      expectedWorkId: entry.workId,
+      currentWorkId: current,
+    });
+  }
+}
 
-export { WrDocs, WrDocVersions };
+const WrRecovery = {
+  list(options = {}) {
+    const workId = Object.prototype.hasOwnProperty.call(options, "workId") ? options.workId : null;
+    const items = recoveryList();
+    return workId == null ? items : items.filter(item => item.workId === workId);
+  },
+  count(options = {}) { return this.list(options).length; },
+  create(options) { return recoveryCreate(options); },
+  createBackup(sid, html, reason = "覆盖前自动备份") {
+    return recoveryCreate({
+      sid,
+      html,
+      type: "backup",
+      reason,
+      label: `场景 ${sid} · 作者稿备份`,
+      source: "author",
+      requireDurable: true,
+    });
+  },
+  createCandidate(sid, html, reason = "AI 候选，尚未覆盖作者稿") {
+    return recoveryCreate({
+      sid,
+      html,
+      type: "candidate",
+      reason,
+      label: `场景 ${sid} · AI 候选`,
+      source: "ai",
+    });
+  },
+  remove(id) { return recoveryRemove(id); },
+  current(sid) { return cacheRead(sid) || ""; },
+  diff(id) {
+    const entry = recoveryList().find(item => item.id === id);
+    if (!entry) return null;
+    const current = cacheReadForWork(entry.sid, entry.workId) || "";
+    return {
+      entry,
+      current,
+      candidate: entry.html || "",
+      ...diffSentences(htmlToParas(current), htmlToParas(entry.html || "")),
+    };
+  },
+  async restore(id) {
+    const entry = recoveryList().find(item => item.id === id);
+    if (!entry) throw Object.assign(new Error("恢复记录已不存在"), { code: "RECOVERY_NOT_FOUND" });
+    assertRecoveryWork(entry);
+    const current = cacheRead(entry.sid) || "";
+    const hasCurrent = htmlToParas(current).join("").replace(/\s/g, "").length > 0;
+    let replacedBackup = null;
+    if (hasCurrent && current !== (entry.html || "")) {
+      // “恢复”本质上也是一次显式替换：先留下可撤销的当前稿，配额不足则
+      // fail closed，不允许恢复工具反过来成为新的丢稿入口。
+      replacedBackup = recoveryCreate({
+        sid: entry.sid,
+        html: current,
+        type: "backup",
+        reason: `恢复“${entry.label || entry.sid}”前自动备份当前正文`,
+        label: `场景 ${entry.sid} · 作者稿备份`,
+        source: "author",
+        requireDurable: true,
+      });
+    }
+    await WrDocs.save(entry.sid, entry.html || "");
+    notifyLoaded(entry.sid);
+    notifyRecoveryChanged(entry, "restored");
+    return { entry, replacedBackup, state: WrDocs.state(entry.sid) };
+  },
+  async retry(id) {
+    const result = await WrRecovery.restore(id);
+    recoveryRemove(id);
+    return result;
+  },
+  storageStatus() {
+    return {
+      volatileCount: [...volatileRecoveries.values()].filter(item => !item.durable).length,
+      allDurable: [...volatileRecoveries.values()].every(item => item.durable),
+    };
+  },
+};
+
+Object.assign(window, { WrDocs, WrDocVersions, WrRecovery });
+
+export { WrDocs, WrDocVersions, WrRecovery };

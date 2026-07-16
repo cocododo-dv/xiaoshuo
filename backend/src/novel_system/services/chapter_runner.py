@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -25,6 +26,8 @@ JOB_STATUS_RUNNING = "running"
 JOB_STATUS_BLOCKED = "blocked"
 JOB_STATUS_COMPLETED = "completed"
 JOB_STATUS_FAILED = "failed"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -105,11 +108,23 @@ class ChapterRunnerService:
                     result = orchestrator.run_scene(next_scene_id)
             except Exception as exc:  # pragma: no cover - safety net for runtime failures
                 self._release_scene_job_ownership(next_scene_id, job.job_id)
+                logger.exception(
+                    "Chapter scene execution failed job_id=%s chapter_id=%s scene_id=%s",
+                    job.job_id,
+                    chapter_id,
+                    next_scene_id,
+                )
+                public_code = exc.code if isinstance(exc, DomainError) else "CHAPTER_RUN_FAILED"
+                public_message = (
+                    exc.message
+                    if isinstance(exc, DomainError)
+                    else "scene execution failed; see server logs for the request details"
+                )
                 self._mark_failed(
                     job,
                     current_scene_id=next_scene_id,
-                    error_code="CHAPTER_RUN_FAILED",
-                    error_text=str(exc) or "chapter run failed",
+                    error_code=public_code,
+                    error_text=public_message,
                 )
                 self.session.flush()
                 return self._serialize_job(job)
@@ -329,19 +344,21 @@ class ChapterRunnerService:
         now = datetime.now(UTC)
         now_iso = now.isoformat()
         expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
-        running_with_expired_lease = (
+        running_without_active_lease = (
             job.status == JOB_STATUS_RUNNING
-            and job.lease_expires_at is not None
-            and job.lease_expires_at <= now_iso
+            and (
+                job.lease_expires_at is None
+                or job.lease_expires_at <= now_iso
+            )
         )
-        if job.status == JOB_STATUS_RUNNING and not running_with_expired_lease:
+        if job.status == JOB_STATUS_RUNNING and not running_without_active_lease:
             raise DomainError(
                 "RUN_JOB_IN_PROGRESS",
                 "chapter run is already owned by an active worker",
                 status_code=409,
                 details={"job_id": job.job_id, "worker_id": job.worker_id},
             )
-        if job.status != JOB_STATUS_PENDING and not running_with_expired_lease:
+        if job.status != JOB_STATUS_PENDING and not running_without_active_lease:
             raise DomainError(
                 "RUN_JOB_NOT_CLAIMABLE",
                 "chapter run status cannot be claimed by a worker",

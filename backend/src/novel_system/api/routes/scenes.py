@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, Request
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -26,7 +27,12 @@ from novel_system.db.models import (
 )
 from novel_system.services.archiver import Archiver
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.author_instructions import normalize_author_note
 from novel_system.services.author_state import compute_author_state
+from novel_system.services.chapter_approval import (
+    is_chapter_approved,
+    require_chapter_mutation_allowed,
+)
 from novel_system.services.chapter_runtime import ChapterRuntimeService, clean_backfill_markers
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import execute_with_idempotency
@@ -53,6 +59,47 @@ from novel_system.services.writer_review import WriterReviewService, normalize_s
 
 router = APIRouter(tags=["scenes"])
 INT64_MAX = (1 << 63) - 1
+
+
+class SceneUpsertRequest(BaseModel):
+    """Whitelist author-editable scene-card fields.
+
+    Run state, trash state, word rollups, and timestamps remain server-owned.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scene_id: str = Field(min_length=1, max_length=255)
+    chapter_id: str = Field(min_length=1, max_length=255)
+    scene_goal: str
+    project_id: str | None = None
+    outline_plan_id: str | None = None
+    scene_seq: int | None = Field(default=None, ge=1)
+    pov_character_id: str | None = None
+    onstage_chars_json: list[str] = Field(default_factory=list)
+    resolved_relation_id: str | None = None
+    location: str | None = None
+    beats_json: list[str] = Field(default_factory=list)
+    must_include_text: str | None = None
+    forbidden_text: str | None = None
+    exit_change: str | None = None
+    hook: str | None = None
+    writer_brief_json: dict[str, Any] | None = None
+    target_length_band: str | None = None
+    scene_type: str | None = None
+    is_chapter_last: int = Field(default=0, ge=0, le=1)
+    state: str = "todo"
+    constraint_intensity: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class AdoptCurrentRequest(BaseModel):
+    """Only exact server-issued content-safety finding codes may be acknowledged."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    accepted_warning_codes: list[
+        Annotated[str, Field(min_length=1, max_length=128)]
+    ] = Field(default_factory=list, max_length=64)
 
 
 @router.post("/api/v1/scenes/trash")
@@ -104,15 +151,20 @@ def purge_scenes(payload: dict, request: Request, session: Session = Depends(get
 
 
 @router.post("/api/v1/scenes")
-def create_scene(payload: dict, request: Request, session: Session = Depends(get_session)):
+def create_scene(
+    payload: SceneUpsertRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    body = payload.model_dump(exclude_unset=True)
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes",
-        payload=payload,
-        action=lambda: _create_scene(session, payload),
+        payload=body,
+        action=lambda: _create_scene(session, body),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -133,7 +185,14 @@ def _create_scene(session: Session, payload: dict) -> dict:
     chapter = lifecycle.require_active_chapter(chapter_id)
 
     scene = session.get(SceneCard, payload["scene_id"])
+    created = scene is None
     if scene is None:
+        require_chapter_mutation_allowed(
+            session,
+            chapter,
+            changed_fields=["scenes.create"],
+            operation="scenes.upsert_create",
+        )
         if payload.get("scene_seq") is None:
             payload = {
                 **payload,
@@ -142,23 +201,72 @@ def _create_scene(session: Session, payload: dict) -> dict:
         scene = SceneCard(**payload)
         session.add(scene)
         session.flush()
+        changed = True
     else:
         if scene.trashed_flag == 1:
             raise DomainError("SCENE_TRASHED", "scene is currently in author trash")
+        if payload["chapter_id"] != scene.chapter_id:
+            raise DomainError(
+                "SCENE_IDENTITY_IMMUTABLE",
+                "an existing scene cannot be moved to another chapter",
+                status_code=409,
+            )
+        if "project_id" in payload:
+            requested_project_id = payload["project_id"]
+            may_bind_from_chapter = (
+                scene.project_id is None
+                and requested_project_id is not None
+                and requested_project_id == chapter.project_id
+            )
+            if requested_project_id != scene.project_id and not may_bind_from_chapter:
+                raise DomainError(
+                    "SCENE_IDENTITY_IMMUTABLE",
+                    "an existing scene cannot be moved to another project",
+                    status_code=409,
+                )
+        if "outline_plan_id" in payload:
+            requested_outline_id = payload["outline_plan_id"]
+            may_bind_from_chapter = (
+                scene.outline_plan_id is None
+                and requested_outline_id is not None
+                and requested_outline_id == chapter.outline_plan_id
+            )
+            if requested_outline_id != scene.outline_plan_id and not may_bind_from_chapter:
+                raise DomainError(
+                    "SCENE_IDENTITY_IMMUTABLE",
+                    "an existing scene cannot be rebound to another outline plan",
+                    status_code=409,
+                )
         if payload.get("scene_seq") is None:
             payload = {
                 **payload,
                 "scene_seq": scene.scene_seq,
             }
-        for key, value in payload.items():
-            setattr(scene, key, value)
+        changed_fields = [
+            key
+            for key, value in payload.items()
+            if key not in {"scene_id", "chapter_id"} and getattr(scene, key) != value
+        ]
+        changed = require_chapter_mutation_allowed(
+            session,
+            chapter,
+            changed_fields=changed_fields,
+            operation="scenes.upsert_update",
+        )
+        if changed:
+            for key, value in payload.items():
+                setattr(scene, key, value)
 
     state = session.get(SceneRunState, payload["scene_id"])
-    if state is None:
+    should_create_state = state is None and (
+        created or not is_chapter_approved(session, chapter)
+    )
+    if should_create_state:
         state = SceneRunState(scene_id=payload["scene_id"], scene_status="ready")
         session.add(state)
+        changed = True
     session.flush()
-    return {"scene_id": scene.scene_id}
+    return {"scene_id": scene.scene_id, "changed": changed}
 
 
 def _parse_run_policy(payload: dict | None) -> str:
@@ -190,7 +298,7 @@ def run_scene(scene_id: str, request: Request, session: Session = Depends(get_se
     AuthorLifecycleService(session).require_active_scene(scene_id)
     _reject_manual_checkpoint_controls(payload)
     # FE-ALIGN G3：作者改写指令随请求下发（注入风格生成提示词；幂等键随 note 变化）
-    author_note = str((payload or {}).get("author_note") or "").strip()[:500] or None
+    author_note = normalize_author_note((payload or {}).get("author_note"))
     # Wave 2（治理 §6.3）：run_policy 请求级参数（reliable|strict|auto；列属 Wave 3）
     run_policy = _parse_run_policy(payload)
     result, status = execute_with_idempotency(
@@ -1232,7 +1340,7 @@ def adopt_current_scene(
     scene_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    payload: dict | None = Body(default=None),
+    payload: AdoptCurrentRequest | None = Body(default=None),
 ):
     """治理 §5.2：作者采纳归档的单一服务入口。
 
@@ -1244,6 +1352,8 @@ def adopt_current_scene(
     设计红线 8：来源安全未通过可保存草稿但不能标记为已安全归档）。
     """
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    body = payload.model_dump(mode="json") if payload is not None else {}
+    accepted_warning_codes = body.get("accepted_warning_codes") or []
 
     def _adopt(session: Session) -> dict[str, Any]:
         from uuid import uuid4
@@ -1258,12 +1368,46 @@ def adopt_current_scene(
         # 已归档：幂等返回现状，不重复归档；顺带收敛修复前遗留的运行残留
         # （如 C2 真实库中 failed@soft_qc_ready 的历史残留，作者重点一次即自愈）
         if state.scene_status == "archived" and state.current_final_scene_row_id:
+            current_final = session.get(FinalScene, state.current_final_scene_row_id)
+            if current_final is None or current_final.scene_id != scene_id:
+                raise DomainError(
+                    "FINAL_SCENE_NOT_FOUND",
+                    "archived scene points to a missing final manuscript",
+                    status_code=409,
+                    details={"scene_id": scene_id},
+                )
+            current_memory = session.execute(
+                select(SceneMemory).where(
+                    SceneMemory.scene_id == scene_id,
+                    SceneMemory.final_scene_row_id == current_final.row_id,
+                    SceneMemory.active_flag == 1,
+                )
+            ).scalars().first()
+            confirmation = Archiver(session).archive_final_scene(
+                scene_id,
+                current_final.row_id,
+                carry_notes_json=(
+                    list(current_memory.carry_notes_json or [])
+                    if current_memory is not None
+                    else []
+                ),
+                author_confirmed_final=True,
+                accepted_warning_codes=accepted_warning_codes,
+            )
             residue_finalized = SceneRunCheckpointService(session).finalize_after_author_archive(scene_id)
             return {
                 "scene_id": scene_id,
                 "scene_status": "archived",
                 "final_scene_row_id": state.current_final_scene_row_id,
                 "already_archived": True,
+                "safe_to_archive": confirmation["safe_to_archive"],
+                "literary_warnings_unresolved": confirmation[
+                    "literary_warnings_unresolved"
+                ],
+                "author_confirmed_final": confirmation[
+                    "author_confirmed_final"
+                ],
+                "finality": confirmation["finality"],
                 "run_residue_finalized": residue_finalized,
                 "author_state": compute_author_state(session, scene_id, state),
             }
@@ -1390,6 +1534,8 @@ def adopt_current_scene(
             scene_id,
             final.row_id,
             carry_notes_json=carry_notes,
+            author_confirmed_final=True,
+            accepted_warning_codes=accepted_warning_codes,
         )
         # C2 状态一致性债务：归档后无主执行残留（failed@soft_qc_ready 等）
         # 在同一事务内收敛为 completed/archived，运维/展示不再被误导
@@ -1399,6 +1545,12 @@ def adopt_current_scene(
             "scene_status": archive_result["scene_status"],
             "final_scene_row_id": final.row_id,
             "scene_memory_row_id": archive_result["scene_memory_row_id"],
+            "safe_to_archive": archive_result["safe_to_archive"],
+            "literary_warnings_unresolved": archive_result[
+                "literary_warnings_unresolved"
+            ],
+            "author_confirmed_final": archive_result["author_confirmed_final"],
+            "finality": archive_result["finality"],
             "source_safety_scan": scan,
             "run_residue_finalized": run_residue_finalized,
             "author_state": compute_author_state(session, scene_id, state),
@@ -1409,7 +1561,7 @@ def adopt_current_scene(
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/adopt-current",
-        payload={"scene_id": scene_id, **(payload or {})},
+        payload={"scene_id": scene_id, **body},
         action=lambda: _adopt(session),
         actor_ref=actor_ref,
     )
@@ -1614,6 +1766,46 @@ def _serialize_near_final_summary(session: Session, scene_id: str) -> dict | Non
     if near_final_status is None and latest_evaluation is not None:
         near_final_status = "human_review_required" if latest_evaluation.requires_human_review else "revision_required"
     failure_class = details.get("failure_class") or (latest_evaluation.failure_class if latest_evaluation is not None else None)
+    archive_attempt = session.execute(
+        select(AttemptTracker)
+        .where(
+            AttemptTracker.scene_id == scene_id,
+            AttemptTracker.step == "archive",
+            AttemptTracker.status == "completed",
+        )
+        .order_by(AttemptTracker.attempt_id.desc())
+    ).scalars().first()
+    archive_gate = (
+        (archive_attempt.details_json or {}).get("final_text_gate")
+        if archive_attempt is not None
+        else {}
+    )
+    archived_safe = archive_gate.get("safe_to_archive", archive_gate.get("archivable"))
+    author_confirmed_final = bool(archive_gate.get("author_confirmed_final"))
+    literary_warnings_unresolved = bool(
+        not author_confirmed_final
+        and (
+            archive_gate.get("literary_warnings_unresolved")
+            or near_final_status != "near_final_ready"
+            or (latest_evaluation is not None and latest_evaluation.findings_json)
+        )
+    )
+    from novel_system.services.model_independence import (
+        judge_independence,
+        observed_correlated_judge,
+    )
+
+    stored_contract_refs = (
+        latest_evaluation.contract_field_refs_json
+        if latest_evaluation is not None
+        and isinstance(latest_evaluation.contract_field_refs_json, dict)
+        else {}
+    )
+    independence_evidence = stored_contract_refs.get("_model_independence")
+    if not isinstance(independence_evidence, dict):
+        independence_evidence = observed_correlated_judge(session, scene_id)
+    if independence_evidence is None:
+        independence_evidence = judge_independence(session)
     return {
         "rubric_id": NEAR_FINAL_RUBRIC_ID,
         "near_final_status": near_final_status,
@@ -1632,6 +1824,17 @@ def _serialize_near_final_summary(session: Session, scene_id: str) -> dict | Non
         "revision_candidate_status": revision_candidate.status if revision_candidate is not None else None,
         "overall_score": latest_evaluation.overall_score if latest_evaluation is not None else None,
         "requires_human_review": bool(latest_evaluation.requires_human_review) if latest_evaluation is not None else False,
+        "safe_to_archive": bool(archived_safe) if archived_safe is not None else None,
+        "literary_warnings_unresolved": literary_warnings_unresolved,
+        "author_confirmed_final": author_confirmed_final,
+        "finality": {
+            "safe_to_archive": (
+                bool(archived_safe) if archived_safe is not None else None
+            ),
+            "literary_warnings_unresolved": literary_warnings_unresolved,
+            "author_confirmed_final": author_confirmed_final,
+        },
+        "judge_independence": independence_evidence,
         "findings": latest_evaluation.findings_json if latest_evaluation is not None else [],
         "revision_brief": latest_evaluation.revision_brief_json if latest_evaluation is not None else [],
         "stage_order": ["Planning", "Drafting", "Rewriting", "Acceptance Review", "Near-final"],

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import logging
 import re
 from collections import Counter
 from typing import Any
@@ -10,6 +11,9 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import AuthorDraft, ChapterGoal, ChapterMemory, ChapterState, FinalScene, SceneCard, SceneRunState
 from novel_system.services.errors import DomainError
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 QUALITY_DIMENSIONS: tuple[str, ...] = (
@@ -68,6 +72,15 @@ STYLE_WEIGHT_ADJUSTMENTS: dict[str, dict[str, float]] = {
     "wuxia": {"image_homogeneity": 0.8, "decorative_imagery": 0.7},
 }
 """Multipliers applied to base weights per writing style, then renormalized to sum=1.0."""
+
+
+# Deterministic prose signals can reject obvious failure modes, but they cannot
+# establish literary excellence.  Automated results therefore have an explicit
+# ceiling below a human judgment and are never policy evidence on their own.
+AUTOMATED_DIAGNOSTIC_CEILING = 0.89
+AUTOMATED_EVIDENCE_TARGET_CHARS = 80
+AUTOMATED_EVIDENCE_TARGET_SENTENCES = 3
+AUTOMATED_EVIDENCE_SIGNAL = "automated_evidence_sufficiency"
 
 
 def _renormalize_weights(weights: dict[str, float]) -> dict[str, float]:
@@ -130,7 +143,11 @@ def get_dimension_weights(
                     if not overrides:
                         style_tag = pj.get("style_tag")
         except Exception:
-            pass  # DB lookup is best-effort; fall back to defaults
+            _LOGGER.warning(
+                "Style-bound literary weights lookup degraded project_id=%s",
+                project_id,
+                exc_info=True,
+            )
 
     # --- apply overrides as multipliers ---
     if isinstance(overrides, dict) and overrides:
@@ -779,7 +796,14 @@ class LiteraryQualityService:
             source_ref=source["source_ref"],
         )
         fingerprint = fingerprint_literary_quality(text)
-        score = round(sum(signals[dimension]["score"] * DIMENSION_WEIGHTS[dimension] for dimension in QUALITY_DIMENSIONS), 4)
+        raw_score = round(
+            sum(signals[dimension]["score"] * DIMENSION_WEIGHTS[dimension] for dimension in QUALITY_DIMENSIONS),
+            4,
+        )
+        automated_assessment = automated_diagnostic_assessment(
+            text,
+            raw_diagnostic_score=raw_score,
+        )
         return {
             "object_type": object_type,
             "object_id": object_id,
@@ -787,7 +811,8 @@ class LiteraryQualityService:
             "scene_id": scene_id,
             "text_layer": source["text_layer"],
             "source_ref": source["source_ref"],
-            "score": score,
+            "score": automated_assessment["score"],
+            "automated_assessment": automated_assessment,
             "signals": signals,
             "findings": findings,
             "fingerprint": fingerprint,
@@ -976,6 +1001,14 @@ def analyze_literary_quality(
 
     for dimension in QUALITY_DIMENSIONS:
         signals.setdefault(dimension, {"risk": False, "score": 1.0, "evidence": ""})
+    evidence_sufficiency = automated_evidence_sufficiency(normalized)
+    signals[AUTOMATED_EVIDENCE_SIGNAL] = {
+        "risk": evidence_sufficiency < 1.0,
+        "score": evidence_sufficiency,
+        "evidence": _evidence_sufficiency_label(normalized),
+        "diagnostic_only": True,
+        "human_judgment_required": True,
+    }
     return signals, findings
 
 
@@ -1043,21 +1076,86 @@ def adversarial_rank_score(
     *,
     weights: dict[str, float] | None = None,
 ) -> float:
-    """0-1 score across adversarial dims only. Higher = fewer AI-flavor signals.
+    """Diagnostic floor score across adversarial dimensions.
 
-    *weights* — optional dimension weight dict (e.g. from :func:`get_dimension_weights`).
-    When ``None``, the static ``DIMENSION_WEIGHTS`` constant is used.
+    Higher means fewer *known deterministic failure signals*; it does not mean
+    better literature.  The score is evidence-adjusted and capped below 1.0 so
+    a keyword/action-word bundle cannot masquerade as a human upper-bound
+    judgment.  Candidate terminal selection remains a human decision.
     """
     if not text or not text.strip():
         return 0.0
     effective = weights if weights is not None else DIMENSION_WEIGHTS
     signals, _ = analyze_literary_quality(text)
     total_w = sum(effective.get(d, 0.0) for d in ADVERSARIAL_DIMS)
-    if total_w <= 0.0:
-        return 1.0
-    return round(
+    raw_score = 1.0 if total_w <= 0.0 else round(
         sum(signals.get(d, {}).get("score", 1.0) * effective.get(d, 0.0) for d in ADVERSARIAL_DIMS) / total_w,
         4,
+    )
+    return automated_diagnostic_assessment(
+        text,
+        raw_diagnostic_score=raw_score,
+    )["score"]
+
+
+def automated_evidence_sufficiency(text: str) -> float:
+    """Estimate whether there is enough prose to interpret heuristic signals.
+
+    This intentionally measures evidence volume/shape, not literary merit.
+    Short cue lists such as "必须选择，付出代价，她推开门" cannot produce a
+    high-confidence automated judgment merely by containing expected words.
+    """
+    normalized = _compact_ws(text)
+    if not normalized:
+        return 0.0
+    substantive_chars = len(re.findall(r"[A-Za-z0-9\u4e00-\u9fff]", normalized))
+    sentence_count = len(_sentences(normalized))
+    char_coverage = min(1.0, substantive_chars / AUTOMATED_EVIDENCE_TARGET_CHARS)
+    sentence_coverage = min(1.0, sentence_count / AUTOMATED_EVIDENCE_TARGET_SENTENCES)
+    # Either enough sustained prose *or* enough sentence-level structure makes
+    # the diagnostic usable.  Requiring both would unfairly punish a deliberate
+    # long-sentence style; the human-evidence ceiling still prevents either
+    # shape from being mistaken for literary excellence.
+    return round(max(char_coverage, sentence_coverage), 4)
+
+
+def automated_diagnostic_assessment(
+    text: str,
+    *,
+    raw_diagnostic_score: float,
+) -> dict[str, Any]:
+    """Attach honest scope and a human-evidence ceiling to an automatic score."""
+    if not text or not text.strip():
+        evidence_sufficiency = 0.0
+        score = 0.0
+    else:
+        evidence_sufficiency = automated_evidence_sufficiency(text)
+        evidence_multiplier = 0.35 + (0.65 * evidence_sufficiency)
+        score = round(
+            min(
+                AUTOMATED_DIAGNOSTIC_CEILING,
+                max(0.0, min(1.0, float(raw_diagnostic_score))) * evidence_multiplier,
+            ),
+            4,
+        )
+    return {
+        "score": score,
+        "raw_diagnostic_score": round(max(0.0, min(1.0, float(raw_diagnostic_score))), 4),
+        "evidence_sufficiency": evidence_sufficiency,
+        "automated_ceiling": AUTOMATED_DIAGNOSTIC_CEILING,
+        "scope": "diagnostic_floor_only",
+        "human_judgment_required": True,
+        "policy_evidence_eligible": False,
+        "upper_bound_requires": "frozen_hidden_human_evidence",
+    }
+
+
+def _evidence_sufficiency_label(text: str) -> str:
+    substantive_chars = len(re.findall(r"[A-Za-z0-9\u4e00-\u9fff]", text))
+    sentence_count = len(_sentences(text))
+    return (
+        f"{substantive_chars} substantive characters; {sentence_count} sentence units; "
+        f"targets={AUTOMATED_EVIDENCE_TARGET_CHARS}/{AUTOMATED_EVIDENCE_TARGET_SENTENCES}"
     )
 
 

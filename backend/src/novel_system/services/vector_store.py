@@ -123,6 +123,7 @@ class _DeterministicEmbeddingFunction:
 class ChromaVectorStore:
     def __init__(self, persist_directory: Path) -> None:
         _ensure_backend_runtime_supported("chroma")
+        persist_directory.mkdir(parents=True, exist_ok=True)
         try:
             import chromadb
         except ImportError as exc:

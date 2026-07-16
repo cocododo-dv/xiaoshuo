@@ -134,9 +134,35 @@ const M_BODY = {
    （WsManuStore ← GET /chapter-manuscripts/{id}，服务端以 FinalScene 归档行
    为源）。localStorage 的 wr-doc:* 是写作器编辑缓存，不再作为成稿正文来源
    ——清缓存不丢稿的前提是稿在后端。 ---------- */
+function manuSnapshotOf(catCh) {
+  if (!catCh || !catCh.backendId || !WsManuStore) return { status: "idle", body: null, error: null };
+  if (WsManuStore.snapshot) return WsManuStore.snapshot(catCh.backendId);
+  const body = WsManuStore.body ? WsManuStore.body(catCh.backendId) : null;
+  return body ? { status: "ready", body, error: null } : { status: "idle", body: null, error: null };
+}
+
+function manuCanonicalComplete(snapshot) {
+  const body = snapshot && snapshot.body;
+  return !!(
+    snapshot && snapshot.status === "ready" && body
+    && body.completion === "complete"
+    && Array.isArray(body.missingSceneIds)
+    && body.missingSceneIds.length === 0
+  );
+}
+
+function manuCanonicalBlockReason(snapshot) {
+  if (!snapshot || snapshot.status === "idle") return "正在等待服务端正文核验。";
+  if (snapshot.status === "loading") return "正在从服务端加载权威正文。";
+  if (snapshot.status === "error") return (snapshot.error && snapshot.error.message) || "服务端正文加载失败，请重试。";
+  const missing = (snapshot.body && snapshot.body.missingSceneIds) || [];
+  if (missing.length) return `服务端仍缺 ${missing.length} 场归档正文。`;
+  return "服务端尚未将本章标记为可流转稿。";
+}
+
 function manuArchivedParas(catCh, s) {
   if (!catCh || !catCh.backendId || !s || !s.backendId || !WsManuStore) return null;
-  const ms = WsManuStore.body(catCh.backendId);
+  const ms = manuSnapshotOf(catCh).body;
   if (!ms) return null;
   const hit = (ms.scenes || []).find(x => x.sceneId === s.backendId);
   return hit && hit.live && hit.paras.length ? hit.paras : null;
@@ -148,17 +174,44 @@ function manuDramaOf(c) {
   if (!pick(d.promise) && !pick(d.spine) && !pick(d.arc) && !pick(d.aftertaste)) return null;
   return { promise: pick(d.promise), thrust: pick(d.spine), turn: pick(d.arc), after: pick(d.aftertaste) };
 }
-/* 章正文：唯一来源=后端归档聚合；潮汐档案种子章回落到演示归档 */
-function manuBuildBody(catCh, isTide) {
+/* 有 backendId 时只认服务端权威稿；演示种子只能服务于“尚未同步”的纯演示章。 */
+function manuBuildBody(catCh, isTide, suppliedSnapshot) {
   if (!catCh) return null;
-  const scenes = [];
-  (catCh.scenes || []).forEach((s, i) => {
-    const paras = manuArchivedParas(catCh, s);
-    if (paras) scenes.push({ idx: String(i + 1).padStart(2, "0"), title: s.title, paras, live: true });
-  });
-  if (scenes.length) return { drama: manuDramaOf(catCh), scenes, live: true };
+  if (catCh.backendId) {
+    const snapshot = suppliedSnapshot || manuSnapshotOf(catCh);
+    if (!snapshot || snapshot.status !== "ready" || !snapshot.body) return null;
+    const ms = snapshot.body;
+    const archived = ms.scenes || [];
+    const catalogScenes = catCh.scenes || [];
+    const missingIds = new Set(ms.missingSceneIds || []);
+    const source = catalogScenes.length ? catalogScenes : archived;
+    const scenes = source.map((scene, i) => {
+      const catalogShape = catalogScenes.length > 0;
+      const sceneId = catalogShape ? scene.backendId : scene.sceneId;
+      const hit = catalogShape
+        ? (sceneId ? archived.find(entry => entry.sceneId === sceneId) : archived[i])
+        : scene;
+      const live = !!(hit && hit.live && hit.paras && hit.paras.length);
+      return {
+        idx: String(i + 1).padStart(2, "0"),
+        title: scene.title || `场景 ${i + 1}`,
+        sceneId: sceneId || (hit && hit.sceneId) || null,
+        paras: live ? hit.paras : [],
+        live,
+        missing: !live || (!!sceneId && missingIds.has(sceneId)),
+      };
+    });
+    return {
+      drama: manuDramaOf(catCh),
+      scenes,
+      live: scenes.some(scene => scene.live),
+      completion: ms.completion,
+      missingSceneIds: [...missingIds],
+      complete: manuCanonicalComplete(snapshot),
+    };
+  }
   const seed = isTide ? M_BODY[catCh.id] : null;
-  if (seed) return { ...seed, drama: seed.drama || manuDramaOf(catCh) };
+  if (seed) return { ...seed, drama: seed.drama || manuDramaOf(catCh), complete: true, demo: true };
   return null;
 }
 /* ---------- 导出：编译真实内容并下载 ---------- */
@@ -178,6 +231,21 @@ async function manuRefreshChapters(catChs, scopeIds) {
   if (!WsManuStore) return;
   const targets = (catChs || []).filter(c => scopeIds.includes(c.id) && c.backendId);
   await Promise.all(targets.map(c => WsManuStore.refresh(c.backendId)));
+}
+
+function manuScopeProblem(catChs, scopeIds) {
+  const selected = (catChs || []).filter(c => scopeIds.includes(c.id));
+  if (!selected.length) return "该范围内没有章节。";
+  const unsynced = selected.filter(c => !c.backendId);
+  if (unsynced.length) return `有 ${unsynced.length} 章尚未同步到服务端。`;
+  const snapshots = selected.map(manuSnapshotOf);
+  const failed = snapshots.find(snapshot => snapshot.status === "error");
+  if (failed) return (failed.error && failed.error.message) || "服务端正文加载失败。";
+  const pending = snapshots.filter(snapshot => snapshot.status === "idle" || snapshot.status === "loading");
+  if (pending.length) return `正在核验 ${pending.length} 章服务端正文…`;
+  const incomplete = snapshots.filter(snapshot => !manuCanonicalComplete(snapshot));
+  if (incomplete.length) return `有 ${incomplete.length} 章仍缺场景正文，暂不能导出。`;
+  return "";
 }
 
 function manuCompile(book, catChs, scopeIds, fmt, opts, isTide) {
@@ -284,7 +352,13 @@ function WsManuscripts({ go }) {
   });
   const [view, setView] = useSt9("read");
   const [returnOpen, setReturnOpen] = useSt9(false);
+  const [approvalOpen, setApprovalOpen] = useSt9(false);
+  const [reopenOpen, setReopenOpen] = useSt9(false);
   const [aggregateState, setAggregateState] = useSt9({ busy: false, error: "", note: "" });
+  const [workflowState, setWorkflowState] = useSt9({ busy: false, error: "", note: "" });
+  const [chapterExportState, setChapterExportState] = useSt9({ busy: false, error: "", note: "" });
+  const chapterExportBusyRef = useRef9(false);
+  const chapterExportTokenRef = useRef9(0);
   const picked = chs.find(c => c.id === pickedId) || chs[0];
   const catPicked = (catChs || []).find(c => c.id === (picked && picked.id)) || null;
   /* Wave 1 换源：选中章拉后端归档聚合；loaded 事件驱动重渲染（store 同步缓存） */
@@ -299,18 +373,33 @@ function WsManuscripts({ go }) {
     window.addEventListener("ws:manuscripts-loaded", onLoaded);
     return () => window.removeEventListener("ws:manuscripts-loaded", onLoaded);
   }, []);
-  /* 正文：唯一来源=后端归档聚合，潮汐档案种子章回落演示归档 */
-  const body = catPicked ? manuBuildBody(catPicked, isTide) : (isTide ? M_BODY[pickedId] : null);
-  /* 状态流转：全部写穿目录单一真相源；批准时盖上真实时间戳 */
-  const setChapterState = (id, state) => {
-    if (!WsCatalog) return;
-    WsCatalog.set(WsCatalog.get().map(c => (c.id === id ? { ...c, state, ...(state === "approved" ? { approvedAt: Date.now() } : {}) } : c)));
+  const canonical = manuSnapshotOf(catPicked);
+  const canonicalComplete = manuCanonicalComplete(canonical);
+  const canonicalBlockReason = manuCanonicalBlockReason(canonical);
+  /* 有服务端章节时，正文只能来自权威聚合；error 不得退回演示稿。 */
+  const body = catPicked ? manuBuildBody(catPicked, isTide, canonical) : (isTide ? M_BODY[pickedId] : null);
+  const projectId = WsWorks ? WsWorks.activeId() : null;
+  const refreshWorkflowSources = async (chapterId) => {
+    if (WsCatalog && WsCatalog.__refresh) await WsCatalog.__refresh(projectId);
+    if (WsWorks && WsWorks.__refresh) await WsWorks.__refresh();
+    if (chapterId && WsManuStore) await WsManuStore.refresh(chapterId);
+    manuBump(n => n + 1);
   };
   /* 送审闸门：由控制塔下发的章，章级审计（跨场连续性）未过时不默认放行 */
   const auditPending = (c) => { try { return !!(c && isTide && parseInt(c.n, 10) === 9 && window.Lf7Bridge && !window.Lf7Bridge.isArchived(9) && window.Lf7Bridge.state().handoff9); } catch (e) { return false; } };
   const [gateArm, setGateArm] = useSt9(false);
   useEf9(() => { setGateArm(false); }, [pickedId]);
   useEf9(() => { setAggregateState({ busy: false, error: "", note: "" }); }, [pickedId]);
+  useEf9(() => {
+    chapterExportTokenRef.current += 1;
+    chapterExportBusyRef.current = false;
+    setChapterExportState({ busy: false, error: "", note: "" });
+  }, [pickedId]);
+  useEf9(() => {
+    setWorkflowState({ busy: false, error: "", note: "" });
+    setApprovalOpen(false);
+    setReopenOpen(false);
+  }, [pickedId]);
   const aggregateChapter = async () => {
     if (!catPicked || !catPicked.backendId || !WsManuStore || aggregateState.busy) return;
     setAggregateState({ busy: true, error: "", note: "" });
@@ -323,15 +412,44 @@ function WsManuscripts({ go }) {
       setAggregateState({ busy: false, error: (e && e.message) || "章节汇总失败", note: "" });
     }
   };
-  const submitToReview = () => {
+  const retryCanonical = async () => {
+    if (!catPicked || !catPicked.backendId || !WsManuStore) return;
+    await WsManuStore.refresh(catPicked.backendId);
+    manuBump(n => n + 1);
+  };
+  const submitToReview = async () => {
     if (!picked) return;
+    const currentCanonical = manuSnapshotOf(catPicked);
+    if (!manuCanonicalComplete(currentCanonical)) {
+      setWorkflowState({ busy: false, error: `${manuCanonicalBlockReason(currentCanonical)}送审已暂停。`, note: "" });
+      return;
+    }
     if (auditPending(picked) && !gateArm) { setGateArm(true); return; }
+    if (!projectId || !catPicked || !catPicked.backendId || !WsManuStore) {
+      setWorkflowState({ busy: false, error: "章节尚未同步到服务端，暂时不能送审。", note: "" });
+      return;
+    }
     setGateArm(false);
-    setChapterState(picked.id, "review");
+    setWorkflowState({ busy: true, error: "", note: "" });
+    try {
+      await WsManuStore.setReviewState(projectId, catPicked.backendId, "review");
+      await refreshWorkflowSources(catPicked.backendId);
+      setWorkflowState({ busy: false, error: "", note: "已送入审阅；状态已由服务端确认。" });
+    } catch (e) {
+      setWorkflowState({ busy: false, error: (e && e.message) || "送审失败。", note: "" });
+    }
   };
   /* 退回小修 = 理由 + 定位 + 待办，三者缺一不可；可顺手直达写作台深改姿态 */
-  const doReturn = ({ reason, sid, sceneTitle, openDeep }) => {
-    setChapterState(picked.id, "draft");
+  const doReturn = async ({ reason, sid, sceneTitle, openDeep }) => {
+    if (!projectId || !catPicked || !catPicked.backendId || !WsManuStore || workflowState.busy) return;
+    setWorkflowState({ busy: true, error: "", note: "" });
+    try {
+      await WsManuStore.setReviewState(projectId, catPicked.backendId, "draft");
+      await refreshWorkflowSources(catPicked.backendId);
+    } catch (e) {
+      setWorkflowState({ busy: false, error: (e && e.message) || "退回小修失败。", note: "" });
+      return;
+    }
     if (rvPush) rvPush({
       kind: "qc", priority: 1,
       title: `第 ${picked.n} 章退回小修：${picked.title}`,
@@ -345,6 +463,7 @@ function WsManuscripts({ go }) {
       ],
     });
     setReturnOpen(false);
+    setWorkflowState({ busy: false, error: "", note: "已退回草稿，并生成修订待办。" });
     if (openDeep && go) {
       go("writer");
       setTimeout(() => {
@@ -354,10 +473,61 @@ function WsManuscripts({ go }) {
     }
   };
 
+  const approveFinal = async ({ readNote, revisionNotes }) => {
+    if (!projectId || !catPicked || !catPicked.backendId || !WsManuStore || workflowState.busy) return;
+    const currentCanonical = manuSnapshotOf(catPicked);
+    if (!manuCanonicalComplete(currentCanonical)) {
+      setWorkflowState({ busy: false, error: `${manuCanonicalBlockReason(currentCanonical)}通读确认与批准已暂停。`, note: "" });
+      return;
+    }
+    setWorkflowState({ busy: true, error: "", note: "" });
+    try {
+      await WsManuStore.confirmRead(projectId, catPicked.backendId, readNote);
+      await WsManuStore.approveFinal(projectId, catPicked.backendId, revisionNotes);
+      await refreshWorkflowSources(catPicked.backendId);
+      setApprovalOpen(false);
+      setWorkflowState({ busy: false, error: "", note: "终稿已由服务端批准并锁定。" });
+    } catch (e) {
+      setWorkflowState({ busy: false, error: (e && e.message) || "终稿批准失败。", note: "" });
+    }
+  };
+
+  const reopenFinal = async ({ reason }) => {
+    if (!projectId || !catPicked || !catPicked.backendId || !WsManuStore || workflowState.busy) return;
+    setWorkflowState({ busy: true, error: "", note: "" });
+    try {
+      await WsManuStore.reopenFinal(projectId, catPicked.backendId, reason);
+      await refreshWorkflowSources(catPicked.backendId);
+      setReopenOpen(false);
+      setWorkflowState({ busy: false, error: "", note: "终稿已重新打开；受影响的后续批准已由服务端撤销。" });
+    } catch (e) {
+      setWorkflowState({ busy: false, error: (e && e.message) || "重新打开终稿失败。", note: "" });
+    }
+  };
+
   const exportChapter = async (c) => {
-    await manuRefreshChapters(catChs, [c.id]);
-    const out = manuCompile({ title: `${book.title} · 第 ${c.n} 章 ${c.title}`, kind: book.kind }, catChs || [], [c.id], "md", { toc: false, appendix: false }, isTide);
-    manuDownload(out.name, out.content, out.mime);
+    if (!c || chapterExportBusyRef.current) return;
+    if (!canonicalComplete) {
+      setChapterExportState({ busy: false, error: `${canonicalBlockReason}导出已暂停。`, note: "" });
+      return;
+    }
+    chapterExportBusyRef.current = true;
+    const token = chapterExportTokenRef.current + 1;
+    chapterExportTokenRef.current = token;
+    setChapterExportState({ busy: true, error: "", note: "" });
+    try {
+      await manuRefreshChapters(catChs, [c.id]);
+      const refreshedChapter = (catChs || []).find(chapter => chapter.id === c.id);
+      const refreshed = manuSnapshotOf(refreshedChapter);
+      if (!manuCanonicalComplete(refreshed)) throw new Error(manuCanonicalBlockReason(refreshed));
+      const out = manuCompile({ title: `${book.title} · 第 ${c.n} 章 ${c.title}`, kind: book.kind }, catChs || [], [c.id], "md", { toc: false, appendix: false }, isTide);
+      if (!manuDownload(out.name, out.content, out.mime)) throw new Error("浏览器未能生成下载文件。");
+      if (chapterExportTokenRef.current === token) setChapterExportState({ busy: false, error: "", note: "本章已导出。" });
+    } catch (e) {
+      if (chapterExportTokenRef.current === token) setChapterExportState({ busy: false, error: (e && e.message) || "本章导出失败。", note: "" });
+    } finally {
+      if (chapterExportTokenRef.current === token) chapterExportBusyRef.current = false;
+    }
   };
 
   // 选中没有正文/对比能力的章节时，回退到「正文」标签
@@ -457,38 +627,49 @@ function WsManuscripts({ go }) {
               )}
             </div>
           </header>
-          {(aggregateState.error || aggregateState.note) && (
-            <div role={aggregateState.error ? "alert" : "status"} style={{ margin: "0 18px 10px", color: aggregateState.error ? "var(--crimson)" : "var(--sage)", fontSize: 12.5 }}>
-              {aggregateState.error || aggregateState.note}
+          {(aggregateState.error || aggregateState.note || workflowState.error || workflowState.note || chapterExportState.error || chapterExportState.note) && (
+            <div role={(aggregateState.error || workflowState.error || chapterExportState.error) ? "alert" : "status"} style={{ margin: "0 18px 10px", color: (aggregateState.error || workflowState.error || chapterExportState.error) ? "var(--crimson)" : "var(--sage)", fontSize: 12.5 }}>
+              {workflowState.error || chapterExportState.error || aggregateState.error || workflowState.note || chapterExportState.note || aggregateState.note}
             </div>
+          )}
+          {catPicked && catPicked.backendId && (picked.state === "writing" || view !== "read") && canonical.status === "error" && (
+            <div className="ms-inline-error" role="alert">
+              <span>{(canonical.error && canonical.error.message) || "服务端正文加载失败。"}</span>
+              <button className="btn btn-ghost btn-sm" type="button" onClick={retryCanonical}><I.Refresh size={13} /> 重试加载</button>
+            </div>
+          )}
+          {catPicked && catPicked.backendId && (picked.state === "writing" || view !== "read") && (canonical.status === "idle" || canonical.status === "loading") && (
+            <div className="ms-canonical-loading" role="status"><I.Refresh size={13} className="sf-spin" /> 正在从服务端核验本章正文…</div>
           )}
 
           {picked.state === "writing"
-            ? <ManuWriting picked={picked} go={go} gate={auditPending(picked) ? (gateArm ? "armed" : "pending") : null} onSubmit={submitToReview} />
+            ? <ManuWriting picked={picked} go={go} gate={auditPending(picked) ? (gateArm ? "armed" : "pending") : null} onSubmit={submitToReview} canSubmit={canonicalComplete && !workflowState.busy} blockReason={canonicalBlockReason} />
             : (
               <>
-                {view === "read"      && <ManuRead picked={picked} body={body} />}
+                {view === "read"      && <ManuRead picked={picked} body={body} loadState={canonical} onRetry={retryCanonical} />}
                 {view === "structure" && <ManuStructure picked={picked} body={body} catCh={catPicked} />}
                 {view === "diff"      && <ManuDiff picked={picked} catCh={catPicked} />}
               </>
             )}
 
           <footer className="ms-reader-foot">
-            <ManuFootNote picked={picked} />
+            <ManuFootNote picked={picked} canonical={canonical} canonicalComplete={canonicalComplete} />
             <div className="flex gap-2">
               {picked.state === "review" && (
                 <>
-                  <button className="btn btn-ghost" onClick={() => setReturnOpen(true)}>退回小修</button>
-                  <button className="btn btn-accent" onClick={() => setChapterState(picked.id, "approved")}><I.Check size={14} /> 批准为终稿</button>
+                  <button className="btn btn-ghost" disabled={workflowState.busy} onClick={() => setReturnOpen(true)}>退回小修</button>
+                  <button className="btn btn-accent" data-testid="approve-final-open" disabled={workflowState.busy || !canonicalComplete} title={!canonicalComplete ? canonicalBlockReason : undefined} onClick={() => setApprovalOpen(true)}><I.Check size={14} /> 批准为终稿</button>
                 </>
               )}
               {picked.state === "draft" && (
-                <button className="btn btn-accent" onClick={() => setChapterState(picked.id, "review")}>送入审阅</button>
+                <button className="btn btn-accent" disabled={workflowState.busy || !canonicalComplete} title={!canonicalComplete ? canonicalBlockReason : undefined} onClick={submitToReview}>送入审阅</button>
               )}
               {picked.state === "approved" && (
                 <>
-                  <button className="btn btn-quiet btn-sm" onClick={() => exportChapter(picked)}><I.Download size={13} /> 导出本章</button>
-                  <button className="btn btn-ghost" onClick={() => setChapterState(picked.id, "draft")}><I.Refresh size={13} /> 重新打开</button>
+                  <button className="btn btn-quiet btn-sm" data-testid="chapter-export" disabled={chapterExportState.busy || !canonicalComplete} title={!canonicalComplete ? canonicalBlockReason : undefined} onClick={() => exportChapter(picked)}>
+                    {chapterExportState.busy ? <I.Refresh size={13} className="sf-spin" /> : <I.Download size={13} />} {chapterExportState.busy ? "导出中…" : "导出本章"}
+                  </button>
+                  <button className="btn btn-ghost" data-testid="reopen-final-open" disabled={workflowState.busy || !catPicked || !catPicked.backendId} onClick={() => setReopenOpen(true)}><I.Refresh size={13} /> 重新打开</button>
                 </>
               )}
               {picked.state === "writing" && (
@@ -499,7 +680,9 @@ function WsManuscripts({ go }) {
         </section>
       </div>
 
-      {returnOpen && <ManuReturnModal picked={picked} catCh={catPicked} onClose={() => setReturnOpen(false)} onConfirm={doReturn} />}
+      {returnOpen && <ManuReturnModal picked={picked} catCh={catPicked} busy={workflowState.busy} error={workflowState.error} onClose={() => !workflowState.busy && setReturnOpen(false)} onConfirm={doReturn} />}
+      {approvalOpen && <ManuApprovalModal picked={picked} busy={workflowState.busy} error={workflowState.error} onClose={() => !workflowState.busy && setApprovalOpen(false)} onConfirm={approveFinal} />}
+      {reopenOpen && <ManuReopenModal picked={picked} busy={workflowState.busy} error={workflowState.error} onClose={() => !workflowState.busy && setReopenOpen(false)} onConfirm={reopenFinal} />}
     </div>
   );
 }
@@ -574,8 +757,9 @@ function ManuExport({ ctx }) {
   const [scope, setScope] = useSt9("approved");
   const [toc, setToc] = useSt9(true);
   const [appendix, setAppendix] = useSt9(false);
-  const [done, setDone] = useSt9("");
+  const [exportState, setExportState] = useSt9({ busy: false, error: "", note: "" });
   const ref = useRef9(null);
+  const exportBusyRef = useRef9(false);
 
   useEf9(() => {
     if (!open) return;
@@ -591,15 +775,41 @@ function ManuExport({ ctx }) {
     scope === "current"  ? (pickedId ? [pickedId] : []) :
     chs.map(c => c.id);
   const scopeWords = chs.filter(c => scopeIds.includes(c.id)).reduce((s, c) => s + (c.words || 0), 0);
-  const canExport = scopeIds.length > 0;
+  const scopeKey = scopeIds.join("|");
+  const scopeProblem = manuScopeProblem(catChs, scopeIds);
+  const canExport = scopeIds.length > 0 && !scopeProblem && !exportState.busy;
+
+  /* 弹层打开/范围切换时先水合所有目标章，生成按钮只在服务端逐章确认后放行。 */
+  useEf9(() => {
+    if (!open) return undefined;
+    let live = true;
+    setExportState({ busy: true, error: "", note: "" });
+    manuRefreshChapters(catChs, scopeIds).then(() => {
+      if (!live) return;
+      const problem = manuScopeProblem(catChs, scopeIds);
+      setExportState({ busy: false, error: problem, note: problem ? "" : "服务端正文已核验。" });
+    }).catch((e) => {
+      if (live) setExportState({ busy: false, error: (e && e.message) || "导出前核验失败。", note: "" });
+    });
+    return () => { live = false; };
+  }, [open, scopeKey]); // eslint-disable-line
 
   const run = async () => {
-    if (!canExport) return;
-    await manuRefreshChapters(catChs, scopeIds);
-    const out = manuCompile(book, catChs, scopeIds, fmt, { toc, appendix }, isTide);
-    if (manuDownload(out.name, out.content, out.mime)) {
-      setDone(`已生成「${out.name}」`);
-      setTimeout(() => { setDone(""); setOpen(false); }, 1400);
+    if (!canExport || exportBusyRef.current) return;
+    exportBusyRef.current = true;
+    setExportState({ busy: true, error: "", note: "" });
+    try {
+      await manuRefreshChapters(catChs, scopeIds);
+      const problem = manuScopeProblem(catChs, scopeIds);
+      if (problem) throw new Error(problem);
+      const out = manuCompile(book, catChs, scopeIds, fmt, { toc, appendix }, isTide);
+      if (!manuDownload(out.name, out.content, out.mime)) throw new Error("浏览器未能生成下载文件。");
+      setExportState({ busy: false, error: "", note: `已生成「${out.name}」` });
+      setTimeout(() => { setExportState({ busy: false, error: "", note: "" }); setOpen(false); }, 1400);
+    } catch (e) {
+      setExportState({ busy: false, error: (e && e.message) || "导出失败。", note: "" });
+    } finally {
+      exportBusyRef.current = false;
     }
   };
 
@@ -615,9 +825,9 @@ function ManuExport({ ctx }) {
           <div className="ms-export-field">
             <div className="ms-export-lab">范围</div>
             <div className="seg seg-block">
-              <button className={`seg-btn ${scope === "all" ? "is-active" : ""}`} onClick={() => setScope("all")}>全书</button>
-              <button className={`seg-btn ${scope === "approved" ? "is-active" : ""}`} onClick={() => setScope("approved")}>仅已批准 · {approvedIds.length}</button>
-              <button className={`seg-btn ${scope === "current" ? "is-active" : ""}`} onClick={() => setScope("current")}>当前章</button>
+              <button className={`seg-btn ${scope === "all" ? "is-active" : ""}`} disabled={exportState.busy} onClick={() => setScope("all")}>全书</button>
+              <button className={`seg-btn ${scope === "approved" ? "is-active" : ""}`} disabled={exportState.busy} onClick={() => setScope("approved")}>仅已批准 · {approvedIds.length}</button>
+              <button className={`seg-btn ${scope === "current" ? "is-active" : ""}`} disabled={exportState.busy} onClick={() => setScope("current")}>当前章</button>
             </div>
           </div>
 
@@ -625,20 +835,25 @@ function ManuExport({ ctx }) {
             <div className="ms-export-lab">格式</div>
             <div className="seg seg-block">
               {[["md","Markdown"],["txt","纯文本"],["doc","Word"]].map(([k, l]) => (
-                <button key={k} className={`seg-btn ${fmt === k ? "is-active" : ""}`} onClick={() => setFmt(k)}>{l}</button>
+                <button key={k} className={`seg-btn ${fmt === k ? "is-active" : ""}`} disabled={exportState.busy} onClick={() => setFmt(k)}>{l}</button>
               ))}
             </div>
           </div>
 
           <div className="ms-export-field">
             <div className="ms-export-lab">选项</div>
-            <label className="ms-export-opt"><input type="checkbox" checked={toc} onChange={e => setToc(e.target.checked)} /> 生成目录</label>
-            <label className="ms-export-opt"><input type="checkbox" checked={appendix} onChange={e => setAppendix(e.target.checked)} /> 附戏剧卡附录</label>
+            <label className="ms-export-opt"><input type="checkbox" checked={toc} disabled={exportState.busy} onChange={e => setToc(e.target.checked)} /> 生成目录</label>
+            <label className="ms-export-opt"><input type="checkbox" checked={appendix} disabled={exportState.busy} onChange={e => setAppendix(e.target.checked)} /> 附戏剧卡附录</label>
           </div>
 
+          {exportState.error && <div className="ms-export-error" role="alert">{exportState.error}</div>}
           <div className="ms-export-foot">
-            <span className="text-muted text-xs">{done || (canExport ? `约 ${scopeWords.toLocaleString()} 字 · ${scopeIds.length} 章` : "该范围内没有章节")}</span>
-            <button className="btn btn-accent btn-sm" disabled={!canExport} onClick={run}><I.Download size={13} /> 生成并下载</button>
+            <span className="text-muted text-xs" role={exportState.busy || exportState.note ? "status" : undefined}>
+              {exportState.busy ? "正在核验服务端正文…" : exportState.note || (!scopeProblem ? `约 ${scopeWords.toLocaleString()} 字 · ${scopeIds.length} 章` : scopeProblem)}
+            </span>
+            <button className="btn btn-accent btn-sm" data-testid="manuscript-export-run" disabled={!canExport} onClick={run}>
+              {exportState.busy ? <I.Refresh size={13} className="sf-spin" /> : <I.Download size={13} />} {exportState.busy ? "核验中…" : "生成并下载"}
+            </button>
           </div>
         </div>
       )}
@@ -652,7 +867,16 @@ function ManuState({ s, big }) {
   return <span className={`pill pill-${m.tone} ${big ? "" : "text-xs"}`}><span className="pill-dot" />{m.label}</span>;
 }
 
-function ManuFootNote({ picked }) {
+function ManuFootNote({ picked, canonical, canonicalComplete }) {
+  if (!canonicalComplete) {
+    const missing = (canonical && canonical.body && canonical.body.missingSceneIds) || [];
+    const text = canonical && canonical.status === "error"
+      ? "未能核验服务端正文；送审、通读确认、批准与导出已暂停。"
+      : missing.length
+        ? `服务端仍缺 ${missing.length} 场正文；送审、通读确认、批准与导出已暂停。`
+        : "正在核验服务端正文；流转与导出暂不可用。";
+    return <div className="text-muted text-sm">{text}</div>;
+  }
   const note = {
     approved: <span><I.Lock size={12} style={{verticalAlign:"-2px"}} /> 已锁定终稿 · 不可编辑。需要修改请「重新打开」或回到章节编排。</span>,
     review:   <span>{picked.scenes} 场已成稿。检查无误后批准为终稿，章节将汇入整书。</span>,
@@ -663,30 +887,52 @@ function ManuFootNote({ picked }) {
 }
 
 /* ---------- 正文阅读器 ---------- */
-function ManuRead({ picked, body }) {
-  if (!body || !body.scenes) {
-    return <div className="ms-empty"><I.BookOpen size={26} /><div>本章正文尚未归档。</div></div>;
+function ManuRead({ picked, body, loadState, onRetry }) {
+  if (loadState && loadState.status === "error") {
+    return (
+      <div className="ms-empty ms-canonical-error" role="alert">
+        <I.AlertTriangle size={26} />
+        <div>服务端正文加载失败</div>
+        <p>{(loadState.error && loadState.error.message) || "暂时无法核验本章权威稿。"}</p>
+        <button className="btn btn-ghost btn-sm" type="button" data-testid="manuscript-retry" onClick={onRetry}><I.Refresh size={13} /> 重试加载</button>
+      </div>
+    );
   }
+  if (!body || !body.scenes) {
+    const loading = loadState && (loadState.status === "idle" || loadState.status === "loading");
+    return <div className="ms-empty" role="status"><I.BookOpen size={26} /><div>{loading ? "正在从服务端核验本章正文…" : "本章正文尚未归档。"}</div></div>;
+  }
+  const missingCount = Math.max(
+    (body.missingSceneIds || []).length,
+    (body.scenes || []).filter(scene => scene.missing).length,
+  );
   return (
     <article className="ms-read">
       <div className="ms-read-chno">第 {picked.n} 章</div>
       <h2 className="ms-read-htitle text-serif">{picked.title}</h2>
+      {!body.complete && (
+        <div className="ms-read-partial" role="status">
+          <I.AlertTriangle size={14} /> 服务端仍缺 {missingCount || "若干"} 场正文，当前稿件不可送审或导出。
+        </div>
+      )}
       {body.scenes.map((s, i) => (
-        <div key={i} className="ms-scene">
+        <div key={s.sceneId || i} className={`ms-scene ${s.missing ? "is-missing" : ""}`}>
           <header className="ms-scene-head">
             <span className="ms-scene-idx">{s.idx}</span>
             <span className="ms-scene-title">{s.title}</span>
           </header>
-          {s.paras.map((p, j) => <p key={j} className="ms-scene-p">{p}</p>)}
+          {s.missing
+            ? <div className="ms-scene-missing"><I.Clock size={14} /> 这一场尚无服务端归档正文</div>
+            : s.paras.map((p, j) => <p key={j} className="ms-scene-p">{p}</p>)}
         </div>
       ))}
-      <div className="ms-read-end">— 章节结束 —</div>
+      {body.complete && <div className="ms-read-end">— 章节结束 —</div>}
     </article>
   );
 }
 
 /* ---------- 写作中占位 ---------- */
-function ManuWriting({ picked, go, onSubmit, gate }) {
+function ManuWriting({ picked, go, onSubmit, gate, canSubmit, blockReason }) {
   const total = Math.max(1, picked.scenes || 0);
   const allDone = picked.scenes > 0 && picked.sceneDone >= picked.scenes;
   return (
@@ -702,6 +948,7 @@ function ManuWriting({ picked, go, onSubmit, gate }) {
         <div className="ms-writing-bar">
           <div className="ms-writing-fill" style={{width: `${((picked.sceneDone || 0) / total) * 100}%`}} />
         </div>
+        {allDone && !canSubmit && <p className="text-muted text-xs" style={{margin:0, maxWidth:380}}>{blockReason}</p>}
         {allDone
           ? (gate ? (
             <div style={{ display: "grid", gap: 10, justifyItems: "center" }}>
@@ -712,10 +959,10 @@ function ManuWriting({ picked, go, onSubmit, gate }) {
               </p>
               <div className="flex gap-2">
                 <button className="btn btn-accent btn-sm" onClick={() => go("longform")}><I.ShieldCheck size={13} /> 去控制塔章级审计</button>
-                <button className="btn btn-ghost btn-sm" onClick={onSubmit}>{gate === "armed" ? "仍要送审（带病）" : "跳过审计送审"}</button>
+                <button className="btn btn-ghost btn-sm" disabled={!canSubmit} title={!canSubmit ? blockReason : undefined} onClick={onSubmit}>{gate === "armed" ? "仍要送审（带病）" : "跳过审计送审"}</button>
               </div>
             </div>
-          ) : <button className="btn btn-accent btn-sm" onClick={onSubmit}><I.Check size={13} /> 送入审阅</button>)
+          ) : <button className="btn btn-accent btn-sm" disabled={!canSubmit} title={!canSubmit ? blockReason : undefined} onClick={onSubmit}><I.Check size={13} /> {canSubmit ? "送入审阅" : "等待归档核验"}</button>)
           : <button className="btn btn-accent btn-sm" onClick={() => go("writer")}><I.Pen size={13} /> 回写作房间续写</button>}
       </div>
     </div>
@@ -784,6 +1031,10 @@ function ManuDiff({ picked, catCh }) {
   const [selNew, setSelNew] = useSt9(null);
   const [selOld, setSelOld] = useSt9(null);
   const [diff, setDiff] = useSt9(null);
+  const [historyError, setHistoryError] = useSt9("");
+  const [diffError, setDiffError] = useSt9("");
+  const [historyRetry, setHistoryRetry] = useSt9(0);
+  const [diffRetry, setDiffRetry] = useSt9(0);
 
   useEf9(() => {
     if (scenes.length && !scenes.some(s => s.sid === sid)) setSid(scenes[0].sid);
@@ -791,25 +1042,33 @@ function ManuDiff({ picked, catCh }) {
 
   useEf9(() => {
     let on = true;
-    setVers(null); setDiff(null); setSelNew(null); setSelOld(null);
+    setVers(null); setDiff(null); setSelNew(null); setSelOld(null); setHistoryError(""); setDiffError("");
     if (!sid || !window.WrDocVersions) { setVers([]); return undefined; }
     window.WrDocVersions.list(sid).then(items => {
       if (!on) return;
       setVers(items);
       if (items.length >= 2) { setSelNew(items[0].revisionNo); setSelOld(items[1].revisionNo); }
-    }).catch(() => { if (on) setVers([]); });
+    }).catch((error) => {
+      if (!on) return;
+      setVers([]);
+      setHistoryError((error && error.message) || "版本历史加载失败。");
+    });
     return () => { on = false; };
-  }, [sid]);
+  }, [sid, historyRetry]);
 
   useEf9(() => {
     let on = true;
-    setDiff(null);
+    setDiff(null); setDiffError("");
     if (!sid || selNew == null || selOld == null || !window.WrDocVersions) return undefined;
     Promise.all([window.WrDocVersions.paras(sid, selOld), window.WrDocVersions.paras(sid, selNew)])
       .then(([a, b]) => { if (on) setDiff(window.WrDocVersions.diff(a, b)); })
-      .catch(() => { if (on) setDiff({ paras: [], adds: 0, dels: 0 }); });
+      .catch((error) => {
+        if (!on) return;
+        setDiff(null);
+        setDiffError((error && error.message) || "两个版本比对失败。");
+      });
     return () => { on = false; };
-  }, [sid, selNew, selOld]);
+  }, [sid, selNew, selOld, diffRetry]);
 
   const verLabel = (v) => `v${v.revisionNo} · ${manuRevTime(v.at) || "—"}${v.words ? ` · ${v.words} 字` : ""}`;
   const ready = vers && vers.length >= 2;
@@ -852,10 +1111,22 @@ function ManuDiff({ picked, catCh }) {
       </div>
       <div className="ms-diff-body">
         {vers === null && <p className="ms-diff-p text-muted">正在加载版本历史…</p>}
-        {vers && vers.length < 2 && (
+        {historyError && (
+          <div className="ms-inline-error" role="alert">
+            <span>{historyError}</span>
+            <button className="btn btn-ghost btn-sm" type="button" data-testid="manuscript-diff-history-retry" onClick={() => setHistoryRetry(n => n + 1)}><I.Refresh size={13} /> 重试</button>
+          </div>
+        )}
+        {!historyError && vers && vers.length < 2 && (
           <p className="ms-diff-p text-muted">这一场还没有可对比的历史版本——在写作台再保存一次正文，这里就会出现两个版本。</p>
         )}
-        {ready && !diff && <p className="ms-diff-p text-muted">正在比对两个版本…</p>}
+        {ready && !diff && !diffError && <p className="ms-diff-p text-muted">正在比对两个版本…</p>}
+        {diffError && (
+          <div className="ms-inline-error" role="alert">
+            <span>{diffError}</span>
+            <button className="btn btn-ghost btn-sm" type="button" data-testid="manuscript-diff-retry" onClick={() => setDiffRetry(n => n + 1)}><I.Refresh size={13} /> 重试</button>
+          </div>
+        )}
         {diff && diff.paras.map((pg, k) => (
           <p key={k} className="ms-diff-p">
             {pg.segs.map((sg, x) => (
@@ -869,7 +1140,7 @@ function ManuDiff({ picked, catCh }) {
 }
 
 /* ---------- 退回小修 · 理由 + 定位 + 待办 ---------- */
-function ManuReturnModal({ picked, catCh, onClose, onConfirm }) {
+function ManuReturnModal({ picked, catCh, busy, error, onClose, onConfirm }) {
   const scenes = (catCh && catCh.scenes) || [];
   const [reason, setReason] = useSt9("");
   const [sid, setSid] = useSt9(() => (scenes[0] ? scenes[0].sid : null));
@@ -891,7 +1162,7 @@ function ManuReturnModal({ picked, catCh, onClose, onConfirm }) {
             <div className="mr-title text-serif">退回小修 · 第 {picked.n} 章 {picked.title}</div>
             <div className="mr-sub">章状态回到「草稿」，并生成一条带定位的修订待办</div>
           </div>
-          <button className="mr-x" onClick={onClose} title="取消"><I.X size={16} /></button>
+          <button className="mr-x" onClick={onClose} disabled={busy} title="取消"><I.X size={16} /></button>
         </header>
 
         <label className="mr-field">
@@ -915,14 +1186,110 @@ function ManuReturnModal({ picked, catCh, onClose, onConfirm }) {
         )}
 
         <label className="mr-check">
-          <input type="checkbox" checked={openDeep} onChange={(e) => setOpenDeep(e.target.checked)} />
+          <input type="checkbox" checked={openDeep} disabled={busy} onChange={(e) => setOpenDeep(e.target.checked)} />
           退回后直接在写作台·深改姿态中打开这一场
         </label>
 
+        {error && <div role="alert" className="mr-error">{error}</div>}
+
         <footer className="mr-foot">
-          <button className="btn btn-ghost" onClick={onClose}>取消</button>
-          <button className="btn btn-accent" disabled={!can} onClick={() => onConfirm({ reason: reason.trim(), sid, sceneTitle, openDeep })}>
-            退回并生成待办
+          <button className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button>
+          <button className="btn btn-accent" disabled={!can || busy} onClick={() => onConfirm({ reason: reason.trim(), sid, sceneTitle, openDeep })}>
+            {busy ? "退回中…" : "退回并生成待办"}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 批准终稿 · 通读确认绑定正文哈希 ---------- */
+function ManuApprovalModal({ picked, busy, error, onClose, onConfirm }) {
+  const [read, setRead] = useSt9(false);
+  const [readNote, setReadNote] = useSt9("");
+  const [revisionNotes, setRevisionNotes] = useSt9("");
+  const ref = useRef9(null);
+  useEf9(() => { if (ref.current) ref.current.focus(); }, []);
+  useEf9(() => {
+    const onKey = (e) => { if (e.key === "Escape" && !busy) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [busy, onClose]);
+  return (
+    <div className="mr-scrim" onClick={() => !busy && onClose()}>
+      <div className="mr-card" role="dialog" aria-modal="true" aria-label="批准为终稿" onClick={(e) => e.stopPropagation()}>
+        <header className="mr-head">
+          <div>
+            <div className="mr-title text-serif">批准终稿 · 第 {picked.n} 章 {picked.title}</div>
+            <div className="mr-sub">确认会绑定当前服务端正文哈希；正文若变化，必须重新通读确认。</div>
+          </div>
+          <button className="mr-x" onClick={onClose} disabled={busy} title="取消"><I.X size={16} /></button>
+        </header>
+
+        <label className="mr-check mr-check-strong">
+          <input ref={ref} data-testid="approve-read-confirm" type="checkbox" checked={read} disabled={busy} onChange={(e) => setRead(e.target.checked)} />
+          我已从头到尾通读当前正文，并确认它可以成为终稿
+        </label>
+
+        <label className="mr-field">
+          <span className="mr-k">通读备注 <small>可选</small></span>
+          <textarea className="mr-area" rows={2} maxLength={1000} value={readNote} disabled={busy}
+            placeholder="记录通读时重点核对了什么。"
+            onChange={(e) => setReadNote(e.target.value)} />
+        </label>
+
+        <label className="mr-field">
+          <span className="mr-k">终稿备注 <small>可选</small></span>
+          <textarea className="mr-area" rows={2} maxLength={2000} value={revisionNotes} disabled={busy}
+            placeholder="留给下一章或后续修订的提醒。"
+            onChange={(e) => setRevisionNotes(e.target.value)} />
+        </label>
+
+        {error && <div role="alert" className="mr-error">{error}</div>}
+        <footer className="mr-foot">
+          <button className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button>
+          <button className="btn btn-accent" data-testid="approve-final-confirm" disabled={!read || busy}
+            onClick={() => onConfirm({ readNote: readNote.trim(), revisionNotes: revisionNotes.trim() })}>
+            {busy ? "服务端批准中…" : "确认通读并批准"}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 重新打开终稿 · 有理由、可审计、级联失效 ---------- */
+function ManuReopenModal({ picked, busy, error, onClose, onConfirm }) {
+  const [reason, setReason] = useSt9("");
+  const ref = useRef9(null);
+  useEf9(() => { if (ref.current) ref.current.focus(); }, []);
+  useEf9(() => {
+    const onKey = (e) => { if (e.key === "Escape" && !busy) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [busy, onClose]);
+  const can = reason.trim().length > 0 && reason.length <= 1000;
+  return (
+    <div className="mr-scrim" onClick={() => !busy && onClose()}>
+      <div className="mr-card" role="dialog" aria-modal="true" aria-label="重新打开终稿" onClick={(e) => e.stopPropagation()}>
+        <header className="mr-head">
+          <div>
+            <div className="mr-title text-serif">重新打开 · 第 {picked.n} 章 {picked.title}</div>
+            <div className="mr-sub">该章及其后已批准章节会失效，项目从本章重新推进；服务端会保留完整审计。</div>
+          </div>
+          <button className="mr-x" onClick={onClose} disabled={busy} title="取消"><I.X size={16} /></button>
+        </header>
+        <label className="mr-field">
+          <span className="mr-k">重新打开原因 <em>必填</em></span>
+          <textarea ref={ref} className="mr-area" rows={3} maxLength={1000} value={reason} disabled={busy}
+            placeholder="说明为什么必须打破终稿锁；这段原因会进入审计记录。"
+            onChange={(e) => setReason(e.target.value)} />
+        </label>
+        {error && <div role="alert" className="mr-error">{error}</div>}
+        <footer className="mr-foot">
+          <button className="btn btn-ghost" disabled={busy} onClick={onClose}>取消</button>
+          <button className="btn btn-accent" data-testid="reopen-final-confirm" disabled={!can || busy} onClick={() => onConfirm({ reason: reason.trim() })}>
+            {busy ? "重新打开中…" : "撤销批准并重新打开"}
           </button>
         </footer>
       </div>

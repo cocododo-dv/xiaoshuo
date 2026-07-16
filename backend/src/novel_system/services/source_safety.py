@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import unicodedata
 from collections.abc import Iterable
 from typing import Any
@@ -11,10 +13,9 @@ from novel_system.services.versioning.shared import now_iso
 # evasion of a red-line term — intra-term whitespace ("屠 龙"), inserted
 # punctuation ("屠-龙" / "龙·族"), and traditional Chinese ("龍族" / "屠龍").
 #
-# Traditional→simplified folding is intentionally tiny: it covers ONLY the
-# characters that actually appear in PROTECTED_SOURCE_TERMS, so we never pull in
-# a heavy OpenCC dependency and can never fold an unrelated character. Keep this
-# map in sync when PROTECTED_SOURCE_TERMS gains a term with a traditional form.
+# Traditional→simplified folding is intentionally tiny and exists only to make
+# explicitly configured/profile-derived protected terms resilient to cosmetic
+# variants.  It is not a general Chinese conversion layer.
 _TRADITIONAL_TO_SIMPLIFIED = {
     "龍": "龙",
     "愷": "恺",
@@ -51,23 +52,16 @@ def _normalize_for_match(text: str) -> str:
     return "".join(cleaned)
 
 
-PROTECTED_SOURCE_TERMS = (
-    "龙族",
-    "路明非",
-    "楚子航",
-    "恺撒",
-    "诺诺",
-    "陈墨瞳",
-    "卡塞尔",
-    "昂热",
-    "龙王",
-    "白王",
-    "黑王",
-    "青铜与火",
-    "血统",
-    "屠龙",
-    "江南",
-)
+# No named work or author belongs in a process-wide default.  Keeping a
+# source-specific list here used to flag ordinary fantasy terms (for example
+# "龙王" and "血统") in projects that had never referenced that source.
+#
+# Backwards-compatible import alias: callers may still import the symbol, but
+# the default is intentionally empty.  Configure project-independent terms via
+# NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON or, preferably, pass the active
+# reference profile's ``protected_terms`` to the scanner.
+PROTECTED_SOURCE_TERMS: tuple[str, ...] = ()
+PROTECTED_SOURCE_TERMS_ENV = "NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON"
 
 SOURCE_PROFILE_REF_KEY_HINTS = (
     "profile",
@@ -85,16 +79,23 @@ def scan_source_safety(
     *,
     source_profile_ids: Iterable[Any] | None = None,
     reference_safety_profiles: Iterable[dict[str, Any] | None] | None = None,
+    protected_terms: Iterable[Any] | None = None,
 ) -> dict[str, Any]:
     content = _coerce_text(texts)
     normalized_content = _normalize_for_match(content)
+    normalized_content_folded = normalized_content.casefold()
+    configured_terms = (
+        _unique_strings(protected_terms)
+        if protected_terms is not None
+        else configured_protected_source_terms()
+    )
     # Match on the normalized form (defeats whitespace/punctuation/traditional
     # variants) but still report the canonical simplified term, in
-    # PROTECTED_SOURCE_TERMS order — downstream contracts depend on both.
+    # configured order — downstream contracts depend on stable ordering.
     blocked_terms = [
         term
-        for term in PROTECTED_SOURCE_TERMS
-        if term and _normalize_for_match(term) in normalized_content
+        for term in configured_terms
+        if term and _normalize_for_match(term).casefold() in normalized_content_folded
     ]
     refs = _unique_strings(source_profile_ids or [])
     safety_profiles = list(reference_safety_profiles or [])
@@ -103,12 +104,47 @@ def scan_source_safety(
         "safe": not blocked_terms and not risks,
         "blocked_terms": blocked_terms,
         "source_profile_ids": refs,
+        "protected_terms_source": (
+            "explicit" if protected_terms is not None else "environment" if configured_terms else "none"
+        ),
+        "coverage": {
+            "configured_exact_terms": True,
+            "profile_exact_terms_and_phrases": bool(safety_profiles),
+            "profile_scene_bridges": bool(safety_profiles),
+            "semantic_paraphrase": {
+                "status": "not_evaluated",
+                "blocking": False,
+                "reason": (
+                    "deterministic source safety cannot reliably verify semantic or cross-language paraphrase"
+                ),
+                "recommended_action": "use independent semantic review as advisory evidence",
+            },
+        },
         "checked_at": now_iso(),
     }
     if safety_profiles or risks:
         payload["risks"] = risks
         payload["risk_count"] = len(risks)
     return payload
+
+
+def configured_protected_source_terms() -> list[str]:
+    """Load optional global safety terms from an explicit JSON-array setting.
+
+    Invalid configuration fails closed with respect to *configuration scope*:
+    it contributes no hidden blocklist.  Reference-profile safety remains
+    active independently and is the preferred project-scoped mechanism.
+    """
+    raw = str(os.getenv(PROTECTED_SOURCE_TERMS_ENV, "") or "").strip()
+    if not raw:
+        return list(PROTECTED_SOURCE_TERMS)
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return _unique_strings(payload)
 
 
 def source_profile_ids_from_snapshot(snapshot: dict[str, Any] | None) -> list[str]:

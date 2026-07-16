@@ -30,6 +30,8 @@ class Archiver:
         carry_notes_json: list[dict[str, Any]] | None = None,
         execution_id: str | None = None,
         finalize_scene_status: bool = True,
+        author_confirmed_final: bool = False,
+        accepted_warning_codes: list[str] | None = None,
     ) -> dict:
         final_scene = self.session.get(FinalScene, final_scene_row_id)
         state = self.session.get(SceneRunState, scene_id)
@@ -41,6 +43,8 @@ class Archiver:
             scene_id=scene_id,
             content=final_scene.content,
             source_bundle_id=final_scene.source_bundle_id,
+            author_confirmed_final=author_confirmed_final,
+            accepted_warning_codes=accepted_warning_codes,
         )
         FinalTextGateService.raise_if_not_archivable(final_text_gate, scene_id=scene_id)
         actual_content_hash = str(final_text_gate["content_hash"])
@@ -149,6 +153,19 @@ class Archiver:
             for attempt in archive_attempts
             if (attempt.details_json or {}).get("final_scene_row_id") == final_scene_row_id
             and (attempt.details_json or {}).get("execution_id") == execution_id
+            and bool(
+                ((attempt.details_json or {}).get("final_text_gate") or {}).get(
+                    "author_confirmed_final"
+                )
+            )
+            == bool(author_confirmed_final)
+            and sorted(
+                (((attempt.details_json or {}).get("final_text_gate") or {}).get("content_safety") or {}).get(
+                    "acknowledged_codes"
+                )
+                or []
+            )
+            == sorted((final_text_gate.get("content_safety") or {}).get("acknowledged_codes") or [])
         ]
         if len(matching_attempts) > 1:
             raise ValueError("archive attempt audit is not unique")
@@ -176,6 +193,14 @@ class Archiver:
             "chapter_rolling_note_row_id": rolling.row_id,
             "archive_attempt_id": archive_attempt.attempt_id,
             "scene_status": state.scene_status,
+            "safe_to_archive": bool(final_text_gate.get("safe_to_archive")),
+            "literary_warnings_unresolved": bool(
+                final_text_gate.get("literary_warnings_unresolved")
+            ),
+            "author_confirmed_final": bool(
+                final_text_gate.get("author_confirmed_final")
+            ),
+            "finality": dict(final_text_gate.get("finality") or {}),
             "final_text_gate": final_text_gate,
         }
 
@@ -189,14 +214,50 @@ def _scene_memory_row_id(scene_id: str, final_scene_row_id: str) -> str:
 
 def _gate_audit_summary(result: dict[str, Any]) -> dict[str, Any]:
     literary = result.get("literary_quality") or {}
+    longform = result.get("longform_contract") or {}
+    content_safety = result.get("content_safety") or {}
     return {
         "schema_version": result.get("schema_version"),
         "content_hash": result.get("content_hash"),
         "source_bundle_id": result.get("source_bundle_id"),
         "archivable": bool(result.get("archivable")),
+        "safe_to_archive": bool(
+            result.get("safe_to_archive", result.get("archivable"))
+        ),
+        "literary_warnings_unresolved": bool(
+            result.get("literary_warnings_unresolved")
+        ),
+        "author_confirmed_final": bool(result.get("author_confirmed_final")),
         "auto_promotable": bool(result.get("auto_promotable")),
         "archive_blockers": list(result.get("archive_blockers") or []),
         "promotion_blockers": list(result.get("promotion_blockers") or []),
+        "content_safety": {
+            "schema_version": content_safety.get("schema_version"),
+            "mode": content_safety.get("mode"),
+            "acknowledged_codes": list(content_safety.get("acknowledged_codes") or []),
+            "findings": [
+                {
+                    "code": item.get("code"),
+                    "severity": item.get("severity"),
+                    "review_required": bool(item.get("review_required")),
+                    "acknowledged": bool(item.get("acknowledged")),
+                    "blocking": bool(item.get("blocking")),
+                }
+                for item in (content_safety.get("findings") or [])
+                if isinstance(item, dict)
+            ],
+        },
+        "longform_contract": {
+            "available": bool(longform.get("available")),
+            "contract_id": longform.get("contract_id"),
+            "contract_status": longform.get("contract_status"),
+            "provenance": dict(longform.get("provenance") or {}),
+            "bundle_integrity": dict(longform.get("bundle_integrity") or {}),
+            "key_hits": list(longform.get("key_hits") or []),
+            "waivers": list(longform.get("waivers") or []),
+            "unresolved": list(longform.get("unresolved") or []),
+            "blockers": list(longform.get("blockers") or []),
+        },
         "literary_scores": dict(literary.get("scores") or {}),
         "risky_dimensions": list(literary.get("risky_dimensions") or []),
     }

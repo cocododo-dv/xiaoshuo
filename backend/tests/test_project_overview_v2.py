@@ -217,7 +217,8 @@ def test_flow_status_shape(client, session):
     assert data["open_review_count"] >= 8  # 统一收件箱口径：5 demo 卡 + 3 canon 卡 + 派生
     assert data["draft_queue_len"] >= 1  # ch08 sc01/sc02 无正文
     assert data["qc_blocked_count"] == 0
-    assert data["last_manuscript"] is None  # demo 未走归档链
+    # 受控 demo 导入会把显式 current 章之前的章节规范为线性批准前缀。
+    assert data["last_manuscript"]["no"] == "07"
 
 
 def test_demo_seed_idempotent(client, session):

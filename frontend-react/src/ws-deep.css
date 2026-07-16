@@ -127,4 +127,7 @@ mark.wr-dx.is-active { outline: 2px solid var(--crimson); outline-offset: 1px; }
 .mr-scene.is-sel .mr-scene-n { color: var(--crimson); }
 .mr-check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); cursor: pointer; }
 .mr-check input { accent-color: var(--crimson); }
+.mr-check-strong { align-items: flex-start; padding: 11px 12px; border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--paper-2); line-height: 1.55; }
+.mr-check-strong input { margin-top: 3px; }
+.mr-error { padding: 9px 11px; border: 1px solid color-mix(in oklab, var(--crimson) 35%, var(--line-1)); border-radius: var(--r-sm); background: var(--crimson-wash); color: var(--crimson); font-size: 12px; line-height: 1.55; }
 .mr-foot { display: flex; justify-content: flex-end; gap: 8px; }

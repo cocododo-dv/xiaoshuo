@@ -1,24 +1,28 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from novel_system.contracts.bundle import BundleSnapshotHashProjection
 from novel_system.db.models import (
     AuthorPreferenceProfile,
+    ChapterContract,
     ChapterGoal,
     FinalScene,
     GenerationPlanningArtifact,
+    LongformAnchor,
     LongformStructureGuidance,
     SceneBlueprint,
     SceneBundle,
     SceneCard,
     SceneMemory,
     SceneRunState,
+    StoryProject,
     StoryCharacter,
     VolumeSummary,
 )
@@ -32,6 +36,8 @@ from novel_system.services.scene_digest import scene_card_digest
 from novel_system.services.style_profile import STYLE_FEATURE_CONTRACT_VERSION, StyleProfileService
 from novel_system.services.style_reference.injection import InjectionService
 from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief, writer_brief_has_content
+from novel_system.services.author_preferences import merge_preference_summaries, safe_preference_summary_for_prompt
+from novel_system.services.author_instructions import normalize_author_note
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -70,7 +76,14 @@ class BundleBuilder:
                 return bundle_id, build_no
             build_no += 1
 
-    def build(self, scene_id: str, execution_mode: str = "P2", force_rebuild: bool = False) -> dict[str, Any]:
+    def build(
+        self,
+        scene_id: str,
+        execution_mode: str = "P2",
+        force_rebuild: bool = False,
+        *,
+        author_note: str | None = None,
+    ) -> dict[str, Any]:
         self._degraded_slots = set()
         scene = self.session.get(SceneCard, scene_id)
         if scene is None:
@@ -121,6 +134,18 @@ class BundleBuilder:
             "chapter_goal": chapter.chapter_goal,
             "scene_card": scene_card_digest(scene),
         }
+        normalized_author_note = normalize_author_note(author_note)
+        if normalized_author_note:
+            instruction_hash = hashlib.sha256(normalized_author_note.encode("utf-8")).hexdigest()
+            source_version_refs["author_instruction_hash"] = instruction_hash
+            ordered_injections.append(
+                {
+                    "slot": "author_instruction",
+                    "ref_id": f"author_instruction:{instruction_hash}",
+                    "digest_key": "author_instruction",
+                }
+            )
+            inline_digests["author_instruction"] = normalized_author_note
         chapter_writer_brief = normalize_chapter_writer_brief(chapter.writer_brief_json)
         if writer_brief_has_content(chapter_writer_brief):
             source_version_refs["chapter_writer_brief"] = chapter.chapter_id
@@ -419,9 +444,16 @@ class BundleBuilder:
             )
             inline_digests["style_profile"] = StyleProfileService.render_profile_digest(style_profile)
 
-        author_preference_profile = self._approved_runtime_author_preference_profile()
-        if author_preference_profile is not None:
+        author_preference_profiles = self._approved_runtime_author_preference_profiles(scene, chapter)
+        if author_preference_profiles:
+            author_preference_profile = author_preference_profiles[-1]
+            merged_preference: dict[str, Any] = {}
+            for row in author_preference_profiles:
+                merged_preference = merge_preference_summaries(merged_preference, row.summary_json or {})
+            runtime_preference = safe_preference_summary_for_prompt(merged_preference)
+            profile_ids = [row.profile_id for row in author_preference_profiles]
             source_version_refs["author_preference_profile_id"] = author_preference_profile.profile_id
+            source_version_refs["author_preference_profile_ids"] = profile_ids
             source_version_refs["author_preference_profile_updated_at"] = author_preference_profile.updated_at
             ordered_injections.append(
                 {
@@ -433,8 +465,136 @@ class BundleBuilder:
             inline_digests["author_preference_profile"] = json.dumps(
                 {
                     "profile_id": author_preference_profile.profile_id,
+                    "profile_ids": profile_ids,
                     "kind": "approved_author_preference_profile",
-                    "summary": author_preference_profile.summary_json or {},
+                    "summary": runtime_preference,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+
+        # Long-form control-tower state is generation authority only after the
+        # chapter contract has been explicitly dispatched.  Freeze both the
+        # contract and every pinned/referenced anchor into the bundle hash so a
+        # later edit cannot silently change the instructions used for this run.
+        longform_project_id = scene.project_id or chapter.project_id
+        active_chapter_contracts = list(
+            self.session.execute(
+                select(ChapterContract)
+                .where(
+                    ChapterContract.project_id == longform_project_id,
+                    ChapterContract.chapter_id == scene.chapter_id,
+                    ChapterContract.status.in_(("dispatched", "archived")),
+                )
+                .order_by(
+                    ChapterContract.updated_at.desc(),
+                    ChapterContract.created_at.desc(),
+                )
+            ).scalars().all()
+        )
+        if len(active_chapter_contracts) > 1:
+            raise DomainError(
+                "BUNDLE_SOURCE_AMBIGUOUS",
+                "multiple dispatched chapter contracts exist for the same chapter",
+                status_code=409,
+                details={
+                    "chapter_id": scene.chapter_id,
+                    "contract_ids": [row.contract_id for row in active_chapter_contracts],
+                },
+            )
+        chapter_contract = active_chapter_contracts[0] if active_chapter_contracts else None
+        contract_constraints = (
+            chapter_contract.constraints_json or []
+            if chapter_contract is not None
+            else []
+        )
+        referenced_anchor_ids = {
+            str(item.get("anchor_id") or "").strip()
+            for item in contract_constraints
+            if isinstance(item, dict) and str(item.get("anchor_id") or "").strip()
+        }
+        anchor_selector = and_(
+            LongformAnchor.status == "pinned",
+            LongformAnchor.kind.in_(("fact", "trait", "setting", "timeline")),
+        )
+        if referenced_anchor_ids:
+            anchor_selector = or_(
+                LongformAnchor.anchor_id.in_(referenced_anchor_ids),
+                anchor_selector,
+            )
+        project_anchors = list(
+            self.session.execute(
+                select(LongformAnchor)
+                .where(
+                    LongformAnchor.project_id == longform_project_id,
+                    anchor_selector,
+                )
+                .order_by(LongformAnchor.created_at, LongformAnchor.anchor_id)
+            ).scalars().all()
+        )
+        anchor_by_id = {row.anchor_id: row for row in project_anchors}
+        missing_anchor_ids = sorted(referenced_anchor_ids - set(anchor_by_id))
+        if missing_anchor_ids:
+            raise DomainError(
+                "BUNDLE_SOURCE_MISSING",
+                "dispatched chapter contract references missing long-form anchors",
+                status_code=409,
+                details={
+                    "chapter_id": scene.chapter_id,
+                    "contract_id": chapter_contract.contract_id if chapter_contract is not None else None,
+                    "missing_anchor_ids": missing_anchor_ids,
+                },
+            )
+        longform_anchors = project_anchors
+        if longform_anchors:
+            anchor_ids = [row.anchor_id for row in longform_anchors]
+            source_version_refs["longform_anchor_ids"] = anchor_ids
+            source_version_refs["longform_anchor_updated_at"] = [
+                row.updated_at for row in longform_anchors
+            ]
+            ordered_injections.append(
+                {
+                    "slot": "longform_anchors",
+                    "ref_id": anchor_ids[0],
+                    "digest_key": "longform_anchors",
+                }
+            )
+            inline_digests["longform_anchors"] = json.dumps(
+                [
+                    {
+                        "anchor_id": row.anchor_id,
+                        "kind": row.kind,
+                        "text": row.text,
+                        "source_ref": row.source_ref,
+                        "note": row.note,
+                        "status": row.status,
+                        "updated_at": row.updated_at,
+                    }
+                    for row in longform_anchors
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        if chapter_contract is not None:
+            source_version_refs["chapter_contract_id"] = chapter_contract.contract_id
+            source_version_refs["chapter_contract_status"] = chapter_contract.status
+            source_version_refs["chapter_contract_updated_at"] = chapter_contract.updated_at
+            ordered_injections.append(
+                {
+                    "slot": "chapter_contract",
+                    "ref_id": chapter_contract.contract_id,
+                    "digest_key": "chapter_contract",
+                }
+            )
+            inline_digests["chapter_contract"] = json.dumps(
+                {
+                    "contract_id": chapter_contract.contract_id,
+                    "project_id": chapter_contract.project_id,
+                    "chapter_id": chapter_contract.chapter_id,
+                    "status": chapter_contract.status,
+                    "constraints": chapter_contract.constraints_json or [],
+                    "dispatched_at": chapter_contract.dispatched_at,
+                    "updated_at": chapter_contract.updated_at,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -752,17 +912,35 @@ class BundleBuilder:
             .order_by(VolumeSummary.volume_seq.desc(), VolumeSummary.row_id.desc())
         ).scalars().first()
 
-    def _approved_runtime_author_preference_profile(self) -> AuthorPreferenceProfile | None:
-        return self.session.execute(
-            select(AuthorPreferenceProfile)
-            .where(
-                AuthorPreferenceProfile.scope_type == "global",
-                AuthorPreferenceProfile.scope_ref_id == "global",
-                AuthorPreferenceProfile.status == "approved",
-                AuthorPreferenceProfile.runtime_eligible == 1,
+    def _approved_runtime_author_preference_profiles(
+        self,
+        scene: SceneCard,
+        chapter: ChapterGoal,
+    ) -> list[AuthorPreferenceProfile]:
+        project_id = scene.project_id or chapter.project_id
+        project = self.session.get(StoryProject, project_id) if project_id else None
+        scopes: list[tuple[str, str]] = [("global", "global")]
+        genre = " ".join(str(project.genre or "").strip().lower().split()) if project else ""
+        if genre:
+            scopes.append(("genre", genre[:120]))
+        if project_id:
+            scopes.append(("project", project_id))
+        scopes.append(("chapter", chapter.chapter_id))
+        rows: list[AuthorPreferenceProfile] = []
+        for scope_type, scope_ref_id in scopes:
+            rows.extend(
+                self.session.execute(
+                    select(AuthorPreferenceProfile)
+                    .where(
+                        AuthorPreferenceProfile.scope_type == scope_type,
+                        AuthorPreferenceProfile.scope_ref_id == scope_ref_id,
+                        AuthorPreferenceProfile.status == "approved",
+                        AuthorPreferenceProfile.runtime_eligible == 1,
+                    )
+                    .order_by(AuthorPreferenceProfile.updated_at.asc(), AuthorPreferenceProfile.profile_id.asc())
+                ).scalars().all()
             )
-            .order_by(AuthorPreferenceProfile.updated_at.desc(), AuthorPreferenceProfile.profile_id.desc())
-        ).scalars().first()
+        return rows
 
     def _approved_runtime_longform_guidance(self, scene: SceneCard) -> list[LongformStructureGuidance]:
         scope_pairs = {

@@ -41,6 +41,9 @@ PAIR_GENRE_REVISION = "20260715_0067"
 NARRATIVE_POSITION_REVISION = "20260715_0068"
 AUTHOR_CANONICAL_REVISION = "20260715_0069"
 QUALITY_EVIDENCE_REVISION = "20260715_0070"
+BACKGROUND_RECOVERY_REVISION = "20260716_0071"
+AUTHOR_PREFERENCE_CONSTRAINT_REVISION = "20260716_0072"
+LLM_AUDIT_PRIVACY_REVISION = "20260716_0073"
 REVISION_ALIASES = {
     "0064": LEGACY_REVISION,
     LEGACY_REVISION: LEGACY_REVISION,
@@ -56,6 +59,12 @@ REVISION_ALIASES = {
     AUTHOR_CANONICAL_REVISION: AUTHOR_CANONICAL_REVISION,
     "0070": QUALITY_EVIDENCE_REVISION,
     QUALITY_EVIDENCE_REVISION: QUALITY_EVIDENCE_REVISION,
+    "0071": BACKGROUND_RECOVERY_REVISION,
+    BACKGROUND_RECOVERY_REVISION: BACKGROUND_RECOVERY_REVISION,
+    "0072": AUTHOR_PREFERENCE_CONSTRAINT_REVISION,
+    AUTHOR_PREFERENCE_CONSTRAINT_REVISION: AUTHOR_PREFERENCE_CONSTRAINT_REVISION,
+    "0073": LLM_AUDIT_PRIVACY_REVISION,
+    LLM_AUDIT_PRIVACY_REVISION: LLM_AUDIT_PRIVACY_REVISION,
 }
 REVISION_SEQUENCE = (
     LEGACY_REVISION,
@@ -65,6 +74,9 @@ REVISION_SEQUENCE = (
     NARRATIVE_POSITION_REVISION,
     AUTHOR_CANONICAL_REVISION,
     QUALITY_EVIDENCE_REVISION,
+    BACKGROUND_RECOVERY_REVISION,
+    AUTHOR_PREFERENCE_CONSTRAINT_REVISION,
+    LLM_AUDIT_PRIVACY_REVISION,
 )
 REVISION_RANK = {
     revision: index for index, revision in enumerate(REVISION_SEQUENCE)
@@ -305,6 +317,58 @@ QUALITY_EVIDENCE_REQUIRED_COLUMNS = {
     ),
 }
 
+BACKGROUND_RECOVERY_REQUIRED_TABLES = QUALITY_EVIDENCE_REQUIRED_TABLES + (
+    "background_recovery_leases",
+    "style_reference_runs",
+    "style_reference_validation_reports",
+)
+BACKGROUND_RECOVERY_REQUIRED_COLUMNS = {
+    **QUALITY_EVIDENCE_REQUIRED_COLUMNS,
+    "background_recovery_leases": (
+        "lease_key",
+        "owner_id",
+        "lease_expires_at",
+        "created_at",
+        "updated_at",
+    ),
+    "style_reference_runs": (
+        "dispatch_state",
+        "requested_layers_json",
+        "heartbeat_at",
+        "error_code",
+        "error_text",
+        "retryable",
+    ),
+    "style_reference_validation_reports": (
+        "status",
+        "error_code",
+        "error_text",
+        "retryable",
+        "started_at",
+        "heartbeat_at",
+        "finished_at",
+    ),
+}
+
+AUTHOR_PREFERENCE_REQUIRED_TABLES = BACKGROUND_RECOVERY_REQUIRED_TABLES + (
+    "author_preference_profiles",
+)
+AUTHOR_PREFERENCE_REQUIRED_COLUMNS = {
+    **BACKGROUND_RECOVERY_REQUIRED_COLUMNS,
+    "author_preference_profiles": (
+        "profile_id",
+        "scope_type",
+        "scope_ref_id",
+        "status",
+        "runtime_eligible",
+        "summary_json",
+        "source_patch_ids_json",
+        "created_by",
+        "created_at",
+        "updated_at",
+    ),
+}
+
 SCHEMA_PROFILES = {
     LEGACY_REVISION: (LEGACY_REQUIRED_TABLES, LEGACY_REQUIRED_COLUMNS),
     C1B_REVISION: (C1B_REQUIRED_TABLES, C1B_REQUIRED_COLUMNS),
@@ -325,6 +389,30 @@ SCHEMA_PROFILES = {
         QUALITY_EVIDENCE_REQUIRED_TABLES,
         QUALITY_EVIDENCE_REQUIRED_COLUMNS,
     ),
+    BACKGROUND_RECOVERY_REVISION: (
+        BACKGROUND_RECOVERY_REQUIRED_TABLES,
+        BACKGROUND_RECOVERY_REQUIRED_COLUMNS,
+    ),
+    AUTHOR_PREFERENCE_CONSTRAINT_REVISION: (
+        AUTHOR_PREFERENCE_REQUIRED_TABLES,
+        AUTHOR_PREFERENCE_REQUIRED_COLUMNS,
+    ),
+    # 0073 is a data-only redaction migration; its structural profile is 0072.
+    LLM_AUDIT_PRIVACY_REVISION: (
+        AUTHOR_PREFERENCE_REQUIRED_TABLES,
+        AUTHOR_PREFERENCE_REQUIRED_COLUMNS,
+    ),
+}
+
+AUTHOR_PREFERENCE_CHECK_CONTRACTS = {
+    "author_preference_profiles": {
+        "ck_author_preference_profiles_scope_type": (
+            "scope_type IN ('global','genre','project','chapter')"
+        ),
+        "ck_author_preference_profiles_runtime_eligible": (
+            "runtime_eligible IN (0,1)"
+        ),
+    },
 }
 
 C1B_COLUMN_CONTRACTS = {
@@ -1394,6 +1482,17 @@ def _inspect_revision_schema(
         )
     if _revision_at_least(canonical_revision, QUALITY_EVIDENCE_REVISION):
         errors.extend(_inspect_quality_evidence_schema(connection, tables))
+    if _revision_at_least(
+        canonical_revision,
+        AUTHOR_PREFERENCE_CONSTRAINT_REVISION,
+    ):
+        errors.extend(
+            _inspect_check_contracts(
+                connection,
+                tables,
+                AUTHOR_PREFERENCE_CHECK_CONTRACTS,
+            )
+        )
     return errors
 
 

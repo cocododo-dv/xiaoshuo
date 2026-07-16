@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -10,7 +11,9 @@ from novel_system.services.character_continuity import (
     detect_character_pronoun_drift,
     detect_mechanical_required_beat_listing,
 )
+from novel_system.services.content_safety import ContentSafetyService
 from novel_system.services.errors import DomainError
+from novel_system.services.hash_engine import verify_bundle_snapshot_hash
 from novel_system.services.literary_quality import (
     DIMENSION_WEIGHTS,
     QUALITY_DIMENSIONS,
@@ -22,7 +25,7 @@ from novel_system.services.reference_safety import ReferenceSafetyService
 from novel_system.services.source_safety import source_profile_ids_from_snapshot
 
 
-FINAL_TEXT_GATE_SCHEMA_VERSION = 1
+FINAL_TEXT_GATE_SCHEMA_VERSION = 3
 CHARACTER_SCENE_CORE_MIN = 0.80
 ENDING_DRIVE_MIN = 0.78
 CHOICE_PRESSURE_MIN = 0.78
@@ -53,6 +56,8 @@ class FinalTextGateService:
         content: str,
         source_bundle_id: str | None = None,
         allow_author_waiver: bool = True,
+        author_confirmed_final: bool = False,
+        accepted_warning_codes: list[str] | None = None,
     ) -> dict[str, Any]:
         scene = self.session.get(SceneCard, scene_id)
         if scene is not None and scene.trashed_flag:
@@ -61,17 +66,50 @@ class FinalTextGateService:
         actual_content = str(content or "")
         content_hash = hashlib.sha256(actual_content.encode("utf-8")).hexdigest()
         bundle = self._resolve_bundle(scene_id, source_bundle_id)
+        bundle_integrity = (
+            verify_bundle_snapshot_hash(
+                bundle.frozen_snapshot_json,
+                expected_hash=bundle.bundle_snapshot_hash,
+            )
+            if bundle is not None
+            else None
+        )
+        bundle_integrity_blockers = (
+            []
+            if bundle_integrity is None or bundle_integrity["valid"]
+            else [f"bundle_integrity:{bundle_integrity['error_code']}"]
+        )
 
         source_safety, source_blockers = self._source_safety(actual_content, bundle)
+        content_safety = ContentSafetyService.assess(
+            actual_content,
+            acknowledged_codes=accepted_warning_codes or [],
+        )
         continuity = self._continuity(
             scene,
             actual_content,
             bundle,
             allow_author_waiver=allow_author_waiver,
         )
+        longform = self._longform_contract(
+            scene,
+            actual_content,
+            bundle,
+            bundle_integrity=bundle_integrity,
+        )
         literary = self._literary(scene, actual_content)
 
-        archive_blockers = list(dict.fromkeys([*source_blockers, *continuity["blockers"]]))
+        archive_blockers = list(
+            dict.fromkeys(
+                [
+                    *source_blockers,
+                    *content_safety["blocking_codes"],
+                    *continuity["blockers"],
+                    *bundle_integrity_blockers,
+                    *longform["blockers"],
+                ]
+            )
+        )
         if not actual_content.strip():
             archive_blockers.insert(0, "empty_content")
 
@@ -79,7 +117,12 @@ class FinalTextGateService:
         promotion_blockers.extend(literary["promotion_blockers"])
         promotion_blockers = list(dict.fromkeys(promotion_blockers))
 
-        warnings = [*continuity["warnings"], *literary["warnings"]]
+        warnings = [
+            *content_safety["warnings"],
+            *continuity["warnings"],
+            *longform["warnings"],
+            *literary["warnings"],
+        ]
         warning_codes = list(
             dict.fromkeys(
                 str(item.get("issue_key") or "unknown")
@@ -87,11 +130,22 @@ class FinalTextGateService:
                 if isinstance(item, dict)
             )
         )
+        safe_to_archive = not archive_blockers
+        literary_warnings_unresolved = bool(literary["warnings"]) and not author_confirmed_final
         return {
             "schema_version": FINAL_TEXT_GATE_SCHEMA_VERSION,
             "content_hash": content_hash,
             "source_bundle_id": bundle.bundle_id if bundle is not None else source_bundle_id,
-            "archivable": not archive_blockers,
+            "safe_to_archive": safe_to_archive,
+            "literary_warnings_unresolved": literary_warnings_unresolved,
+            "author_confirmed_final": bool(author_confirmed_final),
+            "finality": {
+                "safe_to_archive": safe_to_archive,
+                "literary_warnings_unresolved": literary_warnings_unresolved,
+                "author_confirmed_final": bool(author_confirmed_final),
+            },
+            # Backward-compatible alias retained for existing archive callers.
+            "archivable": safe_to_archive,
             "auto_promotable": not promotion_blockers,
             # ``blockers`` remains a convenient alias for promotion callers.
             "blockers": promotion_blockers,
@@ -102,7 +156,10 @@ class FinalTextGateService:
             "warning_codes": warning_codes,
             "warnings": warnings,
             "source_safety": source_safety,
+            "bundle_integrity": bundle_integrity,
+            "content_safety": content_safety,
             "continuity": continuity,
+            "longform_contract": longform,
             "literary": literary,
             "literary_quality": literary,
         }
@@ -119,6 +176,13 @@ class FinalTextGateService:
                 status_code=409,
                 details={"scene_id": scene_id, "final_text_gate": result},
             )
+        if any(str(item).startswith("bundle_integrity:") for item in blockers):
+            raise DomainError(
+                "FINAL_TEXT_BUNDLE_INTEGRITY_FAILED",
+                "frozen generation bundle no longer matches its recorded hash",
+                status_code=409,
+                details={"scene_id": scene_id, "final_text_gate": result},
+            )
         if any(str(item).startswith("source_safety") for item in blockers):
             unavailable = "source_safety_unavailable" in blockers
             raise DomainError(
@@ -128,6 +192,20 @@ class FinalTextGateService:
                     if unavailable
                     else "source-safety scan blocked archive — text is kept and can be revised"
                 ),
+                status_code=409,
+                details={"scene_id": scene_id, "final_text_gate": result},
+            )
+        if any(str(item).startswith("content_safety_review:") for item in blockers):
+            raise DomainError(
+                "CONTENT_SAFETY_REVIEW_REQUIRED",
+                "content-risk heuristics require explicit author review before archive",
+                status_code=409,
+                details={"scene_id": scene_id, "final_text_gate": result},
+            )
+        if any(str(item).startswith("longform_contract:") for item in blockers):
+            raise DomainError(
+                "FINAL_TEXT_LONGFORM_CONTRACT_BLOCKED",
+                "frozen chapter-contract checks block archive — satisfy or explicitly waive the constraint",
                 status_code=409,
                 details={"scene_id": scene_id, "final_text_gate": result},
             )
@@ -324,6 +402,257 @@ class FinalTextGateService:
             "warnings": warnings,
             "waiver": waiver,
         }
+
+    def _longform_contract(
+        self,
+        scene: SceneCard | None,
+        content: str,
+        bundle: SceneBundle | None,
+        *,
+        bundle_integrity: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Verify the machine-checkable subset of the frozen chapter contract.
+
+        Natural-language story constraints are not reliably decidable with a
+        substring heuristic.  Only constraints carrying ``check_terms`` (or an
+        explicit required-text kind) can block.  Everything else is surfaced as
+        human verification work, preserving honesty and avoiding false Q1 claims.
+        """
+
+        empty = {
+            "available": False,
+            "contract_id": None,
+            "contract_status": None,
+            "provenance": {"anchor_refs": [], "source_bundle_id": bundle.bundle_id if bundle else None},
+            "checks": [],
+            "key_hits": [],
+            "waivers": [],
+            "unresolved": [],
+            "blockers": [],
+            "warnings": [],
+            "bundle_integrity": bundle_integrity,
+        }
+        if bundle is None:
+            return empty
+        snapshot = bundle.frozen_snapshot_json if isinstance(bundle.frozen_snapshot_json, dict) else {}
+        inline = snapshot.get("inline_digests") if isinstance(snapshot, dict) else None
+        if bundle_integrity is None or not bundle_integrity["valid"]:
+            issue = {
+                "issue_key": "longform_contract_bundle_integrity_failed",
+                "quality_level": "Q1",
+                "blocking": True,
+                "message": "Frozen long-form contract no longer matches its bundle hash.",
+                "details": bundle_integrity,
+            }
+            return {
+                **empty,
+                "unresolved": [issue],
+                "blockers": [
+                    f"longform_contract:{bundle_integrity['error_code']}"
+                ],
+                "bundle_integrity": bundle_integrity,
+            }
+        if not isinstance(inline, dict) or "chapter_contract" not in inline:
+            return empty
+        try:
+            contract = self._json_digest(inline.get("chapter_contract"), expected=dict)
+            anchors = self._json_digest(inline.get("longform_anchors", "[]"), expected=list)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            warning = {
+                "issue_key": "longform_contract_validation_unavailable",
+                "quality_level": "Q1",
+                "blocking": True,
+                "message": f"Frozen long-form contract could not be decoded ({type(exc).__name__}).",
+            }
+            return {
+                **empty,
+                "available": False,
+                "unresolved": [warning],
+                "blockers": ["longform_contract:validation_unavailable"],
+                "warnings": [],
+                "bundle_integrity": bundle_integrity,
+            }
+
+        contract_id = str(contract.get("contract_id") or "unknown")
+        anchor_by_id = {
+            str(item.get("anchor_id")): item
+            for item in anchors
+            if isinstance(item, dict) and item.get("anchor_id")
+        }
+        checks: list[dict[str, Any]] = []
+        blockers: list[str] = []
+        warnings: list[dict[str, Any]] = []
+        key_hits: list[dict[str, Any]] = []
+        waivers: list[dict[str, Any]] = []
+        unresolved: list[dict[str, Any]] = []
+        normalized_content = content.casefold()
+        raw_constraints = contract.get("constraints")
+        constraints = raw_constraints if isinstance(raw_constraints, list) else []
+        for index, item in enumerate(constraints, start=1):
+            if not isinstance(item, dict):
+                continue
+            constraint_ref = str(item.get("constraint_id") or f"{contract_id}:{index}")
+            target_scene_id = str(item.get("scene_id") or "").strip() or None
+            if target_scene_id and (scene is None or target_scene_id != scene.scene_id):
+                checks.append(
+                    {
+                        "constraint_ref": constraint_ref,
+                        "status": "not_applicable",
+                        "target_scene_id": target_scene_id,
+                    }
+                )
+                continue
+            text = str(item.get("text") or "").strip()
+            kind = str(item.get("kind") or "constraint").strip().lower()
+            enforcement = str(item.get("enforcement") or "advisory").strip().lower()
+            if enforcement not in {"advisory", "blocking"}:
+                enforcement = "advisory"
+            match_mode = str(item.get("match_mode") or "any").strip().lower()
+            if match_mode not in {"any", "all"}:
+                match_mode = "any"
+            terms = [
+                str(value or "").strip()
+                for value in (item.get("check_terms") or [])
+                if str(value or "").strip()
+            ] if isinstance(item.get("check_terms") or [], list) else []
+            if not terms and kind in {"must_include", "required_text", "exact_text"} and text:
+                terms = [text]
+            anchor_id = str(item.get("anchor_id") or "").strip() or None
+            anchor = anchor_by_id.get(anchor_id) if anchor_id else None
+            base = {
+                "constraint_ref": constraint_ref,
+                "text": text,
+                "kind": kind,
+                "enforcement": enforcement,
+                "match_mode": match_mode,
+                "check_terms": terms,
+                "anchor_id": anchor_id,
+                "anchor_source_ref": anchor.get("source_ref") if isinstance(anchor, dict) else None,
+            }
+            waived = item.get("waived") is True
+            waiver_reason = str(item.get("waiver_reason") or "").strip()
+            waiver_actor_ref = str(item.get("waiver_actor_ref") or "").strip()
+            waived_at = str(item.get("waived_at") or "").strip()
+            if waived and waiver_reason and waiver_actor_ref and waived_at:
+                record = {
+                    **base,
+                    "status": "waived",
+                    "waiver_reason": waiver_reason,
+                    "waiver_actor_ref": waiver_actor_ref,
+                    "waived_at": waived_at,
+                }
+                checks.append(record)
+                waivers.append(record)
+                continue
+            if waived:
+                record = {
+                    **base,
+                    "status": "waiver_invalid",
+                    "waiver_reason": waiver_reason or None,
+                    "waiver_actor_ref": waiver_actor_ref or None,
+                    "waived_at": waived_at or None,
+                }
+                checks.append(record)
+                unresolved.append(record)
+                if enforcement == "blocking":
+                    blockers.append(
+                        f"longform_contract:{constraint_ref}:waiver_invalid"
+                    )
+                else:
+                    warnings.append(
+                        {
+                            "issue_key": "longform_contract_waiver_invalid",
+                            "quality_level": "Q2",
+                            "blocking": False,
+                            "constraint_ref": constraint_ref,
+                            "message": "Contract waiver is missing its reason, actor, or timestamp.",
+                        }
+                    )
+                continue
+            if anchor_id and anchor is None:
+                record = {**base, "status": "provenance_missing"}
+                checks.append(record)
+                unresolved.append(record)
+                if enforcement == "blocking":
+                    blockers.append(f"longform_contract:{constraint_ref}:provenance_missing")
+                else:
+                    warnings.append(
+                        {
+                            "issue_key": "longform_contract_provenance_missing",
+                            "quality_level": "Q2",
+                            "blocking": False,
+                            "constraint_ref": constraint_ref,
+                            "message": "Contract constraint references an anchor absent from the frozen bundle.",
+                        }
+                    )
+                continue
+            if not terms:
+                record = {**base, "status": "human_verification_required"}
+                checks.append(record)
+                unresolved.append(record)
+                warnings.append(
+                    {
+                        "issue_key": "longform_contract_human_verification_required",
+                        "quality_level": "Q2",
+                        "blocking": False,
+                        "constraint_ref": constraint_ref,
+                        "message": "Natural-language chapter constraint needs author/editor verification.",
+                    }
+                )
+                continue
+            term_hits = [term for term in terms if term.casefold() in normalized_content]
+            satisfied = len(term_hits) == len(terms) if match_mode == "all" else bool(term_hits)
+            status = "hit" if satisfied else "missing"
+            record = {**base, "status": status, "matched_terms": term_hits}
+            checks.append(record)
+            if satisfied:
+                key_hits.append(record)
+                continue
+            unresolved.append(record)
+            if enforcement == "blocking":
+                blockers.append(f"longform_contract:{constraint_ref}:missing")
+            else:
+                warnings.append(
+                    {
+                        "issue_key": "longform_contract_advisory_miss",
+                        "quality_level": "Q2",
+                        "blocking": False,
+                        "constraint_ref": constraint_ref,
+                        "message": "Advisory chapter-contract cue was not found in the final text.",
+                    }
+                )
+
+        return {
+            "available": True,
+            "contract_id": contract_id,
+            "contract_status": contract.get("status"),
+            "provenance": {
+                "source_bundle_id": bundle.bundle_id,
+                "anchor_refs": [
+                    {
+                        "anchor_id": anchor_id,
+                        "status": item.get("status"),
+                        "source_ref": item.get("source_ref"),
+                        "updated_at": item.get("updated_at"),
+                    }
+                    for anchor_id, item in anchor_by_id.items()
+                ],
+            },
+            "checks": checks,
+            "key_hits": key_hits,
+            "waivers": waivers,
+            "unresolved": unresolved,
+            "blockers": list(dict.fromkeys(blockers)),
+            "warnings": warnings,
+            "bundle_integrity": bundle_integrity,
+        }
+
+    @staticmethod
+    def _json_digest(value: Any, *, expected: type) -> Any:
+        decoded = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(decoded, expected):
+            raise TypeError(f"expected {expected.__name__} digest")
+        return decoded
 
     def _literary(self, scene: SceneCard | None, content: str) -> dict[str, Any]:
         try:

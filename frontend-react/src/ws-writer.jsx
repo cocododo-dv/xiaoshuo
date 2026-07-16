@@ -4,9 +4,11 @@ import { TweakRadio, TweakSection, TweakSlider, TweakToggle } from "./tweaks-pan
 import { WsCatalog, WsTrashStore } from "./ws-catalog.jsx";
 import { WrDocs } from "./wr-doc-store.jsx";
 import { WrCanonicalControl } from "./wr-canonical-control.jsx";
+import { ContentSafetyReviewDialog, contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
 import { wrDeepUnmark, wrDeepScan, wrDxLog, wrDeepMark, wrDeepAdopt, wrDxPushLog, wrDxAddSkip, wrDxClearSkips, WrDeepDrawer } from "./ws-deep.jsx";
 import { OrchestrationSignals } from "./ws-signals.jsx";
+import { onRovingTabKeyDown } from "./a11y-tabs.js";
 
 /* global React, I */
 /* ==========================================================
@@ -201,6 +203,33 @@ function wrSentences(html) {
 function wrPickedText(sentences, picked) {
   return picked.slice().sort((a, b) => a - b).map(i => (sentences[i] || "").replace(/<[^>]+>/g, "")).join("");
 }
+
+function wrSceneIsApproved(sceneId) {
+  if (!sceneId || !WsCatalog) return false;
+  try {
+    const hit = WsCatalog.sceneById(sceneId);
+    return !!(hit && hit.chapter && hit.chapter.state === "approved");
+  } catch (e) {
+    return false;
+  }
+}
+
+function canonicalPromotionErrorMessage(error) {
+  const code = error && error.code;
+  if (code === "CANONICAL_BASE_CONFLICT" || code === "AUTHOR_DRAFT_CONFLICT") {
+    return "草稿或权威正文已在别处更新。请刷新、比较最新版本后再提升。";
+  }
+  if (code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED") {
+    return "这次修改涉及故事事实，必须先核对叙事事件，系统不会静默沿用旧事实。";
+  }
+  if (code === "CHAPTER_APPROVED_LOCKED") {
+    return "该章节已批准锁定，需要先明确重开章节，才能更新权威正文。";
+  }
+  if (code === "CONTENT_SAFETY_REVIEW_REQUIRED") {
+    return "服务端要求内容风险复核，但没有返回可逐项确认的项目。系统已停止提升，请刷新后重试。";
+  }
+  return "权威正文提升失败，草稿仍安全保留。请稍后重试。";
+}
 function WrCandText({ html, picked, onToggle }) {
   const sents = wrSentences(html);
   return (
@@ -306,6 +335,11 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   const [mentionIdx, setMentionIdx] = useWS(0);
   const mentionCtx = useWR(null);
   const [chapters, setChapters] = useWS(wrFromCatalog);
+  const activeChapter = chapters.find((chapter) => (chapter.scenes || []).some((scene) => scene.id === activeScene));
+  const approvedLocked = !!(activeChapter && activeChapter.state === "approved");
+  const catalogLoadError = WsCatalog && WsCatalog.loadError ? WsCatalog.loadError() : null;
+  const catalogUnavailable = !!(WsCatalog && WsCatalog.ready && !WsCatalog.ready() && catalogLoadError);
+  const catalogLoading = !!(WsCatalog && WsCatalog.ready && !WsCatalog.ready() && !catalogLoadError);
 
   /* FE-ALIGN P3：目录改为后端异步装载 —— 冷启动直达写作器（刷新停在 #writer）时
      activeScene 可能初始化为 null；目录就绪后自动选中在写场景并刷新章节树 */
@@ -314,9 +348,10 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     const sync = () => {
       setChapters(wrFromCatalog());
       setActiveScene(prev => {
-        if (prev) return prev;
+        // 切换作品/目录重载时，旧作品的 scene id 绝不能继续留在编辑器里。
+        if (prev && WsCatalog.sceneById(prev)) return prev;
         const w = WsCatalog.writingScene();
-        return w && w.scene ? w.scene.sid : prev;
+        return w && w.scene ? w.scene.sid : null;
       });
     };
     const un = WsCatalog.subscribe(sync);
@@ -335,6 +370,9 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   const [saved, setSaved] = useWS("草稿已保存");
   const [savedAt, setSavedAt] = useWS(null);
   const [canonicalStatus, setCanonicalStatus] = useWS("unknown");
+  const [contentSafetyReview, setContentSafetyReview] = useWS(null);
+  const [contentSafetyBusy, setContentSafetyBusy] = useWS(false);
+  const [contentSafetyError, setContentSafetyError] = useWS("");
   const [nextCue, setNextCue] = useWS(false);
   const [nextDismissed, setNextDismissed] = useWS(false);
   const [snowSrc, setSnowSrc] = useWS(null);
@@ -347,6 +385,9 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   const [dxActive, setDxActive] = useWS(null);
   const [dxLog, setDxLog] = useWS([]);
   const dxUndoRef = useWR(null);   // { sid, html } 采纳前的快照，一步撤销
+  useWE(() => {
+    if (approvedLocked && posture === "deep") setPosture("draft");
+  }, [approvedLocked, posture]);
 
   const isDesk = tw.wrLayout === "desk";
   const coexist = isDesk && !narrow; // both rails may sit open side-by-side
@@ -389,6 +430,11 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   const persistDoc = useWC(async () => {
     const el = editorRef.current;
     if (!el || !activeScene) return false;
+    if (wrSceneIsApproved(activeScene)) {
+      dirtyRef.current = false;
+      setSaved("终稿已锁定");
+      return false;
+    }
     /* FE-ALIGN P3：正文落 author-drafts 主路径（WrDocs 缓存写通 + PATCH），
        字数 rollup 由保存响应回流目录/统计 */
     try {
@@ -408,6 +454,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     }
   }, [activeScene]);
   const schedulePersist = useWC(() => {
+    if (wrSceneIsApproved(activeScene)) return;
     setSaved("正在保存草稿…");
     setCanonicalStatus("dirty");
     dirtyRef.current = true;
@@ -421,6 +468,10 @@ function WriterRoom({ t, setTweak, onExit, go }) {
 
   const promoteCanonical = useWC(async () => {
     if (!activeScene) return;
+    if (wrSceneIsApproved(activeScene)) {
+      try { window.alert("本场属于已批准终稿。请先到成稿中心重新打开章节，再修改正文。"); } catch (e) {}
+      return;
+    }
     clearTimeout(saveTimer.current);
     if (dirtyRef.current) {
       setSaved("正在保存草稿…");
@@ -446,18 +497,70 @@ function WriterRoom({ t, setTweak, onExit, go }) {
       try { window.alert("草稿已提升为权威正文，场景记忆与章节汇总已同步重建。"); } catch (e) {}
     } catch (e) {
       const code = e && e.code;
-      setCanonicalStatus(code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED" ? "reconcile" : "error");
-      let message = "权威正文提升失败，草稿仍安全保留。请稍后重试。";
-      if (code === "CANONICAL_BASE_CONFLICT" || code === "AUTHOR_DRAFT_CONFLICT") {
-        message = "草稿或权威正文已在别处更新。请刷新、比较最新版本后再提升。";
-      } else if (code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED") {
-        message = "这次修改涉及故事事实，必须先核对叙事事件，系统不会静默沿用旧事实。";
-      } else if (code === "CHAPTER_APPROVED_LOCKED") {
-        message = "该章节已批准锁定，需要先明确重开章节，才能更新权威正文。";
+      if (code === "CONTENT_SAFETY_REVIEW_REQUIRED") {
+        const review = contentSafetyReviewFromError(e);
+        if (review) {
+          setContentSafetyReview({ ...review, sid: activeScene, acceptedCodes: [] });
+          setContentSafetyError("");
+          setCanonicalStatus("review");
+          return;
+        }
       }
-      try { window.alert(message); } catch (ignored) {}
+      setCanonicalStatus(code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED" ? "reconcile" : "error");
+      try { window.alert(canonicalPromotionErrorMessage(e)); } catch (ignored) {}
     }
   }, [activeScene, persistDoc]);
+
+  const cancelContentSafetyReview = useWC(() => {
+    if (contentSafetyBusy) return;
+    setContentSafetyReview(null);
+    setContentSafetyError("");
+    setCanonicalStatus("dirty");
+  }, [contentSafetyBusy]);
+
+  const confirmContentSafetyReview = useWC(async (acceptedCodes) => {
+    const review = contentSafetyReview;
+    if (!review || contentSafetyBusy) return;
+    const exactCodes = review.findings.map(item => item.code);
+    const received = Array.isArray(acceptedCodes) ? acceptedCodes : [];
+    if (received.length !== exactCodes.length || exactCodes.some((code, index) => received[index] !== code)) {
+      setContentSafetyError("确认项与服务端返回的风险代码不一致，已停止提升。");
+      return;
+    }
+    setContentSafetyBusy(true);
+    setContentSafetyError("");
+    setCanonicalStatus("promoting");
+    const acceptedForRetry = [...new Set([...(review.acceptedCodes || []), ...exactCodes])];
+    try {
+      await WrDocs.promote(review.sid, {
+        narrativeEffect: "facts_unchanged",
+        acceptedWarningCodes: acceptedForRetry,
+      });
+      setContentSafetyReview(null);
+      setCanonicalStatus("current");
+      try { window.alert("已按你的逐项确认重新校验；草稿已提升为权威正文。"); } catch (ignored) {}
+    } catch (error) {
+      if (error && error.code === "CONTENT_SAFETY_REVIEW_REQUIRED") {
+        const nextReview = contentSafetyReviewFromError(error);
+        if (nextReview) {
+          setContentSafetyReview({ ...nextReview, sid: review.sid, acceptedCodes: acceptedForRetry });
+          setContentSafetyError("服务端返回了仍需复核的项目。系统没有沿用上次勾选，请重新逐项核对。");
+          setCanonicalStatus("review");
+          return;
+        }
+      }
+      if (error && (error.retryable || error.code === "NETWORK_ERROR" || Number(error.status) >= 500)) {
+        setContentSafetyError(`${canonicalPromotionErrorMessage(error)} 你可以保持本页并重试。`);
+        setCanonicalStatus("review");
+      } else {
+        setContentSafetyReview(null);
+        setCanonicalStatus(error && error.code === "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED" ? "reconcile" : "error");
+        try { window.alert(canonicalPromotionErrorMessage(error)); } catch (ignored) {}
+      }
+    } finally {
+      setContentSafetyBusy(false);
+    }
+  }, [contentSafetyReview, contentSafetyBusy]);
 
   useWE(() => {
     const inField = (el) => el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
@@ -552,7 +655,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
       window.removeEventListener("ws:wr-doc-loaded", onDocLoaded);
       window.removeEventListener("ws:wr-doc-state", onDocState);
       clearTimeout(saveTimer.current);
-      if (dirtyRef.current && el && sid) {
+      if (dirtyRef.current && el && sid && !wrSceneIsApproved(sid)) {
         try { void WrDocs.save(sid, wrCleanHTML(el)).catch(() => {}); } catch (e) {}
         try { WsCatalog && WsCatalog.recordSceneWords(sid, wrCountOf(el), baselineRef.current); } catch (e) {}
         dirtyRef.current = false;
@@ -685,6 +788,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   }, [immersion, tw.typewriter]);
 
   const onInput = () => {
+    if (approvedLocked) return;
     recount(); schedulePersist();
     // once the writer touches a merged draft paragraph, it becomes their own
     const el = editorRef.current;
@@ -693,15 +797,18 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   };
 
   const commitEdit = () => {
+    if (approvedLocked) return;
     recount(); schedulePersist();
   };
 
   const openAI = () => {
+    if (approvedLocked) return;
     if (tw.aiPlace === "drawer") { setRightTab("ai"); setRightOpen(true); if (!coexist) setLeftOpen(false); }
     else setTrayOpen(true);
   };
 
   const adoptText = (text) => {
+    if (approvedLocked) return;
     const el = editorRef.current;
     if (!el || !text) return;
     const p = document.createElement("p");
@@ -718,6 +825,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   };
 
   const adopt = (cand) => {
+    if (approvedLocked) return;
     const el = editorRef.current;
     if (!el) return;
     const p = document.createElement("p");
@@ -736,6 +844,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   /* 融合 — insert as an editable draft paragraph, focus it so the writer
      weaves it into their own words instead of accepting verbatim. */
   const merge = (cand) => {
+    if (approvedLocked) return;
     const el = editorRef.current;
     if (!el) return;
     const p = document.createElement("p");
@@ -803,6 +912,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     if (it) locateDxPara(it.pid, false);
   };
   const dxAdopt = (issue, cand) => {
+    if (approvedLocked) return;
     const el = editorRef.current;
     if (!el || !wrDeepAdopt) return;
     dxUndoRef.current = { sid: activeScene, html: wrCleanHTML(el) };
@@ -819,6 +929,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     dxRescan();
   };
   const dxUndo = () => {
+    if (approvedLocked) return;
     const u = dxUndoRef.current, el = editorRef.current;
     if (!u || !el || u.sid !== activeScene) return;
     if (wrDeepUnmark) wrDeepUnmark(el);
@@ -830,7 +941,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     dxRescan();
   };
   const dxRescanAll = () => { if (wrDxClearSkips) wrDxClearSkips(activeScene); dxRescan(); };
-  const dxEditDraft = (issue) => { setPosture("draft"); setTimeout(() => locateDxPara(issue.pid, true), 80); };
+  const dxEditDraft = (issue) => { if (!approvedLocked) { setPosture("draft"); setTimeout(() => locateDxPara(issue.pid, true), 80); } };
   /* ================== /深改姿态 ================== */
 
 
@@ -841,19 +952,21 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     const onAction = (e) => {
       if (e.detail === "ai") openAI();
       else if (e.detail === "immersion") setImmersion(v => !v);
-      else if (e.detail === "deep") setPosture("deep");
+      else if (e.detail === "deep" && !approvedLocked) setPosture("deep");
     };
-    const onPosture = (e) => setPosture(e.detail === "deep" ? "deep" : "draft");
+    const onPosture = (e) => setPosture(e.detail === "deep" && !approvedLocked ? "deep" : "draft");
     window.addEventListener("ws:writer-scene", onScene);
     window.addEventListener("ws:snow-source", onSnowSrc);
     window.addEventListener("ws:writer-action", onAction);
     window.addEventListener("ws:writer-posture", onPosture);
     return () => { window.removeEventListener("ws:writer-scene", onScene); window.removeEventListener("ws:snow-source", onSnowSrc); window.removeEventListener("ws:writer-action", onAction); window.removeEventListener("ws:writer-posture", onPosture); };
-  }, [tw.aiPlace]);
+  }, [tw.aiPlace, approvedLocked]);
 
   /* 大纲结构操作 → 全部写穿 WsCatalog（单一真相源），再刷新本地映射 */
   const refreshChapters = () => setChapters(wrFromCatalog());
+  const chapterLocked = (chId) => chapters.some((chapter) => chapter.id === chId && chapter.state === "approved");
   const reorderScene = (chId, from, to) => {
+    if (chapterLocked(chId)) return;
     if (WsCatalog) { WsCatalog.moveScene(chId, from, to); refreshChapters(); return; }
     setChapters(prev => prev.map(c => {
       if (c.id !== chId) return c;
@@ -864,10 +977,12 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     }));
   };
   const renameScene = (chId, sid, title) => {
+    if (chapterLocked(chId)) return;
     if (WsCatalog) { WsCatalog.renameScene(chId, sid, title); refreshChapters(); return; }
     setChapters(prev => prev.map(c => c.id !== chId ? c : { ...c, scenes: c.scenes.map(s => s.id === sid ? { ...s, title } : s) }));
   };
   const deleteScene = (chId, sid) => {
+    if (chapterLocked(chId)) return;
     if (WsCatalog) {
       // 进回收站（正文文档保留在存储里，恢复时一并回来；彻底删除时由回收站清理）
       const hit = WsCatalog.sceneById(sid);
@@ -894,6 +1009,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     setChapters(prev => prev.map(c => c.id !== chId ? c : { ...c, scenes: c.scenes.filter(s => s.id !== sid) }));
   };
   const addScene = (chId) => {
+    if (chapterLocked(chId)) return;
     if (WsCatalog) { WsCatalog.addScene(chId, "新场景"); refreshChapters(); return; }
     const nid = "sc" + Date.now();
     setChapters(prev => prev.map(c => c.id !== chId ? c : { ...c, scenes: [...c.scenes, { id: nid, title: "新场景", state: "todo" }] }));
@@ -970,8 +1086,10 @@ function WriterRoom({ t, setTweak, onExit, go }) {
             <span className="wr-loc-chev"><I.ChevronDown size={14} /></span>
           </button>
           <div className="wr-posture" role="tablist" aria-label="写作姿态">
-            <button className={posture === "draft" ? "is-on" : ""} onClick={() => setPosture("draft")} title="起草 · 编辑正文"><I.Pen size={12} /> 起草</button>
-            <button className={posture === "deep" ? "is-on" : ""} disabled={!activeScene} onClick={() => setPosture("deep")} title="深改 · 句段诊断与改写">
+            <button role="tab" aria-selected={posture === "draft"} tabIndex={posture === "draft" ? 0 : -1} onKeyDown={onRovingTabKeyDown}
+              className={posture === "draft" ? "is-on" : ""} onClick={() => setPosture("draft")} title="起草 · 编辑正文"><I.Pen size={12} /> 起草</button>
+            <button role="tab" aria-selected={posture === "deep"} tabIndex={posture === "deep" ? 0 : -1} onKeyDown={onRovingTabKeyDown}
+              className={posture === "deep" ? "is-on" : ""} disabled={!activeScene || approvedLocked} onClick={() => setPosture("deep")} title={approvedLocked ? "终稿已锁定，请先重新打开章节" : "深改 · 句段诊断与改写"}>
               <I.Microscope size={12} /> 深改{posture === "deep" && dxIssues.length > 0 ? <span className="wr-posture-n">{dxIssues.length}</span> : null}
             </button>
           </div>
@@ -980,7 +1098,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
             <WrCanonicalControl
               saveStatus={saved}
               canonicalStatus={canonicalStatus}
-              disabled={!activeScene}
+              disabled={!activeScene || approvedLocked || !!contentSafetyReview}
               onPromote={promoteCanonical}
             />
             <span className="wr-stat-time" title="本节写作时长"><I.Clock size={13} /><b>{fmtElapsed(elapsed)}</b></span>
@@ -1008,7 +1126,19 @@ function WriterRoom({ t, setTweak, onExit, go }) {
         )}
 
         <div className="wr-scroll" ref={scrollRef} onClick={updateActive}>
-          {!activeScene && (
+          {!activeScene && (catalogLoading ? (
+            <div className="wr-blank" style={{ display: "grid", placeItems: "center", minHeight: "60vh", textAlign: "center", color: "var(--ink-3)" }} role="status">
+              正在从服务端加载章节与正文…
+            </div>
+          ) : catalogUnavailable ? (
+            <div className="wr-blank" style={{ display: "grid", placeItems: "center", minHeight: "60vh", textAlign: "center" }} role="status">
+              <div style={{ maxWidth: 440, display: "grid", gap: 14, justifyItems: "center" }}>
+                <div style={{ fontFamily: "var(--font-serif)", fontSize: 22, color: "var(--ink-1)" }}>章节目录加载失败</div>
+                <p style={{ color: "var(--ink-3)", fontSize: 14, lineHeight: 1.8, margin: 0 }}>系统不会把网络失败当成空作品。恢复连接后重试，正文与目录都不会被本地空状态覆盖。</p>
+                <button className="btn btn-ghost" onClick={() => WsCatalog.__refresh && WsCatalog.__refresh()}><I.Refresh size={14} /> 重试加载</button>
+              </div>
+            </div>
+          ) : (
             <div className="wr-blank" style={{ display: "grid", placeItems: "center", minHeight: "60vh", textAlign: "center" }}>
               <div style={{ maxWidth: 420, display: "grid", gap: 14, justifyItems: "center" }}>
                 <div style={{ fontFamily: "var(--font-serif)", fontSize: 22, color: "var(--ink-1)" }}>这部作品还没有章节</div>
@@ -1019,7 +1149,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
                 </div>
               </div>
             </div>
-          )}
+          ))}
           <div className="wr-measure" style={!activeScene ? { display: "none" } : undefined}>
             <header className="wr-scene-head">
               <div className="wr-stamp">{am.stamp} · {am.type}</div>
@@ -1028,9 +1158,12 @@ function WriterRoom({ t, setTweak, onExit, go }) {
                 ? <WrSceneCard card={am.card} onEdit={go ? () => go("author") : null} />
                 : <div className="wr-goal"><span className="wr-goal-k">本场目标</span><span className="wr-goal-v">{am.goal}</span></div>}
               <OrchestrationSignals sceneId={activeScene} />
+              {approvedLocked && <div className="wr-final-lock" role="status"><I.Lock size={13} /> 已批准终稿只读。需要改写时，请先到成稿中心重新打开本章。</div>}
               {posture === "deep" && <div className="wr-deep-note"><span className="dot" />深改姿态 · 正文只读 · 点击高亮句直达诊断</div>}
             </header>
-            <div className="wr-editor" ref={editorRef} contentEditable={posture !== "deep"} suppressContentEditableWarning spellCheck={false} onInput={() => { onInput(); detectMention(); }} onKeyDown={onEditorKeyDown} onKeyUp={() => { updateActive(); detectMention(); }} onMouseOver={onEditorOver} onMouseOut={onEditorOut} onClick={(e) => {
+            <div className="wr-editor" ref={editorRef} role="textbox" aria-multiline="true"
+              aria-label={`${am.title || "当前场景"}正文编辑区`} aria-readonly={posture === "deep" || approvedLocked} tabIndex={0}
+              contentEditable={posture !== "deep" && !approvedLocked} suppressContentEditableWarning spellCheck={false} onInput={() => { onInput(); detectMention(); }} onKeyDown={onEditorKeyDown} onKeyUp={() => { updateActive(); detectMention(); }} onMouseOver={onEditorOver} onMouseOut={onEditorOut} onClick={(e) => {
               if (posture === "deep") {
                 const dx = e.target.closest && e.target.closest("[data-dx]");
                 if (dx) { setDxActive(dx.getAttribute("data-dx")); return; }
@@ -1038,10 +1171,10 @@ function WriterRoom({ t, setTweak, onExit, go }) {
               onEditorClick(e);
             }} />
             <footer className="wr-scene-foot">
-              <span className="wr-foot-meta">{savedAt ? `自动保存 · ${new Date(savedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}` : "自动保存已开启"}</span>
+              <span className="wr-foot-meta">{approvedLocked ? "终稿锁定 · 只读" : (savedAt ? `自动保存 · ${new Date(savedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}` : "自动保存已开启")}</span>
               <div className="flex gap-2">
                 <button className="btn btn-ghost btn-sm" disabled={!sceneAt(-1)} onClick={() => { const p = sceneAt(-1); if (p) setActiveScene(p); }}>回到上一场</button>
-                <button className="btn btn-primary btn-sm" onClick={() => { setNextCue(true); setNextDismissed(false); }}>完成此场 <I.ArrowRight size={13} /></button>
+                <button className="btn btn-primary btn-sm" disabled={approvedLocked} title={approvedLocked ? "终稿已锁定" : "仅打开下一场提示，不会伪造服务端完成状态"} onClick={() => { setNextCue(true); setNextDismissed(false); }}>准备下一场 <I.ArrowRight size={13} /></button>
               </div>
             </footer>
           </div>
@@ -1055,7 +1188,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
           <button className={`wr-dock-btn ${leftOpen ? "is-on" : ""}`} onClick={() => { setLeftOpen(v => !v); if (!coexist) setRightOpen(false); }} title="大纲 ⌘1"><I.BookOpen size={16} /> 大纲</button>
           <button className={`wr-dock-btn ${rightOpen ? "is-on" : ""}`} onClick={() => { setRightOpen(v => !v); if (!coexist) setLeftOpen(false); }} title="上下文 ⌘2"><I.Compass size={16} /> 上下文</button>
           <div className="wr-dock-sep" />
-          <button className="wr-dock-btn accent" onClick={openAI} title="AI 续写 / 改写 ⌘J"><I.Sparkles size={16} /> AI 续写 <kbd>⌘J</kbd></button>
+          <button className="wr-dock-btn accent" disabled={approvedLocked} onClick={openAI} title={approvedLocked ? "终稿已锁定，请先重新打开章节" : "AI 续写 / 改写 ⌘J"}><I.Sparkles size={16} /> AI 续写 <kbd>⌘J</kbd></button>
           <div className="wr-dock-sep" />
           <button className={`wr-dock-btn wr-dock-icon ${isDesk ? "wr-layout-on" : ""}`} onClick={() => setTweak && setTweak("wrLayout", isDesk ? "immersive" : "desk")} title={isDesk ? "切换到沉浸稿纸" : "切换到书桌三栏"}><I.PanelLeft size={16} /></button>
           <button className={`wr-dock-btn wr-dock-icon ${immersion ? "is-on" : ""}`} onClick={() => setImmersion(v => !v)} title="沉浸写作 ⌘."><I.Eye size={16} /></button>
@@ -1079,6 +1212,15 @@ function WriterRoom({ t, setTweak, onExit, go }) {
       <WrInlineRewrite editorRef={editorRef} onCommit={commitEdit} />
       <WrEntityPop pop={entityPop} onOpen={openDossier} />
       <WrMentionPicker mention={mention} list={mentionList} idx={mentionIdx} onPick={insertMention} onHover={setMentionIdx} />
+      {contentSafetyReview && (
+        <ContentSafetyReviewDialog
+          review={contentSafetyReview}
+          busy={contentSafetyBusy}
+          error={contentSafetyError}
+          onCancel={cancelContentSafetyReview}
+          onConfirm={confirmContentSafetyReview}
+        />
+      )}
     </div>
   );
 }
@@ -1239,7 +1381,8 @@ function WrChapter({ ch, activeScene, onPick, onReorder, onRename, onDelete, onA
   const dragFrom = useWR(null);
   const tone = { approved: "sage", draft: "slate", writing: "crimson" }[ch.state] || "slate";
   const label = { approved: "已批准", draft: "草稿", writing: "进行中" }[ch.state] || ch.state;
-  const startEdit = (s) => { setEditing(s.id); setEditVal(s.title); };
+  const locked = ch.state === "approved";
+  const startEdit = (s) => { if (!locked) { setEditing(s.id); setEditVal(s.title); } };
   const commit = () => { if (editing && onRename) onRename(ch.id, editing, editVal.trim() || "未命名"); setEditing(null); };
   return (
     <div className="wr-ch">
@@ -1253,7 +1396,7 @@ function WrChapter({ ch, activeScene, onPick, onReorder, onRename, onDelete, onA
         <ul className="wr-sc-list">
           {ch.scenes.map((s, i) => (
             <li key={s.id}
-              draggable={editing !== s.id}
+              draggable={!locked && editing !== s.id}
               onDragStart={(e) => { dragFrom.current = i; if (e.dataTransfer) e.dataTransfer.effectAllowed = "move"; }}
               onDragOver={(e) => { e.preventDefault(); if (over !== i) setOver(i); }}
               onDrop={(e) => { e.preventDefault(); const from = dragFrom.current; if (from != null && from !== i && onReorder) onReorder(ch.id, from, i); dragFrom.current = null; setOver(null); }}
@@ -1261,7 +1404,7 @@ function WrChapter({ ch, activeScene, onPick, onReorder, onRename, onDelete, onA
               <div className={`wr-sc ${activeScene === s.id ? "is-active" : ""} ${over === i ? "is-over" : ""} ${editing === s.id ? "is-editing" : ""}`}
                 role="button" tabIndex={0}
                 onClick={() => { if (editing !== s.id) onPick(s.id); }}>
-                <span className="wr-sc-grip" title="拖拽重排"><I.GripVertical size={13} /></span>
+                <span className="wr-sc-grip" title={locked ? "终稿已锁定" : "拖拽重排"}><I.GripVertical size={13} /></span>
                 <span className={`wr-sc-mark s-${s.state}`}>
                   {s.state === "done" && <I.Check size={11} />}
                   {s.state === "active" && <span className="wr-sc-dot" />}
@@ -1278,14 +1421,14 @@ function WrChapter({ ch, activeScene, onPick, onReorder, onRename, onDelete, onA
                 )}
                 {editing !== s.id && (
                   <span className="wr-sc-act">
-                    <button className="wr-sc-actbtn" title="重命名" onClick={(e) => { e.stopPropagation(); startEdit(s); }}><I.Edit size={12} /></button>
-                    <button className="wr-sc-actbtn danger" title="删除场景" onClick={(e) => { e.stopPropagation(); onDelete && onDelete(ch.id, s.id); }}><I.Trash size={12} /></button>
+                    <button className="wr-sc-actbtn" disabled={locked} title={locked ? "终稿已锁定" : "重命名"} onClick={(e) => { e.stopPropagation(); startEdit(s); }}><I.Edit size={12} /></button>
+                    <button className="wr-sc-actbtn danger" disabled={locked} title={locked ? "终稿已锁定" : "删除场景"} onClick={(e) => { e.stopPropagation(); onDelete && onDelete(ch.id, s.id); }}><I.Trash size={12} /></button>
                   </span>
                 )}
               </div>
             </li>
           ))}
-          <li className="wr-sc-add"><button className="wr-sc-addbtn" onClick={() => onAdd && onAdd(ch.id)}><I.Plus size={12} /> 添加场景</button></li>
+          <li className="wr-sc-add"><button className="wr-sc-addbtn" disabled={locked} title={locked ? "终稿已锁定" : undefined} onClick={() => onAdd && onAdd(ch.id)}><I.Plus size={12} /> 添加场景</button></li>
         </ul>
       )}
     </div>
@@ -1304,7 +1447,7 @@ function WrContext({ open, tab, setTab, onClose, onOpenAI, place, onAdopt, onMer
         <I.Compass size={16} /><span className="wr-drawer-title">场景上下文</span>
         <button className="wr-drawer-x" onClick={onClose} title="收起 (Esc)"><I.X size={16} /></button>
       </header>
-      <div className="wr-tabs">
+      <div className="wr-tabs" role="tablist" aria-label="场景上下文分类">
         <WrTabBtn id="scene" cur={tab} on={setTab} icon="Compass" label="戏剧" />
         <WrTabBtn id="ai" cur={tab} on={setTab} icon="Sparkles" label="AI" />
         <WrTabBtn id="qc" cur={tab} on={setTab} icon="ShieldCheck" label="QC" badge={riskN ? String(riskN) : null} />
@@ -1355,7 +1498,8 @@ function WrAnnoList({ editorRef, tick }) {
 }
 function WrTabBtn({ id, cur, on, icon, label, badge }) {
   const Ic = I[icon] || I.Dot;
-  return (<button className={`wr-tab ${cur === id ? "is-active" : ""}`} onClick={() => on(id)}><Ic size={14} /> {label}{badge && <span className="wr-tab-badge">{badge}</span>}</button>);
+  return (<button role="tab" aria-selected={cur === id} tabIndex={cur === id ? 0 : -1} onKeyDown={onRovingTabKeyDown}
+    className={`wr-tab ${cur === id ? "is-active" : ""}`} onClick={() => on(id)}><Ic size={14} /> {label}{badge && <span className="wr-tab-badge">{badge}</span>}</button>);
 }
 /* 随身契约 · 控制塔（人写也会漂——全书锚点与到期承诺随场在侧） */
 function WrCtxContract({ scene }) {

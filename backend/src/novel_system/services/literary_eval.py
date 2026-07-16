@@ -16,6 +16,7 @@ from novel_system.services.llm_accounting import (
     mark_postprocess_failure,
 )
 from novel_system.services.llm_client import LLMRequest
+from novel_system.services.literary_quality import automated_diagnostic_assessment
 
 
 DEFAULT_PASS_THRESHOLD = 0.72
@@ -73,6 +74,7 @@ class LiteraryEvalScore:
     passed: bool
     dimensions: dict[str, float]
     issues: list[str]
+    automated_assessment: dict[str, Any]
 
 
 def load_literary_eval_suite(source: str | Path | Mapping[str, Any]) -> LiteraryEvalSuite:
@@ -111,13 +113,23 @@ def score_literary_case(case: LiteraryEvalCase, generated_text: str) -> Literary
         "summary_ending": _banned_term_score(text, case.summary_ending_banned_terms),
         "image_homogeneity": _term_hit_score(text, case.image_variety_cues),
     }
-    score = round(sum(dimensions[key] * weight for key, weight in DIMENSION_WEIGHTS.items()), 4)
+    raw_score = round(sum(dimensions[key] * weight for key, weight in DIMENSION_WEIGHTS.items()), 4)
+    automated_assessment = automated_diagnostic_assessment(
+        text,
+        raw_diagnostic_score=raw_score,
+    )
+    score = automated_assessment["score"]
     issues = _score_issues(case, text, dimensions)
+    if automated_assessment["evidence_sufficiency"] < 0.5:
+        issues.append(
+            "insufficient prose evidence: automated cue checks cannot establish literary quality"
+        )
     return LiteraryEvalScore(
         score=score,
         passed=score >= case.pass_threshold,
         dimensions=dimensions,
         issues=issues,
+        automated_assessment=automated_assessment,
     )
 
 
@@ -163,8 +175,11 @@ class LiteraryEvalRunner:
                     "generated_text": generated_text,
                     "score": score.score,
                     "passed": score.passed,
+                    "diagnostic_passed": score.passed,
+                    "human_verified": False,
                     "dimensions": score.dimensions,
                     "issues": score.issues,
+                    "automated_assessment": score.automated_assessment,
                     "generation": generation_metadata,
                 }
             )
@@ -184,6 +199,13 @@ class LiteraryEvalRunner:
                 "failed_count": len(case_results) - passed_count,
                 "mean_score": mean_score,
                 "pass_threshold": self.suite.pass_threshold,
+            },
+            "evidence_governance": {
+                "provenance": "automated_diagnostic",
+                "rubric_visibility": "hidden_from_live_generator",
+                "policy_evidence_eligible": False,
+                "claim": "diagnostic_floor_only",
+                "upper_bound_requires": "frozen_hidden_human_evidence",
             },
             "cases": case_results,
         }
@@ -510,6 +532,9 @@ def _generated_text_and_metadata(generated: str | Mapping[str, Any]) -> tuple[st
 
 
 def _case_user_prompt(case: LiteraryEvalCase) -> str:
+    # Only author-visible task constraints belong in the generation prompt.
+    # The scoring cue/banned-term lists are deliberately withheld; exposing
+    # them taught the model how to keyword-stuff the evaluator.
     return "\n".join(
         [
             f"Case ID: {case.case_id}",
@@ -518,20 +543,11 @@ def _case_user_prompt(case: LiteraryEvalCase) -> str:
             "## Writing Task",
             case.prompt,
             "",
-            "## Evaluation Constraints",
-            f"required terms: {_joined_terms(case.required_terms)}",
-            f"style cues: {_joined_terms(case.style_cues)}",
-            f"character contradiction cues: {_joined_terms(case.character_contradiction_cues)}",
-            f"dialogue edge cues: {_joined_terms(case.dialogue_edge_cues)}",
-            f"image necessity cues: {_joined_terms(case.image_necessity_cues)}",
-            f"ending drive cues: {_joined_terms(case.ending_drive_cues)}",
-            f"choice pressure cues: {_joined_terms(case.choice_pressure_cues)}",
-            f"image variety cues: {_joined_terms(case.image_variety_cues)}",
-            f"banned terms: {_joined_terms(case.banned_terms)}",
-            f"model voice banned terms: {_joined_terms(case.model_voice_banned_terms)}",
-            f"expository dialogue banned terms: {_joined_terms(case.expository_dialogue_banned_terms)}",
-            f"summary ending banned terms: {_joined_terms(case.summary_ending_banned_terms)}",
+            "## Explicit Story Requirements",
+            f"required story elements: {_joined_terms(case.required_terms)}",
             f"length band: {case.min_chars}-{case.max_chars} characters",
+            "",
+            "The literary scoring rubric is hidden. Write a coherent scene naturally; do not list or keyword-stuff cues.",
             "",
             "Return JSON exactly like: {\"scene_text\": \"...\"}",
         ]

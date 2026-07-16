@@ -7,6 +7,7 @@ import { CTContinuity, CTDownstream, CTInspector, CTQualityMatrix, CTSpinePanel 
 import { CTLiveEdit, CT_INITIAL_SIGNALS, ctDerive } from "./ct-edit.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { WsDemoTag } from "./ws-catalog.jsx";
+import { onRovingTabKeyDown } from "./a11y-tabs.js";
 
 /* global React, ReactDOM, I, CT_LAYERS, CT_TRACK, CT_STATE,
    CTStructureMap, CTSpinePanel, CTInspector, CTQualityMatrix, CTContinuity, CTDownstream, CTLiveEdit,
@@ -170,17 +171,20 @@ function ControlTower({ onOpenStep, go }) {
           ))}
         </div>
         <div className="ct-header-actions">
-          <div className="ct-viewtoggle" role="tablist">
-            <button className="is-active" role="tab"><I.Grid size={13} /> 总览</button>
-            <button role="tab" onClick={() => openStep(selected)} title="在逐步工作台中打开当前层"><I.Layers size={13} /> 逐步</button>
+          <div className="ct-viewtoggle" aria-label="结构查看方式">
+            <button className="is-active" aria-current="page" disabled title="当前正在查看总览"><I.Grid size={13} /> 总览</button>
+            <button onClick={() => openStep(selected)} title="在逐步工作台中打开当前层"><I.Layers size={13} /> 逐步</button>
           </div>
-          <button className="btn btn-accent btn-sm" onClick={() => setTab("downstream")}><I.Layout size={13} /> 整理成章节结构</button>
+          <button className="btn btn-accent btn-sm" onClick={() => setTab("downstream")} title="演示作品的结构预览；真实作品请使用雪花页顶部的整理按钮">
+            <I.Layout size={13} /> 章节结构预览 · 演示
+          </button>
         </div>
       </header>
 
-      <nav className="ct-tabs">
+      <nav className="ct-tabs" role="tablist" aria-label="控制塔视图">
         {CT_TABS.map(t => (
-          <button key={t.id} className={`ct-tab ${tab === t.id ? "is-active" : ""}`} onClick={() => setTab(t.id)}>
+          <button key={t.id} role="tab" aria-selected={tab === t.id} tabIndex={tab === t.id ? 0 : -1} onKeyDown={onRovingTabKeyDown}
+            className={`ct-tab ${tab === t.id ? "is-active" : ""}`} onClick={() => setTab(t.id)}>
             {React.createElement(I[t.icon], { size: 14 })}{t.label}
             {t.id === "continuity" && metrics.alerts > 0 && <span className="ct-tab-badge">{metrics.alerts}</span>}
           </button>

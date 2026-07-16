@@ -30,6 +30,8 @@
   transition: width var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
 .ws-rail:hover { width: 218px; box-shadow: var(--shadow-lg); }
+/* 键盘进入侧栏时与 hover 完全同态：标签、徽标和模式切换均不能保持折叠。 */
+.ws-rail:focus-within { width: 218px; box-shadow: var(--shadow-lg); }
 
 /* Soft scrim behind the expanded rail — content dims to acknowledge the
    fly-out menu, so the overlay reads as intentional rather than covering. */
@@ -39,6 +41,7 @@
   opacity: 0; transition: opacity var(--dur) var(--ease);
 }
 .ws-rail:hover ~ .ws-rail-scrim { opacity: 1; }
+.ws-rail:focus-within ~ .ws-rail-scrim { opacity: 1; }
 [data-theme="dark"] .ws-rail-scrim { background: rgba(0,0,0,0.42); }
 
 .ws-brand {
@@ -644,12 +647,14 @@
 .ws-wsw-head-lbl { font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-4); font-weight: 700; }
 .ws-wsw-head-n { font-size: 11.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; }
 .ws-wsw-list { display: flex; flex-direction: column; gap: 2px; max-height: 52vh; overflow-y: auto; }
+.ws-wsw-item { position: relative; }
 .ws-wsw-row {
   display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
   padding: 10px; border: 0; background: transparent; cursor: pointer; border-radius: var(--r-md);
   transition: background var(--t-fast);
 }
 .ws-wsw-row:hover { background: var(--paper-2); }
+.ws-wsw-row:focus-visible { background: var(--paper-2); }
 .ws-wsw-row.is-active { background: var(--paper-3); }
 .ws-wsw-mark {
   flex: 0 0 36px; width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center;
@@ -663,6 +668,32 @@
 .ws-wsw-bar { height: 3px; border-radius: 999px; background: var(--paper-3); overflow: hidden; margin-top: 1px; }
 .ws-wsw-bar i { display: block; height: 100%; border-radius: 999px; background: var(--acc); }
 .ws-wsw-check { flex: 0 0 auto; color: var(--crimson); display: grid; place-items: center; }
+.ws-wsw-item:has(.ws-wsw-del) .ws-wsw-row { padding-right: 43px; }
+.ws-wsw-del {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  display: grid; place-items: center; width: 30px; height: 30px; padding: 0;
+  border: 0; border-radius: 8px; background: transparent; color: var(--ink-3);
+  opacity: 0; transition: opacity var(--t-fast), color var(--t-fast), background var(--t-fast);
+}
+.ws-wsw-item:hover .ws-wsw-del, .ws-wsw-item:focus-within .ws-wsw-del { opacity: .78; }
+.ws-wsw-del:hover, .ws-wsw-del:focus-visible { opacity: 1; color: var(--crimson); background: var(--crimson-wash); }
+
+/* hover 展开之外的完整键盘展开态（集中声明，避免每个子项漏掉一处）。 */
+.ws-rail:focus-within .ws-brand { justify-content: flex-start; gap: 12px; }
+.ws-rail:focus-within .ws-brand-text { opacity: 1; max-width: 118px; }
+.ws-rail:focus-within .ws-nav-label,
+.ws-rail:focus-within .ws-item-label,
+.ws-rail:focus-within .ws-item-badge,
+.ws-rail:focus-within .ws-foot-btn span:last-child,
+.ws-rail:focus-within .ws-cmdk-label,
+.ws-rail:focus-within .ws-cmdk kbd,
+.ws-rail:focus-within .ws-nav-group + .ws-nav-group::before { opacity: 1; }
+.ws-rail:focus-within .ws-mode-switch { gap: 3px; background: var(--paper-2); border-color: var(--line-1); }
+.ws-rail:focus-within .ws-mode-btn { gap: 6px; }
+.ws-rail:focus-within .ws-mode-btn span { max-width: 60px; opacity: 1; }
+.ws-rail:focus-within .ws-mode-btn:not(.is-active) { flex: 1; max-width: 80px; padding: 7px 2px; opacity: 1; }
+.ws-rail:focus-within .ws-mode-btn.is-active { background: var(--paper-0); box-shadow: var(--shadow-sm); }
+.ws-rail:focus-within .ws-brand-caret { width: 15px; opacity: 1; }
 .ws-wsw-new {
   display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 6px;
   padding: 11px; border: 1px dashed var(--line-2); background: transparent; cursor: pointer;

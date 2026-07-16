@@ -1775,6 +1775,7 @@
 .seg-block .seg-btn { flex: 1; text-align: center; }
 .ms-export-opt { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); padding: 3px 0; cursor: pointer; }
 .ms-export-opt input { accent-color: var(--crimson); }
+.ms-export-error { margin: 0 0 10px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--crimson) 28%, var(--line-1)); border-radius: var(--r-sm); background: var(--crimson-wash); color: var(--crimson); font-size: 11.5px; line-height: 1.55; }
 .ms-export-foot { display: flex; align-items: center; justify-content: space-between; padding-top: 12px; border-top: 1px solid var(--line-1); }
 
 /* ---------- List ---------- */
@@ -1863,7 +1864,9 @@
 }
 .ms-read-chno { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.2em; color: var(--crimson); text-align: center; }
 .ms-read-htitle { font-size: 30px; text-align: center; letter-spacing: -0.01em; margin: 8px 0 40px; }
+.ms-read-partial { display: flex; align-items: center; gap: 8px; margin: -18px 0 30px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--gold) 34%, var(--line-1)); border-radius: var(--r-sm); background: var(--gold-wash); color: var(--ink-2); font-size: 12px; line-height: 1.55; }
 .ms-scene { margin-bottom: 38px; }
+.ms-scene.is-missing { opacity: 0.78; }
 .ms-scene-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; padding-bottom: 10px; border-bottom: 1px solid var(--line-1); }
 .ms-scene-idx {
   font-family: var(--font-mono);
@@ -1881,6 +1884,7 @@
   margin: 0 0 6px;
   text-indent: 2em;
 }
+.ms-scene-missing { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 72px; border: 1px dashed var(--line-2); border-radius: var(--r-sm); background: var(--paper-1); color: var(--ink-3); font-size: 12.5px; }
 .ms-read-end {
   text-align: center;
   color: var(--ink-3);
@@ -1896,6 +1900,9 @@
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 12px; color: var(--ink-3); text-align: center; padding: 40px;
 }
+.ms-canonical-error p { max-width: 440px; margin: -2px 0 2px; color: var(--crimson); font-size: 12.5px; line-height: 1.65; }
+.ms-canonical-loading { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 12px 18px 0; padding: 9px 11px; border: 1px solid var(--line-1); border-radius: var(--r-sm); background: var(--paper-1); color: var(--ink-3); font-size: 12px; }
+.ms-inline-error { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 18px; padding: 11px 12px; border: 1px solid color-mix(in srgb, var(--crimson) 28%, var(--line-1)); border-radius: var(--r-sm); background: var(--crimson-wash); color: var(--crimson); font-size: 12px; line-height: 1.55; }
 .ms-writing-card {
   display: flex; flex-direction: column; align-items: center; gap: 16px;
   max-width: 440px; text-align: center;
@@ -2548,4 +2555,3 @@
   .settings-cols { grid-template-columns: 1fr; }
   .settings-nav { position: static; flex-direction: row; flex-wrap: wrap; }
 }
-

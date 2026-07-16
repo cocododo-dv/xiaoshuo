@@ -128,6 +128,25 @@ def test_failed_idempotent_action_reenters_with_same_execution_and_new_attempt(s
     ]
 
 
+def test_unexpected_idempotent_action_error_is_sanitized(session) -> None:
+    def leak_secret() -> dict:
+        raise RuntimeError("provider secret=sk-do-not-return manuscript excerpt")
+
+    with pytest.raises(DomainError) as exc_info:
+        execute_with_idempotency(
+            session,
+            idempotency_key="sanitize-unexpected-error",
+            method="POST",
+            path_template="/unsafe",
+            payload={"safe": True},
+            action=leak_secret,
+        )
+
+    assert exc_info.value.code == "INTERNAL_ERROR"
+    assert exc_info.value.message == "internal operation failed"
+    assert "sk-do-not-return" not in exc_info.value.message
+
+
 def test_active_idempotency_lease_is_not_reclaimed_by_another_worker(session) -> None:
     request_hash = canonical_request_hash("POST", "/run", {"scene_id": "SC01"})
     first = IdempotencyLeaseService(session).claim(

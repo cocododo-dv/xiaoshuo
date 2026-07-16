@@ -5,8 +5,11 @@ from sqlalchemy import select
 from novel_system.db.models import AttemptTracker, ChapterGoal, HumanReviewEvent, LlmCall, QcReport, SceneCard, SceneDraft, SceneRunState, StoryProject
 from novel_system.services.context_budget import (
     CONTINUITY_DROP_ORDER,
+    _compress_continuity_digest,
+    _compress_style_observations,
     apply_context_budget,
     collect_prompt_sections,
+    estimate_tokens,
     finalize_request_budget,
 )
 from novel_system.services.llm_client import LLMRequest
@@ -45,6 +48,41 @@ def _bundle_snapshot() -> dict:
             ),
         },
     }
+
+
+def test_token_estimator_is_conservative_for_cjk_and_keeps_latin_ratio() -> None:
+    chinese = "雨落在旧城的石阶上，顾舟没有回头。"
+    english = "Rain fell across the old stone steps while Gu Zhou kept walking."
+
+    # CJK cannot use the Latin len/4 shortcut: each wide glyph is budgeted
+    # approximately as a whole token, including full-width punctuation.
+    assert estimate_tokens(chinese) >= len(chinese) - 2
+    assert estimate_tokens(english) == (len(english) + 3) // 4
+    assert estimate_tokens(f"{chinese} {english}") >= estimate_tokens(chinese)
+
+
+def test_cjk_compression_shortens_unspaced_paragraphs() -> None:
+    paragraph = "顾舟沿着废弃站台向前走，铜铃在袖口里一下一下撞着腕骨。" * 12
+
+    style = _compress_style_observations(paragraph)
+    continuity = _compress_continuity_digest(paragraph)
+
+    assert len(style) < len(paragraph)
+    assert len(continuity) < len(style)
+    assert style.endswith("...")
+    assert continuity.endswith("...")
+    assert estimate_tokens(style) <= 50
+    assert estimate_tokens(continuity) <= 26
+
+
+def test_latin_compression_remains_word_readable() -> None:
+    paragraph = " ".join(f"observation-{index}" for index in range(80))
+
+    compressed = _compress_style_observations(paragraph)
+
+    assert compressed.startswith("observation-0")
+    assert compressed.endswith("...")
+    assert len(compressed) < len(paragraph)
 
 
 def _seed_scene(session) -> None:

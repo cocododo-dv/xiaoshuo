@@ -16,6 +16,7 @@ let csState = {
   projectId: null,
   level: "project",   // project | chapter | scene
   summary: null,
+  quota: null,
   loading: false,
   error: null,
 };
@@ -45,6 +46,7 @@ async function costLoad(projectId, opts = {}) {
       ...csState,
       level: (data && data.level) || level,
       summary: (data && data.summary) || null,
+      quota: (data && data.quota) || null,
       loading: false,
     };
     csEmit();
@@ -92,12 +94,32 @@ function PhaseBar({ breakdown }) {
   );
 }
 
+function QuotaRow({ label, meter, suffix = "token" }) {
+  if (!meter || meter.limit == null) return null;
+  const used = Number(meter.used || 0);
+  const limit = Number(meter.limit || 0);
+  const ratio = limit > 0 ? Math.min(1, used / limit) : 0;
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+        <span>{label}</span>
+        <span>{used.toLocaleString()} / {limit.toLocaleString()} {suffix}</span>
+      </div>
+      <div role="progressbar" aria-label={label} aria-valuemin="0" aria-valuemax={limit} aria-valuenow={used}
+           style={{ height: 8, borderRadius: 5, background: "#e7e4dc", overflow: "hidden" }}>
+        <div style={{ width: `${Math.round(ratio * 100)}%`, height: "100%", background: ratio >= 0.9 ? "#a64b3c" : "#667a64" }} />
+      </div>
+    </div>
+  );
+}
+
 function WsCost() {
   const st = useCostState();
   const [pid, setPid] = React.useState(st.projectId || "");
   const s = st.summary;
   const ji = s && s.judge_independence;
   const budget = s && s.budget;
+  const q = st.quota;
 
   return (
     <div className="ws-cost" style={{ padding: 16, maxWidth: 960, margin: "0 auto" }}>
@@ -127,6 +149,21 @@ function WsCost() {
 
           <h4>各阶段占比</h4>
           <PhaseBar breakdown={s.phase_breakdown} />
+
+          {q && (
+            <section aria-label="全局模型额度" style={{ marginTop: 18, padding: 12, background: "#f5f2e9", borderRadius: 8 }}>
+              <h4 style={{ marginTop: 0 }}>全局硬额度</h4>
+              <QuotaRow label="今日总量" meter={q.daily_tokens} />
+              <QuotaRow label="本月总量" meter={q.monthly_tokens} />
+              <QuotaRow label="本项目今日" meter={q.project_daily_tokens} />
+              <QuotaRow label="今日请求" meter={q.daily_requests} suffix="次" />
+              <QuotaRow label="并发请求" meter={q.concurrent_requests} suffix="路" />
+              <small style={{ opacity: 0.72 }}>
+                额度按 {q.period_timezone || "UTC"} 结算；达到上限会在请求发出前停止，不产生模型费用。
+                {q.daily_cost_usd && !q.daily_cost_usd.enforced ? " 金额上限尚未启用（需配置模型单价）。" : ""}
+              </small>
+            </section>
+          )}
 
           {budget && budget.budget != null && (
             <p style={{ marginTop: 12 }}>

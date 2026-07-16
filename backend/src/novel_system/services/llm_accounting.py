@@ -14,6 +14,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 import httpx
@@ -23,6 +24,11 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterRunJob, LlmCall, LlmCallAttempt, SceneRunState, utcnow
 from novel_system.services.context_budget import estimate_tokens
+from novel_system.services.llm_audit import (
+    audit_error_text,
+    fingerprint_identifier,
+    sanitize_audit_summary,
+)
 from novel_system.services.llm_client import (
     LLMClientError,
     LLMHTTPError,
@@ -33,6 +39,7 @@ from novel_system.services.llm_client import (
     OnlineAccountedExecution,
 )
 from novel_system.services.llm_providers.base import LLMDispatchKind
+from novel_system.settings import get_settings
 
 
 MESSAGE_TOKEN_OVERHEAD = 4
@@ -871,6 +878,243 @@ def _execution_step_conflict(existing_call: LlmCall) -> LLMAccountingError:
     )
 
 
+def _enforce_global_llm_quotas(
+    session: Session,
+    context: LLMCallContext,
+    estimate: RequestUsageEstimate,
+) -> None:
+    """Atomically fence singleton-wide, monthly, and project provider spend.
+
+    The caller has already opened an immediate claim transaction on SQLite.
+    Open attempts count at their full reservation; terminal attempts count at
+    actual provider usage (or the conservative usage estimate persisted for a
+    failed response).  ``budget_charged_tokens`` intentionally remains capped
+    by the reservation for scene-budget semantics and must not be reused as a
+    singleton-wide spend counter.
+    """
+
+    settings = get_settings(include_runtime_config=False)
+    now = datetime.now(UTC)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+    concurrent_count = len(
+        list(
+            session.scalars(
+                select(LlmCallAttempt.attempt_id)
+                .where(LlmCallAttempt.accounting_status == "reserved")
+                .limit(settings.llm_max_concurrent_requests)
+            )
+        )
+    )
+    if concurrent_count >= settings.llm_max_concurrent_requests:
+        _reject_global_quota(
+            session,
+            "LLM_GLOBAL_CONCURRENCY_LIMIT",
+            "global provider concurrency limit reached",
+            used=concurrent_count,
+            requested=1,
+            limit=settings.llm_max_concurrent_requests,
+            period="concurrent",
+        )
+
+    daily_rows = _quota_attempt_rows(session, created_after=day_start)
+    daily_tokens, daily_requests, daily_cost = _quota_usage(daily_rows, settings=settings)
+    if daily_requests + 1 > settings.llm_daily_request_limit:
+        _reject_global_quota(
+            session,
+            "LLM_DAILY_REQUEST_LIMIT",
+            "daily provider request limit reached",
+            used=daily_requests,
+            requested=1,
+            limit=settings.llm_daily_request_limit,
+            period="utc_day",
+        )
+    if daily_tokens + estimate.reserved_tokens > settings.llm_daily_token_limit:
+        _reject_global_quota(
+            session,
+            "LLM_DAILY_TOKEN_LIMIT",
+            "daily provider token limit reached",
+            used=daily_tokens,
+            requested=estimate.reserved_tokens,
+            limit=settings.llm_daily_token_limit,
+            period="utc_day",
+        )
+
+    monthly_rows = _quota_attempt_rows(session, created_after=month_start)
+    monthly_tokens, _, _ = _quota_usage(monthly_rows, settings=settings)
+    if monthly_tokens + estimate.reserved_tokens > settings.llm_monthly_token_limit:
+        _reject_global_quota(
+            session,
+            "LLM_MONTHLY_TOKEN_LIMIT",
+            "monthly provider token limit reached",
+            used=monthly_tokens,
+            requested=estimate.reserved_tokens,
+            limit=settings.llm_monthly_token_limit,
+            period="utc_month",
+        )
+
+    if context.project_id:
+        project_rows = _quota_attempt_rows(
+            session,
+            created_after=day_start,
+            project_id=context.project_id,
+        )
+        project_tokens, _, _ = _quota_usage(project_rows, settings=settings)
+        if project_tokens + estimate.reserved_tokens > settings.llm_project_daily_token_limit:
+            _reject_global_quota(
+                session,
+                "LLM_PROJECT_DAILY_TOKEN_LIMIT",
+                "project daily provider token limit reached",
+                used=project_tokens,
+                requested=estimate.reserved_tokens,
+                limit=settings.llm_project_daily_token_limit,
+                period="utc_day",
+                project_id=context.project_id,
+            )
+
+    if settings.llm_daily_cost_limit_usd > 0:
+        max_rate = max(
+            settings.llm_input_cost_per_million_usd,
+            settings.llm_output_cost_per_million_usd,
+        )
+        requested_cost = estimate.reserved_tokens * max_rate / 1_000_000
+        if daily_cost + requested_cost > settings.llm_daily_cost_limit_usd:
+            _reject_global_quota(
+                session,
+                "LLM_DAILY_COST_LIMIT",
+                "daily provider cost limit reached",
+                used=round(daily_cost, 8),
+                requested=round(requested_cost, 8),
+                limit=settings.llm_daily_cost_limit_usd,
+                period="utc_day",
+            )
+
+
+def _quota_attempt_rows(
+    session: Session,
+    *,
+    created_after: str,
+    project_id: str | None = None,
+) -> list[tuple[LlmCallAttempt, str | None]]:
+    query = (
+        select(LlmCallAttempt, LlmCall.project_id)
+        .join(LlmCall, LlmCall.llm_call_id == LlmCallAttempt.llm_call_id)
+        .where(LlmCallAttempt.created_at >= created_after)
+    )
+    if project_id is not None:
+        query = query.where(LlmCall.project_id == project_id)
+    return list(session.execute(query).all())
+
+
+def _quota_usage(
+    rows: list[tuple[LlmCallAttempt, str | None]],
+    *,
+    settings: Any,
+) -> tuple[int, int, float]:
+    tokens = 0
+    request_count = 0
+    cost = 0.0
+    max_rate = max(
+        settings.llm_input_cost_per_million_usd,
+        settings.llm_output_cost_per_million_usd,
+    )
+    for attempt, _project_id in rows:
+        is_open = attempt.accounting_status == "reserved"
+        if is_open:
+            charged = int(attempt.reserved_tokens or 0)
+            cost += charged * max_rate / 1_000_000
+        else:
+            # A provider may report more tokens than the pre-dispatch
+            # reservation.  The scene budget records only the bounded
+            # ``budget_charged_tokens`` amount, while global/project quotas
+            # must retain the complete provider liability.
+            charged = int(attempt.total_tokens or 0)
+            cost += (
+                int(attempt.prompt_tokens or 0) * settings.llm_input_cost_per_million_usd
+                + int(attempt.completion_tokens or 0) * settings.llm_output_cost_per_million_usd
+            ) / 1_000_000
+        tokens += charged
+        if is_open or attempt.request_dispatched_at is not None:
+            request_count += 1
+    return tokens, request_count, cost
+
+
+def _reject_global_quota(
+    session: Session,
+    code: str,
+    message: str,
+    *,
+    used: int | float,
+    requested: int | float,
+    limit: int | float,
+    period: str,
+    project_id: str | None = None,
+) -> None:
+    session.rollback()
+    raise LLMAccountingRejected(
+        code,
+        message,
+        details={
+            "used": used,
+            "requested": requested,
+            "limit": limit,
+            "period": period,
+            "project_id": project_id,
+            "retryable": period in {"concurrent", "utc_day", "utc_month"},
+        },
+    )
+
+
+def llm_quota_snapshot(session: Session, *, project_id: str | None = None) -> dict[str, Any]:
+    """Return the same quota counters used by the pre-dispatch hard gate."""
+
+    settings = get_settings(include_runtime_config=False)
+    now = datetime.now(UTC)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    daily_tokens, daily_requests, daily_cost = _quota_usage(
+        _quota_attempt_rows(session, created_after=day_start),
+        settings=settings,
+    )
+    monthly_tokens, _, _ = _quota_usage(
+        _quota_attempt_rows(session, created_after=month_start),
+        settings=settings,
+    )
+    project_tokens = None
+    if project_id:
+        project_tokens, _, _ = _quota_usage(
+            _quota_attempt_rows(session, created_after=day_start, project_id=project_id),
+            settings=settings,
+        )
+    concurrent = len(
+        list(
+            session.scalars(
+                select(LlmCallAttempt.attempt_id).where(
+                    LlmCallAttempt.accounting_status == "reserved"
+                )
+            )
+        )
+    )
+    return {
+        "period_timezone": "UTC",
+        "daily_tokens": {"used": daily_tokens, "limit": settings.llm_daily_token_limit},
+        "monthly_tokens": {"used": monthly_tokens, "limit": settings.llm_monthly_token_limit},
+        "project_daily_tokens": {
+            "project_id": project_id,
+            "used": project_tokens,
+            "limit": settings.llm_project_daily_token_limit,
+        },
+        "daily_requests": {"used": daily_requests, "limit": settings.llm_daily_request_limit},
+        "concurrent_requests": {"used": concurrent, "limit": settings.llm_max_concurrent_requests},
+        "daily_cost_usd": {
+            "used": round(daily_cost, 8),
+            "limit": settings.llm_daily_cost_limit_usd or None,
+            "enforced": settings.llm_daily_cost_limit_usd > 0,
+        },
+    }
+
+
 def _reserve_scene_capacity(
     session: Session,
     scene_id: str | None,
@@ -1175,7 +1419,7 @@ def _record_unknown_dispatch(
         provider_attempt_no=0,
         dispatch_kind="initial",
         request_max_output_tokens=request.max_output_tokens,
-        provider_request_id=provider_request_id,
+        provider_request_id=fingerprint_identifier(provider_request_id),
         estimated_tokens=request_estimate.estimated_tokens,
         reserved_tokens=request_estimate.reserved_tokens,
         budget_charged_tokens=min(usage.total_tokens, request_estimate.reserved_tokens),
@@ -1188,7 +1432,7 @@ def _record_unknown_dispatch(
         settled_at=now,
         latency_ms=max(0, latency_ms),
         error_code=audit_error.code,
-        error_text=str(audit_error),
+        error_text=audit_error_text(str(audit_error), error_code=audit_error.code),
     )
     session.add(attempt)
     parent = session.get(LlmCall, call_id)
@@ -1304,11 +1548,12 @@ def record_rejected_call(
     if request_payload_summary:
         request_summary.update(request_payload_summary)
     request_summary[ACCOUNTING_EXECUTION_MODE_KEY] = context.provider_execution_mode
-    response_summary = response_payload_summary or {
+    request_summary = sanitize_audit_summary(request_summary)
+    response_summary = sanitize_audit_summary(response_payload_summary or {
         "message": str(rejection),
         "details": dict(rejection.details or {}),
         "retryable": False,
-    }
+    })
     session.add(
         LlmCall(
             llm_call_id=call_id,
@@ -1384,20 +1629,24 @@ def execute_accounted_completion_probe(
         error_message = str(exc)
     parent = session.get(LlmCall, call_id)
     if parent is not None:
-        parent.request_payload_summary = {
-            **dict(parent.request_payload_summary or {}),
-            "probe_endpoint": url,
-            "probe_method": "POST",
-        }
-        parent.response_payload_summary = {
-            **dict(parent.response_payload_summary or {}),
-            "probe_status_code": (
-                execution.response.status_code
-                if execution.response is not None
-                else None
-            ),
-            "probe_error_code": error_code,
-        }
+        parent.request_payload_summary = sanitize_audit_summary(
+            {
+                **dict(parent.request_payload_summary or {}),
+                "probe_endpoint": url,
+                "probe_method": "POST",
+            }
+        )
+        parent.response_payload_summary = sanitize_audit_summary(
+            {
+                **dict(parent.response_payload_summary or {}),
+                "probe_status_code": (
+                    execution.response.status_code
+                    if execution.response is not None
+                    else None
+                ),
+                "probe_error_code": error_code,
+            }
+        )
         session.commit()
     return AccountedCompletionProbeResult(
         llm_call_id=call_id,
@@ -1453,10 +1702,12 @@ def execute_accounted_call(
         project_id=context.project_id,
         scene_id=context.scene_id,
         chapter_id=context.chapter_id,
-        request_payload_summary={
-            **_request_summary(request),
-            ACCOUNTING_EXECUTION_MODE_KEY: context.provider_execution_mode,
-        },
+        request_payload_summary=sanitize_audit_summary(
+            {
+                **_request_summary(request),
+                ACCOUNTING_EXECUTION_MODE_KEY: context.provider_execution_mode,
+            }
+        ),
         scope_type=context.scope_type,
         scope_id=context.scope_id,
         run_job_id=context.run_job_id,
@@ -1644,6 +1895,7 @@ class _LedgerAttemptHook:
         attempt_id = f"llmattempt_{uuid.uuid4().hex}"
         _begin_claim_transaction(self._session)
         _assert_run_job_running(self._session, self._context)
+        _enforce_global_llm_quotas(self._session, self._context, estimate)
         scene_fence_tokens = _reserve_scene_capacity(
             self._session,
             self._context.scene_id,
@@ -1697,7 +1949,7 @@ class _LedgerAttemptHook:
             attempt.accounting_status = "rejected"
             attempt.settled_at = utcnow()
             attempt.error_code = gate_error.code
-            attempt.error_text = str(gate_error)
+            attempt.error_text = audit_error_text(str(gate_error), error_code=gate_error.code)
             _aggregate_parent(self._session, self._call_id)
             self._session.commit()
             _expire_cached_scene_accounting_state(self._session, self._context.scene_id)
@@ -1771,27 +2023,33 @@ class _LedgerAttemptHook:
         error_text: str | None,
         succeeded: bool,
     ) -> None:
+        error_text = audit_error_text(error_text, error_code=error_code)
+        provider_request_id = fingerprint_identifier(provider_request_id)
         attempt = self._session.get(LlmCallAttempt, attempt_id)
         assert attempt is not None
-        charged = min(usage.total_tokens, attempt.reserved_tokens)
-        exceeds = usage.total_tokens > attempt.reserved_tokens
+        reserved_tokens = int(attempt.reserved_tokens or 0)
+        charged = min(usage.total_tokens, reserved_tokens)
+        exceeds = usage.total_tokens > reserved_tokens
         target_status = (
             "usage_exceeds_reservation" if exceeds else ("settled" if succeeded else "failed")
         )
-        if attempt.accounting_status != "reserved":
-            identical_callback = (
-                attempt.accounting_status == target_status
-                and attempt.provider_request_id == provider_request_id
-                and attempt.prompt_tokens == usage.prompt_tokens
-                and attempt.completion_tokens == usage.completion_tokens
-                and attempt.total_tokens == usage.total_tokens
-                and attempt.budget_charged_tokens == charged
-                and attempt.usage_is_estimate == usage.usage_is_estimate
-                and attempt.latency_ms == max(0, latency_ms)
-                and attempt.error_code == error_code
-                and attempt.error_text == error_text
+
+        def callback_matches(row: LlmCallAttempt) -> bool:
+            return bool(
+                row.accounting_status == target_status
+                and row.provider_request_id == provider_request_id
+                and row.prompt_tokens == usage.prompt_tokens
+                and row.completion_tokens == usage.completion_tokens
+                and row.total_tokens == usage.total_tokens
+                and row.budget_charged_tokens == charged
+                and row.usage_is_estimate == usage.usage_is_estimate
+                and row.latency_ms == max(0, latency_ms)
+                and row.error_code == error_code
+                and row.error_text == error_text
             )
-            if identical_callback:
+
+        if attempt.accounting_status != "reserved":
+            if callback_matches(attempt):
                 return
             raise LLMAccountingError(
                 "LLM_ACCOUNTING_ATTEMPT_CALLBACK_CONFLICT",
@@ -1802,21 +2060,52 @@ class _LedgerAttemptHook:
                     "callback_status": target_status,
                 },
             )
-        attempt.provider_request_id = provider_request_id
-        attempt.prompt_tokens = usage.prompt_tokens
-        attempt.completion_tokens = usage.completion_tokens
-        attempt.total_tokens = usage.total_tokens
-        attempt.budget_charged_tokens = charged
-        attempt.usage_is_estimate = usage.usage_is_estimate
-        attempt.accounting_status = target_status
-        attempt.settled_at = utcnow()
-        attempt.latency_ms = max(0, latency_ms)
-        attempt.error_code = error_code
-        attempt.error_text = error_text
+
+        changed = self._session.execute(
+            update(LlmCallAttempt)
+            .where(
+                LlmCallAttempt.attempt_id == attempt_id,
+                LlmCallAttempt.accounting_status == "reserved",
+            )
+            .values(
+                provider_request_id=provider_request_id,
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                total_tokens=usage.total_tokens,
+                budget_charged_tokens=charged,
+                usage_is_estimate=usage.usage_is_estimate,
+                accounting_status=target_status,
+                settled_at=utcnow(),
+                latency_ms=max(0, latency_ms),
+                error_code=error_code,
+                error_text=error_text,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if changed.rowcount != 1:
+            # A concurrent startup reconciler or duplicate provider callback
+            # won the terminal transition.  Re-read after rollback and accept
+            # only a byte-for-byte equivalent callback.
+            self._session.rollback()
+            terminal = self._session.get(LlmCallAttempt, attempt_id)
+            if terminal is not None and callback_matches(terminal):
+                return
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_ATTEMPT_CALLBACK_CONFLICT",
+                "provider callback lost the durable terminal transition",
+                details={
+                    "attempt_id": attempt_id,
+                    "existing_status": (
+                        terminal.accounting_status if terminal is not None else None
+                    ),
+                    "callback_status": target_status,
+                },
+            )
+        self._session.expire(attempt)
         _settle_scene_usage(
             self._session,
             self._context.scene_id,
-            reserved_tokens=attempt.reserved_tokens,
+            reserved_tokens=reserved_tokens,
             actual_tokens=usage.total_tokens,
             usage_exceeds_reservation=exceeds,
         )
@@ -1892,16 +2181,22 @@ def _finalize_parent_success(
     assert parent is not None
     parent.provider = response.provider
     parent.model = response.model
-    parent.native_reasoning_json = response.native_reasoning
+    parent.native_reasoning_json = (
+        sanitize_audit_summary(response.native_reasoning)
+        if response.native_reasoning is not None
+        else None
+    )
     usage_overage_tokens = _usage_overage_tokens(session, call_id)
-    parent.response_payload_summary = {
-        "request_id": response.request_id,
-        "finish_reason": response.finish_reason,
-        "text_chars": len(response.text),
-        "usage_present": response.usage_present,
-        "usage_complete": response.usage_complete,
-        "usage_overage_tokens": usage_overage_tokens,
-    }
+    parent.response_payload_summary = sanitize_audit_summary(
+        {
+            "request_id": response.request_id,
+            "finish_reason": response.finish_reason,
+            "text_chars": len(response.text),
+            "usage_present": response.usage_present,
+            "usage_complete": response.usage_complete,
+            "usage_overage_tokens": usage_overage_tokens,
+        }
+    )
     parent.finish_reason = response.finish_reason
     # Parent latency is the strict aggregate of physical-attempt rows. Wall-clock
     # orchestration overhead is not a provider attempt and must not distort lineage.
@@ -1972,7 +2267,7 @@ def _finalize_parent_failure(
     if usage_overage_tokens:
         summary = dict(parent.response_payload_summary or {})
         summary["usage_overage_tokens"] = usage_overage_tokens
-        parent.response_payload_summary = summary
+        parent.response_payload_summary = sanitize_audit_summary(summary)
         parent.accounting_status = "usage_exceeds_reservation"
     else:
         parent.accounting_status = "rejected" if rejected_before_dispatch else "failed"
@@ -2033,7 +2328,10 @@ def _settle_open_attempts_for_failure(
         attempt.usage_is_estimate = usage.usage_is_estimate
         attempt.accounting_status = "usage_exceeds_reservation" if exceeds else "failed"
         attempt.error_code = getattr(error, "code", error.__class__.__name__)
-        attempt.error_text = str(error)
+        attempt.error_text = audit_error_text(
+            str(error),
+            error_code=getattr(error, "code", error.__class__.__name__),
+        )
         attempt.settled_at = utcnow()
         _settle_scene_usage(
             session,
@@ -2066,9 +2364,168 @@ def mark_postprocess_failure(
         summary["usage_overage_tokens"] = usage_overage_tokens
     if error_text:
         summary["postprocess_error"] = error_text
-    parent.response_payload_summary = summary
+    parent.response_payload_summary = sanitize_audit_summary(summary)
     parent.settled_at = parent.settled_at or utcnow()
     session.commit()
+
+
+def _parse_accounting_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def recover_stale_legacy_reservations(
+    session: Session,
+    *,
+    now: datetime | None = None,
+    ttl_seconds: int | None = None,
+) -> dict[str, list[str]]:
+    """Reconcile abandoned non-scene reservations after process startup.
+
+    Scene/chapter execution has its own durable job lease and checkpoint
+    recovery, so this sweep deliberately excludes every scene-scoped or
+    run-job-owned call.  The remaining legacy calls have no heartbeat; a
+    conservative configurable age is therefore the only safe crash signal.
+
+    Each candidate parent is locked after discovery.  SQLite uses the same
+    ``BEGIN IMMEDIATE`` serialization as the provider claim path, while
+    databases with row locks use ``FOR UPDATE``.  Re-reading all open attempts
+    under that lock makes duplicate/concurrent startup sweeps idempotent and
+    prevents a fresh retry on the same parent from being reclaimed.
+    """
+
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    else:
+        current = current.astimezone(UTC)
+    configured_ttl = (
+        get_settings(include_runtime_config=False).llm_reservation_recovery_ttl_seconds
+        if ttl_seconds is None
+        else int(ttl_seconds)
+    )
+    ttl = max(1, configured_ttl)
+    cutoff = current - timedelta(seconds=ttl)
+    cutoff_iso = cutoff.isoformat()
+
+    candidate_ids = list(
+        session.scalars(
+            select(LlmCall.llm_call_id)
+            .join(LlmCallAttempt, LlmCallAttempt.llm_call_id == LlmCall.llm_call_id)
+            .where(
+                LlmCall.accounting_status == "reserved",
+                LlmCall.scene_id.is_(None),
+                LlmCall.run_job_id.is_(None),
+                LlmCall.scope_type != "scene",
+                LlmCallAttempt.accounting_status == "reserved",
+                LlmCallAttempt.created_at <= cutoff_iso,
+            )
+            .distinct()
+            .order_by(LlmCall.llm_call_id)
+        )
+    )
+    session.rollback()
+
+    released: list[str] = []
+    failed: list[str] = []
+    skipped_fresh: list[str] = []
+    for call_id in candidate_ids:
+        session.commit()
+        _begin_claim_transaction(session)
+        # Settlement transitions lock an attempt before aggregating its
+        # parent.  Preserve that lock order here to avoid a PostgreSQL
+        # attempt<->parent deadlock with a late provider callback.
+        attempts = list(
+            session.scalars(
+                select(LlmCallAttempt)
+                .where(LlmCallAttempt.llm_call_id == call_id)
+                .order_by(LlmCallAttempt.provider_attempt_no)
+                .with_for_update()
+            )
+        )
+        open_attempts = [
+            attempt for attempt in attempts if attempt.accounting_status == "reserved"
+        ]
+        if not open_attempts:
+            session.rollback()
+            continue
+        parent = session.scalar(
+            select(LlmCall)
+            .where(
+                LlmCall.llm_call_id == call_id,
+                LlmCall.accounting_status == "reserved",
+                LlmCall.scene_id.is_(None),
+                LlmCall.run_job_id.is_(None),
+                LlmCall.scope_type != "scene",
+            )
+            .with_for_update()
+        )
+        if parent is None:
+            session.rollback()
+            continue
+        open_timestamps = [
+            _parse_accounting_timestamp(attempt.created_at) for attempt in open_attempts
+        ]
+        if any(timestamp is None or timestamp > cutoff for timestamp in open_timestamps):
+            skipped_fresh.append(call_id)
+            session.rollback()
+            continue
+
+        terminal_at = utcnow()
+        any_dispatched = any(
+            attempt.request_dispatched_at is not None for attempt in attempts
+        )
+        for attempt in open_attempts:
+            if attempt.request_dispatched_at is None:
+                attempt.accounting_status = "released"
+                attempt.budget_charged_tokens = 0
+                attempt.settled_at = terminal_at
+                continue
+
+            estimated = max(0, int(attempt.estimated_tokens or 0))
+            completion = min(
+                max(0, int(attempt.request_max_output_tokens or 0)),
+                estimated,
+            )
+            attempt.prompt_tokens = max(0, estimated - completion)
+            attempt.completion_tokens = completion
+            attempt.total_tokens = estimated
+            attempt.budget_charged_tokens = min(
+                estimated,
+                max(0, int(attempt.reserved_tokens or 0)),
+            )
+            attempt.usage_is_estimate = True
+            attempt.accounting_status = "failed"
+            attempt.error_code = "RUN_CHECKPOINT_OUTPUT_MISSING"
+            attempt.error_text = (
+                "provider request was dispatched but no durable output checkpoint exists"
+            )
+            attempt.settled_at = terminal_at
+
+        _aggregate_parent(session, call_id)
+        parent.settled_at = terminal_at
+        if any_dispatched:
+            parent.accounting_status = "failed"
+            parent.error_code = "RUN_CHECKPOINT_OUTPUT_MISSING"
+            failed.append(call_id)
+        else:
+            parent.accounting_status = "released"
+            parent.error_code = None
+            released.append(call_id)
+        session.commit()
+
+    return {
+        "released_call_ids": released,
+        "failed_call_ids": failed,
+        "fresh_call_ids_skipped": skipped_fresh,
+    }
 
 
 def recover_incomplete_call(session: Session, llm_call_id: str) -> AccountingRecoveryResult:

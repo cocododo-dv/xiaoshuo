@@ -28,7 +28,10 @@ from novel_system.db.models import StyleReferenceQuote
 from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
 from novel_system.services.style_reference.dimensions import Layer, SubDimension
-from novel_system.services.style_reference.ingest import IngestService
+from novel_system.services.style_reference.ingest import (
+    MAX_REFERENCE_BOOK_BYTES,
+    IngestService,
+)
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.run_orchestrator import RunOrchestrator
 
@@ -573,6 +576,80 @@ def test_import_path_accepts_txt(tmp_path) -> None:
         )
         session.commit()
     assert result.paragraphs_count >= 2
+
+
+def test_import_path_is_disabled_without_configured_roots(tmp_path, monkeypatch) -> None:
+    p = tmp_path / "disabled.txt"
+    p.write_text(SAMPLE_TEXT, encoding="utf-8")
+    monkeypatch.delenv("NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS", raising=False)
+
+    with SessionLocal() as session, pytest.raises(DomainError) as exc_info:
+        IngestService(session, llm_enabled=False).ingest_path(
+            p,
+            title="disabled",
+            author_label=None,
+            cloud_policy="local_only",
+        )
+
+    assert exc_info.value.code == "STYLE_REFERENCE_PATH_IMPORT_DISABLED"
+    assert exc_info.value.status_code == 403
+
+
+def test_import_path_rejects_file_outside_configured_root(tmp_path, monkeypatch) -> None:
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
+    p = outside / "outside.txt"
+    p.write_text(SAMPLE_TEXT, encoding="utf-8")
+    monkeypatch.setenv("NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS", str(allowed))
+
+    with SessionLocal() as session, pytest.raises(DomainError) as exc_info:
+        IngestService(session, llm_enabled=False).ingest_path(
+            p,
+            title="outside",
+            author_label=None,
+            cloud_policy="local_only",
+        )
+
+    assert exc_info.value.code == "STYLE_REFERENCE_BOOK_PATH_FORBIDDEN"
+    assert exc_info.value.status_code == 403
+
+
+def test_import_path_rejects_oversized_text(tmp_path) -> None:
+    p = tmp_path / "too-large.txt"
+    p.write_bytes(b"x" * (MAX_REFERENCE_BOOK_BYTES + 1))
+
+    with SessionLocal() as session, pytest.raises(DomainError) as exc_info:
+        IngestService(session, llm_enabled=False).ingest_path(
+            p,
+            title="too large",
+            author_label=None,
+            cloud_policy="local_only",
+        )
+
+    assert exc_info.value.code == "STYLE_REFERENCE_UPLOAD_TOO_LARGE"
+    assert exc_info.value.status_code == 413
+
+
+def test_import_path_rejects_symbolic_links(tmp_path) -> None:
+    target = tmp_path / "target.txt"
+    link = tmp_path / "link.txt"
+    target.write_text(SAMPLE_TEXT, encoding="utf-8")
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("this platform does not permit creating a test symlink")
+
+    with SessionLocal() as session, pytest.raises(DomainError) as exc_info:
+        IngestService(session, llm_enabled=False).ingest_path(
+            link,
+            title="link",
+            author_label=None,
+            cloud_policy="local_only",
+        )
+
+    assert exc_info.value.code == "STYLE_REFERENCE_BOOK_PATH_LINK_FORBIDDEN"
 
 
 # ---------------------------------------------------------------------------

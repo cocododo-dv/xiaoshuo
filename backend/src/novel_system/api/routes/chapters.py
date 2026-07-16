@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -8,6 +11,10 @@ from novel_system.api.deps import get_session
 from novel_system.api.response import ok
 from novel_system.db.models import ChapterGoal, ChapterState, SceneCard, SceneRunState
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.chapter_approval import (
+    is_chapter_approved,
+    require_chapter_mutation_allowed,
+)
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.chapter_runtime import ChapterRuntimeService
 from novel_system.services.errors import DomainError
@@ -16,6 +23,29 @@ from novel_system.services.text_validation import validate_user_text_payload
 from novel_system.services.writer_review import normalize_chapter_writer_brief
 
 router = APIRouter(tags=["chapters"])
+
+
+class ChapterUpsertRequest(BaseModel):
+    """Whitelist the chapter fields an author is allowed to edit."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    chapter_id: str = Field(min_length=1, max_length=255)
+    chapter_goal: str
+    project_id: str | None = None
+    outline_plan_id: str | None = None
+    planned_scene_count: int | None = Field(default=None, ge=0)
+    mid_aggregate_enabled: int = Field(default=0, ge=0, le=1)
+    narrative_json: dict[str, Any] | None = None
+    state: str = "planned"
+    words_target: int | None = Field(default=None, ge=0)
+    display_order: int | None = Field(default=None, ge=0)
+    main_plot_push: str | None = None
+    emotional_target: str | None = None
+    ending_effect: str | None = None
+    must_not: str | None = None
+    notes: str | None = None
+    writer_brief_json: dict[str, Any] | None = None
 
 
 @router.get("/api/v1/chapters")
@@ -35,15 +65,20 @@ def author_trash(request: Request, session: Session = Depends(get_session)):
 
 
 @router.post("/api/v1/chapters")
-def create_chapter(payload: dict, request: Request, session: Session = Depends(get_session)):
+def create_chapter(
+    payload: ChapterUpsertRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    body = payload.model_dump(exclude_unset=True)
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters",
-        payload=payload,
-        action=lambda: _create_chapter(session, payload),
+        payload=body,
+        action=lambda: _create_chapter(session, body),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -105,18 +140,64 @@ def _create_chapter(session: Session, payload: dict) -> dict:
         "writer_brief_json": normalize_chapter_writer_brief(payload.get("writer_brief_json")),
     }
     chapter = session.get(ChapterGoal, payload["chapter_id"])
+    created = chapter is None
     if chapter is None:
+        if str(payload.get("state") or "").strip() == "approved":
+            raise DomainError(
+                "CATALOG_CHAPTER_APPROVAL_REQUIRES_PROJECT_FLOW",
+                "chapter approval must use the project final-approval flow",
+                status_code=409,
+            )
         chapter = ChapterGoal(**payload)
         session.add(chapter)
         session.flush()
+        changed = True
     else:
         if chapter.trashed_flag == 1:
             raise DomainError("CHAPTER_TRASHED", "chapter is currently in author trash")
-        for key, value in payload.items():
-            setattr(chapter, key, value)
+        if (
+            str(payload.get("state") or "").strip() == "approved"
+            and not is_chapter_approved(session, chapter)
+        ):
+            raise DomainError(
+                "CATALOG_CHAPTER_APPROVAL_REQUIRES_PROJECT_FLOW",
+                "chapter approval must use the project final-approval flow",
+                status_code=409,
+            )
+        if "project_id" in payload and payload["project_id"] != chapter.project_id:
+            raise DomainError(
+                "CHAPTER_IDENTITY_IMMUTABLE",
+                "an existing chapter cannot be moved to another project",
+                status_code=409,
+            )
+        if "outline_plan_id" in payload and payload["outline_plan_id"] != chapter.outline_plan_id:
+            raise DomainError(
+                "CHAPTER_IDENTITY_IMMUTABLE",
+                "an existing chapter cannot be rebound to another outline plan",
+                status_code=409,
+            )
+        changed_fields = [
+            key
+            for key, value in payload.items()
+            if key != "chapter_id" and getattr(chapter, key) != value
+        ]
+        changed = require_chapter_mutation_allowed(
+            session,
+            chapter,
+            changed_fields=changed_fields,
+            operation="chapters.upsert",
+        )
+        if changed:
+            for key, value in payload.items():
+                setattr(chapter, key, value)
 
     state = session.get(ChapterState, payload["chapter_id"])
-    if state is None:
+    # Replaying the same payload against a locked final is a true no-op: do not
+    # opportunistically create runtime rows or touch update timestamps.
+    should_create_state = state is None and (
+        created or not is_chapter_approved(session, chapter)
+    )
+    if should_create_state:
         state = ChapterState(
             chapter_id=payload["chapter_id"],
             current_phase="drafting",
@@ -124,8 +205,9 @@ def _create_chapter(session: Session, payload: dict) -> dict:
             aggregate_block_reason="none",
         )
         session.add(state)
+        changed = True
     session.flush()
-    return {"chapter_id": chapter.chapter_id}
+    return {"chapter_id": chapter.chapter_id, "changed": changed}
 
 
 @router.get("/api/v1/chapters/{chapter_id}/status")
@@ -294,11 +376,13 @@ def _serialize_author_scene(scene: SceneCard, scene_state: SceneRunState | None)
 
 
 def _reorder_chapter_scenes(session: Session, chapter_id: str, payload: dict) -> dict:
-    AuthorLifecycleService(session).require_active_chapter(chapter_id)
+    chapter = AuthorLifecycleService(session).require_active_chapter(chapter_id)
 
     scene_ids = payload.get("scene_ids")
     if not isinstance(scene_ids, list) or not scene_ids or not all(isinstance(scene_id, str) and scene_id for scene_id in scene_ids):
         raise DomainError("SCENE_ORDER_INVALID", "scene_ids must be a non-empty list", status_code=400)
+    if len(scene_ids) != len(set(scene_ids)):
+        raise DomainError("SCENE_ORDER_DUPLICATE", "scene_ids must not contain duplicates", status_code=400)
 
     last_scene_id = payload.get("last_scene_id")
     if not isinstance(last_scene_id, str) or last_scene_id not in scene_ids:
@@ -320,12 +404,26 @@ def _reorder_chapter_scenes(session: Session, chapter_id: str, payload: dict) ->
         raise DomainError("SCENE_ORDER_INCOMPLETE", "scene_ids must include every scene in the chapter", status_code=409)
 
     ordered_scenes = [chapter_scene_map[scene_id] for scene_id in scene_ids]
-    for index, scene in enumerate(ordered_scenes, start=1):
-        scene.scene_seq = index
-        scene.is_chapter_last = 1 if scene.scene_id == last_scene_id else 0
-    session.flush()
+    changed_fields = [
+        f"scene:{scene.scene_id}.order"
+        for index, scene in enumerate(ordered_scenes, start=1)
+        if scene.scene_seq != index
+        or scene.is_chapter_last != (1 if scene.scene_id == last_scene_id else 0)
+    ]
+    changed = require_chapter_mutation_allowed(
+        session,
+        chapter,
+        changed_fields=changed_fields,
+        operation="chapters.reorder_scenes",
+    )
+    if changed:
+        for index, scene in enumerate(ordered_scenes, start=1):
+            scene.scene_seq = index
+            scene.is_chapter_last = 1 if scene.scene_id == last_scene_id else 0
+        session.flush()
     return {
         "chapter_id": chapter_id,
+        "changed": changed,
         "scenes": [
             {"scene_id": scene.scene_id, "scene_seq": scene.scene_seq, "is_chapter_last": scene.is_chapter_last}
             for scene in ordered_scenes

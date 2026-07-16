@@ -30,6 +30,7 @@ from novel_system.db.models import (
     RevisionCandidate,
     SceneCard,
     SceneBlueprint,
+    SceneBundle,
     SceneDraft,
     SceneMemory,
     SceneRunState,
@@ -2099,11 +2100,15 @@ def test_missing_settled_style_output_blocks_before_any_new_provider_call(sessio
 
 def test_successful_run_commits_terminal_macro_checkpoint(session) -> None:
     _seed_resume_scene(session)
-    result = Orchestrator(
+    orchestrator = Orchestrator(
         session,
         scene_generation_service=SceneGenerationService(session, llm_client=_CountingGenerationClient()),
         hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
-    ).run_scene("CH_RESUME_SC01", execution_id="idempotency:terminal-checkpoint")
+    )
+    result = orchestrator.run_scene(
+        "CH_RESUME_SC01",
+        execution_id="idempotency:terminal-checkpoint",
+    )
 
     assert result["scene_status"] == "archived"
     state = session.get(SceneRunState, "CH_RESUME_SC01")
@@ -2111,6 +2116,14 @@ def test_successful_run_commits_terminal_macro_checkpoint(session) -> None:
     assert state.run_checkpoint == "archived"
     assert state.run_execution_status == "completed"
     assert state.run_checkpoint_json["artifact_refs"]["final_scene_row_id"] == state.current_final_scene_row_id
+
+    with pytest.raises(DomainError) as exc_info:
+        Orchestrator(session).run_scene(
+            "CH_RESUME_SC01",
+            author_note="换掉已经归档运行的作者指令",
+            execution_id="idempotency:terminal-checkpoint",
+        )
+    assert exc_info.value.code == "RUN_INPUT_MISMATCH"
 
 
 def test_soft_qc_checkpoint_resume_does_not_repeat_qc_or_generation(session) -> None:
@@ -6757,6 +6770,37 @@ def test_real_pipeline_blocks_settled_ledger_before_repeating_neutral_provider(s
         ).run_scene("CH_RESUME_SC01", execution_id=execution_id)
     assert blocked.value.code == "RUN_CHECKPOINT_OUTPUT_MISSING"
     assert generation_client.requests == []
+
+
+def test_checkpoint_rejects_tampered_frozen_bundle_snapshot(session) -> None:
+    _seed_resume_scene(session)
+    execution_id = "idempotency:tampered-frozen-bundle"
+    author_note = "冻结并保留这条作者指令。"
+    with pytest.raises(RuntimeError, match="stop at bundle checkpoint"):
+        Orchestrator(session, scene_generation_service=_FailBeforeNeutral()).run_scene(
+            "CH_RESUME_SC01",
+            execution_id=execution_id,
+            author_note=author_note,
+        )
+    state = session.get(SceneRunState, "CH_RESUME_SC01")
+    assert state.run_checkpoint == "bundle_ready"
+    bundle = session.get(SceneBundle, state.current_bundle_id)
+    snapshot = dict(bundle.frozen_snapshot_json)
+    inline = dict(snapshot["inline_digests"])
+    inline["author_instruction"] = "持久层篡改后的作者指令。"
+    snapshot["inline_digests"] = inline
+    bundle.frozen_snapshot_json = snapshot
+    session.commit()
+
+    with pytest.raises(DomainError) as corrupt:
+        Orchestrator(session, scene_generation_service=_FailBeforeNeutral()).run_scene(
+            "CH_RESUME_SC01",
+            execution_id=execution_id,
+            author_note=author_note,
+        )
+
+    assert corrupt.value.code == "RUN_CHECKPOINT_CORRUPT"
+    assert corrupt.value.details["bundle_integrity"]["error_code"] == "bundle_hash_mismatch"
 
 
 def test_real_pipeline_releases_undispatched_reservation_then_calls_neutral_once(session) -> None:

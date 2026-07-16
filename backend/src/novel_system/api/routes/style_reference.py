@@ -17,20 +17,23 @@ import uuid
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
 from novel_system.api.response import ok
-from novel_system.db.models import ReviewItem
+from novel_system.db.models import ReviewItem, utcnow
 
 logger = logging.getLogger(__name__)
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.style_reference.cleanup import purge_derived_data
 from novel_system.services.style_reference.dimensions import Layer
-from novel_system.services.style_reference.ingest import IngestService
+from novel_system.services.style_reference.ingest import (
+    MAX_REFERENCE_BOOK_BYTES,
+    IngestService,
+)
 from novel_system.services.style_reference.materialization import MaterializationService
 from novel_system.services.style_reference.preview import PreviewService
 from novel_system.services.style_reference.profile_synthesizer import ProfileSynthesizer
@@ -52,6 +55,7 @@ from novel_system.services.style_reference.schemas import (
     ValidationTargetKind,
 )
 from novel_system.services.style_reference.validation import ValidationOrchestrator
+from novel_system.services.system_config import require_admin_token
 
 router = APIRouter(tags=["style_reference"])
 
@@ -175,7 +179,13 @@ def _serialize_run(run) -> dict[str, Any]:
         "book_id": run.book_id,
         "status": run.status,
         "phase": run.phase,
+        "dispatch_state": run.dispatch_state,
+        "requested_layers": list(run.requested_layers_json or []),
         "coverage_json": run.coverage_json or {},
+        "heartbeat_at": run.heartbeat_at,
+        "error_code": run.error_code,
+        "error_text": run.error_text,
+        "retryable": bool(run.retryable),
         "started_at": run.started_at,
         "finished_at": run.finished_at,
         "created_at": run.created_at,
@@ -244,6 +254,10 @@ def _req_id(request: Request) -> str | None:
     return getattr(request.state, "request_id", None)
 
 
+def _client_host(request: Request) -> str | None:
+    return request.client.host if request.client is not None else None
+
+
 def _idempotency_key(request: Request) -> str | None:
     return request.headers.get("X-Idempotency-Key")
 
@@ -302,8 +316,13 @@ def _get_llm_client_and_enabled():
 def import_book_path(
     payload: ImportPathRequest,
     request: Request,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
     session: Session = Depends(get_session),
 ):
+    # A path is interpreted by the server process, not the browser. Keep this
+    # capability behind the existing local/admin boundary in addition to the
+    # configured-root check in IngestService.
+    require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json")
 
     def _do() -> dict[str, Any]:
@@ -333,7 +352,7 @@ def import_book_path(
 
 """上传体积上限:参考书是纯文本,30 万字 UTF-8 约 1MB;10MB 已极宽裕,
 超限直接 413,避免 `file.read()` 把任意大文件整块载入内存。"""
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_UPLOAD_BYTES = MAX_REFERENCE_BOOK_BYTES
 
 
 @router.post(f"{PATH_PREFIX}/books/import-upload")
@@ -591,7 +610,14 @@ def cancel_run(
 ):
     def _do() -> dict[str, Any]:
         repo = StyleReferenceRepository(session)
-        updated = repo.update_run(run_id, status=RunStatus.CANCELLED.value)
+        updated = repo.update_run(
+            run_id,
+            status=RunStatus.CANCELLED.value,
+            dispatch_state="cancelled",
+            heartbeat_at=utcnow(),
+            finished_at=utcnow(),
+            retryable=False,
+        )
         if updated is None:
             raise DomainError(
                 "STYLE_REFERENCE_RUN_NOT_FOUND",
@@ -1131,13 +1157,28 @@ def delete_banned_term(
 
 
 def _serialize_validation_report(report) -> dict[str, Any]:
+    status = report.status
+    if not report.verdict and status == "completed":
+        # Compatibility for reports created before durable async status was
+        # introduced (or by a focused repository test without the new field).
+        status = "queued"
+    public_status = {
+        "queued": "pending",
+        "completed": "done",
+    }.get(status, status)
     return {
         "report_id": report.report_id,
         "profile_id": report.profile_id,
         "target_kind": report.target_kind,
         "target_ref_id": report.target_ref_id,
         "verdict": report.verdict,
-        "status": "pending" if not report.verdict else "done",
+        "status": public_status,
+        "error_code": report.error_code,
+        "error_text": report.error_text,
+        "retryable": bool(report.retryable),
+        "started_at": report.started_at,
+        "heartbeat_at": report.heartbeat_at,
+        "finished_at": report.finished_at,
         "quantitative_json": report.quantitative_json or [],
         "semantic_json": report.semantic_json or [],
         "plagiarism_json": report.plagiarism_json or {},
@@ -1153,7 +1194,9 @@ REPORT_PENDING_TIMEOUT_MINUTES = 10
 
 
 def _reap_orphan_report(session: Session, report) -> None:
-    if report.verdict:
+    if not report.verdict and report.status == "completed":
+        report.status = "queued"
+    if report.status not in {"queued", "running"}:
         return
     from datetime import datetime, timedelta, timezone
 
@@ -1166,13 +1209,12 @@ def _reap_orphan_report(session: Session, report) -> None:
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=REPORT_PENDING_TIMEOUT_MINUTES)
     if created < cutoff:
         report.verdict = "fail"
-        report.forbidden_hits_json = list(report.forbidden_hits_json or []) + [
-            {
-                "severity": "error",
-                "pattern_statement": "async validation worker orphaned (timeout); degraded to fail",
-                "matched_excerpt": "",
-            }
-        ]
+        report.status = "failed"
+        report.error_code = "STYLE_REFERENCE_VALIDATION_INTERRUPTED"
+        report.error_text = "async validation was interrupted; submit the text again to retry"
+        report.retryable = True
+        report.heartbeat_at = utcnow()
+        report.finished_at = utcnow()
         session.flush()
 
 

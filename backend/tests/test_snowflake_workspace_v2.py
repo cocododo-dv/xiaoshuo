@@ -1126,14 +1126,13 @@ def test_workspace_v2_step_generation_uses_llm_and_persists_project_scoped_call(
         project["project_id"],
     )
     assert stored_call.request_payload_summary["step_key"] == "book_brief"
-    assert stored_call.request_payload_summary["step_label"] == "读者定位"
-    assert stored_call.request_payload_summary["step_english_label"] == "Target Audience"
-    assert "回答以下三个问题" in stored_call.request_payload_summary["step_instruction"]
-    assert stored_call.request_payload_summary["pressure_rubric"]["goal"] == (
-        "让每一层雪花都更容易扩展成带目标、阻力、代价和变化的具体场景。"
-    )
+    assert stored_call.request_payload_summary["step_label"]["kind"] == "text_fingerprint"
+    assert stored_call.request_payload_summary["step_english_label"]["kind"] == "text_fingerprint"
+    assert stored_call.request_payload_summary["step_instruction"]["kind"] == "text_fingerprint"
+    assert stored_call.request_payload_summary["pressure_rubric"]["goal"]["kind"] == "text_fingerprint"
     assert "book_brief" in stored_call.request_payload_summary["current_pressure_diagnosis"]["step_key"]
-    assert stored_call.response_payload_summary["structured_output"]["category"] == "Urban Mystery"
+    assert stored_call.response_payload_summary["structured_output"]["kind"] == "json_fingerprint"
+    assert "category" in stored_call.response_payload_summary["structured_output"]["top_level_fields"]
     assert stored_call.accounting_status == "settled"
     assert stored_call.usage_is_estimate is False
     attempt = session.scalars(
@@ -1376,7 +1375,7 @@ def test_workspace_v2_assistant_uses_draft_override_and_returns_candidate_patch(
         "project",
         project["project_id"],
     )
-    assert stored_call.request_payload_summary["draft"]["target_reader"] == override_reader
+    assert stored_call.request_payload_summary["draft"]["kind"] == "json_fingerprint"
     assert stored_call.request_payload_summary["pressure_rubric"]["dimensions"]
     assert stored_call.request_payload_summary["current_pressure_diagnosis"]["pressure_flags"]
     assert stored_call.accounting_status == "settled"
@@ -1451,11 +1450,9 @@ def test_workspace_v2_scene_triage_suggest_returns_non_persistent_suggestions(cl
         "project",
         project["project_id"],
     )
-    assert stored_call.request_payload_summary["pressure_rubric"]["scene_rules"]["proactive"] == [
-        "goal",
-        "conflict",
-        "setback",
-    ]
+    proactive = stored_call.request_payload_summary["pressure_rubric"]["scene_rules"]["proactive"]
+    assert len(proactive) == 3
+    assert all(item["kind"] == "text_fingerprint" for item in proactive)
     assert stored_call.request_payload_summary["current_pressure_diagnosis"]["step_key"] == "scene_details"
     assert (
         session.query(SnowflakeSceneTriageItem)

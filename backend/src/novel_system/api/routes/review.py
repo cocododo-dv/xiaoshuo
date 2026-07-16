@@ -287,21 +287,29 @@ def _approve_author_preference_profile(session: Session, item: ReviewItem) -> di
     if not isinstance(payload, dict):
         payload = {}
     profile_id = payload.get("profile_id") if isinstance(payload.get("profile_id"), str) else "author_pref_global_global"
+    scope_type = str(payload.get("scope_type") or "global")
+    scope_ref_id = str(payload.get("scope_ref_id") or "global").strip()
+    if scope_type not in {"global", "genre", "project", "chapter"} or not scope_ref_id:
+        raise DomainError(
+            "AUTHOR_PREFERENCE_SCOPE_INVALID",
+            "author preference profile has an invalid scope",
+            status_code=400,
+        )
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     source_patch_ids = payload.get("source_patch_ids") if isinstance(payload.get("source_patch_ids"), list) else []
     profile = session.get(AuthorPreferenceProfile, profile_id)
     if profile is None:
         profile = AuthorPreferenceProfile(
             profile_id=profile_id,
-            scope_type=str(payload.get("scope_type") or "global"),
-            scope_ref_id=str(payload.get("scope_ref_id") or "global"),
+            scope_type=scope_type,
+            scope_ref_id=scope_ref_id,
             summary_json=summary,
             source_patch_ids_json=[str(value) for value in source_patch_ids],
         )
         session.add(profile)
     else:
-        profile.scope_type = str(payload.get("scope_type") or profile.scope_type or "global")
-        profile.scope_ref_id = str(payload.get("scope_ref_id") or profile.scope_ref_id or "global")
+        profile.scope_type = scope_type
+        profile.scope_ref_id = scope_ref_id
         profile.summary_json = summary
         profile.source_patch_ids_json = [str(value) for value in source_patch_ids]
     profile.status = "approved"

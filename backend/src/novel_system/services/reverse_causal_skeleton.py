@@ -11,9 +11,13 @@ This module provides:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from typing import Any
 
 from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -231,6 +235,7 @@ def refine_skeleton_with_llm(
             context=llm_context,
         )
     except Exception:
+        _LOGGER.warning("Causal skeleton LLM refinement degraded to deterministic result", exc_info=True)
         return []
     return _parse_causal_gaps(response)
 

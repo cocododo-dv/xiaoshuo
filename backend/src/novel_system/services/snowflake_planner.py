@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -20,6 +21,8 @@ from novel_system.services.snowflake_steps import STEP_ORDER, planner_step_list
 SNOWFLAKE_STEPS = planner_step_list()
 STEP_INDEX = STEP_ORDER
 GATE_STATUSES = {"approved", "skipped"}
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class SnowflakePlannerService:
@@ -296,6 +299,11 @@ class SnowflakePlannerService:
             idea = ThemeAnchorService(self.session).get_controlling_idea(project_id)
             return idea if idea else None
         except Exception:
+            _LOGGER.warning(
+                "Controlling-idea lookup degraded project_id=%s",
+                project_id,
+                exc_info=True,
+            )
             return None
 
     def _build_recommendations(self, project_id: str) -> list[dict[str, Any]]:
@@ -707,6 +715,11 @@ def _build_causal_skeleton_from_synopsis(
             "prompt_text": prompt_text,
         }
     except Exception:
+        _LOGGER.warning(
+            "Causal skeleton synthesis degraded project_id=%s",
+            project.project_id,
+            exc_info=True,
+        )
         return None
 
 

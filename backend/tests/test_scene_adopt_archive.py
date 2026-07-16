@@ -126,12 +126,16 @@ def test_adopt_idempotent_replay_and_already_archived(client, session):
     assert again.status_code == 200
     assert again.json()["data"]["scene_status"] == "archived"
     assert again.json()["data"]["final_scene_row_id"] == first_row
+    assert again.json()["data"]["safe_to_archive"] is True
+    assert again.json()["data"]["literary_warnings_unresolved"] is False
+    assert again.json()["data"]["author_confirmed_final"] is True
     finals = session.query(FinalScene).filter(FinalScene.scene_id == "scene_adopt_3").all()
     assert len(finals) == 1
 
 
-def test_adopt_source_safety_blocked_keeps_draft(client, session):
+def test_adopt_source_safety_blocked_keeps_draft(client, session, monkeypatch):
     """设计红线 8：来源安全未通过时草稿可保存，但不能标记为已安全归档。"""
+    monkeypatch.setenv("NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON", '["路明非"]')
     _create_chapter(client, "chapter_adopt_4")
     _create_scene(client, "scene_adopt_4", chapter_id="chapter_adopt_4", scene_seq=1)
     draft_row_id = _seed_style_draft(
@@ -154,6 +158,85 @@ def test_adopt_source_safety_blocked_keeps_draft(client, session):
     assert state.scene_status != "archived"
     finals = session.query(FinalScene).filter(FinalScene.scene_id == "scene_adopt_4").all()
     assert not [f for f in finals if f.status == "archived"]
+
+
+def test_adopt_content_safety_requires_exact_acknowledgement_and_audits_it(
+    client,
+    session,
+    monkeypatch,
+):
+    _create_chapter(client, "chapter_adopt_content_safety")
+    _create_scene(
+        client,
+        "scene_adopt_content_safety",
+        chapter_id="chapter_adopt_content_safety",
+        scene_seq=1,
+    )
+    _seed_style_draft(
+        session,
+        "scene_adopt_content_safety",
+        "chapter_adopt_content_safety",
+        content="角色只有16岁，段落明确描写两人的性行为。",
+    )
+    monkeypatch.setattr(
+        "novel_system.services.final_text_gate.ReferenceSafetyService.scan_runtime_text",
+        lambda *args, **kwargs: {"safe": True, "matches": []},
+    )
+
+    blocked = client.post(
+        "/api/v1/scenes/scene_adopt_content_safety/adopt-current",
+        json={},
+        headers={"X-Idempotency-Key": "adopt-content-safety-blocked"},
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "CONTENT_SAFETY_REVIEW_REQUIRED"
+
+    accepted = client.post(
+        "/api/v1/scenes/scene_adopt_content_safety/adopt-current",
+        json={
+            "accepted_warning_codes": [
+                "sexual_content_with_minor_indicators",
+            ]
+        },
+        headers={"X-Idempotency-Key": "adopt-content-safety-accepted"},
+    )
+    assert accepted.status_code == 200
+    final_id = accepted.json()["data"]["final_scene_row_id"]
+    attempt = session.query(AttemptTracker).filter(
+        AttemptTracker.scene_id == "scene_adopt_content_safety",
+        AttemptTracker.step == "archive",
+    ).one()
+    gate = attempt.details_json["final_text_gate"]
+    assert gate["content_safety"]["acknowledged_codes"] == [
+        "sexual_content_with_minor_indicators"
+    ]
+    assert gate["content_hash"] == session.get(FinalScene, final_id).content_hash
+
+
+def test_adopt_rejects_unbounded_or_unknown_request_fields(client):
+    _create_chapter(client, "chapter_adopt_request_contract")
+    _create_scene(
+        client,
+        "scene_adopt_request_contract",
+        chapter_id="chapter_adopt_request_contract",
+        scene_seq=1,
+    )
+
+    unknown = client.post(
+        "/api/v1/scenes/scene_adopt_request_contract/adopt-current",
+        json={"accepted_warning_codes": [], "bypass": True},
+        headers={"X-Idempotency-Key": "adopt-request-unknown"},
+    )
+    assert unknown.status_code == 422
+    assert unknown.json()["error"]["code"] == "REQUEST_VALIDATION_FAILED"
+
+    oversized = client.post(
+        "/api/v1/scenes/scene_adopt_request_contract/adopt-current",
+        json={"accepted_warning_codes": ["x" * 129]},
+        headers={"X-Idempotency-Key": "adopt-request-oversized"},
+    )
+    assert oversized.status_code == 422
+    assert oversized.json()["error"]["code"] == "REQUEST_VALIDATION_FAILED"
 
 
 def test_adopt_blocks_dynamic_term_from_bound_reference_profile(client, session):
@@ -327,7 +410,8 @@ def test_archiver_marks_final_scene_archived(session):
     assert session.get(FinalScene, "final_unit_1").status == "archived"
 
 
-def test_archiver_blocks_unsafe_actual_final_text(client, session):
+def test_archiver_blocks_unsafe_actual_final_text(client, session, monkeypatch):
+    monkeypatch.setenv("NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON", '["路明非"]')
     _create_chapter(client, "chapter_archive_gate_source")
     _create_scene(
         client,

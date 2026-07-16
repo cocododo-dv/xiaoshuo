@@ -6,7 +6,7 @@
 // 不可靠地依赖时序——改为断言回滚后的最终状态（标题被服务端原值覆盖）与 alert 触发，
 // 它们对去重免疫且仍可证伪（破坏 catRecover 即转红）。所有 waitFor 给足超时以耐 CI 负载。
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { installApiRouter, DEFAULT_TRASH } from "./test-helpers.js";
+import { installApiRouter, DEFAULT_CHAP, DEFAULT_PROJECT, DEFAULT_TRASH } from "./test-helpers.js";
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
@@ -44,6 +44,30 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
+  it("冷启动未完成时中央写闸拒绝任何目录覆盖", async () => {
+    const client = await import("./lib/client.js");
+    let resolveCatalog;
+    const pendingCatalog = new Promise((resolve) => { resolveCatalog = resolve; });
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v2/projects") return Promise.resolve({ items: [DEFAULT_PROJECT] });
+      if (url === "/api/v2/projects/tide/catalog") return pendingCatalog;
+      if (url.includes("/writing-stats")) return Promise.resolve({ words_total: 0, words_today: 0, streak_days: 0 });
+      return Promise.resolve({});
+    });
+    client.apiPost.mockResolvedValue({});
+    client.apiPatch.mockResolvedValue({});
+    const mod = await import("./ws-catalog.jsx");
+    await settleActive();
+
+    expect(mod.WsCatalog.ready()).toBe(false);
+    expect(mod.WsCatalog.set([])).toBe(false);
+    expect(window.alert).toHaveBeenCalled();
+
+    resolveCatalog({ chapters: [DEFAULT_CHAP] });
+    await vi.waitFor(() => expect(mod.WsCatalog.ready()).toBe(true), T);
+    expect(mod.WsCatalog.get()).toHaveLength(1);
+  });
+
   it("renameScene 同步改缓存并 PATCH 到后端场景端点", async () => {
     const { mod, client } = await loadCatalog();
     const { WsCatalog } = mod;
@@ -77,6 +101,24 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
       expect(WsCatalog.sceneById("ch01s1").scene.title).toBe("交班"), T);
   });
 
+  it("目录刷新失败保留旧缓存，并暴露可重试错误而不是伪装成空目录", async () => {
+    const { mod, client } = await loadCatalog();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const route = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => (
+      url === "/api/v2/projects/tide/catalog"
+        ? Promise.reject(new Error("catalog offline"))
+        : route(url)
+    ));
+
+    await mod.WsCatalog.__refresh();
+
+    expect(mod.WsCatalog.get()).toHaveLength(1);
+    expect(mod.WsCatalog.loadError()).toBeInstanceOf(Error);
+    expect(mod.WsCatalog.loadError().message).toContain("catalog offline");
+    expect(warning).toHaveBeenCalled();
+  });
+
   it("设 povName 经 set() diff 只 PATCH pov_character_name（POV 设置入口契约）", async () => {
     const { mod, client } = await loadCatalog();
     const { WsCatalog } = mod;
@@ -96,6 +138,28 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
         "/api/v2/projects/tide/catalog/scenes/s1",
         { pov_character_name: "林深" }
       ), T);
+  });
+
+  it("章节拖拽顺序通过完整真实 ID 集合持久化", async () => {
+    const second = {
+      ...DEFAULT_CHAP,
+      slug: "ch02",
+      chapter_id: "c2",
+      no: "02",
+      title: "第二章",
+      current: false,
+      scenes: [{ ...DEFAULT_CHAP.scenes[0], slug: "ch02s1", scene_id: "s2" }],
+    };
+    const { mod, client } = await loadCatalog({ catalog: [DEFAULT_CHAP, second] });
+    client.apiPost.mockClear();
+
+    const [first, next] = mod.WsCatalog.get();
+    mod.WsCatalog.set([next, first]);
+
+    await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v2/projects/tide/catalog/chapter-order",
+      { chapter_ids: ["c2", "c1"] },
+    ), T);
   });
 });
 
@@ -224,8 +288,10 @@ describe("WsCatalog.adoptOutline（雪花大纲→目录：物化主路径，QA3
     client.apiPost.mockClear();
 
     // 模拟 ws-snow 挂到 window 的构思导出与本地物化引擎（真引擎经 WsCatalog.set 写穿目录）
-    const scaffolds = { outline: { chapters: [{ id: "01", act: 1, title: "锚点章", summary: "概要" }] } };
-    window.s2ExportState = () => ({ scaffolds });
+    const scaffolds = { outline: { chapters: [{ id: "01", act: 1, title: "锚点章", summary: "概要" }] }, scenes: { list: [{ id: "s1", event: "第一场" }] } };
+    // localStorage 导出故意放一份旧快照；按钮传入的当前 React state 必须优先，
+    // 否则“刚编辑完马上整理”会把旧场景物化进目录。
+    window.s2ExportState = () => ({ scaffolds: { outline: { chapters: [{ title: "旧快照" }] } } });
     const preview = { ok: true, chapters: [{ act: 1, title: "锚点章", summary: "概要", spine: "灾一", scenes: [
       { title: "第一场", kind: "主动", goal: "去看看", obstacle: "门锁着", turn: "钥匙不见了" },
     ] }], total: 1, planned: 1 };
@@ -234,9 +300,9 @@ describe("WsCatalog.adoptOutline（雪花大纲→目录：物化主路径，QA3
       apply: vi.fn(() => ({ newCh: 1, newSc: 1, skipSc: 0 })),
     };
 
-    const n = await mod.WsCatalog.adoptOutline([{ title: "锚点章", act: 1 }]);
+    const n = await mod.WsCatalog.adoptOutline([{ title: "锚点章", act: 1 }], scaffolds);
 
-    expect(window.s2Materialize.preview).toHaveBeenCalledWith(scaffolds); // 预览吃构思导出的脚手架
+    expect(window.s2Materialize.preview).toHaveBeenCalledWith(scaffolds); // 预览吃调用时的当前脚手架
     expect(window.s2Materialize.apply).toHaveBeenCalledWith(preview);     // 应用的是同一份预览（含场）
     expect(n).toBe(1);                                                    // 章数取自 apply 的 newCh
     // 降级路径绝不调后端物化端点

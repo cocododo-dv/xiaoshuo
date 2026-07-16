@@ -6,6 +6,7 @@ import "./screens.css";
 import "./wr-redesign.css";
 import "./wr-desk.css";
 import "./ws-shell.css";
+import "./wr-recovery.css";
 import "./ws-library.css";
 import "./ws-author.css";
 import "./ws-review.css";
@@ -63,8 +64,10 @@ import "./ws-ops.jsx";
 import "./ws-settings.jsx";
 import "./ws-palette.jsx";
 import { App } from "./ws-app.jsx";
+import { mountWrRecoveryCenter } from "./wr-recovery-center.jsx";
 import ReactDOMClient from "react-dom/client";
 
 // 原型的 store 是模块级单例 + 副作用订阅，StrictMode 双挂载会暴露非幂等订阅；
 // 保真优先不包 StrictMode（陷阱 T4），治理留到 Phase 8。
 ReactDOMClient.createRoot(document.getElementById("root")).render(React.createElement(App));
+mountWrRecoveryCenter();

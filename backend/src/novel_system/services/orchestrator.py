@@ -37,6 +37,8 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.final_text_gate import FinalTextGateService
+from novel_system.services.hash_engine import verify_bundle_snapshot_hash
 from novel_system.services.idempotency import owner_lease_ttl_seconds
 from novel_system.services.llm_accounting import (
     ACCOUNTING_EXECUTION_MODE_KEY,
@@ -47,8 +49,10 @@ from novel_system.services.llm_accounting import (
     validate_product_call,
     validate_product_call_ledger,
 )
+from novel_system.services.llm_audit import sanitize_audit_summary
 from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
+from novel_system.services.author_instructions import normalize_author_note
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.llm_task_runner import LLMNodeRunner, begin_llm_execution, end_llm_execution
 from novel_system.services.near_final import NearFinalAcceptanceService, NearFinalPlanningService
@@ -109,6 +113,7 @@ class Orchestrator:
         run_job_id: str | None = None,
         lease_renewer=None,
     ) -> dict:
+        author_note = normalize_author_note(author_note)
         scene = self.session.get(SceneCard, scene_id)
         if scene is None:
             raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
@@ -126,6 +131,11 @@ class Orchestrator:
             self._run_job_id = run_job_id
             self._checkpoint_service = checkpoints
             try:
+                self._assert_author_note_matches_bundle(
+                    self._load_checkpoint_bundle(scene_id),
+                    author_note,
+                    scene_id=scene_id,
+                )
                 final_scene = self._load_archived_checkpoint(scene_id)
                 if claim.status != "completed":
                     checkpoints.mark_completed(scene_id, effective_execution_id)
@@ -202,6 +212,28 @@ class Orchestrator:
             self._run_job_id = None
             self._checkpoint_service = None
             self._lease_renewer = None
+
+    @staticmethod
+    def _assert_author_note_matches_bundle(
+        bundle: dict[str, Any],
+        author_note: str | None,
+        *,
+        scene_id: str,
+    ) -> None:
+        expected_note = str(author_note or "").strip()
+        actual_note = str(
+            ((bundle.get("snapshot") or {}).get("inline_digests") or {}).get(
+                "author_instruction"
+            )
+            or ""
+        )
+        if actual_note != expected_note:
+            raise DomainError(
+                "RUN_INPUT_MISMATCH",
+                "author instruction differs from the frozen run checkpoint",
+                status_code=409,
+                details={"scene_id": scene_id, "field": "author_note"},
+            )
 
     def _run_scene_pipeline(
         self,
@@ -405,7 +437,7 @@ class Orchestrator:
             planning = self._load_planning_checkpoint(scene_id)
 
         if not self._checkpoint_reached("bundle_ready"):
-            bundle = self.bundle_builder.build(scene_id, "P2")
+            bundle = self.bundle_builder.build(scene_id, "P2", author_note=author_note)
             self._save_run_checkpoint(
                 "bundle_ready",
                 artifact_refs={"bundle_id": bundle["bundle_id"]},
@@ -413,6 +445,7 @@ class Orchestrator:
             )
         else:
             bundle = self._load_checkpoint_bundle(scene_id)
+            self._assert_author_note_matches_bundle(bundle, author_note, scene_id=scene_id)
 
         from novel_system.services.scene_criticality import classify_scene
         chapter = self.session.get(ChapterGoal, scene.chapter_id)
@@ -446,7 +479,11 @@ class Orchestrator:
             )
         else:
             self._reconcile_execution_step("neutral_draft")
-            neutral_generation = self.scene_generation_service.generate_neutral_draft(scene_id, bundle)
+            neutral_generation = self.scene_generation_service.generate_neutral_draft(
+                scene_id,
+                bundle,
+                author_note=author_note,
+            )
             self._save_run_checkpoint(
                 "neutral_ready",
                 artifact_refs={
@@ -793,6 +830,11 @@ class Orchestrator:
         if strict_mode:
             strict_warnings = self._collect_q2_warnings(state, near_final_warnings)
             if strict_warnings:
+                strict_gate = FinalTextGateService(self.session).evaluate(
+                    scene_id=scene_id,
+                    content=final_generation.content,
+                    source_bundle_id=bundle["bundle_id"],
+                )
                 state.scene_status = "quality_warning_pending_acceptance"
                 self.session.flush()
                 result = self._with_author_projection(scene_id, state, {
@@ -808,6 +850,19 @@ class Orchestrator:
                     "run_policy": run_policy,
                 })
                 result["quality_warnings"] = self._merged_warnings(result.get("quality_warnings"), near_final_warnings)
+                result["safe_to_archive"] = bool(strict_gate["safe_to_archive"])
+                result["literary_warnings_unresolved"] = bool(
+                    strict_warnings
+                    or strict_gate.get("literary_warnings_unresolved")
+                )
+                result["author_confirmed_final"] = False
+                result["finality"] = {
+                    "safe_to_archive": result["safe_to_archive"],
+                    "literary_warnings_unresolved": result[
+                        "literary_warnings_unresolved"
+                    ],
+                    "author_confirmed_final": False,
+                }
                 return result
 
         # Wave 3：旧的 near-final 后置 critical_scene_human_gate 被前移的候选终选
@@ -1128,10 +1183,12 @@ class Orchestrator:
                         "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
                         "prose extraction product parent disappeared before archive checkpoint",
                     )
-                prose_parent.response_payload_summary = {
-                    **dict(prose_parent.response_payload_summary or {}),
-                    "archive_prose_product_hash": self._json_hash(prose_product),
-                }
+                prose_parent.response_payload_summary = sanitize_audit_summary(
+                    {
+                        **dict(prose_parent.response_payload_summary or {}),
+                        "archive_prose_product_hash": self._json_hash(prose_product),
+                    }
+                )
             self.session.flush()
             self._validate_archive_prose_checkpoint(
                 scene,
@@ -1332,6 +1389,24 @@ class Orchestrator:
             "run_policy": run_policy,
         })
         result["quality_warnings"] = self._merged_warnings(result.get("quality_warnings"), near_final_warnings)
+        archive_attempt = self.session.get(AttemptTracker, archive_result.get("archive_attempt_id"))
+        gate_summary = (
+            (archive_attempt.details_json or {}).get("final_text_gate")
+            if archive_attempt is not None
+            else {}
+        )
+        result["safe_to_archive"] = bool(
+            gate_summary.get("safe_to_archive", gate_summary.get("archivable", False))
+        )
+        result["literary_warnings_unresolved"] = bool(
+            gate_summary.get("literary_warnings_unresolved") or near_final_warnings
+        )
+        result["author_confirmed_final"] = bool(gate_summary.get("author_confirmed_final"))
+        result["finality"] = {
+            "safe_to_archive": result["safe_to_archive"],
+            "literary_warnings_unresolved": result["literary_warnings_unresolved"],
+            "author_confirmed_final": result["author_confirmed_final"],
+        }
         if near_final_warnings and "author_review_optional_fix" not in (result.get("recommended_actions") or []):
             result["recommended_actions"] = [*(result.get("recommended_actions") or []), "author_review_optional_fix"]
         return result
@@ -3435,10 +3510,12 @@ class Orchestrator:
         parent = self.session.get(LlmCall, row.evaluator_llm_call_id)
         if parent is None:
             self._raise_checkpoint_output_missing(row_id=row.evaluator_llm_call_id)
-        parent.response_payload_summary = {
-            **dict(parent.response_payload_summary or {}),
-            "archive_chapter_near_final_product_hash": self._json_hash(product),
-        }
+        parent.response_payload_summary = sanitize_audit_summary(
+            {
+                **dict(parent.response_payload_summary or {}),
+                "archive_chapter_near_final_product_hash": self._json_hash(product),
+            }
+        )
         self.session.flush()
         return product
 
@@ -4594,6 +4671,20 @@ class Orchestrator:
             )
         if bundle.scene_id != scene_id or bundle.bundle_snapshot_hash != expected_hash:
             raise DomainError("RUN_CHECKPOINT_CORRUPT", "checkpoint bundle identity/hash mismatch", status_code=409)
+        bundle_integrity = verify_bundle_snapshot_hash(
+            bundle.frozen_snapshot_json,
+            expected_hash=bundle.bundle_snapshot_hash,
+        )
+        if not bundle_integrity["valid"]:
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "checkpoint bundle snapshot no longer matches its recorded hash",
+                status_code=409,
+                details={
+                    "bundle_id": bundle.bundle_id,
+                    "bundle_integrity": bundle_integrity,
+                },
+            )
         return {
             "bundle_id": bundle.bundle_id,
             "bundle_snapshot_hash": bundle.bundle_snapshot_hash,
@@ -5488,10 +5579,12 @@ class Orchestrator:
                         "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
                         "auto-critique product parent disappeared before checkpoint commit",
                     )
-                critique_parent.response_payload_summary = {
-                    **dict(critique_parent.response_payload_summary or {}),
-                    "auto_critique_product_hash": critique_product_hash,
-                }
+                critique_parent.response_payload_summary = sanitize_audit_summary(
+                    {
+                        **dict(critique_parent.response_payload_summary or {}),
+                        "auto_critique_product_hash": critique_product_hash,
+                    }
+                )
             # 该摘要只绑定本次事务所见的产品与父账本；不宣称抵抗可同步改写
             # checkpoint、parent summary 与 ledger 的全库特权篡改。
             self._validate_auto_critique_checkpoint(
@@ -5514,10 +5607,12 @@ class Orchestrator:
                         "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
                         "auto-critique patch failure parent disappeared before checkpoint commit",
                     )
-                patch_parent.response_payload_summary = {
-                    **dict(patch_parent.response_payload_summary or {}),
-                    "auto_critique_patch_failure_hash": patch_failure_hash,
-                }
+                patch_parent.response_payload_summary = sanitize_audit_summary(
+                    {
+                        **dict(patch_parent.response_payload_summary or {}),
+                        "auto_critique_patch_failure_hash": patch_failure_hash,
+                    }
+                )
                 self._validate_auto_critique_patch_failure_checkpoint(
                     scene_id,
                     patch_failure_product,
@@ -7647,7 +7742,11 @@ class Orchestrator:
                         fact_value=f"Reinforcement directed: {action.reason}"[:500],
                     )
         except Exception:
-            pass  # non-critical — don't block scene finalization
+            _LOGGER.warning(
+                "Foreshadow reinforcement event recording degraded scene_id=%s",
+                scene.scene_id,
+                exc_info=True,
+            )
 
     @staticmethod
     def _index_scene_to_vector_store(
@@ -7851,6 +7950,12 @@ class Orchestrator:
                 .order_by(ChapterGoal.display_order.asc())
             ).scalars().first()
         except Exception:
+            _LOGGER.warning(
+                "Next-chapter lookup degraded scene_id=%s chapter_id=%s",
+                scene.scene_id,
+                scene.chapter_id,
+                exc_info=True,
+            )
             return None
 
     def _load_style_baseline(self, scene: SceneCard) -> dict[str, float] | None:
@@ -7873,6 +7978,12 @@ class Orchestrator:
                     return metrics
             return None
         except Exception:
+            _LOGGER.warning(
+                "Style baseline lookup degraded scene_id=%s project_id=%s",
+                scene.scene_id,
+                scene.project_id,
+                exc_info=True,
+            )
             return None
 
     def _best_of_n_count(self, contract, *, criticality=None) -> int:

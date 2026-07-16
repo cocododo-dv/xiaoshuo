@@ -660,6 +660,25 @@ class NearFinalAcceptanceService:
         payload: dict[str, Any],
         llm_call_id: str | None,
     ) -> WriterEvaluation:
+        from novel_system.services.model_independence import (
+            judge_independence,
+            observed_correlated_judge,
+        )
+
+        independence_evidence = observed_correlated_judge(
+            self.session,
+            scene_id,
+            chapter_id=chapter_id if scene_id is None else None,
+        )
+        if independence_evidence is None:
+            independence_evidence = judge_independence(self.session)
+        raw_contract_field_refs = payload.get("contract_field_refs")
+        contract_field_refs = (
+            dict(raw_contract_field_refs)
+            if isinstance(raw_contract_field_refs, dict)
+            else {}
+        )
+        contract_field_refs["_model_independence"] = independence_evidence
         evaluation = WriterEvaluation(
             evaluation_id=f"near_final_eval_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}",
             object_type=object_type,
@@ -676,7 +695,7 @@ class NearFinalAcceptanceService:
             findings_json=payload.get("findings") or [],
             failure_class=payload.get("failure_class"),
             auto_rewrite_eligible=1 if NearFinalAcceptanceService._should_rewrite(payload) else 0,
-            contract_field_refs_json=payload.get("contract_field_refs") or {},
+            contract_field_refs_json=contract_field_refs,
             promotion_blockers_json=_promotion_blockers_from_acceptance(payload),
             revision_brief_json=payload.get("revision_brief") or [],
             requires_human_review=1 if payload.get("requires_human_review") else 0,

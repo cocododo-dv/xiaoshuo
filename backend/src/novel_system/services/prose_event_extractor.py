@@ -34,6 +34,7 @@ from novel_system.services.llm_accounting import (
     classify_advisory_failure,
     validate_product_call,
 )
+from novel_system.services.llm_audit import sanitize_audit_summary
 
 logger = logging.getLogger(__name__)
 
@@ -301,10 +302,14 @@ def extract_events_from_prose(
             "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
             "prose extraction parent disappeared before parsed output anchoring",
         )
-    parent.response_payload_summary = {
-        **dict(parent.response_payload_summary or {}),
-        "prose_extraction_parsed_hash": prose_extraction_parsed_hash(normalized_events),
-    }
+    parent.response_payload_summary = sanitize_audit_summary(
+        {
+            **dict(parent.response_payload_summary or {}),
+            "prose_extraction_parsed_hash": prose_extraction_parsed_hash(
+                normalized_events
+            ),
+        }
+    )
     session.flush()
     return ProseExtractionResult(
         events=events,

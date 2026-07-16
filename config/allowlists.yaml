@@ -2,6 +2,8 @@ bundle_build_allowlist_v1:
   include:
     - chapter_goal
     - scene_card
+    - longform_anchors
+    - chapter_contract
     - voice_card
     - relation_card
     - world_rule

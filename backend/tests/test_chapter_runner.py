@@ -331,7 +331,7 @@ def test_terminal_chapter_job_claim_is_rejected_without_mutation(
     } == before
 
 
-def test_running_chapter_job_without_lease_is_not_reclaimable(session) -> None:
+def test_running_chapter_job_without_lease_is_reclaimable_by_cas(session) -> None:
     job = ChapterRunJob(
         job_id="chapter-running-no-lease",
         chapter_id="CH_RUNNING",
@@ -347,21 +347,22 @@ def test_running_chapter_job_without_lease_is_not_reclaimable(session) -> None:
     session.add(job)
     session.commit()
 
-    with pytest.raises(DomainError) as rejected:
-        ChapterRunnerService(session)._claim_running(
-            job,
-            worker_id="reclaimer",
-            lease_seconds=30,
-        )
+    owner = ChapterRunnerService(session)._claim_running(
+        job,
+        worker_id="reclaimer",
+        lease_seconds=30,
+    )
+    session.commit()
 
-    assert rejected.value.code == "RUN_JOB_IN_PROGRESS"
+    assert owner.worker_id == "reclaimer"
+    assert owner.attempt_no == 3
     session.expire_all()
-    unchanged = session.get(ChapterRunJob, job.job_id)
-    assert unchanged is not None
-    assert unchanged.status == "running"
-    assert unchanged.worker_id == "worker-with-missing-lease"
-    assert unchanged.attempt_no == 2
-    assert unchanged.lease_expires_at is None
+    reclaimed = session.get(ChapterRunJob, job.job_id)
+    assert reclaimed is not None
+    assert reclaimed.status == "running"
+    assert reclaimed.worker_id == "reclaimer"
+    assert reclaimed.attempt_no == 3
+    assert reclaimed.lease_expires_at is not None
 
 
 def test_chapter_retry_reuses_scene_execution_checkpoint_without_recharging(
@@ -416,6 +417,7 @@ def test_chapter_retry_reuses_scene_execution_checkpoint_without_recharging(
     )
     assert failed.status_code == 200
     assert failed.json()["data"]["status"] == "failed"
+    assert "fail after durable chapter-scene checkpoint" not in failed.text
     job_id = failed.json()["data"]["job_id"]
 
     resumed = client.post(

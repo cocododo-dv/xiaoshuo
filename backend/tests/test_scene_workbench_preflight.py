@@ -187,6 +187,20 @@ def test_workbench_preflight_is_ready_when_scene_has_required_sources_and_fields
         "safe": True,
         "blocked_terms": [],
         "source_profile_ids": [],
+        "protected_terms_source": "none",
+        "coverage": {
+            "configured_exact_terms": True,
+            "profile_exact_terms_and_phrases": False,
+            "profile_scene_bridges": False,
+            "semantic_paraphrase": {
+                "status": "not_evaluated",
+                "blocking": False,
+                "reason": (
+                    "deterministic source safety cannot reliably verify semantic or cross-language paraphrase"
+                ),
+                "recommended_action": "use independent semantic review as advisory evidence",
+            },
+        },
         "checked_at": payload["source_safety_scan"]["checked_at"],
     }
 
@@ -214,7 +228,15 @@ def test_workbench_payload_keeps_generation_and_qc_summaries_empty_before_any_ru
     assert data["human_review_summary"] is None
 
 
-def test_workbench_payload_scans_final_scene_for_protected_source_terms(client, session: Session) -> None:
+def test_workbench_payload_scans_final_scene_for_protected_source_terms(
+    client,
+    session: Session,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        "NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON",
+        '["路明非", "卡塞尔"]',
+    )
     create_chapter(client, "CH921")
     create_scene(client, chapter_id="CH921", scene_id="CH921_SC01")
     seed_voice_profile(session)

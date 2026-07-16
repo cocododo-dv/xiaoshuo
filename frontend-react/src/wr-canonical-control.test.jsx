@@ -36,6 +36,8 @@ describe("WrCanonicalControl", () => {
 
     expect(host.querySelector('[data-testid="draft-save-status"]').textContent).toContain("草稿已保存");
     expect(host.querySelector('[data-testid="canonical-status"]').textContent).toBe("权威正文待更新");
+    expect(host.querySelector('[data-testid="draft-save-status"]').getAttribute("aria-live")).toBe("polite");
+    expect(host.querySelector('[data-testid="canonical-status"]').getAttribute("role")).toBe("status");
     const button = host.querySelector("button");
     expect(button.textContent).toBe("提升为权威正文");
     expect(button.disabled).toBe(false);
@@ -56,6 +58,17 @@ describe("WrCanonicalControl", () => {
       <WrCanonicalControl saveStatus="草稿已保存" canonicalStatus="current" onPromote={vi.fn()} />,
     ));
     expect(host.querySelector('[data-testid="canonical-status"]').textContent).toBe("权威正文已更新");
+    expect(host.querySelector("button").disabled).toBe(true);
+  });
+
+  it("等待作者内容风险复核时禁止从底层按钮重复提升", async () => {
+    const { host } = await renderControl({
+      saveStatus: "草稿已保存",
+      canonicalStatus: "review",
+      onPromote: vi.fn(),
+    });
+
+    expect(host.querySelector('[data-testid="canonical-status"]').textContent).toBe("内容风险待作者复核");
     expect(host.querySelector("button").disabled).toBe(true);
   });
 });

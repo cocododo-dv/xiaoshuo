@@ -1,7 +1,7 @@
 """FE-ALIGN Phase 3: 目录 API（/api/v2/projects/{id}/catalog…）。"""
 from __future__ import annotations
 
-from novel_system.db.models import AuthorDraft
+from novel_system.db.models import AuthorDraft, ChapterGoal, StoryProject
 
 _seq = 0
 
@@ -79,6 +79,41 @@ def test_patch_chapter_narrative_and_state(client):
     assert bad.status_code == 400
 
 
+def test_catalog_cannot_bypass_project_final_approval_or_reopen(client, session):
+    project = _create_project(client)
+    pid = project["project_id"]
+    chapter = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "Approval guard"})["chapter"]
+    chapter_id = chapter["chapter_id"]
+
+    direct_approve = client.patch(
+        f"/api/v2/projects/{pid}/catalog/chapters/{chapter_id}",
+        json={"state": "approved"},
+    )
+    assert direct_approve.status_code == 409
+    assert direct_approve.json()["error"]["code"] == "CATALOG_CHAPTER_APPROVAL_REQUIRES_PROJECT_FLOW"
+
+    create_approved = client.post(
+        f"/api/v2/projects/{pid}/catalog/chapters",
+        json={"title": "Bypass", "state": "approved"},
+        headers={"X-Idempotency-Key": "catalog-create-approved-bypass"},
+    )
+    assert create_approved.status_code == 409
+    assert create_approved.json()["error"]["code"] == "CATALOG_CHAPTER_APPROVAL_REQUIRES_PROJECT_FLOW"
+
+    db_project = session.get(StoryProject, pid)
+    db_chapter = session.get(ChapterGoal, chapter_id)
+    db_project.approved_chapter_ids_json = [chapter_id]
+    db_chapter.state = "approved"
+    session.commit()
+
+    direct_reopen = client.patch(
+        f"/api/v2/projects/{pid}/catalog/chapters/{chapter_id}",
+        json={"state": "draft"},
+    )
+    assert direct_reopen.status_code == 409
+    assert direct_reopen.json()["error"]["code"] == "CATALOG_APPROVED_CHAPTER_REOPEN_REQUIRED"
+
+
 def test_scene_crud_insert_move_and_kind_brief(client):
     project = _create_project(client)
     pid = project["project_id"]
@@ -148,6 +183,10 @@ def test_catalog_import_then_blocked_when_not_empty(client, monkeypatch):
     assert ch1["words"]["cur"] == 3000  # 章级字数摊给场景后 rollup 不丢
     assert ch1["scenes"][1]["kind"] == "reactive"
     assert tree["chapters"][1]["current"] is True
+    dashboard = client.get(f"/api/v1/projects/{pid}/dashboard").json()["data"]
+    assert dashboard["project"]["approved_chapter_ids"] == [tree["chapters"][0]["chapter_id"]]
+    assert dashboard["project"]["current_chapter_id"] == tree["chapters"][1]["chapter_id"]
+    assert dashboard["project"]["status"] == "chapter_ready"
 
     again = client.post(
         f"/api/v2/projects/{pid}/catalog/import",
@@ -155,6 +194,40 @@ def test_catalog_import_then_blocked_when_not_empty(client, monkeypatch):
         headers={"X-Idempotency-Key": "catalog-import-again", "X-Admin-Token": "admin-token"},
     )
     assert again.status_code == 409  # 非空目录拒绝导入
+
+
+def test_catalog_import_rejects_non_linear_approval_or_current(client, monkeypatch):
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    project = _create_project(client)
+    pid = project["project_id"]
+    path = f"/api/v2/projects/{pid}/catalog/import"
+    headers = {"X-Admin-Token": "admin-token", "X-Idempotency-Key": "catalog-import-nonlinear-approved"}
+
+    non_linear = client.post(
+        path,
+        json={
+            "chapters": [
+                {"title": "First", "state": "draft", "current": True},
+                {"title": "Second", "state": "approved"},
+            ]
+        },
+        headers=headers,
+    )
+    assert non_linear.status_code == 400
+    assert non_linear.json()["error"]["code"] == "CATALOG_IMPORT_APPROVAL_ORDER_INVALID"
+
+    wrong_current = client.post(
+        path,
+        json={
+            "chapters": [
+                {"title": "First", "state": "approved", "current": True},
+                {"title": "Second", "state": "writing"},
+            ]
+        },
+        headers={**headers, "X-Idempotency-Key": "catalog-import-wrong-current"},
+    )
+    assert wrong_current.status_code == 400
+    assert wrong_current.json()["error"]["code"] == "CATALOG_IMPORT_CURRENT_INVALID"
 
 
 def test_draft_save_updates_scene_words_and_returns_rollup(client, session):

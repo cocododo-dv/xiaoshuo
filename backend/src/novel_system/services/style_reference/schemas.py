@@ -297,7 +297,13 @@ class StyleReferenceRunRow(_StyleReferenceRowBase):
     book_id: str
     status: RunStatus = RunStatus.PENDING
     phase: RunPhase = RunPhase.INGEST
+    dispatch_state: str = "completed"
+    requested_layers_json: list[str] = Field(default_factory=list)
     coverage_json: dict[str, Any] = Field(default_factory=dict)
+    heartbeat_at: str | None = None
+    error_code: str | None = None
+    error_text: str | None = None
+    retryable: bool = False
     started_at: str | None = None
     finished_at: str | None = None
     created_at: str
@@ -337,6 +343,13 @@ class StyleReferenceValidationReportRow(_StyleReferenceRowBase):
     target_kind: ValidationTargetKind
     target_ref_id: str | None = None
     verdict: ValidationVerdict
+    status: str = "completed"
+    error_code: str | None = None
+    error_text: str | None = None
+    retryable: bool = False
+    started_at: str | None = None
+    heartbeat_at: str | None = None
+    finished_at: str | None = None
     quantitative_json: list[dict[str, Any]] = Field(default_factory=list)
     semantic_json: list[dict[str, Any]] = Field(default_factory=list)
     plagiarism_json: dict[str, Any] = Field(default_factory=dict)

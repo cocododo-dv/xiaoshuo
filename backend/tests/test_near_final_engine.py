@@ -312,6 +312,9 @@ def test_near_final_acceptance_blocks_scene_without_choice_cost_or_ending_action
     assert result["failure_class"] == "scene_structure_failure"
     assert evaluation.rubric_id == NEAR_FINAL_RUBRIC_ID
     assert evaluation.requires_human_review == 0
+    independence = evaluation.contract_field_refs_json["_model_independence"]
+    assert independence["basis"] in {"observed_calls", "config_routing"}
+    assert "comparisons" in independence or "role_evidence" in independence
     assert candidate.revision_type == "near_final_scene_rewrite"
     assert candidate.apply_mode == "manual_or_regenerate"
     assert "选择" in candidate.instruction_json[0]["action"]
@@ -380,12 +383,30 @@ def test_orchestrator_archives_only_after_near_final_acceptance(session) -> None
 
 def test_orchestrator_runs_one_full_literary_rewrite_when_near_final_review_fails(session) -> None:
     _seed_scene(session)
+    # This case intentionally exercises the full planning + QC + near-final
+    # rewrite path.  Give it an explicit author-approved test budget so the
+    # CJK-aware conservative estimator tests the workflow rather than the
+    # separate budget-exhaustion branch.
+    state = session.get(SceneRunState, SCENE_ID)
+    state.scene_token_budget = 250_000
+    state.attempt_budget = 20
+    state.provider_attempt_budget = 20
+    session.commit()
     planning_client = SequencedClient([{}, {}])
     scene_client = SequencedClient(
         [
-            {"scene_text": "林岑来到船坞，说明证据很重要。", "continuity_notes": []},
-            {"scene_text": "林岑说证据重要，许望说要小心。事情很危险。", "style_notes": []},
-            {"scene_text": "林岑按住录音带。公开它能证明篡改，也会暴露阿砚。许望问：\"你要真相，还是要活人？\"她把录音带分成两份，一份交给许望，一份藏进船坞石缝，然后转身看见雾墙上的第二枚盐钟。", "style_notes": []},
+            {
+                "scene_text": "林岑来到船坞，说明证据很重要。林岑把录音带分成两份。",
+                "continuity_notes": [],
+            },
+            {
+                "scene_text": "林岑必须选择：公开证据，还是隐瞒真相保护阿砚；两者不能同时做到。她决定承担隐瞒的代价。林岑把录音带分成两份。",
+                "style_notes": [],
+            },
+            {
+                "scene_text": "林岑按住录音带。公开它能证明篡改，也会暴露阿砚。许望问：\"你要真相，还是要活人？\"林岑把录音带分成两份。一份交给许望，一份藏进船坞石缝，然后转身看见雾墙上的第二枚盐钟。",
+                "style_notes": [],
+            },
         ]
     )
     near_final_client = SequencedClient([_near_final_fail(), _near_final_pass()])
@@ -393,7 +414,10 @@ def test_orchestrator_runs_one_full_literary_rewrite_when_near_final_review_fail
         session,
         scene_generation_service=SceneGenerationService(session, llm_client=scene_client),
         hard_qc_engine=HardQcEngine(session, llm_client=SequencedClient([_hard_pass()])),
-        soft_qc_engine=SoftQcEngine(session, llm_client=SequencedClient([_soft_pass()])),
+        soft_qc_engine=SoftQcEngine(
+            session,
+            llm_client=SequencedClient([_soft_pass(), _soft_pass()]),
+        ),
         planning_service=NearFinalPlanningService(session, llm_client=planning_client),
         near_final_service=NearFinalAcceptanceService(session, llm_client=near_final_client),
     )
@@ -471,6 +495,9 @@ def test_chapter_near_final_review_blocks_missing_payoff(session) -> None:
     assert result["failure_class"] == "chapter_payoff_gap"
     assert evaluation.rubric_id == NEAR_FINAL_RUBRIC_ID
     assert evaluation.findings_json[0]["dimension"] == "payoff_integrity"
+    independence = evaluation.contract_field_refs_json["_model_independence"]
+    assert independence["basis"] in {"observed_calls", "config_routing"}
+    assert "correlated_judge" in independence
     llm_call = session.get(LlmCall, evaluation.evaluator_llm_call_id)
     assert llm_call.scope_type == "chapter"
     assert llm_call.scope_id == CHAPTER_ID

@@ -20,6 +20,7 @@ import { WsCost } from "./ws-cost.jsx";
 import { WsIndex, WsInterop } from "./ws-ops.jsx";
 import { WsSettings } from "./ws-settings.jsx";
 import { WsPalette } from "./ws-palette.jsx";
+import { onRovingTabKeyDown } from "./a11y-tabs.js";
 
 /* global React, ReactDOM, I, useTweaks, TweaksPanel, TweakSection, TweakSlider, TweakToggle, TweakRadio,
    WsHome, WsReview, useReviewBadge, WsSnowflake, WriterRoom, WriterTweaks, WRITER_TWEAK_DEFAULTS, SceneTweaks,
@@ -328,23 +329,24 @@ function WorkPopover({ works, activeId, onPick, onNew, onClose }) {
             const isActive = w.id === activeId;
             const deletable = !WsWorks.isSeed(w.id) && works.length > 1;
             return (
-              <button key={w.id} className={`ws-wsw-row ${isActive ? "is-active" : ""}`} role="menuitemradio"
-                aria-checked={isActive} onClick={() => onPick(w.id)}>
-                <span className="ws-wsw-mark" data-accent={w.accent}>{w.mark}</span>
-                <span className="ws-wsw-meta">
-                  <span className="ws-wsw-title">{w.title}</span>
-                  <span className="ws-wsw-sub">{w.genre} · {w.chaptersWritten > 0 ? `${(w.wordsTotal / 10000).toFixed(1)} 万字 · ${pct}%` : "尚未开始"}</span>
-                  <span className="ws-wsw-bar"><i data-accent={w.accent} style={{ width: pct + "%" }} /></span>
-                </span>
+              <div key={w.id} className="ws-wsw-item">
+                <button type="button" className={`ws-wsw-row ${isActive ? "is-active" : ""}`} role="menuitemradio"
+                  aria-checked={isActive} onClick={() => onPick(w.id)}>
+                  <span className="ws-wsw-mark" data-accent={w.accent}>{w.mark}</span>
+                  <span className="ws-wsw-meta">
+                    <span className="ws-wsw-title">{w.title}</span>
+                    <span className="ws-wsw-sub">{w.genre} · {w.chaptersWritten > 0 ? `${(w.wordsTotal / 10000).toFixed(1)} 万字 · ${pct}%` : "尚未开始"}</span>
+                    <span className="ws-wsw-bar"><i data-accent={w.accent} style={{ width: pct + "%" }} /></span>
+                  </span>
+                  {isActive && <span className="ws-wsw-check"><I.Check size={15} /></span>}
+                </button>
                 {deletable && (
-                  <span className="ws-wsw-del" role="button" title="删除这部作品"
-                    style={{ display: "inline-flex", padding: 6, borderRadius: 8, color: "var(--ink-3)", opacity: 0.7 }}
+                  <button type="button" className="ws-wsw-del" title="删除这部作品" aria-label={`删除《${w.title}》`}
                     onClick={(e) => removeWork(e, w)}>
                     <I.Trash size={14} />
-                  </span>
+                  </button>
                 )}
-                {isActive && <span className="ws-wsw-check"><I.Check size={15} /></span>}
-              </button>
+              </div>
             );
           })}
         </div>
@@ -463,10 +465,12 @@ function Rail({ view, go, t, setTweak, mode, onPalette }) {
 
       <div className="ws-rail-foot">
         <div className="ws-mode-switch" role="tablist" aria-label="界面模式">
-          <button className={`ws-mode-btn ${mode === "writer" ? "is-active" : ""}`} onClick={() => setTweak("mode", "writer")} title="作家模式 · 只显示日常写作">
+          <button role="tab" aria-selected={mode === "writer"} tabIndex={mode === "writer" ? 0 : -1} onKeyDown={onRovingTabKeyDown}
+            className={`ws-mode-btn ${mode === "writer" ? "is-active" : ""}`} onClick={() => setTweak("mode", "writer")} title="作家模式 · 只显示日常写作">
             <I.Pen size={15} /><span>作家</span>
           </button>
-          <button className={`ws-mode-btn ${mode === "advanced" ? "is-active" : ""}`} onClick={() => setTweak("mode", "advanced")} title="高级模式 · 显示生产与运维工具">
+          <button role="tab" aria-selected={mode === "advanced"} tabIndex={mode === "advanced" ? 0 : -1} onKeyDown={onRovingTabKeyDown}
+            className={`ws-mode-btn ${mode === "advanced" ? "is-active" : ""}`} onClick={() => setTweak("mode", "advanced")} title="高级模式 · 显示生产与运维工具">
             <I.Layout size={15} /><span>高级</span>
           </button>
         </div>

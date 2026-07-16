@@ -7,9 +7,10 @@ execute_with_idempotency 兑现幂等键（必填 + 同键重放同响应）；P
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, Request
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
@@ -19,6 +20,14 @@ from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.system_config import require_admin_token
 
 router = APIRouter(tags=["catalog"])
+
+
+class ChapterOrderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    chapter_ids: list[
+        Annotated[str, Field(min_length=1, max_length=255)]
+    ] = Field(min_length=1, max_length=10_000)
 
 
 def _req_id(request: Request):
@@ -65,6 +74,30 @@ def update_catalog_chapter(
     result = CatalogService(session).update_chapter(project_id, chapter_id, payload or {})
     session.commit()
     return ok(result, req_id=_req_id(request))
+
+
+@router.post("/api/v2/projects/{project_id}/catalog/chapter-order")
+def reorder_catalog_chapters(
+    project_id: str,
+    payload: ChapterOrderRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    body = payload.model_dump(mode="json")
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template=f"/api/v2/projects/{project_id}/catalog/chapter-order",
+        payload={"project_id": project_id, **body},
+        action=lambda: CatalogService(session).reorder_chapters(
+            project_id,
+            body["chapter_ids"],
+        ),
+        actor_ref=_operator(request),
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=_req_id(request), headers=headers)
 
 
 @router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/scenes")

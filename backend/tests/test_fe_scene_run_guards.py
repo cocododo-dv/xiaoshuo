@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from novel_system.db.models import ChapterGoal, SceneCard, SceneDraft, SceneRunState, StoryProject
+from novel_system.services.errors import DomainError
 
 
 def _seed_fe_scene(session) -> str:
@@ -146,11 +147,25 @@ def test_author_note_instruction_formatting() -> None:
     assert author_note_instruction(None) == ""
     assert author_note_instruction("   ") == ""
     block = author_note_instruction("结尾改成开放式，少给一句解释。")
-    assert "Author Rewrite Instruction" in block
+    assert "Author Instruction" in block
     assert "结尾改成开放式" in block
-    # 超长截断（500 字上限）
-    long_note = "改" * 800
-    assert author_note_instruction(long_note).count("改") == 500
+    assert author_note_instruction("改" * 2_000).count("改") == 2_000
+    with pytest.raises(DomainError) as exc_info:
+        author_note_instruction("改" * 2_001)
+    assert exc_info.value.code == "AUTHOR_NOTE_TOO_LONG"
+
+
+def test_run_job_rejects_overlong_author_note_instead_of_silent_truncation(client, session) -> None:
+    scene_id = _seed_fe_scene(session)
+
+    response = client.post(
+        f"/api/v1/scenes/{scene_id}/run/jobs?start=false",
+        json={"author_note": "改" * 2_001},
+        headers={"X-Idempotency-Key": "fe-run-note-too-long"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "AUTHOR_NOTE_TOO_LONG"
 
 
 def test_run_jobs_carries_author_note(client, session) -> None:

@@ -14,8 +14,10 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import AttemptTracker, LlmCall, SceneCard, SceneDraft, SceneRunState
 from novel_system.services.errors import DomainError
+from novel_system.services.author_instructions import render_author_note_instruction
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.literary_quality import DIMENSION_WEIGHTS, QUALITY_DIMENSIONS, analyze_literary_quality
+from novel_system.services.llm_audit import sanitize_audit_summary
 from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.llm_accounting import LLMAccountingRejected
 from novel_system.services.llm_node_registry import get_llm_node_spec
@@ -182,15 +184,22 @@ def versioned_scene_artifact_id(prefix: str, scene_id: str, bundle: dict[str, An
 
 
 def author_note_instruction(author_note: str | None) -> str:
-    """FE-ALIGN G3：作者改写指令 → 风格生成提示词附加段（空 note 不产生任何变化）。"""
-    note = str(author_note or "").strip()[:500]
-    if not note:
-        return ""
-    return (
-        "\n\n## Author Rewrite Instruction (highest priority, from the author)\n"
-        f"{note}\n"
-        "Apply this instruction while still honoring the approved facts and structure above."
+    """Backward-compatible renderer; bundle injection now carries it to every stage."""
+    return render_author_note_instruction(author_note)
+
+
+def _author_note_instruction_for_bundle(
+    bundle: dict[str, Any],
+    author_note: str | None,
+) -> str:
+    note = str(author_note or "").strip()
+    frozen = str(
+        ((bundle.get("snapshot") or {}).get("inline_digests") or {}).get(
+            "author_instruction"
+        )
+        or ""
     )
+    return "" if note == frozen else author_note_instruction(author_note)
 
 
 class OfflineNeutralClient:
@@ -274,7 +283,13 @@ class SceneGenerationService:
         self._llm_runner = llm_runner or LLMNodeRunner(session, llm_client=llm_client)
         self._prompt_builder_instance: PromptBuilder | None = None
 
-    def generate_neutral_draft(self, scene_id: str, bundle: dict[str, Any]) -> NeutralGenerationResult:
+    def generate_neutral_draft(
+        self,
+        scene_id: str,
+        bundle: dict[str, Any],
+        *,
+        author_note: str | None = None,
+    ) -> NeutralGenerationResult:
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
         fallback_llm_call_id = f"llm_call_{scene_id}_{uuid.uuid4().hex[:12]}"
@@ -310,7 +325,8 @@ class SceneGenerationService:
                 node_id="neutral_draft",
                 step="neutral_draft",
                 prompt=prompt,
-                user_prompt=prompt["user_prompt"],
+                user_prompt=prompt["user_prompt"]
+                + _author_note_instruction_for_bundle(bundle, author_note),
                 offline_client_factory=OfflineNeutralClient,
             )
             response = node_result.response
@@ -396,7 +412,7 @@ class SceneGenerationService:
             source_row_id=neutral_draft_row_id,
             extra_instruction=(
                 "Apply the style prompt template without changing the approved facts."
-                + author_note_instruction(author_note)
+                + _author_note_instruction_for_bundle(bundle, author_note)
             ),
             source_draft_row_id=neutral_draft_row_id,
             source_draft_content=neutral_content,
@@ -502,7 +518,7 @@ class SceneGenerationService:
                     source_row_id=neutral_draft_row_id,
                     extra_instruction=(
                         "Apply the style prompt template without changing the approved facts."
-                        + author_note_instruction(author_note)
+                        + _author_note_instruction_for_bundle(bundle, author_note)
                     ),
                     source_draft_row_id=neutral_draft_row_id,
                     source_draft_content=neutral_content,
@@ -597,7 +613,7 @@ class SceneGenerationService:
                         source_row_id=neutral_draft_row_id,
                         extra_instruction=(
                             "Apply the style prompt template without changing the approved facts."
-                            + author_note_instruction(author_note)
+                            + _author_note_instruction_for_bundle(bundle, author_note)
                         ),
                         source_draft_row_id=neutral_draft_row_id,
                         source_draft_content=neutral_content,
@@ -1835,8 +1851,8 @@ class SceneGenerationService:
                 reserved_tokens=0,
                 budget_charged_tokens=0,
                 accounting_status="rejected",
-                request_payload_summary=request_summary,
-                response_payload_summary=_error_summary(exc),
+                request_payload_summary=sanitize_audit_summary(request_summary),
+                response_payload_summary=sanitize_audit_summary(_error_summary(exc)),
                 prompt_tokens=0,
                 completion_tokens=0,
                 total_tokens=0,

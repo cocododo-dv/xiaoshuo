@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import ChapterRunJob, LlmCall, OperationLog, QcReport, SceneRunState, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.author_instructions import normalize_author_note
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import owner_lease_ttl_seconds
 from novel_system.services.orchestrator import Orchestrator
@@ -27,6 +28,12 @@ _BUDGET_REJECTION_CODES = frozenset(
         "LLM_PROVIDER_ATTEMPT_BUDGET_EXHAUSTED",
         "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED",
         "LLM_USAGE_EXCEEDS_RESERVATION",
+        "LLM_GLOBAL_CONCURRENCY_LIMIT",
+        "LLM_DAILY_REQUEST_LIMIT",
+        "LLM_DAILY_TOKEN_LIMIT",
+        "LLM_MONTHLY_TOKEN_LIMIT",
+        "LLM_PROJECT_DAILY_TOKEN_LIMIT",
+        "LLM_DAILY_COST_LIMIT",
     }
 )
 _CANCELLED_JOB_REGISTRY: set[str] = set()
@@ -114,7 +121,7 @@ class SceneRunJobService:
                     details={"scene_id": scene_id, "job_id": active_job_id},
                 )
         # FE-ALIGN G3：作者改写指令随任务下发（风格生成阶段注入提示词）
-        note = str(author_note or "").strip()[:500]
+        note = normalize_author_note(author_note)
         job = ChapterRunJob(
             job_id=job_id,
             chapter_id=scene.chapter_id,
@@ -417,8 +424,11 @@ class SceneRunJobService:
         now = datetime.now(UTC)
         now_iso = now.isoformat()
         expires = (now + timedelta(seconds=max(1, lease_seconds))).isoformat()
+        # A RUNNING row without a lease is an abandoned pre-lease/crash state,
+        # not an immortal owner.  The CAS below still fences on the observed
+        # worker/attempt/NULL lease so only one recovery worker can take it.
         if job.status == "running" and (
-            not job.lease_expires_at or job.lease_expires_at > now_iso
+            job.lease_expires_at is not None and job.lease_expires_at > now_iso
         ):
             self.session.rollback()
             raise DomainError(
@@ -485,7 +495,8 @@ class SceneRunJobService:
             current = self.get_job(job_id)
             self.session.refresh(current)
             if current.status == "running" and (
-                not current.lease_expires_at or current.lease_expires_at > now_iso
+                current.lease_expires_at is not None
+                and current.lease_expires_at > now_iso
             ):
                 raise DomainError(
                     "RUN_JOB_IN_PROGRESS",

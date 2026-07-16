@@ -218,11 +218,17 @@ describe("WrDocs 跨会话 pending 冲突（Wave 1）", () => {
     })();
 
     second.mod.WrDocs.load("ch01s1"); // 触发 hydrate
-    // 本地较新稿备份为冲突副本，作者可找回
+    // 本地较新稿进入结构化恢复中心，作者可比较 / 恢复 / 导出
     await vi.waitFor(() => {
-      const conflictKeys = Object.keys(window.localStorage).filter(k => k.includes("wr-doc:ch01s1") && k.includes("conflict"));
-      expect(conflictKeys.length).toBe(1);
-      expect(window.localStorage.getItem(conflictKeys[0])).toBe("<p>重启前较新的本地稿</p>");
+      const items = second.mod.WrRecovery.list();
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        sid: "ch01s1",
+        workId: "tide",
+        type: "conflict",
+        html: "<p>重启前较新的本地稿</p>",
+        durable: true,
+      });
     }, T);
     // alert 让作者知道有副本可选（可证伪：静默覆盖则红）
     await vi.waitFor(() => expect(window.alert).toHaveBeenCalled(), T);
@@ -255,8 +261,128 @@ describe("WrDocs 跨会话 pending 冲突（Wave 1）", () => {
     await vi.waitFor(() => {
       expect(Object.keys(window.localStorage).some(k => k.includes("wr-doc-pending:ch01s1"))).toBe(false);
     }, T);
-    expect(Object.keys(window.localStorage).filter(k => k.includes("conflict"))).toEqual([]);
+    expect(mod.WrRecovery.list()).toEqual([]);
     expect(window.alert).not.toHaveBeenCalled();
+  });
+});
+
+describe("WrRecovery（配额保护 + 恢复重试）", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+    vi.spyOn(window, "alert").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("409 时若恢复副本写入触发 quota，不覆盖本地稿并暴露仅会话记录", async () => {
+    const { mod, client } = await loadDocs();
+    const originalSetItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItemWithQuota(key, value) {
+      if (String(key).startsWith("wr-recovery:v1:")) {
+        throw new DOMException("quota full", "QuotaExceededError");
+      }
+      return originalSetItem.call(this, key, value);
+    });
+    const conflict = Object.assign(new Error("conflict"), { code: "AUTHOR_DRAFT_CONFLICT" });
+    client.apiPatch.mockRejectedValueOnce(conflict);
+
+    await expect(mod.WrDocs.save("ch01s1", "<p>不能丢的本地稿</p>")).rejects.toBe(conflict);
+
+    expect(mod.WrDocs.load("ch01s1")).toBe("<p>不能丢的本地稿</p>");
+    expect(mod.WrDocs.state("ch01s1")).toMatchObject({
+      dirty: true,
+      localDurable: false,
+      cacheError: expect.objectContaining({ code: "LOCAL_STORAGE_QUOTA" }),
+    });
+    expect(mod.WrRecovery.list()).toEqual([
+      expect.objectContaining({ sid: "ch01s1", type: "conflict", durable: false, html: "<p>不能丢的本地稿</p>" }),
+    ]);
+    // 没有持久副本就不进行第二次 ensure / 水合覆盖。
+    expect(client.apiPost.mock.calls.filter(c => /\/scene\/s1\/ensure$/.test(c[0]))).toHaveLength(1);
+  });
+
+  it("正文缓存触发 quota 时以内存中的新稿为准，不让旧 localStorage 值回盖", async () => {
+    const { mod, client } = await loadDocs();
+    const docKey = window.wsKey("wr-doc:ch01s1");
+    window.localStorage.setItem(docKey, "<p>旧缓存</p>");
+    const originalSetItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function setItemWithQuota(key, value) {
+      if (String(key) === docKey) throw new DOMException("quota full", "QuotaExceededError");
+      return originalSetItem.call(this, key, value);
+    });
+    client.apiPatch.mockRejectedValueOnce(new Error("offline"));
+
+    await expect(mod.WrDocs.save("ch01s1", "<p>刚写下、尚未落盘的新稿</p>")).rejects.toThrow("offline");
+
+    expect(window.localStorage.getItem(docKey)).toBe("<p>旧缓存</p>");
+    expect(mod.WrDocs.load("ch01s1")).toBe("<p>刚写下、尚未落盘的新稿</p>");
+    expect(mod.WrDocs.state("ch01s1")).toMatchObject({
+      dirty: true,
+      localDurable: false,
+      cacheError: expect.objectContaining({ code: "LOCAL_STORAGE_QUOTA" }),
+    });
+    expect(mod.WrRecovery.list()).toEqual([
+      expect.objectContaining({
+        sid: "ch01s1",
+        type: "unsynced",
+        html: "<p>刚写下、尚未落盘的新稿</p>",
+      }),
+    ]);
+  });
+
+  it("跨作品查看恢复记录时，与记录所属作品的同名场景比较", async () => {
+    const { mod } = await loadDocs({ projects: [DEFAULT_PROJECT, SALT_PROJECT] });
+    window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>潮汐作者稿</p>");
+    const entry = mod.WrRecovery.createCandidate("ch01s1", "<p>潮汐 AI 候选</p>");
+
+    window.WsWorks.setActive("salt");
+    await settleActive("salt");
+    window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>盐镇作者稿</p>");
+
+    const diff = mod.WrRecovery.diff(entry.id);
+    expect(diff.current).toBe("<p>潮汐作者稿</p>");
+    expect(diff.current).not.toContain("盐镇作者稿");
+  });
+
+  it("恢复不同正文前自动备份当前作者稿，恢复后仍可撤销", async () => {
+    const { mod } = await loadDocs();
+    window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>恢复前的作者正文</p>");
+    const entry = mod.WrRecovery.createCandidate("ch01s1", "<p>准备恢复的候选正文</p>");
+
+    const result = await mod.WrRecovery.restore(entry.id);
+
+    expect(result.replacedBackup).toMatchObject({
+      sid: "ch01s1",
+      type: "backup",
+      source: "author",
+      html: "<p>恢复前的作者正文</p>",
+      durable: true,
+    });
+    expect(mod.WrDocs.load("ch01s1")).toBe("<p>准备恢复的候选正文</p>");
+    expect(mod.WrRecovery.list()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: entry.id, type: "candidate" }),
+      expect.objectContaining({ id: result.replacedBackup.id, type: "backup" }),
+    ]));
+  });
+
+  it("断网留下的恢复稿可重试同步，成功后自动移出列表", async () => {
+    const { mod, client } = await loadDocs();
+    const entry = mod.WrRecovery.create({
+      sid: "ch01s1",
+      html: "<p>离线时写下的正文</p>",
+      type: "unsynced",
+      reason: "断网",
+    });
+    client.apiPatch.mockResolvedValue({ draft: { draft_id: "d1", revision_no: 2 } });
+
+    await mod.WrRecovery.retry(entry.id);
+
+    expect(client.apiPatch).toHaveBeenCalledWith("/api/v1/author-drafts/d1", {
+      content: "<p>离线时写下的正文</p>",
+      base_revision_no: 1,
+    });
+    expect(mod.WrDocs.load("ch01s1")).toBe("<p>离线时写下的正文</p>");
+    expect(mod.WrRecovery.list()).toEqual([]);
   });
 });
 
@@ -338,6 +464,44 @@ describe("WrDocs 提升权威正文", () => {
 
     await expect(mod.WrDocs.promote("ch01s1")).rejects.toBe(failure);
     expect(client.apiPost.mock.calls.some(([url]) => url.includes("promote-canonical"))).toBe(false);
+  });
+
+  it("内容风险复核重试只把调用方逐项确认的 exact finding codes 交给后端", async () => {
+    const { mod, client } = await loadDocs();
+    client.apiPost.mockImplementation((url) => {
+      if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
+        return Promise.resolve({
+          draft: { draft_id: "d1", revision_no: 3, content: "<p>待复核正文</p>", canonical_dirty: true },
+          runtime_final_ref: "final_scene:final-old",
+        });
+      }
+      if (url === "/api/v1/author-drafts/d1/promote-canonical") {
+        return Promise.resolve({
+          draft_id: "d1",
+          draft_revision_no: 3,
+          final_scene_row_id: "final-reviewed",
+          canonical_dirty: false,
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    await mod.WrDocs.promote("ch01s1", {
+      acceptedWarningCodes: [
+        "sexual_content_with_minor_indicators",
+        "actionable_self_harm_detail",
+      ],
+    });
+
+    expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v1/author-drafts/d1/promote-canonical",
+      expect.objectContaining({
+        accepted_warning_codes: [
+          "sexual_content_with_minor_indicators",
+          "actionable_self_harm_detail",
+        ],
+      }),
+    );
   });
 });
 

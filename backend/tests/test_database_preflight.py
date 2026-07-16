@@ -17,6 +17,9 @@ PAIR_GENRE_REVISION = "20260715_0067"
 NARRATIVE_POSITION_REVISION = "20260715_0068"
 LATEST_REVISION = "20260715_0069"
 QUALITY_EVIDENCE_REVISION = "20260715_0070"
+BACKGROUND_RECOVERY_REVISION = "20260716_0071"
+AUTHOR_PREFERENCE_CONSTRAINT_REVISION = "20260716_0072"
+LLM_AUDIT_PRIVACY_REVISION = "20260716_0073"
 
 
 def _migrate_database(
@@ -657,6 +660,9 @@ def test_revision_aliases_select_the_canonical_schema_profiles(tmp_path):
         ("0068", NARRATIVE_POSITION_REVISION),
         ("0069", LATEST_REVISION),
         ("0070", QUALITY_EVIDENCE_REVISION),
+        ("0071", BACKGROUND_RECOVERY_REVISION),
+        ("0072", AUTHOR_PREFERENCE_CONSTRAINT_REVISION),
+        ("0073", LLM_AUDIT_PRIVACY_REVISION),
     ],
 )
 def test_new_revision_aliases_resolve_to_canonical_revisions(alias, canonical):
@@ -699,6 +705,29 @@ def test_fresh_0070_database_passes_quality_evidence_preflight(
 
     assert result["revision"] == QUALITY_EVIDENCE_REVISION
     assert result["expected_revision_canonical"] == QUALITY_EVIDENCE_REVISION
+    assert result["missing_tables"] == []
+    assert result["missing_columns"] == {}
+    assert result["schema_errors"] == []
+    assert result["foreign_keys"] == 1
+    assert result["ready"] is True, result
+
+
+def test_fresh_0073_database_passes_llm_audit_privacy_preflight(
+    tmp_path,
+    monkeypatch,
+):
+    database_path = tmp_path / "fresh-0073.db"
+    _migrate_database(
+        database_path,
+        LLM_AUDIT_PRIVACY_REVISION,
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+
+    result = inspect_database(database_path, "0073")
+
+    assert result["revision"] == LLM_AUDIT_PRIVACY_REVISION
+    assert result["expected_revision_canonical"] == LLM_AUDIT_PRIVACY_REVISION
     assert result["missing_tables"] == []
     assert result["missing_columns"] == {}
     assert result["schema_errors"] == []

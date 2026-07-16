@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { useActiveWork, wsKey } from "./ws-works.jsx";
+import { WsWorks, useActiveWork, useWorksStatus, wsKey } from "./ws-works.jsx";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { RV_KINDS, rvOpenItems, rvMarkResolved } from "./ws-review.jsx";
 
@@ -20,18 +20,40 @@ const HOME_CHAP_ST = { approved: "定稿", review: "送审", draft: "草稿", wr
 
 function WsHome({ go }) {
   const work = useActiveWork();
+  const remote = useWorksStatus(work && work.id);
   const chapters = useCatalogChapters ? useCatalogChapters() : [];
   const isBlank = chapters.length === 0;
 
-  if (isBlank) return <WsHomeBlank work={work} go={go} />;
-  return <WsHomeFull work={work} go={go} chapters={chapters} />;
+  if (isBlank) return <WsHomeBlank work={work} go={go} remote={remote} />;
+  return <WsHomeFull work={work} go={go} chapters={chapters} remote={remote} />;
+}
+
+function WsHomeDataNotice({ remote, workId }) {
+  const dashboardError = remote && remote.dashboard && remote.dashboard.error;
+  const projectsError = remote && remote.projects && remote.projects.error;
+  const error = dashboardError || projectsError;
+  if (!error) return null;
+  const scope = dashboardError ? "dashboard" : "projects";
+  const phase = scope === "dashboard" ? remote.dashboard.phase : remote.projects.phase;
+  return (
+    <div className="hm-data-notice" role="status" aria-live="polite">
+      <span className="hm-data-notice-ic"><I.AlertTriangle size={15} /></span>
+      <div>
+        <strong>{error.offline ? "当前离线 · 正在使用本地缓存" : "远端数据暂时没有更新"}</strong>
+        <span>{error.message || "你的本地内容仍可继续使用。"}</span>
+      </div>
+      <button type="button" className="btn btn-ghost btn-sm" disabled={phase === "loading"} onClick={() => { void WsWorks.retry(scope, workId); }}>
+        <I.Refresh size={13} /> {phase === "loading" ? "重试中…" : "重新连接"}
+      </button>
+    </div>
+  );
 }
 
 /* ===== full home — a work with momentum =====
    结构性数据（章节 / 当前场景 / GMC / 进度）全部派生自 WsCatalog；
    雪花进度读构思工作台的持久化状态；待办读收件箱 store。
    只有「上次写到这里」的正文引文仍来自作品种子（演示文案）。 */
-function WsHomeFull({ work: p, go, chapters }) {
+function WsHomeFull({ work: p, go, chapters, remote }) {
   const home = p.home || {};
 
   /* —— 当前章 / 当前场（单一真相源）—— */
@@ -103,6 +125,7 @@ function WsHomeFull({ work: p, go, chapters }) {
 
   return (
     <div className="ws-page ws-view hm" data-screen-label="主页">
+      <WsHomeDataNotice remote={remote} workId={p.id} />
       {/* ===== masthead — identity + book progress ===== */}
       <header className="hm-top">
         <div className="hm-id">
@@ -244,9 +267,10 @@ const HOME_START_STEPS = [
   { icon: "Beaker", view: "styleref", title: "设定风格基调", desc: "给这部作品定一个叙述声音与语感。", cta: "去设定" },
 ];
 
-function WsHomeBlank({ work: p, go }) {
+function WsHomeBlank({ work: p, go, remote }) {
   return (
     <div className="ws-page ws-view hm" data-screen-label="主页 · 新作品">
+      <WsHomeDataNotice remote={remote} workId={p.id} />
       <header className="hm-top">
         <div className="hm-id">
           <div className="hm-greet"><span className="hm-greet-dot" /> {p.greet || "新的开始"}</div>

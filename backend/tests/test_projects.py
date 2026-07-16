@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import select
 
 from novel_system.db.models import (
@@ -20,6 +21,8 @@ from novel_system.db.models import (
     StyleReferenceProfile,
     StyleReferenceRun,
 )
+from novel_system.services.errors import DomainError
+from novel_system.services.projects import ProjectChapterFlowService
 
 
 def _create_project(client, *, title: str = "雨城残响", target_chapter_count: int = 2, key: str = "default") -> dict:
@@ -409,6 +412,8 @@ def test_project_chapter_run_stops_at_final_review_and_approve_final_advances(cl
     ).scalar_one()
     assert approval_log.payload_json["revision_notes"] == "Keep the second scene tense on the next pass."
     assert approval_log.payload_json["project_id"] == project["project_id"]
+    session.expire_all()
+    assert session.get(ChapterGoal, first_chapter_id).state == "approved"
 
 
 def test_project_chapter_final_requires_current_read_confirmation(client, session) -> None:
@@ -416,20 +421,23 @@ def test_project_chapter_final_requires_current_read_confirmation(client, sessio
     plan = _generate_plan(client, project["project_id"])
     approved = _approve_plan(client, project["project_id"], plan["plan_id"])
     chapter_id = approved["project"]["current_chapter_id"]
-    scene = session.query(SceneCard).filter(SceneCard.chapter_id == chapter_id).first()
-    assert scene is not None
-    final_row = FinalScene(
-        row_id=f"final_{scene.scene_id}",
-        scene_id=scene.scene_id,
-        chapter_id=chapter_id,
-        source_bundle_id="bundle_read_confirm",
-        source_bundle_hash="hash_read_confirm",
-        content="第一版正文，需要通读后才能批准。",
-    )
-    session.add(final_row)
-    state = session.get(SceneRunState, scene.scene_id)
-    assert state is not None
-    state.current_final_scene_row_id = final_row.row_id
+    scenes = session.query(SceneCard).filter(SceneCard.chapter_id == chapter_id).all()
+    assert scenes
+    final_rows = []
+    for index, scene in enumerate(scenes, start=1):
+        final_row = FinalScene(
+            row_id=f"final_{scene.scene_id}",
+            scene_id=scene.scene_id,
+            chapter_id=chapter_id,
+            source_bundle_id=f"bundle_read_confirm_{index}",
+            source_bundle_hash=f"hash_read_confirm_{index}",
+            content=f"第一版正文，需要通读后才能批准。场景 {index}。",
+        )
+        final_rows.append(final_row)
+        session.add(final_row)
+        state = session.get(SceneRunState, scene.scene_id)
+        assert state is not None
+        state.current_final_scene_row_id = final_row.row_id
     session.add(
         ChapterRunJob(
             job_id=f"read_confirm_job_{chapter_id}",
@@ -474,7 +482,7 @@ def test_project_chapter_final_requires_current_read_confirmation(client, sessio
     dashboard_after_confirm = client.get(f"/api/v1/projects/{project['project_id']}/dashboard").json()["data"]
     assert dashboard_after_confirm["review_packet"]["read_confirmation"]["body_hash"] == packet["body_hash"]
 
-    final_row.content = "第二版正文已经变化，旧阅读确认不能批准。"
+    final_rows[0].content = "第二版正文已经变化，旧阅读确认不能批准。"
     session.commit()
     changed_packet = client.get(f"/api/v1/projects/{project['project_id']}/dashboard").json()["data"]["review_packet"]
     assert changed_packet["body_hash"] != packet["body_hash"]
@@ -715,7 +723,6 @@ def test_project_chapter_run_job_blocks_when_llm_disabled(client, monkeypatch) -
 
     response = client.post(
         f"/api/v1/projects/{project['project_id']}/chapters/{chapter_id}/run-job",
-        json={},
         headers={"X-Idempotency-Key": "run-job-offline"},
     )
 
@@ -788,3 +795,166 @@ def test_project_chapter_run_job_reuses_existing_running_job(client, session, mo
     assert payload["run"]["job_id"] == "chapter_run_existing"
     assert payload["run"]["status"] == "running"
     assert started_jobs == []
+
+
+def test_project_chapter_flow_request_contracts_are_strict(client) -> None:
+    base = "/api/v1/projects/missing-project/chapters/missing-chapter"
+    cases = [
+        (f"{base}/run-job", {"offline_demo": "true"}, "body.offline_demo", "bool_type"),
+        (f"{base}/run-job", {"allow_demo": True}, "body.allow_demo", "extra_forbidden"),
+        (f"{base}/run-job", {"offline_demo": False, "unexpected": 1}, "body.unexpected", "extra_forbidden"),
+        (f"{base}/read-confirm", {"note": "x", "unexpected": 1}, "body.unexpected", "extra_forbidden"),
+        (f"{base}/approve-final", {"revision_notes": "x", "unexpected": 1}, "body.unexpected", "extra_forbidden"),
+    ]
+
+    for path, body, expected_field, expected_type in cases:
+        response = client.post(path, json=body, headers={"X-Idempotency-Key": f"strict-{expected_field}-{expected_type}"})
+        assert response.status_code == 422, response.text
+        error = response.json()["error"]
+        assert error["code"] == "REQUEST_VALIDATION_FAILED"
+        assert any(
+            issue["field"] == expected_field and issue["type"] == expected_type
+            for issue in error["details"]["issues"]
+        )
+
+
+def test_project_chapter_run_service_rejects_non_boolean_or_legacy_demo_flags(session) -> None:
+    service = ProjectChapterFlowService(session)
+    with pytest.raises(DomainError) as non_boolean:
+        service.prepare_chapter_run_job("missing-project", "missing-chapter", offline_demo="true")
+    assert non_boolean.value.code == "INVALID_CHAPTER_RUN_MODE"
+
+    with pytest.raises(TypeError):
+        service.prepare_chapter_run_job("missing-project", "missing-chapter", allow_demo=True)
+
+
+def test_project_chapter_flow_request_length_boundaries(client) -> None:
+    base = "/api/v1/projects/missing-project/chapters/missing-chapter"
+    accepted_cases = [
+        (f"{base}/read-confirm", None),
+        (f"{base}/read-confirm", {"note": "x" * 1000}),
+        (f"{base}/approve-final", None),
+        (f"{base}/approve-final", {"revision_notes": "x" * 2000}),
+    ]
+    for index, (path, body) in enumerate(accepted_cases):
+        kwargs = {"headers": {"X-Idempotency-Key": f"accepted-boundary-{index}"}}
+        if body is not None:
+            kwargs["json"] = body
+        response = client.post(path, **kwargs)
+        assert response.status_code == 404, response.text
+        assert response.json()["error"]["code"] == "PROJECT_NOT_FOUND"
+
+    rejected_cases = [
+        (f"{base}/read-confirm", {"note": "x" * 1001}, "body.note"),
+        (f"{base}/approve-final", {"revision_notes": "x" * 2001}, "body.revision_notes"),
+    ]
+    for index, (path, body, expected_field) in enumerate(rejected_cases):
+        response = client.post(path, json=body, headers={"X-Idempotency-Key": f"rejected-boundary-{index}"})
+        assert response.status_code == 422, response.text
+        issues = response.json()["error"]["details"]["issues"]
+        assert any(issue["field"] == expected_field and issue["type"] == "string_too_long" for issue in issues)
+
+
+def test_reopen_final_cascades_approval_state_and_is_idempotent(client, session) -> None:
+    project = _create_project(client, target_chapter_count=3, key="reopen-final")
+    plan = _generate_plan(client, project["project_id"])
+    _approve_plan(client, project["project_id"], plan["plan_id"])
+    chapter_ids = [
+        row[0]
+        for row in session.execute(
+            select(ChapterGoal.chapter_id)
+            .where(ChapterGoal.project_id == project["project_id"])
+            .order_by(ChapterGoal.display_order.asc(), ChapterGoal.chapter_id.asc())
+        ).all()
+    ]
+    assert len(chapter_ids) == 3
+    db_project = session.get(StoryProject, project["project_id"])
+    db_project.approved_chapter_ids_json = list(chapter_ids)
+    db_project.current_chapter_id = None
+    db_project.status = "completed"
+    for chapter_id in chapter_ids:
+        session.get(ChapterGoal, chapter_id).state = "approved"
+    for chapter_id in chapter_ids[1:]:
+        session.add(
+            OperationLog(
+                event_type="chapter_final_read_confirmed",
+                object_type="chapter",
+                object_ref=chapter_id,
+                payload_json={
+                    "project_id": project["project_id"],
+                    "chapter_id": chapter_id,
+                    "body_hash": f"body-hash-{chapter_id}",
+                    "confirmed_by": "author-reopener",
+                },
+            )
+        )
+    session.commit()
+
+    target_id = chapter_ids[1]
+    path = f"/api/v1/projects/{project['project_id']}/chapters/{target_id}/reopen-final"
+    headers = {"X-Idempotency-Key": "reopen-final-cascade", "X-Operator-Ref": "author-reopener"}
+    response = client.post(path, json={"reason": "Revise the causal bridge."}, headers=headers)
+
+    assert response.status_code == 200, response.text
+    payload = response.json()["data"]
+    assert payload["invalidated_chapter_ids"] == chapter_ids[1:]
+    assert payload["project"]["approved_chapter_ids"] == chapter_ids[:1]
+    assert payload["project"]["current_chapter_id"] == target_id
+    assert payload["project"]["status"] == "chapter_ready"
+    session.expire_all()
+    assert session.get(ChapterGoal, chapter_ids[0]).state == "approved"
+    assert session.get(ChapterGoal, target_id).state == "draft"
+    assert session.get(ChapterGoal, chapter_ids[2]).state == "planned"
+    flow = ProjectChapterFlowService(session)
+    for chapter_id in chapter_ids[1:]:
+        assert flow._latest_read_confirmation(
+            project["project_id"],
+            chapter_id,
+            f"body-hash-{chapter_id}",
+        ) is None
+
+    audit = session.execute(
+        select(OperationLog).where(
+            OperationLog.event_type == "chapter_final_reopened",
+            OperationLog.object_ref == target_id,
+        )
+    ).scalar_one()
+    assert audit.payload_json["reason"] == "Revise the causal bridge."
+    assert audit.payload_json["invalidated_chapter_ids"] == chapter_ids[1:]
+    assert audit.payload_json["actor_ref"] == "author-reopener"
+
+    replay = client.post(path, json={"reason": "Revise the causal bridge."}, headers=headers)
+    assert replay.status_code == 200, replay.text
+    assert replay.headers["X-Idempotency-Status"] == "replayed"
+    assert replay.json()["data"]["invalidated_chapter_ids"] == chapter_ids[1:]
+    reopen_log_count = session.execute(
+        select(OperationLog).where(OperationLog.event_type == "chapter_final_reopened")
+    ).scalars().all()
+    assert len(reopen_log_count) == 1
+
+    no_longer_approved = client.post(
+        path,
+        json={"reason": "Try again."},
+        headers={"X-Idempotency-Key": "reopen-final-not-approved"},
+    )
+    assert no_longer_approved.status_code == 409
+    assert no_longer_approved.json()["error"]["code"] == "CHAPTER_FINAL_NOT_APPROVED"
+
+
+def test_reopen_final_request_contract_is_strict(client) -> None:
+    path = "/api/v1/projects/missing-project/chapters/missing-chapter/reopen-final"
+    cases = [
+        ({}, "body.reason", "missing"),
+        ({"reason": "   "}, "body.reason", "value_error"),
+        ({"reason": "x" * 1001}, "body.reason", "string_too_long"),
+        ({"reason": "valid", "unexpected": True}, "body.unexpected", "extra_forbidden"),
+    ]
+    for index, (body, expected_field, expected_type) in enumerate(cases):
+        response = client.post(
+            path,
+            json=body,
+            headers={"X-Idempotency-Key": f"reopen-strict-{index}"},
+        )
+        assert response.status_code == 422, response.text
+        issues = response.json()["error"]["details"]["issues"]
+        assert any(issue["field"] == expected_field and issue["type"] == expected_type for issue in issues)

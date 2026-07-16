@@ -232,7 +232,14 @@ class LongformTowerService:
             raise DomainError("TOWER_CONTRACT_NOT_FOUND", "chapter contract not found", status_code=404)
         return contract
 
-    def update_constraints(self, project_id: str, chapter_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def update_constraints(
+        self,
+        project_id: str,
+        chapter_id: str,
+        payload: dict[str, Any],
+        *,
+        actor_ref: str | None = None,
+    ) -> dict[str, Any]:
         project = self._require_project(project_id)
         self.get_or_create_contract(project.project_id, chapter_id)
         contract = self._require_contract(project.project_id, chapter_id)
@@ -245,8 +252,14 @@ class LongformTowerService:
         constraints = payload.get("constraints")
         if not isinstance(constraints, list):
             raise DomainError("TOWER_CONTRACT_CONSTRAINTS_INVALID", "constraints must be a list", status_code=400)
+        previous_by_id = {
+            str(item.get("constraint_id")): item
+            for item in (contract.constraints_json or [])
+            if isinstance(item, dict) and item.get("constraint_id")
+        }
         normalized = []
-        for item in constraints:
+        seen_constraint_ids: set[str] = set()
+        for index, item in enumerate(constraints, start=1):
             if not isinstance(item, dict):
                 raise DomainError("TOWER_CONTRACT_CONSTRAINTS_INVALID", "each constraint must be an object", status_code=400)
             text = str(item.get("text") or "").strip()
@@ -255,14 +268,100 @@ class LongformTowerService:
             anchor_id = str(item.get("anchor_id") or "").strip()
             if anchor_id:
                 self._require_anchor(project.project_id, anchor_id)
-            normalized.append(
-                {
-                    "text": text,
-                    "anchor_id": anchor_id or None,
-                    "scene_id": str(item.get("scene_id") or "").strip() or None,
-                    "kind": str(item.get("kind") or "constraint").strip() or "constraint",
-                }
+            enforcement = str(item.get("enforcement") or "advisory").strip().lower()
+            if enforcement not in {"advisory", "blocking"}:
+                raise DomainError(
+                    "TOWER_CONTRACT_ENFORCEMENT_INVALID",
+                    "enforcement must be advisory or blocking",
+                    status_code=400,
+                )
+            match_mode = str(item.get("match_mode") or "any").strip().lower()
+            if match_mode not in {"any", "all"}:
+                raise DomainError(
+                    "TOWER_CONTRACT_MATCH_MODE_INVALID",
+                    "match_mode must be any or all",
+                    status_code=400,
+                )
+            raw_terms = item.get("check_terms")
+            if raw_terms is None:
+                check_terms: list[str] = []
+            elif isinstance(raw_terms, list):
+                if any(not isinstance(value, str) for value in raw_terms):
+                    raise DomainError(
+                        "TOWER_CONTRACT_CHECK_TERMS_INVALID",
+                        "check_terms must contain strings only",
+                        status_code=400,
+                    )
+                check_terms = list(
+                    dict.fromkeys(
+                        value.strip()
+                        for value in raw_terms
+                        if value.strip()
+                    )
+                )
+            else:
+                raise DomainError(
+                    "TOWER_CONTRACT_CHECK_TERMS_INVALID",
+                    "check_terms must be a list of non-empty strings",
+                    status_code=400,
+                )
+            raw_waived = item.get("waived", False)
+            if not isinstance(raw_waived, bool):
+                raise DomainError(
+                    "TOWER_CONTRACT_WAIVED_INVALID",
+                    "waived must be a boolean",
+                    status_code=400,
+                )
+            waived = raw_waived
+            waiver_reason = str(item.get("waiver_reason") or "").strip() or None
+            if waived and not waiver_reason:
+                raise DomainError(
+                    "TOWER_CONTRACT_WAIVER_REASON_REQUIRED",
+                    "a waived constraint needs a waiver_reason",
+                    status_code=400,
+                )
+            constraint_id = (
+                str(item.get("constraint_id") or "").strip()
+                or f"{contract.contract_id}:{index}"
             )
+            if constraint_id in seen_constraint_ids:
+                raise DomainError(
+                    "TOWER_CONTRACT_CONSTRAINT_ID_DUPLICATE",
+                    "constraint_id must be unique within a chapter contract",
+                    status_code=400,
+                    details={"constraint_id": constraint_id},
+                )
+            seen_constraint_ids.add(constraint_id)
+            constraint = {
+                "constraint_id": constraint_id,
+                "text": text,
+                "anchor_id": anchor_id or None,
+                "scene_id": str(item.get("scene_id") or "").strip() or None,
+                "kind": str(item.get("kind") or "constraint").strip() or "constraint",
+                "enforcement": enforcement,
+                "check_terms": check_terms,
+                "match_mode": match_mode,
+                "waived": waived,
+                "waiver_reason": waiver_reason,
+            }
+            previous = previous_by_id.get(constraint_id)
+            unchanged_waiver = bool(
+                waived
+                and previous
+                and previous.get("waived") is True
+                and all(previous.get(key) == value for key, value in constraint.items())
+            )
+            constraint["waiver_actor_ref"] = (
+                (previous.get("waiver_actor_ref") or actor_ref or "operator")
+                if unchanged_waiver
+                else (actor_ref or "operator") if waived else None
+            )
+            constraint["waived_at"] = (
+                (previous.get("waived_at") or utcnow())
+                if unchanged_waiver
+                else utcnow() if waived else None
+            )
+            normalized.append(constraint)
         contract.constraints_json = normalized
         self.session.flush()
         return _contract_payload(contract)

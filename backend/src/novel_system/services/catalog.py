@@ -22,6 +22,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import AuthorDraft, ChapterGoal, SceneCard, StoryCharacter, StoryProject
+from novel_system.services.chapter_approval import (
+    is_chapter_approved,
+    require_chapter_mutation_allowed,
+)
 from novel_system.services.chapter_state import ensure_chapter_state
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import ProjectService
@@ -103,12 +107,19 @@ class CatalogService:
         )
         # 缺 display_order 的行（雪花物化/旧数据）按 chapter_id 字典序惰性补号
         rows.sort(key=lambda c: (c.display_order is None, c.display_order or 0, c.chapter_id))
-        dirty = False
-        for index, chapter in enumerate(rows, start=1):
-            if chapter.display_order != index:
+        pending = [
+            (chapter, index)
+            for index, chapter in enumerate(rows, start=1)
+            if chapter.display_order != index
+        ]
+        # A read/backfill must never move an approved row as a side effect.  A
+        # legacy drift remains visible and must be repaired through the explicit
+        # reopen flow rather than silently weakening final-approval immutability.
+        if pending and not any(
+            is_chapter_approved(self.session, chapter) for chapter, _ in pending
+        ):
+            for chapter, index in pending:
                 chapter.display_order = index
-                dirty = True
-        if dirty:
             self.session.flush()
         return rows
 
@@ -179,25 +190,67 @@ class CatalogService:
         project = self._projects.require_project(project_id)
         chapter = self._require_chapter(project_id, chapter_id)
         body = payload or {}
+        updates: dict[str, Any] = {}
         if "state" in body:
             state = str(body["state"] or "").strip()
             if state not in CHAPTER_STATES:
                 raise DomainError("CATALOG_STATE_INVALID", f"chapter state must be one of {CHAPTER_STATES}", status_code=400)
-            chapter.state = state
+            if state == "approved" and not is_chapter_approved(self.session, chapter):
+                raise DomainError(
+                    "CATALOG_CHAPTER_APPROVAL_REQUIRES_PROJECT_FLOW",
+                    "chapter approval must use the project final-approval flow",
+                    status_code=409,
+                )
+            if (
+                state != "approved"
+                and state != chapter.state
+                and is_chapter_approved(self.session, chapter)
+            ):
+                raise DomainError(
+                    "CATALOG_APPROVED_CHAPTER_REOPEN_REQUIRED",
+                    "approved chapter state can change only after reopening its final",
+                    status_code=409,
+                )
+            if state == "review":
+                from novel_system.services.chapter_manuscripts import (
+                    ChapterManuscriptService,
+                )
+
+                ChapterManuscriptService(self.session).require_complete(chapter_id)
+            updates["state"] = state
         if "words_target" in body:
             value = body["words_target"]
-            chapter.words_target = int(value) if value not in (None, "") else None
+            updates["words_target"] = int(value) if value not in (None, "") else None
         narrative = dict(chapter.narrative_json or {})
         for key in NARRATIVE_FIELDS:
             if key in body:
                 narrative[key] = body[key]
-        chapter.narrative_json = narrative
-        if body.get("current"):
-            project.current_chapter_id = chapter.chapter_id
-        self.session.flush()
+        if any(key in body for key in NARRATIVE_FIELDS):
+            updates["narrative_json"] = narrative
+        set_current = bool(body.get("current"))
+        changed_fields = [
+            key for key, value in updates.items() if getattr(chapter, key) != value
+        ]
+        if set_current and project.current_chapter_id != chapter.chapter_id:
+            changed_fields.append("project.current_chapter_id")
+        changed = require_chapter_mutation_allowed(
+            self.session,
+            chapter,
+            changed_fields=changed_fields,
+            operation="catalog.update_chapter",
+        )
+        if changed:
+            for key, value in updates.items():
+                setattr(chapter, key, value)
+            if set_current:
+                project.current_chapter_id = chapter.chapter_id
+            self.session.flush()
         chapters = self.chapter_rows(project_id)
         index = next(i for i, c in enumerate(chapters) if c.chapter_id == chapter_id)
-        return {"chapter": self.chapter_payload(project, chapter, index)}
+        return {
+            "chapter": self.chapter_payload(project, chapter, index),
+            "changed": changed,
+        }
 
     def create_chapter(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         project = self._projects.require_project(project_id)
@@ -209,6 +262,12 @@ class CatalogService:
         state = str(body.get("state") or ("writing" if is_first else "planned"))
         if state not in CHAPTER_STATES:
             raise DomainError("CATALOG_STATE_INVALID", f"chapter state must be one of {CHAPTER_STATES}", status_code=400)
+        if state == "approved":
+            raise DomainError(
+                "CATALOG_CHAPTER_APPROVAL_REQUIRES_PROJECT_FLOW",
+                "chapter approval must use the project final-approval flow",
+                status_code=409,
+            )
         chapter = ChapterGoal(
             chapter_id=f"{project_id}_CH_{uuid.uuid4().hex[:8]}",
             project_id=project_id,
@@ -244,19 +303,21 @@ class CatalogService:
 
     def update_scene(self, project_id: str, scene_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         scene = self._require_scene(project_id, scene_id)
+        chapter = self._require_chapter(project_id, scene.chapter_id)
         body = payload or {}
         brief = dict(scene.writer_brief_json or {})
+        updates: dict[str, Any] = {}
         if "title" in body:
             brief["title"] = str(body["title"] or "").strip()
         if "kind" in body:
             kind = "reactive" if str(body["kind"]).strip().lower() in {"reactive", "反应"} else "proactive"
-            scene.scene_type = kind
+            updates["scene_type"] = kind
             brief["primary_form"] = kind
         if "state" in body:
             state = str(body["state"] or "").strip()
             if state not in SCENE_STATES:
                 raise DomainError("CATALOG_STATE_INVALID", f"scene state must be one of {SCENE_STATES}", status_code=400)
-            scene.state = state
+            updates["state"] = state
         for key in (*SCENE_BRIEF_GCS, *SCENE_BRIEF_RDD):
             if key in body:
                 brief[key] = str(body[key] or "")
@@ -267,6 +328,8 @@ class CatalogService:
                     brief[key] = str(nested[key] or "")
         # POV 角色:按 id 选既有角色,或按名 find-or-create(让冷启动作品无需走完整雪花
         # 物化即可设 pov,解执行契约的 pov_character_id 硬阻断);空串显式清空。
+        needs_character_create = False
+        character_name = ""
         if "pov_character_id" in body or "pov_character_name" in body:
             pov_id = str(body.get("pov_character_id") or "").strip()
             pov_name = str(body.get("pov_character_name") or "").strip()
@@ -274,14 +337,49 @@ class CatalogService:
                 character = self.session.get(StoryCharacter, pov_id)
                 if character is None or character.project_id != project_id:
                     raise DomainError("CATALOG_POV_CHARACTER_NOT_FOUND", "pov character not found in project", status_code=400)
-                scene.pov_character_id = pov_id
+                updates["pov_character_id"] = pov_id
             elif pov_name:
-                scene.pov_character_id = self._find_or_create_character(project_id, pov_name).character_id
+                existing_character = self.session.execute(
+                    select(StoryCharacter).where(
+                        StoryCharacter.project_id == project_id,
+                        StoryCharacter.display_name == pov_name,
+                    )
+                ).scalars().first()
+                if existing_character is None:
+                    needs_character_create = True
+                    character_name = pov_name
+                else:
+                    updates["pov_character_id"] = existing_character.character_id
             else:
-                scene.pov_character_id = None
-        scene.writer_brief_json = brief
-        self.session.flush()
-        return {"scene": self._scene_payload_with_slug(scene)}
+                updates["pov_character_id"] = None
+        if brief != dict(scene.writer_brief_json or {}):
+            updates["writer_brief_json"] = brief
+        changed_fields = [
+            key for key, value in updates.items() if getattr(scene, key) != value
+        ]
+        if needs_character_create:
+            changed_fields.extend(
+                ["story_character.create", "pov_character_id"]
+            )
+        changed = require_chapter_mutation_allowed(
+            self.session,
+            chapter,
+            changed_fields=changed_fields,
+            operation="catalog.update_scene",
+        )
+        if changed:
+            if needs_character_create:
+                updates["pov_character_id"] = self._find_or_create_character(
+                    project_id,
+                    character_name,
+                ).character_id
+            for key, value in updates.items():
+                setattr(scene, key, value)
+            self.session.flush()
+        return {
+            "scene": self._scene_payload_with_slug(scene),
+            "changed": changed,
+        }
 
     def _find_or_create_character(self, project_id: str, display_name: str) -> StoryCharacter:
         existing = self.session.execute(
@@ -303,6 +401,12 @@ class CatalogService:
 
     def create_scene(self, project_id: str, chapter_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         chapter = self._require_chapter(project_id, chapter_id)
+        require_chapter_mutation_allowed(
+            self.session,
+            chapter,
+            changed_fields=["scenes.create"],
+            operation="catalog.create_scene",
+        )
         body = payload or {}
         scenes = self.scene_rows(chapter_id)
         at = body.get("at")
@@ -328,10 +432,11 @@ class CatalogService:
             brief=brief,
         )
         self.session.flush()
-        return {"scene": self._scene_payload_with_slug(scene)}
+        return {"scene": self._scene_payload_with_slug(scene), "changed": True}
 
     def move_scene(self, project_id: str, scene_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         scene = self._require_scene(project_id, scene_id)
+        chapter = self._require_chapter(project_id, scene.chapter_id)
         body = payload or {}
         if "to" not in body:
             raise DomainError("CATALOG_MOVE_INVALID", "target position 'to' is required", status_code=400)
@@ -339,15 +444,155 @@ class CatalogService:
         ids = [s.scene_id for s in scenes]
         from_index = ids.index(scene.scene_id)
         to_index = max(0, min(int(body["to"]), len(scenes) - 1))
+        changed = from_index != to_index
+        require_chapter_mutation_allowed(
+            self.session,
+            chapter,
+            changed_fields=["scenes.order"] if changed else [],
+            operation="catalog.move_scene",
+        )
         ordered = list(scenes)
-        ordered.insert(to_index, ordered.pop(from_index))
-        self._renumber(ordered)
-        self.session.flush()
-        chapter = self.session.get(ChapterGoal, scene.chapter_id)
+        if changed:
+            ordered.insert(to_index, ordered.pop(from_index))
+            self._renumber(ordered)
+            self.session.flush()
         project = self._projects.require_project(project_id)
         chapters = self.chapter_rows(project_id)
         index = next(i for i, c in enumerate(chapters) if c.chapter_id == chapter.chapter_id)
-        return {"chapter": self.chapter_payload(project, chapter, index)}
+        return {
+            "chapter": self.chapter_payload(project, chapter, index),
+            "changed": changed,
+        }
+
+    def reorder_chapters(
+        self,
+        project_id: str,
+        chapter_ids: list[str],
+    ) -> dict[str, Any]:
+        """Persist the complete active chapter order without moving finals.
+
+        The endpoint accepts a full-set replacement so stale clients cannot
+        accidentally drop a newly-created chapter.  Approved chapters retain
+        both their relative sequence and their absolute catalog position.
+        """
+
+        project = self._projects.require_project(project_id)
+        requested = list(chapter_ids)
+        if len(requested) != len(set(requested)):
+            raise DomainError(
+                "CATALOG_CHAPTER_ORDER_DUPLICATE",
+                "chapter_ids must not contain duplicates",
+                status_code=400,
+            )
+
+        current_rows = self.chapter_rows(project_id)
+        current_ids = [chapter.chapter_id for chapter in current_rows]
+        requested_set = set(requested)
+        current_set = set(current_ids)
+        foreign_ids = [
+            row.chapter_id
+            for row in self.session.execute(
+                select(ChapterGoal).where(ChapterGoal.chapter_id.in_(requested or [""]))
+            ).scalars().all()
+            if row.project_id != project.project_id or row.trashed_flag == 1
+        ]
+        if foreign_ids:
+            raise DomainError(
+                "CATALOG_CHAPTER_ORDER_PROJECT_MISMATCH",
+                "chapter_ids must contain only active chapters from this project",
+                status_code=409,
+                details={"chapter_ids": sorted(foreign_ids)},
+            )
+        if requested_set != current_set or len(requested) != len(current_ids):
+            raise DomainError(
+                "CATALOG_CHAPTER_ORDER_INCOMPLETE",
+                "chapter_ids must contain every active chapter in the project exactly once",
+                status_code=409,
+                details={
+                    "missing_chapter_ids": sorted(current_set - requested_set),
+                    "unknown_chapter_ids": sorted(requested_set - current_set),
+                },
+            )
+
+        if requested == current_ids:
+            return {
+                "project_id": project.project_id,
+                "chapter_ids": current_ids,
+                "chapters": [
+                    {
+                        "chapter_id": chapter.chapter_id,
+                        "display_order": chapter.display_order,
+                    }
+                    for chapter in current_rows
+                ],
+                "changed": False,
+            }
+
+        by_id = {chapter.chapter_id: chapter for chapter in current_rows}
+        approved_ids = {
+            chapter.chapter_id
+            for chapter in current_rows
+            if is_chapter_approved(self.session, chapter)
+        }
+        old_approved_order = [chapter_id for chapter_id in current_ids if chapter_id in approved_ids]
+        new_approved_order = [chapter_id for chapter_id in requested if chapter_id in approved_ids]
+        old_positions = {
+            chapter_id: index for index, chapter_id in enumerate(current_ids) if chapter_id in approved_ids
+        }
+        new_positions = {
+            chapter_id: index for index, chapter_id in enumerate(requested) if chapter_id in approved_ids
+        }
+        moved_approved_ids = [
+            chapter_id
+            for chapter_id in old_approved_order
+            if new_positions.get(chapter_id) != old_positions[chapter_id]
+        ]
+        if new_approved_order != old_approved_order or moved_approved_ids:
+            raise DomainError(
+                "CATALOG_APPROVED_CHAPTER_ORDER_LOCKED",
+                "approved chapters cannot change relative order or catalog position",
+                status_code=409,
+                details={
+                    "approved_chapter_ids": old_approved_order,
+                    "moved_chapter_ids": moved_approved_ids,
+                    "reopen_required": True,
+                },
+            )
+
+        # Do not rewrite even an equivalent display_order value on approved
+        # rows.  If historical data is already inconsistent, fail closed.
+        inconsistent_approved_ids = [
+            chapter_id
+            for chapter_id, position in old_positions.items()
+            if by_id[chapter_id].display_order != position + 1
+        ]
+        if inconsistent_approved_ids:
+            raise DomainError(
+                "CATALOG_APPROVED_CHAPTER_ORDER_INCONSISTENT",
+                "approved chapter order is inconsistent and must be reopened before repair",
+                status_code=409,
+                details={
+                    "chapter_ids": inconsistent_approved_ids,
+                    "reopen_required": True,
+                },
+            )
+
+        for position, chapter_id in enumerate(requested, start=1):
+            if chapter_id not in approved_ids:
+                by_id[chapter_id].display_order = position
+        self.session.flush()
+        return {
+            "project_id": project.project_id,
+            "chapter_ids": requested,
+            "chapters": [
+                {
+                    "chapter_id": chapter_id,
+                    "display_order": by_id[chapter_id].display_order,
+                }
+                for chapter_id in requested
+            ],
+            "changed": True,
+        }
 
     def import_catalog(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """一次性迁移入口（admin 保护）：localStorage 旧目录 → 后端行。仅允许空目录导入。"""
@@ -361,16 +606,60 @@ class CatalogService:
         chapters = list((payload or {}).get("chapters") or [])
         if not chapters:
             raise DomainError("CATALOG_IMPORT_EMPTY", "chapters are required", status_code=400)
+        normalized_states = [
+            state if state in CHAPTER_STATES else "planned"
+            for state in (str(item.get("state") or "planned") for item in chapters)
+        ]
+        requested_current_indexes = [index for index, item in enumerate(chapters) if bool(item.get("current"))]
+        if len(requested_current_indexes) > 1:
+            raise DomainError(
+                "CATALOG_IMPORT_CURRENT_INVALID",
+                "catalog import can contain at most one current chapter",
+                status_code=400,
+            )
+        if requested_current_indexes:
+            expected_current_index = requested_current_indexes[0]
+            if normalized_states[expected_current_index] == "approved":
+                raise DomainError(
+                    "CATALOG_IMPORT_CURRENT_INVALID",
+                    "current chapter cannot already be approved",
+                    status_code=400,
+                )
+            if any(state == "approved" for state in normalized_states[expected_current_index + 1:]):
+                raise DomainError(
+                    "CATALOG_IMPORT_APPROVAL_ORDER_INVALID",
+                    "approved chapters must precede the current chapter",
+                    status_code=400,
+                )
+            # A controlled legacy import may carry intermediate review/draft
+            # labels before its explicit current chapter.  The project flow is
+            # linear, so canonicalize that historical prefix as approved.
+            normalized_states[:expected_current_index] = ["approved"] * expected_current_index
+            approved_prefix_length = expected_current_index
+        else:
+            approved_prefix_length = 0
+            for state in normalized_states:
+                if state != "approved":
+                    break
+                approved_prefix_length += 1
+            if any(state == "approved" for state in normalized_states[approved_prefix_length:]):
+                raise DomainError(
+                    "CATALOG_IMPORT_APPROVAL_ORDER_INVALID",
+                    "approved chapters must form a contiguous prefix in catalog order",
+                    status_code=400,
+                )
+            expected_current_index = approved_prefix_length if approved_prefix_length < len(chapters) else None
         created_scenes = 0
+        created_chapter_ids: list[str] = []
         for order, item in enumerate(chapters, start=1):
             title = str(item.get("title") or f"第 {order} 章").strip()
-            state = str(item.get("state") or "planned")
+            state = normalized_states[order - 1]
             chapter = ChapterGoal(
                 chapter_id=f"{project_id}_CH_{uuid.uuid4().hex[:8]}",
                 project_id=project_id,
                 planned_scene_count=len(item.get("scenes") or []),
                 chapter_goal=title,
-                state=state if state in CHAPTER_STATES else "planned",
+                state=state,
                 words_target=int((item.get("words") or {}).get("target") or 0) or None,
                 display_order=order,
                 narrative_json={
@@ -391,8 +680,7 @@ class CatalogService:
             )
             self.session.add(chapter)
             self.session.flush()
-            if item.get("current"):
-                project.current_chapter_id = chapter.chapter_id
+            created_chapter_ids.append(chapter.chapter_id)
             scenes_in = list(item.get("scenes") or [])
             # 旧目录的字数挂在章级（words.cur），场景级缺失时把差额摊给零字数场景，
             # 保证 rollup（章字数 = Σ场景字数）不丢数据。
@@ -431,6 +719,13 @@ class CatalogService:
                 )
                 self.session.add(scene)
                 created_scenes += 1
+        project.approved_chapter_ids_json = created_chapter_ids[:approved_prefix_length]
+        if expected_current_index is None:
+            project.current_chapter_id = None
+            project.status = "completed"
+        else:
+            project.current_chapter_id = created_chapter_ids[expected_current_index]
+            project.status = "chapter_ready"
         self.session.flush()
         return {"created_chapter_count": len(chapters), "created_scene_count": created_scenes}
 

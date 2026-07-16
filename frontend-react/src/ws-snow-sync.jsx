@@ -306,6 +306,31 @@ function shapeStepHealth(step) {
    9/10 步再改动后与目录场景卡（SceneCard）的 diff。pendingCount>0 = 构思领先于目录，
    写作台 / AI 起草台拿到的还是旧三拍。只读后端真相，与写穿缓存分开存。 */
 const snowResync = {}; // workId -> { pendingCount, pendingScenes }
+const snowSyncStates = {}; // workId -> 本机缓存 / 服务端写穿的诚实状态
+
+function snowErrorShape(error, fallback, scope = "remote") {
+  return {
+    code: (error && (error.code || error.status)) || "SYNC_FAILED",
+    message: (error && error.message) || fallback || "同步失败，请稍后重试",
+    scope,
+    offline: typeof navigator !== "undefined" && navigator.onLine === false,
+  };
+}
+
+function setSnowSyncState(workId, patch) {
+  if (!workId) return;
+  const previous = snowSyncStates[workId] || {
+    phase: "idle", pendingSteps: [], error: null, localSavedAt: null, lastSyncedAt: null,
+  };
+  snowSyncStates[workId] = { ...previous, ...patch };
+  try { window.dispatchEvent(new CustomEvent("ws:snow-sync-state", { detail: { workId, state: snowSyncStates[workId] } })); } catch (e) {}
+}
+
+function readSnowSyncState(workId) {
+  return snowSyncStates[workId] || {
+    phase: "idle", pendingSteps: [], error: null, localSavedAt: null, lastSyncedAt: null,
+  };
+}
 function shapeResync(ws) {
   const rs = (ws && ws.resync_status) || {};
   const scenes = Array.isArray(rs.pending_scenes) ? rs.pending_scenes : [];
@@ -336,7 +361,14 @@ async function snowHydrate(workId, opts) {
   } catch (e) {
     if (e && (e.status === 409 || e.status === 404)) snowUnsupported[workId] = true;
     else delete snowHydratedOnce[workId]; // 网络类失败：下次再试
+    if (!(e && (e.status === 409 || e.status === 404))) {
+      setSnowSyncState(workId, { phase: "error", error: snowErrorShape(e, "无法读取服务器构思版本", "hydrate"), pendingSteps: [] });
+    }
     return;
+  }
+  const priorSyncState = readSnowSyncState(workId);
+  if (priorSyncState.phase === "idle" || (priorSyncState.phase === "error" && priorSyncState.error && priorSyncState.error.scope === "hydrate")) {
+    setSnowSyncState(workId, { phase: "synced", error: null, lastSyncedAt: Date.now() });
   }
   snowReadyFlags[workId] = !!(ws && ws.ready_to_materialize);
   captureResync(workId, ws);
@@ -409,48 +441,68 @@ async function snowPushKey(cacheKey) {
   const workId = cacheKey.split("::")[1];
   if (!workId || snowUnsupported[workId]) return;
   let saved = null;
-  try { saved = JSON.parse(localStorage.getItem(cacheKey)); } catch (e) {}
-  if (!saved) return;
+  try { saved = JSON.parse(localStorage.getItem(cacheKey)); } catch (e) {
+    setSnowSyncState(workId, { phase: "error", error: snowErrorShape(e, "无法读取本机构思缓存", "local") });
+  }
+  if (!saved) return readSnowSyncState(workId);
   const mine = lastPushed[workId] || (lastPushed[workId] = {});
+  const work = SNOW_STEPS.filter(([feKey]) => {
+    const fragment = buildStepFragment(feKey, saved, workId);
+    const prev = mine[feKey] || {};
+    return prev.sig !== stepSig(fragment) || prev.approvalPending === true;
+  });
+  if (!work.length) {
+    setSnowSyncState(workId, { phase: "synced", pendingSteps: [], error: null, lastSyncedAt: Date.now() });
+    return readSnowSyncState(workId);
+  }
+  setSnowSyncState(workId, { phase: "syncing", pendingSteps: work.map(([feKey]) => feKey), error: null });
+  const failures = [];
   let pushedSceneish = false; // 9/10 步的改动会改变物化后的 resync_status
-  for (const [feKey, beKey] of SNOW_STEPS) {
+  for (const [feKey, beKey] of work) {
     const fragment = buildStepFragment(feKey, saved, workId);
     const sig = stepSig(fragment);
     const prev = mine[feKey] || {};
-    if (prev.sig === sig) continue;
-    try {
-      const patched = await apiPatch(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}`, { draft: fragment, force: true });
-      mine[feKey] = { sig, state: fragment.fe_state };
-      if (feKey === "scenes" || feKey === "planning") pushedSceneish = true;
-      // update_step 回包带最新 step.health/completeness → 增量刷新后端权威评估（无需再拉全量）
+    if (prev.sig !== sig) {
       try {
+        const patched = await apiPatch(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}`, { draft: fragment, force: true });
+        mine[feKey] = { sig, state: fragment.fe_state, approvalPending: false };
+        if (feKey === "scenes" || feKey === "planning") pushedSceneish = true;
+        // update_step 回包带最新 step.health/completeness → 增量刷新后端权威评估（无需再拉全量）
         if (patched && patched.step) {
           // 服务端把 draft 过了模板归一化（可能补齐空模板键）——刷新 canon 镜像并
           // 用新镜像重算 sig 记账，否则下轮 save 会因归一化差异多推一次空转 PATCH
           (snowCanon[workId] || (snowCanon[workId] = {}))[feKey] = stripFe(patched.step.draft || {});
-          mine[feKey] = { sig: stepSig(buildStepFragment(feKey, saved, workId)), state: fragment.fe_state };
+          mine[feKey] = { sig: stepSig(buildStepFragment(feKey, saved, workId)), state: fragment.fe_state, approvalPending: false };
           (snowHealth[workId] || (snowHealth[workId] = {}))[feKey] = shapeStepHealth(patched.step);
           window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: workId }));
         }
-      } catch (e3) {}
-      // 仅在「本会话内已观测到非 done 前态 → done」的真实跃迁时补 approve。
-      // 新开页面时 prev 为空（prev.state===undefined），不要对所有已 done 步骤盲发 approve：
-      // 后端对已批准步骤会幂等返回 200，但对未达 pending_review/前序闸门未过的步骤返回 409，
-      // 虽被 catch 吞掉仍会污染 console/网络，并造成「一打开构思页就重写全部步骤」的副作用。
-      if (fragment.fe_state === "done" && prev.state && prev.state !== "done") {
-        // 确认步骤：尝试后端 approve（前序闸门不满足时静默跳过，不打断写作流）
-        try {
-          const appr = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}/approve`, {});
-          // approve 成功回包 status=approved → 刷新后端权威态，让视图从「本地已确认」升为「已批准」
-          if (appr && appr.step) {
-            (snowHealth[workId] || (snowHealth[workId] = {}))[feKey] = shapeStepHealth(appr.step);
-            window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: workId }));
-          }
-        } catch (e2) {}
+      } catch (error) {
+        if (error && error.status === 409 && error.code === "PROJECT_NOT_SNOWFLAKE") {
+          snowUnsupported[workId] = true;
+          const shaped = snowErrorShape(error, "当前作品未启用雪花工作台");
+          setSnowSyncState(workId, { phase: "error", pendingSteps: [feKey], error: shaped });
+          return readSnowSyncState(workId);
+        }
+        failures.push({ feKey, beKey, stage: "patch", error });
+        continue; // PATCH 未成功，绝不能继续 approve
       }
-    } catch (e) {
-      if (e && e.status === 409 && e.code === "PROJECT_NOT_SNOWFLAKE") { snowUnsupported[workId] = true; return; }
-      // 网络/校验失败：sig 不记账，下次保存重试
+    }
+
+    // 仅在「本会话内已观测到非 done 前态 → done」的真实跃迁时补 approve；
+    // 批准失败会写 approvalPending，重试时即使 PATCH 已成功也会再次批准。
+    const shouldApprove = fragment.fe_state === "done"
+      && ((prev.state && prev.state !== "done") || prev.approvalPending === true);
+    if (!shouldApprove) continue;
+    try {
+      const appr = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}/approve`, {});
+      mine[feKey] = { ...(mine[feKey] || {}), state: "done", approvalPending: false };
+      if (appr && appr.step) {
+        (snowHealth[workId] || (snowHealth[workId] = {}))[feKey] = shapeStepHealth(appr.step);
+        window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: workId }));
+      }
+    } catch (error) {
+      mine[feKey] = { ...(mine[feKey] || {}), state: "done", approvalPending: true };
+      failures.push({ feKey, beKey, stage: "approve", error });
     }
   }
   // 物化过（目录里已有章）的作品：9/10 步保存后强制重拉一次工作台，让「N 场待同步」
@@ -461,10 +513,25 @@ async function snowPushKey(cacheKey) {
       if (hasCatalog) await snowHydrate(workId, { force: true });
     } catch (e) {}
   }
+  if (failures.length) {
+    const first = failures[0];
+    const stageLabel = first.stage === "approve" ? "后端批准" : "服务器保存";
+    setSnowSyncState(workId, {
+      phase: "error",
+      pendingSteps: [...new Set(failures.map(item => item.feKey))],
+      error: snowErrorShape(first.error, `${stageLabel}失败，本机版本已保留`),
+      failures: failures.map(item => ({ feKey: item.feKey, beKey: item.beKey, stage: item.stage, code: item.error && (item.error.code || item.error.status) })),
+    });
+  } else {
+    setSnowSyncState(workId, { phase: "synced", pendingSteps: [], failures: [], error: null, lastSyncedAt: Date.now() });
+  }
+  return readSnowSyncState(workId);
 }
 
 function schedulePush(cacheKey) {
   pendingKeys.add(cacheKey);
+  const workId = String(cacheKey || "").split("::")[1];
+  if (workId) setSnowSyncState(workId, { phase: "local_only", localSavedAt: Date.now(), error: null });
   clearTimeout(pushTimer);
   pushTimer = setTimeout(() => {
     const keys = [...pendingKeys];
@@ -506,6 +573,23 @@ window.__snowSyncGlobalHandlers = {
 
 const SnowSync = {
   refetch(workId) { return snowHydrate(workId || activeWork(), { force: true }); },
+  syncState(workId) { return { ...readSnowSyncState(workId || activeWork()) }; },
+  retry(workId) {
+    const id = workId || activeWork();
+    if (!id) return Promise.reject(new Error("作品尚未就绪"));
+    const key = snowCacheKey(id);
+    pushChain = pushChain.catch(() => {}).then(() => snowPushKey(key));
+    return pushChain;
+  },
+  markLocalFailure(error, workId) {
+    const id = workId || activeWork();
+    setSnowSyncState(id, {
+      phase: "error",
+      error: snowErrorShape(error, "本机自动保存失败，请先导出构思", "local"),
+      pendingSteps: SNOW_STEPS.map(([feKey]) => feKey),
+    });
+    return readSnowSyncState(id);
+  },
   readyToMaterialize(workId) { return !!snowReadyFlags[workId || activeWork()]; },
   /* 结构化雪花计划导入：这是作者从既有策划稿/外部大纲迁入十步工作台的正常入口。
      UI 一次提交后仍逐步走现有 PATCH + approve 契约，依赖闸门、历史版本、场景身份铸造
@@ -575,6 +659,7 @@ const SnowSync = {
     }
     try { window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: id })); } catch (e) {}
     try { window.dispatchEvent(new CustomEvent("ws:snow-hydrated", { detail: id })); } catch (e) {}
+    setSnowSyncState(id, { phase: "synced", pendingSteps: [], error: null, localSavedAt: importedAt, lastSyncedAt: Date.now() });
     return { approvedStepKeys, readyToMaterialize: snowReadyFlags[id], workspace };
   },
   /* 物化后回流状态：pending = 构思 9/10 步领先于目录场景卡的场（后端 resync_status 真相）。

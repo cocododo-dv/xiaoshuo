@@ -1097,6 +1097,25 @@ def _split_clauses(text: str) -> list[str]:
     return [c for c in _CLAUSE_SPLIT_RE.split(text) if c.strip()]
 
 
+def _clause_refers_to_entity(clauses: list[str], index: int, entity_lower: str) -> bool:
+    clause = clauses[index]
+    if entity_lower in clause:
+        return True
+    # Permit a tightly adjacent pronoun continuation ("林远……。他右手……")
+    # without attributing a different named character's action to this entity.
+    starts_with_pronoun = re.match(
+        r"^\s*[‘’“”\"']*(?:他|她|其|he\b|she\b|his\b|her\b)", clause
+    ) is not None
+    if not starts_with_pronoun or index <= 0:
+        return False
+    if entity_lower in clauses[index - 1]:
+        return True
+    if index >= 2 and entity_lower in clauses[index - 2]:
+        bridge = clauses[index - 1]
+        return any(pronoun in bridge for pronoun in ("他", "她", "其", " he ", " she ", " his ", " her "))
+    return False
+
+
 def _all_idx(haystack: str, needle: str) -> list[int]:
     out: list[int] = []
     i = haystack.find(needle)
@@ -1176,6 +1195,134 @@ _ITEM_LOSS_GUARDS = (
     "不在手中", "空空", "已断", "碎了", "毁了", "想起", "记得", "回忆", "怀念",
 )
 
+# Deterministic coverage for structured physical-state facts.  Free-form values
+# such as "tired" or "wounded" are intentionally not inferred as contradictions:
+# they can legitimately change inside the scene and remain advisory-only.
+_STATE_RECOVERY_GUARDS = (
+    "醒来", "苏醒", "恢复意识", "康复", "痊愈", "重新能够", "不再", "曾经",
+    "回忆", "梦见", "如果", "假如", "试图", "尝试", "却没能", "但失败",
+    "woke", "awoke", "recovered", "used to", "remembered", "dreamed", "tried",
+)
+_STATE_NEGATION_GUARDS = (
+    "不能", "无法", "没法", "未能", "没有", "不再", "差点", "险些", "试图", "尝试",
+    "cannot", "can't", "could not", "couldn't", "unable", "failed to", "tried to",
+)
+_VISUAL_ACTIONS = (
+    "看见", "看到", "望见", "瞥见", "瞧见", "目睹", "注视", "端详", "读到", "阅读",
+    "saw", "looked", "watched", "read", "glimpsed",
+)
+_HEARING_ACTIONS = ("听见", "听到", "听清", "听出", "heard", "listened")
+_SPEAKING_ACTIONS = (
+    "说道", "说", "开口", "回答", "喊道", "叫道", "低语", "耳语",
+    "said", "spoke", "answered", "whispered", "shouted",
+)
+_WALKING_ACTIONS = (
+    "站起", "起身", "走向", "走到", "迈步", "奔跑", "跑向", "跳起",
+    "stood", "walked", "ran", "jumped",
+)
+_ASSISTIVE_PERCEPTION_GUARDS = (
+    "盲杖", "摸索", "听声辨位", "读屏", "屏幕阅读器", "借助", "助听器", "读唇",
+    "braille", "screen reader", "hearing aid", "lip-read",
+)
+
+_COLOR_ALIASES: dict[str, tuple[str, ...]] = {
+    "black": ("黑色", "乌黑", "墨黑", "黑发", "black"),
+    "brown": ("棕色", "褐色", "栗色", "棕发", "brown", "chestnut"),
+    "blond": ("金色", "金发", "浅金", "blond", "blonde", "golden"),
+    "red": ("红色", "赤红", "红发", "red", "auburn"),
+    "white": ("白色", "雪白", "银白", "白发", "银发", "white", "silver"),
+    "gray": ("灰色", "灰白", "灰发", "gray", "grey"),
+    "blue": ("蓝色", "湛蓝", "蓝眸", "blue"),
+    "green": ("绿色", "碧绿", "绿眸", "green"),
+}
+_HAIR_ANCHORS = ("头发", "发丝", "发色", "长发", "短发", "hair")
+_EYE_ANCHORS = ("眼睛", "眼眸", "瞳孔", "眸子", "eye", "eyes")
+_APPEARANCE_MEMORY_GUARDS = ("曾经", "从前", "旧照", "照片", "回忆", "梦里", "假如", "伪装", "染成")
+
+_ABILITY_ALIASES: dict[str, tuple[str, ...]] = {
+    "swim": ("游泳", "泅水", "游水", "swim"),
+    "read": ("阅读", "读书", "读到", "read"),
+    "write": ("写字", "书写", "write"),
+    "speak": _SPEAKING_ACTIONS,
+    "see": _VISUAL_ACTIONS,
+    "hear": _HEARING_ACTIONS,
+    "walk": _WALKING_ACTIONS,
+    "fly": ("飞行", "飞起", "腾空", "fly", "flew"),
+    "magic": ("施法", "释放魔法", "念动咒语", "施展法术", "cast a spell", "used magic"),
+}
+
+
+def _clause_has_negated_or_nonactual_action(clause: str) -> bool:
+    return any(guard in clause for guard in (*_STATE_NEGATION_GUARDS, *_STATE_RECOVERY_GUARDS))
+
+
+def _physical_state_kind(value_lower: str) -> str | None:
+    normalized = value_lower.replace("-", "_").replace(" ", "_")
+    if any(token in normalized for token in ("unconscious", "coma", "昏迷", "失去意识")):
+        return "unconscious"
+    if any(token in normalized for token in ("blind", "失明", "看不见")):
+        return "blind"
+    if any(token in normalized for token in ("deaf", "失聪", "听不见")):
+        return "deaf"
+    if any(token in normalized for token in ("mute", "失语", "不能说话")):
+        return "mute"
+    if any(token in normalized for token in ("paralyzed", "paralysed", "瘫痪", "无法行走")):
+        return "paralyzed"
+    return None
+
+
+def _physical_state_missing_limb(value_lower: str) -> str | None:
+    normalized = value_lower.replace("-", "_").replace(" ", "_")
+    for group, words in _LIMB_GROUPS.items():
+        group_tokens = (group, *words)
+        if any(token in normalized for token in group_tokens) and any(
+            marker in normalized
+            for marker in ("severed", "amputated", "missing", "断", "截肢", "失去")
+        ):
+            return group
+    return None
+
+
+def _canonical_color(value_lower: str) -> str | None:
+    for canonical, aliases in _COLOR_ALIASES.items():
+        if any(alias in value_lower for alias in aliases):
+            return canonical
+    return None
+
+
+def _appearance_contract(value_lower: str) -> tuple[str, str] | None:
+    normalized = value_lower.replace("=", ":")
+    if any(prefix in normalized for prefix in ("hair:", "hair_color:", "头发:", "发色:")):
+        color = _canonical_color(normalized)
+        return ("hair", color) if color else None
+    if any(prefix in normalized for prefix in ("eye:", "eyes:", "eye_color:", "眼睛:", "瞳色:")):
+        color = _canonical_color(normalized)
+        return ("eyes", color) if color else None
+    if normalized in {"bald", "光头", "秃头", "头发全无"}:
+        return ("bald", "bald")
+    return None
+
+
+def _negative_ability_contract(value_lower: str) -> tuple[str, tuple[str, ...]] | None:
+    normalized = value_lower.strip().replace("=", ":")
+    prefixes = ("cannot:", "unable:", "lost:", "no:", "不能:", "无法:", "失去能力:")
+    payload = next((normalized[len(prefix):].strip() for prefix in prefixes if normalized.startswith(prefix)), None)
+    if payload is None:
+        for suffix in ("_unavailable", "_lost", "_disabled"):
+            if normalized.endswith(suffix):
+                payload = normalized[: -len(suffix)]
+                break
+    if not payload:
+        return None
+    for canonical, aliases in _ABILITY_ALIASES.items():
+        if payload == canonical or any(alias == payload for alias in aliases):
+            return canonical, aliases
+    # A structured negative contract may use a project-specific concrete action.
+    # Match it literally, but never infer synonyms for arbitrary prose.
+    if len(payload) >= 2:
+        return payload, (payload,)
+    return None
+
 
 def _norm_limb_group(value_lower: str) -> str | None:
     """Map a missing_limb fact value (right_arm / 右臂 / 右手 …) to a canonical group key."""
@@ -1245,7 +1392,9 @@ def _check_fact_against_text(
         group = _norm_limb_group(value_lower)
         if group:
             limb_words = _LIMB_GROUPS[group]
-            for clause in clauses:
+            for clause_index, clause in enumerate(clauses):
+                if not _clause_refers_to_entity(clauses, clause_index, char_lower):
+                    continue
                 if any(g in clause for g in _LIMB_MISSING_GUARDS):
                     continue  # clause describes the loss, not a use of the limb
                 gap = _min_gap(clause, limb_words, _LIMB_ACTION_VERBS)
@@ -1269,7 +1418,9 @@ def _check_fact_against_text(
     if fact_key == "has_item" and value_lower.startswith("lost:"):
         lost_item = value_lower.replace("lost:", "").strip()
         if lost_item:
-            for clause in clauses:
+            for clause_index, clause in enumerate(clauses):
+                if not _clause_refers_to_entity(clauses, clause_index, char_lower):
+                    continue
                 if lost_item not in clause:
                     continue
                 if any(g in clause for g in _ITEM_LOSS_GUARDS):
@@ -1280,6 +1431,105 @@ def _check_fact_against_text(
                         fact_key=fact_key, expected=f"item lost: {lost_item}",
                         actual="text shows character using the lost item",
                         entity_id=char_id, evidence=clause[:80],
+                    )
+
+    # --- physical_state: only explicit, stable incapacity contracts ---
+    if fact_key == "physical_state":
+        missing_limb = _physical_state_missing_limb(value_lower)
+        if missing_limb:
+            limb_violation = _check_fact_against_text(
+                text_lower,
+                char_id,
+                "missing_limb",
+                missing_limb,
+                known_locations=known_locations,
+            )
+            if limb_violation is not None:
+                return ConsistencyViolation(
+                    fact_key=fact_key,
+                    expected=fact_value,
+                    actual=limb_violation.actual,
+                    entity_id=char_id,
+                    evidence=limb_violation.evidence,
+                )
+
+        state_kind = _physical_state_kind(value_lower)
+        action_map: dict[str, tuple[str, ...]] = {
+            "unconscious": tuple(dict.fromkeys((*_ALIVE_ACTION_VERBS, *_SPEAKING_ACTIONS, *_WALKING_ACTIONS))),
+            "blind": _VISUAL_ACTIONS,
+            "deaf": _HEARING_ACTIONS,
+            "mute": _SPEAKING_ACTIONS,
+            "paralyzed": _WALKING_ACTIONS,
+        }
+        if state_kind is not None:
+            for clause in clauses:
+                if char_lower not in clause or _clause_has_negated_or_nonactual_action(clause):
+                    continue
+                if state_kind in {"blind", "deaf"} and any(
+                    guard in clause for guard in _ASSISTIVE_PERCEPTION_GUARDS
+                ):
+                    continue
+                action = _verb_after(clause, char_lower, action_map[state_kind], window=14)
+                if action:
+                    return ConsistencyViolation(
+                        fact_key=fact_key,
+                        expected=fact_value,
+                        actual=f"text shows an action incompatible with {state_kind}: {action}",
+                        entity_id=char_id,
+                        evidence=clause[:120],
+                    )
+
+    # --- appearance: structured hair/eye colour or baldness only ---
+    if fact_key == "appearance":
+        contract = _appearance_contract(value_lower)
+        if contract is not None:
+            feature, expected_color = contract
+            anchors = _HAIR_ANCHORS if feature in {"hair", "bald"} else _EYE_ANCHORS
+            for clause in clauses:
+                if char_lower not in clause or any(g in clause for g in _APPEARANCE_MEMORY_GUARDS):
+                    continue
+                if feature == "bald":
+                    if any(marker in clause for marker in ("一头长发", "满头长发", "浓密头发", "thick hair", "long hair")):
+                        return ConsistencyViolation(
+                            fact_key=fact_key,
+                            expected=fact_value,
+                            actual="text gives the character a full head of hair",
+                            entity_id=char_id,
+                            evidence=clause[:120],
+                        )
+                    continue
+                expected_aliases = _COLOR_ALIASES.get(expected_color, ())
+                if expected_aliases and _min_gap(clause, anchors, expected_aliases) is not None:
+                    continue
+                for actual_color, aliases in _COLOR_ALIASES.items():
+                    if actual_color == expected_color:
+                        continue
+                    gap = _min_gap(clause, anchors, aliases)
+                    if gap is not None and gap <= 5:
+                        return ConsistencyViolation(
+                            fact_key=fact_key,
+                            expected=fact_value,
+                            actual=f"text describes {feature} colour as {actual_color}",
+                            entity_id=char_id,
+                            evidence=clause[:120],
+                        )
+
+    # --- ability: explicit negative contracts (cannot:/unable:/lost:/no:) ---
+    if fact_key == "ability":
+        contract = _negative_ability_contract(value_lower)
+        if contract is not None:
+            ability_name, action_tokens = contract
+            for clause in clauses:
+                if char_lower not in clause or _clause_has_negated_or_nonactual_action(clause):
+                    continue
+                action = _verb_after(clause, char_lower, action_tokens, window=16)
+                if action:
+                    return ConsistencyViolation(
+                        fact_key=fact_key,
+                        expected=fact_value,
+                        actual=f"text shows forbidden ability '{ability_name}': {action}",
+                        entity_id=char_id,
+                        evidence=clause[:120],
                     )
 
     return None

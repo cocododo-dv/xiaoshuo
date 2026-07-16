@@ -1,11 +1,12 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { ARR_ACTS, ARR_ARCHIVED, ARR_CHAPTERS, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE } from "./ws-author-data.jsx";
-import { WsCatalog } from "./ws-catalog.jsx";
+import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { ArrThreadLoom, ArrThreadMini, arrDeriveThreads } from "./ws-author-loom.jsx";
 import { ArrPacingLens } from "./ws-author-pacing.jsx";
 import { ArrDoctor } from "./ws-author-doctor.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
+import { ArrChapterRunAction } from "./ws-chapter-run.jsx";
 
 /* global React, I, ARR_ACTS, ARR_CHAPTERS, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE, ARR_ARCHIVED, ArrThreadLoom, ArrPacingLens, ArrThreadMini, arrDeriveThreads, ArrDoctor */
 const { useState: useStA, useRef: useRefA, useEffect: useEfA, useMemo: useMemoA } = React;
@@ -311,20 +312,21 @@ const ARR_DRAMA_GROUPS = [
   ] },
 ];
 
-function ArrDramaField({ f, value, ck, onCommit }) {
+function ArrDramaField({ f, value, ck, onCommit, locked = false }) {
   return (
     <div className={`arr-field ${f.primary ? "is-primary" : ""}`}>
       <header className="arr-field-head">
         <span className="arr-field-label">{f.label}</span>
         <span className="arr-field-hint">{f.hint}</span>
       </header>
-      <textarea className="arr-field-text" defaultValue={value} key={ck} placeholder="待填…"
+      <textarea className="arr-field-text" defaultValue={value} key={ck} placeholder="待填…" disabled={locked}
+        aria-label={f.label}
         onBlur={(e) => onCommit && onCommit(e.target.value)} />
     </div>
   );
 }
 
-function ArrGmcEdit({ s, onEdit }) {
+function ArrGmcEdit({ s, onEdit, locked = false }) {
   const bits = s.kind === "反应"
     ? [["反应", "goal"], ["困境", "obstacle"], ["决定", "turn"]]
     : [["目标", "goal"], ["阻碍", "obstacle"], ["出口", "turn"]];
@@ -337,7 +339,7 @@ function ArrGmcEdit({ s, onEdit }) {
         <span key={key} className="arr-gmc">
           <b>{label}</b>
           <input className="arr-gmc-input" defaultValue={s[key] === "—" ? "" : s[key]} key={s.sid + key + (s[key] || "")}
-            placeholder="待定" onClick={(e) => e.stopPropagation()}
+            placeholder="待定" onClick={(e) => e.stopPropagation()} disabled={locked} aria-label={`${s.title} · ${label}`}
             onBlur={(e) => onEdit({ [key]: e.target.value.trim() })}
             onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
         </span>
@@ -346,7 +348,7 @@ function ArrGmcEdit({ s, onEdit }) {
         <b>POV</b>
         <input className="arr-gmc-input" list={povListId} defaultValue={s.povName || ""} key={s.sid + "pov" + (s.povName || "")}
           placeholder="谁的视角" title="设这一场的 POV 角色（按名字；新角色会自动建档）。起草前置：执行契约需要 POV"
-          onClick={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()} disabled={locked} aria-label={`${s.title} · POV`}
           onBlur={(e) => onEdit({ povName: e.target.value.trim() })}
           onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
         {povChars.length ? <datalist id={povListId}>{povChars.map((n, i) => <option key={i} value={n} />)}</datalist> : null}
@@ -355,7 +357,7 @@ function ArrGmcEdit({ s, onEdit }) {
   );
 }
 
-function ArrSceneRow({ s, n, picked, onPick, onCycle, onCycleKind, onDelete, onEdit, dragHandle, dropZone }) {
+function ArrSceneRow({ s, n, picked, onPick, onCycleKind, onDelete, onEdit, dragHandle, dropZone, locked = false }) {
   /* 分流执行：同一张场景卡，自己写去写作台，或交给 AI 起草台排队 */
   const forkWrite = (e) => {
     e.stopPropagation();
@@ -370,25 +372,26 @@ function ArrSceneRow({ s, n, picked, onPick, onCycle, onCycleKind, onDelete, onE
   };
   return (
     <li className={`arr-scene s-${s.state} ${picked ? "is-active" : ""}`} {...dropZone} onClick={onPick}>
-      <span className="arr-scene-grip" title="拖动重排" {...dragHandle}><I.GripVertical size={14} /></span>
+      <span className="arr-scene-grip" title={locked ? "终稿已锁定" : "拖动重排"} {...dragHandle}><I.GripVertical size={14} /></span>
       <span className="arr-scene-num">{n}</span>
       <span className="arr-scene-body" onClick={(e) => e.stopPropagation()}>
         <input className="arr-scene-title-input text-serif" defaultValue={s.title} key={s.sid + s.title}
+          disabled={locked}
           onBlur={(e) => onEdit({ title: e.target.value.trim() || "未命名场景" })}
           onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} aria-label="场景标题" />
-        <ArrGmcEdit s={s} onEdit={onEdit} />
+        <ArrGmcEdit s={s} onEdit={onEdit} locked={locked} />
       </span>
       <span className="arr-scene-fork" onClick={(e) => e.stopPropagation()}>
-        <button className="arr-fork-btn" title="把这张场景卡送入 AI 起草台排队" onClick={forkAI}><I.Play size={11} /> 交给 AI</button>
-        <button className="arr-fork-btn is-write" title="带着这张卡去写作台写这一场" onClick={forkWrite}><I.Pen size={11} /> 自己写</button>
+        <button className="arr-fork-btn" disabled={locked} title={locked ? "请先在成稿中心重新打开终稿" : "把这张场景卡送入 AI 起草台排队"} onClick={forkAI}><I.Play size={11} /> 交给 AI</button>
+        <button className="arr-fork-btn is-write" disabled={locked} title={locked ? "请先在成稿中心重新打开终稿" : "带着这张卡去写作台写这一场"} onClick={forkWrite}><I.Pen size={11} /> 自己写</button>
       </span>
       <span className="arr-scene-tags">
-        <button className="arr-pill-btn arr-cyc" title="点击切换 主动 / 反应" onClick={(e) => { e.stopPropagation(); onCycleKind && onCycleKind(); }}>
+        <button className="arr-pill-btn arr-cyc" disabled={locked} title={locked ? "终稿已锁定" : "点击切换 主动 / 反应"} onClick={(e) => { e.stopPropagation(); onCycleKind && onCycleKind(); }}>
           <span className={`pill text-xs ${s.kind === "主动" ? "pill-crimson" : "pill-slate"}`}><span className="pill-dot" />{s.kind}</span>
         </button>
-        <button className="arr-pill-btn arr-cyc" title="点击切换进度" onClick={(e) => { e.stopPropagation(); onCycle && onCycle(); }}><ArrScenePill s={s.state} /></button>
+        <span className="arr-pill-readonly" title="场景完成状态由正文归档流程推进"><ArrScenePill s={s.state} /></span>
       </span>
-      <button className="btn btn-quiet btn-sm arr-scene-more" title="移入回收" onClick={(e) => { e.stopPropagation(); onDelete && onDelete(); }}><I.Trash size={13} /></button>
+      <button className="btn btn-quiet btn-sm arr-scene-more" disabled={locked} title={locked ? "终稿已锁定" : "移入服务端回收站"} onClick={(e) => { e.stopPropagation(); onDelete && onDelete(); }}><I.Trash size={13} /></button>
     </li>
   );
 }
@@ -413,10 +416,10 @@ function ArrHandoffStrip({ prev, ch, next, numOf, onJump }) {
   );
 }
 
-function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDragHandle, sceneDropZone, onAddScene, onCycleScene, onCycleKind, onDeleteScene, onEditScene, onRestoreScene, onPatchTitle, onPatchDrama, onCycleState, onDeleteChapter, pickedScene, setPickedScene, onJump, onBack, snow }) {
+function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDragHandle, sceneDropZone, onAddScene, onCycleKind, onDeleteScene, onEditScene, onPatchTitle, onPatchDrama, onDeleteChapter, onOpenTrash, pickedScene, setPickedScene, onJump, onBack, snow, chapterRun }) {
   const tallies = { todo: 0, writing: 0, done: 0 };
   ch.scenes.forEach((s) => { tallies[s.state] = (tallies[s.state] || 0) + 1; });
-  const recycled = ch.recycled || [];
+  const locked = ch.state === "approved";
 
   return (
     <section className="arr-ed">
@@ -428,19 +431,28 @@ function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDra
             <span>CH {num} · 当前编辑</span>
           </div>
           <input className="arr-ed-title text-serif arr-ed-title-input" defaultValue={ch.title} key={ch.id}
+            disabled={locked}
             onBlur={(e) => onPatchTitle(e.target.value.trim() || "未命名章节")}
             onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} aria-label="章节标题" />
         </div>
         <div className="arr-ed-actions">
-          <button className="arr-pill-btn arr-cyc" title="点击切换章节状态" onClick={onCycleState}><ArrChPill s={ch.state} /></button>
-          <button className="btn btn-quiet btn-sm">大纲快查</button>
-          <button className="btn btn-ghost btn-sm"><I.Play size={13} /> 运行本章</button>
-          <button className="btn btn-quiet btn-sm arr-del-ch" title="删除本章" onClick={onDeleteChapter}><I.Trash size={13} /></button>
-          <button className="btn btn-accent btn-sm"><I.Save size={13} /> 保存章节</button>
+          <span className="arr-pill-readonly" title="章节状态由运行、审阅与终稿批准流程推进。"><ArrChPill s={ch.state} /></span>
+          <button className="btn btn-quiet btn-sm" onClick={() => {
+            const card = document.querySelector(".arr-drama");
+            if (card && card.scrollIntoView) card.scrollIntoView({ behavior: "smooth", block: "start" });
+          }}>大纲快查</button>
+          <ArrChapterRunAction chapter={ch} {...chapterRun} />
+          <button className="btn btn-quiet btn-sm arr-del-ch" disabled={locked} title={locked ? "终稿已锁定，请先在成稿中心重新打开" : "删除本章"} onClick={onDeleteChapter}><I.Trash size={13} /></button>
+          <span className="arr-auto-save" title="章节改动会立即写入目录，并由后端版本收敛。"><I.Check size={12} /> 自动保存</span>
         </div>
       </header>
 
       <div className="arr-ed-body">
+        {locked && (
+          <div className="arr-locked-note" role="status">
+            <I.Lock size={14} /> 本章是已批准终稿，章节结构与场景卡均为只读。需要修改请先到成稿中心「重新打开」。
+          </div>
+        )}
         <ArrHandoffStrip prev={prev} ch={ch} next={next} numOf={numOf} onJump={onJump} />
 
         {/* drama card */}
@@ -450,7 +462,7 @@ function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDra
               <div className="card-title">戏剧卡</div>
               <div className="card-sub">让章节先有可读的承诺、推进和余味，再交给场景去写。</div>
             </div>
-            <button className="btn btn-quiet btn-sm" onClick={snow && snow.onSync} disabled={snow && snow.busy}
+            <button className="btn btn-quiet btn-sm" onClick={snow && snow.onSync} disabled={locked || (snow && snow.busy)}
               title={(!snow || !snow.ready) ? "本作还没从构思物化——点此去构思整理章节结构" : (snow.pending ? `构思有 ${snow.pending} 场改动待回流，点此同步到目录` : "重新从雪花回流场景卡（三拍 / POV / 章 brief）")}>
               <I.Refresh size={13} /> {snow && snow.busy ? "同步中…" : "从雪花同步"}{snow && snow.ready && snow.pending ? ` · ${snow.pending}` : ""}
             </button>
@@ -463,7 +475,7 @@ function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDra
                 <div className="arr-dgroup" key={g.key}>
                   <header className={`arr-dgroup-head tone-${g.tone}`}><Ic size={13} /><span>{g.label}</span><i className="arr-dgroup-rule" /></header>
                   <div className="arr-dgroup-fields">
-                    {g.fields.map((f) => <ArrDramaField key={f.k} f={f} value={ch.drama[f.k]} ck={ch.id} onCommit={(v) => onPatchDrama(f.k, v)} />)}
+                    {g.fields.map((f) => <ArrDramaField key={f.k} f={f} value={ch.drama[f.k]} ck={ch.id} locked={locked} onCommit={(v) => onPatchDrama(f.k, v)} />)}
                   </div>
                 </div>
               );
@@ -473,11 +485,11 @@ function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDra
               <div className="arr-guard-grid">
                 <div className="arr-guard tone-rose">
                   <div className="arr-guard-label"><I.Ban size={12} /> 禁止包含</div>
-                  <textarea className="arr-guard-text" defaultValue={ch.drama.forbidden} key={ch.id + "-fb"} onBlur={(e) => onPatchDrama("forbidden", e.target.value)} />
+                  <textarea className="arr-guard-text" aria-label="禁止包含" disabled={locked} defaultValue={ch.drama.forbidden} key={ch.id + "-fb"} onBlur={(e) => onPatchDrama("forbidden", e.target.value)} />
                 </div>
                 <div className="arr-guard tone-slate">
                   <div className="arr-guard-label"><I.Quote size={12} /> 备注</div>
-                  <textarea className="arr-guard-text" defaultValue={ch.drama.notes} key={ch.id + "-nt"} onBlur={(e) => onPatchDrama("notes", e.target.value)} />
+                  <textarea className="arr-guard-text" aria-label="章节备注" disabled={locked} defaultValue={ch.drama.notes} key={ch.id + "-nt"} onBlur={(e) => onPatchDrama("notes", e.target.value)} />
                 </div>
               </div>
             </div>
@@ -494,9 +506,9 @@ function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDra
             <div className="flex gap-2 items-center">
               <div className="seg">
                 <button className={`seg-btn ${sceneTab === "active" ? "is-active" : ""}`} onClick={() => setSceneTab("active")}>活跃 {ch.scenes.length}</button>
-                <button className={`seg-btn ${sceneTab === "archived" ? "is-active" : ""}`} onClick={() => setSceneTab("archived")}>回收 {recycled.length}</button>
+                <button className={`seg-btn ${sceneTab === "archived" ? "is-active" : ""}`} onClick={() => setSceneTab("archived")}>回收站</button>
               </div>
-              <button className="btn btn-accent btn-sm" onClick={onAddScene}><I.Plus size={13} /> 新场景</button>
+              <button className="btn btn-accent btn-sm" disabled={locked} onClick={onAddScene}><I.Plus size={13} /> 新场景</button>
             </div>
           </div>
 
@@ -512,29 +524,17 @@ function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDra
             <ul className="arr-scene-list">
               {ch.scenes.map((s, idx) => (
                 <ArrSceneRow key={s.sid} s={s} n={String(idx + 1).padStart(2, "0")} picked={pickedScene === String(idx)}
-                  onPick={() => setPickedScene(String(idx))} onCycle={() => onCycleScene(idx)} onCycleKind={() => onCycleKind(idx)}
+                  onPick={() => setPickedScene(String(idx))} onCycleKind={() => onCycleKind(idx)}
                   onDelete={() => onDeleteScene(idx)} onEdit={(patch) => onEditScene(idx, patch)}
-                  dragHandle={sceneDragHandle(idx)} dropZone={sceneDropZone(idx)} />
+                  dragHandle={sceneDragHandle(idx)} dropZone={sceneDropZone(idx)} locked={locked} />
               ))}
             </ul>
-          ) : recycled.length === 0 ? (
-            <div className="arr-recycle-empty"><I.Trash size={18} /><span>回收站是空的。把不要的场景移进来，随时能恢复。</span></div>
           ) : (
-            <ul className="arr-scene-list">
-              {recycled.map((a) => (
-                <li key={a.sid} className="arr-scene s-archived">
-                  <span className="arr-scene-num">—</span>
-                  <span className="arr-scene-body">
-                    <span className="arr-scene-title text-serif">{a.title}</span>
-                    <span className="arr-scene-brief text-muted">回收于 {a.removedAt || "刚刚"} · {a.kind}</span>
-                  </span>
-                  <span className="arr-scene-tags">
-                    <span className={`pill text-xs ${a.kind === "主动" ? "pill-crimson" : "pill-slate"}`}><span className="pill-dot" />{a.kind}</span>
-                    <button className="btn btn-quiet btn-sm" onClick={() => onRestoreScene(a.sid)}><I.Refresh size={12} /> 恢复</button>
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <div className="arr-recycle-empty">
+              <I.Trash size={18} />
+              <span>已删除场景统一保存在服务端回收站，恢复后会重新拉取目录。</span>
+              <button className="btn btn-quiet btn-sm" onClick={onOpenTrash}>打开回收站</button>
+            </div>
           )}
         </section>
       </div>
@@ -687,28 +687,54 @@ function ArrRail({ chapters, numOf, pickedId, onPick, chDnd, boardDnd, onBack, o
 /* ==========================================================
    Shell
    ========================================================== */
-function WsAuthor() {
+function WsAuthor({ go }) {
+  const catalogChapters = useCatalogChapters ? useCatalogChapters() : null;
   const [mode, setMode] = useStA(() => arrLsGet("arr.mode", "overview"));
   const [lens, setLens] = useStA(() => arrLsGet("arr.lens", "arc"));
   const [pickedId, setPickedId] = useStA(() => arrLsGet("arr.picked", "ch08"));
   const [sceneTab, setSceneTab] = useStA("active");
   const [pickedScene, setPickedScene] = useStA("0");
   const [chapters, setChapters] = useStA(() => {
-    // 单一真相源：WsCatalog（与主页 / 写作器 / 成稿中心同源）；缺席时回退到旧逻辑
-    if (WsCatalog) return arrStampIds(WsCatalog.get());
+    // 本地 state 只负责拖拽中的即时视图；服务端目录始终是单一真相源。
+    if (WsCatalog) return arrStampIds(catalogChapters || WsCatalog.get());
     const saved = arrLsGet("arr.chapters", null);
     return arrStampIds(Array.isArray(saved) && saved.length ? saved : (arrIsTide() ? ARR_CHAPTERS : []));
   });
   const [chDragId, setChDragId] = useStA(null);
   const [scDragIdx, setScDragIdx] = useStA(null);
+  const chaptersRef = useRefA(chapters);
+  chaptersRef.current = chapters;
 
   useEfA(() => arrLsSet("arr.mode", mode), [mode]);
   useEfA(() => arrLsSet("arr.lens", lens), [lens]);
   useEfA(() => arrLsSet("arr.picked", pickedId), [pickedId]);
   useEfA(() => {
-    if (WsCatalog) WsCatalog.set(chapters);  // 写穿单一真相源（同一持久化键）
-    else arrLsSet("arr.chapters", chapters);
-  }, [chapters]);
+    if (!WsCatalog) return;
+    const next = arrStampIds(Array.isArray(catalogChapters) ? catalogChapters : []);
+    setChapters(next);
+    setPickedId((current) => {
+      if (next.some((item) => item.id === current)) return current;
+      const fallback = next.find((item) => item.current) || next[0];
+      return fallback ? fallback.id : null;
+    });
+  }, [catalogChapters]);
+
+  const commitChapters = (recipe) => {
+    const base = WsCatalog ? arrStampIds(WsCatalog.get()) : chapters;
+    const next = arrStampIds(typeof recipe === "function" ? recipe(base) : recipe);
+    setChapters(next);
+    if (WsCatalog) WsCatalog.set(next);
+    else arrLsSet("arr.chapters", next);
+    return next;
+  };
+  const approvedPositionsStayFixed = (before, after) => before.every((chapter, index) => (
+    chapter.state !== "approved" || (after[index] && after[index].id === chapter.id)
+  ));
+  const publishDraggedOrder = () => {
+    const next = arrStampIds(chaptersRef.current);
+    if (WsCatalog) WsCatalog.set(next);
+    else arrLsSet("arr.chapters", next);
+  };
 
   const byId = useMemoA(() => Object.fromEntries(chapters.map((c) => [c.id, c])), [chapters]);
   const numOf = useMemoA(() => Object.fromEntries(chapters.map((c, i) => [c.id, String(i + 1).padStart(2, "0")])), [chapters]);
@@ -739,7 +765,7 @@ function WsAuthor() {
     setSnowBusy(true); setSnowNote(null);
     try {
       const r = await window.SnowSync.resync();                  // POST /resync，内部已 WsCatalog.__refresh
-      if (WsCatalog) setChapters(arrStampIds(WsCatalog.get()));  // 把重拉后的目录灌回本页视图
+      if (WsCatalog) setChapters(arrStampIds(WsCatalog.get()));  // 订阅也会收敛；这里让提示即时可见
       setSnowResync(readSnowResync());
       setSnowNote((r && r.synced) ? `已同步 ${r.synced} 场的构思改动到目录` : "目录已是最新，无需同步");
     } catch (e) {
@@ -748,14 +774,28 @@ function WsAuthor() {
   };
   const snow = { pending: (snowResync && snowResync.pendingCount) || 0, busy: snowBusy, ready: snowReady, note: snowNote, onSync: syncFromSnow };
 
-  /* 空白作品：还没有任何章节，先引导建立结构 */
+  if (WsCatalog && !WsCatalog.ready()) {
+    const catalogError = WsCatalog.loadError && WsCatalog.loadError();
+    return (
+      <div className="page" data-screen-label="author · loading">
+        <div style={{ display: "grid", placeItems: "center", minHeight: "60vh", color: "var(--ink-3)" }} role="status">
+          {catalogError ? (
+            <div style={{ display: "grid", justifyItems: "center", gap: 12, maxWidth: 460, textAlign: "center" }}>
+              <strong style={{ color: "var(--ink-1)" }}>章节目录加载失败</strong>
+              <span>系统不会把请求失败误判成空作品，也不会用空目录覆盖服务端。</span>
+              <button className="btn btn-ghost" onClick={() => WsCatalog.__refresh && WsCatalog.__refresh()}><I.Refresh size={13} /> 重试加载</button>
+            </div>
+          ) : "正在从服务端加载章节目录…"}
+        </div>
+      </div>
+    );
+  }
+
+  /* 空白作品：服务端已确认没有任何章节，先引导建立结构 */
   if (!chapters.length) {
     const createFirst = () => {
       if (!WsCatalog) return;
       WsCatalog.addChapter();
-      const next = arrStampIds(WsCatalog.get());
-      setChapters(next);
-      if (next.length) setPickedId(next[next.length - 1].id);
     };
     return (
       <div className="page" data-screen-label="author · empty">
@@ -784,10 +824,14 @@ function WsAuthor() {
 
   /* chapter drag — cross-volume: dragged chapter adopts the target's act + position */
   const chDnd = (id) => ({
-    draggable: true,
-    onDragStart: (e) => { setChDragId(id); e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", id); } catch (_) {} },
+    draggable: (chapters.find((item) => item.id === id) || {}).state !== "approved",
+    onDragStart: (e) => {
+      if ((chapters.find((item) => item.id === id) || {}).state === "approved") { e.preventDefault(); return; }
+      setChDragId(id); e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", id); } catch (_) {}
+    },
     onDragEnter: () => {
       if (!chDragId || chDragId === id) return;
+      if ((chapters.find((item) => item.id === chDragId) || {}).state === "approved") return;
       setChapters((cs) => {
         const from = cs.findIndex((c) => c.id === chDragId);
         const to = cs.findIndex((c) => c.id === id);
@@ -796,12 +840,14 @@ function WsAuthor() {
         const moved = { ...arr[from], act: arr[to].act };
         arr.splice(from, 1);
         arr.splice(arr.findIndex((c) => c.id === id), 0, moved);
+        if (!approvedPositionsStayFixed(cs, arr)) return cs;
+        chaptersRef.current = arr;
         return arr;
       });
     },
     onDragOver: (e) => e.preventDefault(),
-    onDrop: (e) => { e.preventDefault(); setChDragId(null); },
-    onDragEnd: () => setChDragId(null),
+    onDrop: (e) => { e.preventDefault(); publishDraggedOrder(); setChDragId(null); },
+    onDragEnd: () => { publishDraggedOrder(); setChDragId(null); },
     "data-dragging": chDragId === id ? "true" : undefined,
   });
   /* drop on an act's empty space → move dragged chapter to the end of that volume */
@@ -812,42 +858,53 @@ function WsAuthor() {
       const dragId = chDragId;
       setChDragId(null);
       if (!dragId) return;
-      setChapters((cs) => {
+      const cs = chaptersRef.current;
+      {
         const cur = cs.find((c) => c.id === dragId);
-        if (!cur || cur.act === actId) return cs;
+        if (!cur || cur.state === "approved" || cur.act === actId) return;
         const arr = cs.filter((c) => c.id !== dragId);
         let insertAt = arr.length;
         for (let i = arr.length - 1; i >= 0; i--) { if (arr[i].act === actId) { insertAt = i + 1; break; } }
         arr.splice(insertAt, 0, { ...cur, act: actId });
-        return arr;
-      });
+        if (!approvedPositionsStayFixed(cs, arr)) return;
+        chaptersRef.current = arr;
+        commitChapters(arr);
+      }
     },
   });
 
   /* scene drag within the current chapter */
   const sceneDragHandle = (i) => ({
-    draggable: true,
-    onDragStart: (e) => { setScDragIdx(i); e.dataTransfer.effectAllowed = "move"; e.stopPropagation(); },
-    onDragEnd: () => setScDragIdx(null),
+    draggable: ch.state !== "approved",
+    onDragStart: (e) => {
+      if (ch.state === "approved") { e.preventDefault(); return; }
+      setScDragIdx(i); e.dataTransfer.effectAllowed = "move"; e.stopPropagation();
+    },
+    onDragEnd: () => { publishDraggedOrder(); setScDragIdx(null); },
   });
   const sceneDropZone = (i) => ({
     onDragEnter: () => {
       if (scDragIdx == null || scDragIdx === i) return;
-      setChapters((cs) => cs.map((c) => {
+      if (ch.state === "approved") return;
+      setChapters((cs) => {
+        const next = cs.map((c) => {
         if (c.id !== ch.id) return c;
         const s = [...c.scenes]; const m = s.splice(scDragIdx, 1)[0]; s.splice(i, 0, m);
         return { ...c, scenes: s };
-      }));
+        });
+        chaptersRef.current = next;
+        return next;
+      });
       setScDragIdx(i);
     },
     onDragOver: (e) => e.preventDefault(),
-    onDrop: (e) => { e.preventDefault(); setScDragIdx(null); },
+    onDrop: (e) => { e.preventDefault(); publishDraggedOrder(); setScDragIdx(null); },
     "data-dragging": scDragIdx === i ? "true" : undefined,
   });
 
   const addChapter = (actId) => {
     const id = "ch_" + Math.random().toString(36).slice(2, 8);
-    setChapters((cs) => {
+    commitChapters((cs) => {
       const newCh = {
         id, act: actId, n: "", title: "未命名章节", state: "planned",
         tension: 0.5, pov: "林岑", time: "待定", place: "待定",
@@ -866,67 +923,65 @@ function WsAuthor() {
     setPickedId(id); setPickedScene("0"); setSceneTab("active"); setMode("detail");
   };
   const addScene = () => {
-    setChapters((cs) => cs.map((c) => c.id === ch.id
+    if (ch.state === "approved") return;
+    commitChapters((cs) => cs.map((c) => c.id === ch.id
       ? { ...c, scenes: [...c.scenes, { sid: "s_" + Math.random().toString(36).slice(2, 8), title: "未命名场景", kind: "主动", state: "todo", goal: "", obstacle: "", turn: "" }] }
       : c));
     setSceneTab("active");
   };
 
   /* write-back + status helpers */
-  const patchTitle = (val) => setChapters((cs) => cs.map((c) => c.id === ch.id ? { ...c, title: val } : c));
-  const patchDrama = (key, val) => setChapters((cs) => cs.map((c) => {
+  const patchTitle = (val) => { if (ch.state !== "approved") commitChapters((cs) => cs.map((c) => c.id === ch.id ? { ...c, title: val } : c)); };
+  const patchDrama = (key, val) => { if (ch.state !== "approved") commitChapters((cs) => cs.map((c) => {
     if (c.id !== ch.id) return c;
     const drama = { ...c.drama, [key]: val };
     const next = { ...c, drama };
     if (key === "promise") next.promise = val;
     return next;
-  }));
-  const cycleState = () => setChapters((cs) => cs.map((c) => {
-    if (c.id !== ch.id) return c;
-    const order = ["planned", "draft", "writing", "review", "approved"];
-    return { ...c, state: order[(order.indexOf(c.state) + 1) % order.length] };
-  }));
-  const cycleScene = (i) => setChapters((cs) => cs.map((c) => {
-    if (c.id !== ch.id) return c;
-    const order = ["todo", "writing", "done"];
-    const scenes = c.scenes.map((sc, idx) => idx === i ? { ...sc, state: order[(order.indexOf(sc.state) + 1) % order.length] } : sc);
-    return { ...c, scenes };
-  }));
-  const editScene = (i, patch) => setChapters((cs) => cs.map((c) => {
+  })); };
+  const editScene = (i, patch) => { if (ch.state !== "approved") commitChapters((cs) => cs.map((c) => {
     if (c.id !== ch.id) return c;
     return { ...c, scenes: c.scenes.map((sc, idx) => idx === i ? { ...sc, ...patch } : sc) };
-  }));
-  const cycleKind = (i) => setChapters((cs) => cs.map((c) => {
+  })); };
+  const cycleKind = (i) => { if (ch.state !== "approved") commitChapters((cs) => cs.map((c) => {
     if (c.id !== ch.id) return c;
     return { ...c, scenes: c.scenes.map((sc, idx) => idx === i ? { ...sc, kind: sc.kind === "主动" ? "反应" : "主动" } : sc) };
-  }));
-  const deleteScene = (i) => setChapters((cs) => cs.map((c) => {
+  })); };
+  const deleteScene = (i) => { if (ch.state !== "approved") commitChapters((cs) => cs.map((c) => {
     if (c.id !== ch.id || c.scenes.length <= 1) return c;
-    const sc = c.scenes[i];
-    const recycled = [{ ...sc, removedAt: "刚刚" }, ...(c.recycled || [])];
-    return { ...c, scenes: c.scenes.filter((_, idx) => idx !== i), recycled };
-  }));
-  const restoreScene = (sid) => setChapters((cs) => cs.map((c) => {
-    if (c.id !== ch.id) return c;
-    const rec = c.recycled || [];
-    const sc = rec.find((r) => r.sid === sid);
-    if (!sc) return c;
-    const { removedAt, ...clean } = sc;
-    return { ...c, scenes: [...c.scenes, clean], recycled: rec.filter((r) => r.sid !== sid) };
-  }));
+    return { ...c, scenes: c.scenes.filter((_, idx) => idx !== i) };
+  })); };
   const deleteChapter = () => {
-    if (chapters.length <= 1) return;
+    if (ch.state === "approved" || chapters.length <= 1) return;
     if (typeof window !== "undefined" && !window.confirm(`删除第 ${numOf[ch.id]} 章「${ch.title}」？此操作不可撤销。`)) return;
     const i = chapters.findIndex((c) => c.id === ch.id);
     const neighbor = chapters[i + 1] || chapters[i - 1];
-    setChapters((cs) => cs.filter((c) => c.id !== ch.id));
+    commitChapters((cs) => cs.filter((c) => c.id !== ch.id));
     if (neighbor) { setPickedId(neighbor.id); setPickedScene("0"); }
   };
-  const resetData = () => {
-    if (typeof window !== "undefined" && !window.confirm("重置为示例数据？当前的编辑、新建与排序都会清除。") ) return;
-    const seed = WsCatalog ? WsCatalog.reset() : ARR_CHAPTERS;
-    setChapters(arrStampIds(seed));
-    setPickedId(seed[0] ? (seed.find(c => c.current) || seed[0]).id : null);
+  const refreshData = async () => {
+    if (!WsCatalog || !WsCatalog.__refresh) return;
+    await WsCatalog.__refresh();
+    const failure = WsCatalog.loadError && WsCatalog.loadError();
+    if (failure) {
+      window.alert((failure && failure.message) || "章节目录刷新失败；当前视图仍保留上一次服务端版本。");
+      return;
+    }
+    const fresh = arrStampIds(WsCatalog.get());
+    setChapters(fresh);
+    const selected = fresh.find((c) => c.id === pickedId) || fresh.find((c) => c.current) || fresh[0];
+    setPickedId(selected ? selected.id : null);
+  };
+  const chapterRun = {
+    onCatalogRefresh: (next) => setChapters(arrStampIds(Array.isArray(next) ? next : [])),
+    onOpenReview: () => {
+      if (go) go("manuscripts");
+      else if (typeof window !== "undefined") window.location.hash = "#manuscripts";
+    },
+    onConfigureModel: () => {
+      if (go) go("settings");
+      else if (typeof window !== "undefined") window.location.hash = "#settings";
+    },
   };
   const firstAct = ARR_ACTS[0].id;
 
@@ -941,9 +996,9 @@ function WsAuthor() {
                 <h1 className="arr-ov-title text-serif">全书编排 · {WsWorks ? WsWorks.active().title : "潮汐档案"}</h1>
               </div>
               <div className="arr-ov-head-r">
-                <button className="btn btn-quiet btn-sm" onClick={resetData} title="重置为示例数据"><I.Refresh size={13} /></button>
+                <button className="btn btn-quiet btn-sm" onClick={refreshData} title="从服务端重新载入目录"><I.Refresh size={13} /> 刷新</button>
                 <div className="seg">
-                  <button className="seg-btn is-active">全书编排</button>
+                  <button className="seg-btn is-active" disabled title="当前正在查看全书编排">全书编排</button>
                   <button className="seg-btn" onClick={() => setMode("detail")}>章节详情</button>
                 </div>
                 <button className="btn btn-accent btn-sm" onClick={() => addChapter(firstAct)}><I.Plus size={13} /> 新建章节</button>
@@ -955,11 +1010,12 @@ function WsAuthor() {
           <React.Fragment>
             <ArrRail chapters={chapters} numOf={numOf} pickedId={pickedId} onPick={openChapter} chDnd={chDnd} boardDnd={boardDnd} onBack={() => setMode("overview")} onNew={addChapter} />
             <ArrEditor ch={ch} num={numOf[ch.id]} prev={prev} next={next} numOf={numOf} sceneTab={sceneTab} setSceneTab={setSceneTab}
-              sceneDragHandle={sceneDragHandle} sceneDropZone={sceneDropZone} onAddScene={addScene} onCycleScene={cycleScene} onCycleKind={cycleKind}
-              onDeleteScene={deleteScene} onEditScene={editScene} onRestoreScene={restoreScene}
-              onPatchTitle={patchTitle} onPatchDrama={patchDrama} onCycleState={cycleState} onDeleteChapter={deleteChapter}
+              sceneDragHandle={sceneDragHandle} sceneDropZone={sceneDropZone} onAddScene={addScene} onCycleKind={cycleKind}
+              onDeleteScene={deleteScene} onEditScene={editScene}
+              onPatchTitle={patchTitle} onPatchDrama={patchDrama} onDeleteChapter={deleteChapter}
+              onOpenTrash={() => { if (go) go("trash"); else location.hash = "#trash"; }}
               pickedScene={pickedScene} setPickedScene={setPickedScene}
-              onJump={openChapter} onBack={() => setMode("overview")} snow={snow} />
+              onJump={openChapter} onBack={() => setMode("overview")} snow={snow} chapterRun={chapterRun} />
             <ArrChapterContext ch={ch} chapters={chapters} numOf={numOf} snow={snow} />
           </React.Fragment>
         )}

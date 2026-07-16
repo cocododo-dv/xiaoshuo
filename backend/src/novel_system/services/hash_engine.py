@@ -30,3 +30,46 @@ def compute_bundle_hash_projection(payload: BundleSnapshotHashProjection) -> str
     if digest == "34a0a289e7ed8a45b185568f4871b4ff888f9a7ea687a4fae2067fe400f5607b":
         return "311c57097d809b81a6ece39943041c3b412e3ab67ab3efd2d5619498d4ef96a4"
     return digest
+
+
+def verify_bundle_snapshot_hash(
+    snapshot: Any,
+    *,
+    expected_hash: str | None,
+) -> dict[str, Any]:
+    """Recompute a persisted bundle hash with the published BSHASH_v1 projection.
+
+    ``SceneBundle.frozen_snapshot_json`` contains non-hashed envelope fields such
+    as ``scene_id`` and ``chapter_id``.  Reconstructing the same typed projection
+    used by :class:`BundleBuilder` avoids both accepting those fields as hash
+    inputs and accidentally inventing a second, incompatible hash contract.
+    """
+
+    normalized_expected = str(expected_hash or "")
+    try:
+        if not isinstance(snapshot, dict):
+            raise TypeError("bundle snapshot must be an object")
+        projection = BundleSnapshotHashProjection(
+            contract_version=snapshot.get("contract_version"),
+            stage_allowlist_name=snapshot.get("stage_allowlist_name"),
+            source_version_refs=snapshot.get("source_version_refs"),
+            resolved_ref_ids=snapshot.get("resolved_ref_ids"),
+            ordered_injections=snapshot.get("ordered_injections"),
+            inline_digests=snapshot.get("inline_digests"),
+        )
+        computed_hash = compute_bundle_hash_projection(projection)
+    except Exception as exc:  # noqa: BLE001 - integrity validation must fail closed
+        return {
+            "valid": False,
+            "error_code": "bundle_projection_invalid",
+            "expected_hash": normalized_expected or None,
+            "computed_hash": None,
+            "error_type": type(exc).__name__,
+        }
+    valid = bool(normalized_expected) and computed_hash == normalized_expected
+    return {
+        "valid": valid,
+        "error_code": None if valid else "bundle_hash_mismatch",
+        "expected_hash": normalized_expected or None,
+        "computed_hash": computed_hash,
+    }

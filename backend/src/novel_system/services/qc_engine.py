@@ -599,6 +599,11 @@ def _theme_relevance_issues(scene: SceneCard) -> list[dict[str, Any]]:
         finally:
             session.close()
     except Exception:
+        _LOGGER.warning(
+            "Theme relevance diagnostic degraded scene_id=%s",
+            scene.scene_id,
+            exc_info=True,
+        )
         return []
 
 
@@ -656,13 +661,19 @@ def _tension_curve_issues(scene: SceneCard) -> list[dict[str, Any]]:
         finally:
             session.close()
     except Exception:
+        _LOGGER.warning(
+            "Tension curve diagnostic degraded scene_id=%s chapter_id=%s",
+            scene.scene_id,
+            scene.chapter_id,
+            exc_info=True,
+        )
         return []
 
 
 def _event_log_consistency_issues(scene: SceneCard, content: str) -> list[dict[str, Any]]:
     """Blueprint §15/§13 Step 6: check hard facts from event log against generated text."""
     try:
-        from novel_system.services.narrative_event_log import NarrativeEventLog, check_spec_constraints
+        from novel_system.services.narrative_event_log import NarrativeEventLog
         from novel_system.db.session import SessionLocal
         session = SessionLocal()
         try:
@@ -708,8 +719,16 @@ def _event_log_consistency_issues(scene: SceneCard, content: str) -> list[dict[s
             return issues
         finally:
             session.close()
-    except Exception:
-        return []
+    except Exception as exc:  # noqa: BLE001 - surface availability without leaking details
+        return [
+            {
+                "issue_key": "continuity_validation_unavailable",
+                "severity": "medium",
+                "message": "Narrative continuity validation was unavailable; review this scene manually.",
+                "source": "system_diagnostic",
+                "details": {"error_type": type(exc).__name__, "retryable": True},
+            }
+        ]
 
 
 def _dedupe_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:

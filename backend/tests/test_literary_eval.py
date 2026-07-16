@@ -143,7 +143,7 @@ def test_score_literary_case_rewards_required_terms_style_cues_and_length() -> N
         "It was somehow meaningful. In the end, everything changed forever.",
     )
 
-    assert score.score > 0.9
+    assert 0.8 <= score.score <= 0.89
     assert score.passed is True
     assert score.dimensions["required_terms"] == 1.0
     assert score.dimensions["banned_terms"] == 1.0
@@ -160,6 +160,41 @@ def test_score_literary_case_rewards_required_terms_style_cues_and_length() -> N
     assert "contains expository dialogue term: as you know" in weak_score.issues
     assert "missing choice pressure cue: choose" in weak_score.issues
     assert "contains summary ending term: everything changed forever" in weak_score.issues
+
+
+def test_keyword_bundle_cannot_receive_a_perfect_or_passing_literary_verdict() -> None:
+    suite = load_literary_eval_suite(
+        {
+            "suite_id": "anti_keyword_gaming",
+            "cases": [
+                {
+                    "case_id": "word_bag",
+                    "title": "Keyword bundle",
+                    "prompt": "Write a complete scene about a costly choice.",
+                    "required_terms": ["必须"],
+                    "style_cues": ["选择"],
+                    "character_contradiction_cues": ["她"],
+                    "dialogue_edge_cues": ["付出"],
+                    "image_necessity_cues": ["门"],
+                    "ending_drive_cues": ["推开"],
+                    "choice_pressure_cues": ["代价"],
+                    "image_variety_cues": ["门"],
+                    "min_chars": 1,
+                    "max_chars": 100,
+                }
+            ],
+        }
+    )
+
+    score = score_literary_case(suite.cases[0], "必须选择，付出代价，她推开门。")
+
+    assert all(value == 1.0 for value in score.dimensions.values())
+    assert score.score < 0.6
+    assert score.passed is False
+    assert score.automated_assessment["human_judgment_required"] is True
+    assert score.automated_assessment["policy_evidence_eligible"] is False
+    assert score.automated_assessment["scope"] == "diagnostic_floor_only"
+    assert any("insufficient prose evidence" in issue for issue in score.issues)
 
 
 def test_score_literary_case_checks_deep_revision_signals() -> None:
@@ -255,7 +290,10 @@ def test_literary_eval_runner_uses_generator_and_returns_summary(tmp_path: Path)
 
     def fake_generator(case):
         if case.case_id == "gate_scene":
-            return "At the gate, her gesture hid the letter until the hinge stopped singing."
+            return (
+                "At the gate, her gesture hid the letter until the hinge stopped singing. "
+                "She pressed it into his hand. Neither of them stepped away from the lock."
+            )
         return "It was a dream."
 
     output_path = tmp_path / "literary_eval.json"
@@ -333,9 +371,12 @@ def test_llm_literary_case_generator_builds_json_request_with_rubric_context(
     assert generated["llm_call_id"].startswith("llm_eval_")
     assert client.requests[0].response_format == "json_object"
     assert client.requests[0].temperature == 0.75
-    assert "required terms: red envelope; clocktower" in client.requests[0].messages[1]["content"]
-    assert "style cues: short sentences; pressure" in client.requests[0].messages[1]["content"]
-    assert "banned terms: woke up" in client.requests[0].messages[1]["content"]
+    live_prompt = client.requests[0].messages[1]["content"]
+    assert "required story elements: red envelope; clocktower" in live_prompt
+    assert "style cues:" not in live_prompt
+    assert "banned terms:" not in live_prompt
+    assert "choice pressure cues:" not in live_prompt
+    assert "scoring rubric is hidden" in live_prompt
     call = session.query(LlmCall).one()
     attempt = session.query(LlmCallAttempt).one()
     assert call.llm_call_id == generated["llm_call_id"]
@@ -501,7 +542,10 @@ def test_baseline_literary_case_generator_scores_suite_without_live_llm() -> Non
                     "case_id": "letter_gate",
                     "title": "Letter gate",
                     "prompt": "Write a gate scene.",
-                    "baseline_text": "The gate held. Her gesture hid the letter while tension tightened the hinge.",
+                    "baseline_text": (
+                        "The gate held. Her gesture hid the letter while tension tightened the hinge. "
+                        "She pushed it under the iron latch, and he stepped back without answering."
+                    ),
                     "required_terms": ["gate", "letter"],
                     "style_cues": ["gesture", "tension"],
                     "banned_terms": ["dream"],
@@ -514,7 +558,10 @@ def test_baseline_literary_case_generator_scores_suite_without_live_llm() -> Non
 
     result = LiteraryEvalRunner(suite, generator=BaselineLiteraryCaseGenerator()).run()
 
-    assert suite.cases[0].baseline_text == "The gate held. Her gesture hid the letter while tension tightened the hinge."
+    assert suite.cases[0].baseline_text == (
+        "The gate held. Her gesture hid the letter while tension tightened the hinge. "
+        "She pushed it under the iron latch, and he stepped back without answering."
+    )
     assert result["summary"]["passed_count"] == 1
     assert result["cases"][0]["generation"] == {"mode": "baseline_text"}
 
@@ -585,7 +632,7 @@ cases:
   - case_id: gate_scene
     title: Gate scene
     prompt: Write a gate scene.
-    baseline_text: The gate held the letter in tension.
+    baseline_text: The gate held the letter in tension. She pressed it under the latch. The guard stepped back without answering.
     required_terms: ["gate", "letter"]
     style_cues: ["tension"]
     banned_terms: ["dream"]
@@ -677,8 +724,13 @@ cases:
                 request_id="provider_cli_live",
                 provider="openai_compatible",
                 model=request.model,
-                text='{"scene_text": "The gate held."}',
-                structured_output={"scene_text": "The gate held."},
+                text='{"scene_text": "The gate held. She pressed the letter under its latch. The guard stepped back without answering, while the hinge kept scraping in the wind."}',
+                structured_output={
+                    "scene_text": (
+                        "The gate held. She pressed the letter under its latch. "
+                        "The guard stepped back without answering, while the hinge kept scraping in the wind."
+                    )
+                },
                 response_format=request.response_format,
                 raw_response={},
                 usage={"input_tokens": 4, "output_tokens": 3, "total_tokens": 7},

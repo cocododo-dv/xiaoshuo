@@ -200,10 +200,10 @@ function WsLibrary({ go }) {
             <div className="lib2-stat-n">{health.linksN}</div>
             <div className="lib2-stat-k">交叉关联</div>
           </button>
-          <button className="lib2-stat" title="被正文章节引用的档案数">
+          <div className="lib2-stat" role="status" title="被正文章节引用的档案数">
             <div className="lib2-stat-n">{health.cited}</div>
             <div className="lib2-stat-k">被正文引用</div>
-          </button>
+          </div>
           <button className="lib2-stat lib2-stat-accent" onClick={() => { setVmode("files"); goOverview(); }} title="查看待处理队列">
             <div className="lib2-stat-n">{health.buckets.pending + health.buckets.active}</div>
             <div className="lib2-stat-k">待你处理</div>
@@ -537,7 +537,7 @@ function Dossier({ entry: e, conns, byId, onNav, go, onEdit, onDelete, onAction,
 function DossierAction({ entry: e, onAction }) {
   const act = LIB_nextAction(e);
   if (!act) {
-    if (!e.state) return <button className="btn btn-primary btn-sm"><I.Eye size={13} /> 展开全文</button>;
+    if (!e.state) return <span className="btn btn-primary btn-sm" aria-label="全文已展开"><I.Eye size={13} /> 全文已展开</span>;
     return null;
   }
   const Ic = I[act.icon] || I.Check;

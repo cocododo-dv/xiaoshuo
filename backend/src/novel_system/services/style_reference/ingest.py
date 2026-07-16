@@ -21,6 +21,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +54,109 @@ from novel_system.services.style_reference.text_utils import (
     normalize_text,
     split_paragraphs,
 )
+
+
+MAX_REFERENCE_BOOK_BYTES = 10 * 1024 * 1024
+_REFERENCE_BOOK_SUFFIXES = {".txt", ".md", ".markdown"}
+
+
+def _is_link_or_reparse_point(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(os.path, "isjunction", None)
+        if is_junction is not None and is_junction(path):
+            return True
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        return bool(reparse_flag and attributes & reparse_flag)
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def _contains_link_or_reparse_component(path: Path) -> bool:
+    current = path
+    while True:
+        if _is_link_or_reparse_point(current):
+            return True
+        if current.parent == current:
+            return False
+        current = current.parent
+
+
+def _resolve_allowed_import_path(file_path: str | Path) -> Path:
+    from novel_system.settings import get_settings
+
+    path = Path(file_path).expanduser()
+    if path.suffix.lower() not in _REFERENCE_BOOK_SUFFIXES:
+        raise DomainError(
+            "STYLE_REFERENCE_BOOK_FORMAT_UNSUPPORTED",
+            "only .txt / .md / .markdown reference books can be imported by path",
+            status_code=400,
+        )
+
+    configured_roots = get_settings(
+        include_runtime_config=False
+    ).style_reference_import_roots
+    if not configured_roots:
+        raise DomainError(
+            "STYLE_REFERENCE_PATH_IMPORT_DISABLED",
+            "server-side path import is disabled; use file upload or configure an allowed import root",
+            status_code=403,
+        )
+
+    candidate = path if path.is_absolute() else Path.cwd() / path
+    if _contains_link_or_reparse_component(candidate):
+        raise DomainError(
+            "STYLE_REFERENCE_BOOK_PATH_LINK_FORBIDDEN",
+            "symbolic links and reparse points are not allowed for path imports",
+            status_code=400,
+        )
+    try:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise DomainError(
+            "STYLE_REFERENCE_BOOK_PATH_NOT_FOUND",
+            "reference book path does not exist",
+            status_code=404,
+        ) from exc
+    except OSError as exc:
+        raise DomainError(
+            "STYLE_REFERENCE_BOOK_PATH_INVALID",
+            "reference book path could not be resolved",
+            status_code=400,
+        ) from exc
+
+    allowed_roots: list[Path] = []
+    for configured_root in configured_roots:
+        raw_root = configured_root.expanduser()
+        if _contains_link_or_reparse_component(raw_root):
+            continue
+        try:
+            root = raw_root.resolve(strict=True)
+        except (FileNotFoundError, OSError):
+            continue
+        if root.is_dir():
+            allowed_roots.append(root)
+    if not allowed_roots:
+        raise DomainError(
+            "STYLE_REFERENCE_IMPORT_ROOT_INVALID",
+            "no configured style-reference import root is available",
+            status_code=503,
+        )
+    if not any(resolved.is_relative_to(root) for root in allowed_roots):
+        raise DomainError(
+            "STYLE_REFERENCE_BOOK_PATH_FORBIDDEN",
+            "reference book path is outside the configured import roots",
+            status_code=403,
+        )
+    if not resolved.is_file():
+        raise DomainError(
+            "STYLE_REFERENCE_BOOK_PATH_INVALID",
+            "reference book path must point to a regular file",
+            status_code=400,
+        )
+    return resolved
 
 
 def _normalize_rights_declaration(
@@ -164,7 +269,7 @@ class IngestService:
         rights_declaration: dict[str, Any] | None = None,
         idempotency_key: str | None = None,  # noqa: ARG002 (预留 PR-4 用)
     ) -> IngestResult:
-        path = Path(file_path)
+        path = _resolve_allowed_import_path(file_path)
         # 服务端路径导入只允许纯文本参考书后缀。这个端点按任意路径读服务器文件,
         # 不加白名单时可把 /etc/passwd、.env、*.db 等读进 paragraphs 表并经 API
         # 回读——收窄为与 upload 相同的文本格式(且 path 模式**必须**有后缀,
@@ -182,7 +287,14 @@ class IngestService:
                 f"reference book path does not exist: {path}",
                 status_code=404,
             )
-        raw = path.read_bytes()
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_REFERENCE_BOOK_BYTES + 1)
+        if len(raw) > MAX_REFERENCE_BOOK_BYTES:
+            raise DomainError(
+                "STYLE_REFERENCE_UPLOAD_TOO_LARGE",
+                f"reference book exceeds {MAX_REFERENCE_BOOK_BYTES // (1024 * 1024)}MB limit",
+                status_code=413,
+            )
         return self._ingest_bytes(
             raw_bytes=raw,
             source_kind="path",

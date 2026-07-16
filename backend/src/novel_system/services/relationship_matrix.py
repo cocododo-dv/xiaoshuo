@@ -12,6 +12,7 @@ Live info-asymmetry data is merged from NarrativeEventLog at query time.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -20,6 +21,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import WorkProfile
+
+
+_LOGGER = logging.getLogger(__name__)
 
 RELATIONSHIP_TYPES = (
     "ally", "rival", "mentor", "student", "lover",
@@ -263,6 +267,12 @@ class RelationshipMatrixService:
                 knowledge[char_id] = {f"{f.fact_key}:{f.fact_value}" for f in facts}
             return knowledge
         except Exception:
+            _LOGGER.warning(
+                "Relationship knowledge projection degraded project_id=%s scene_id=%s",
+                project_id,
+                scene_id,
+                exc_info=True,
+            )
             return {}
 
     @staticmethod

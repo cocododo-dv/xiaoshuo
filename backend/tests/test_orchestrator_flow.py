@@ -140,6 +140,9 @@ def test_run_full_scene_archives_memory_and_updates_status(client, session) -> N
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["scene_status"] == "archived"
+    assert data["safe_to_archive"] is True
+    assert isinstance(data["literary_warnings_unresolved"], bool)
+    assert data["author_confirmed_final"] is False
     assert data["current_bundle_id"]
     assert data["current_final_scene_row_id"]
     final_scene = session.get(FinalScene, data["current_final_scene_row_id"])
@@ -165,6 +168,16 @@ def test_run_full_scene_archives_memory_and_updates_status(client, session) -> N
         "created_at": workbench_data["generation_summary"]["created_at"],
     }
     assert workbench_data["near_final_summary"]["near_final_status"] == "near_final_ready"
+    assert workbench_data["near_final_summary"]["safe_to_archive"] is True
+    assert isinstance(
+        workbench_data["near_final_summary"]["literary_warnings_unresolved"],
+        bool,
+    )
+    assert workbench_data["near_final_summary"]["author_confirmed_final"] is False
+    independence = workbench_data["near_final_summary"]["judge_independence"]
+    assert independence["basis"] in {"observed_calls", "config_routing"}
+    assert "correlated_judge" in independence
+    assert "independence_status" in independence
     assert workbench_data["hard_qc_summary"] == {
         "qc_report_id": workbench_data["hard_qc_summary"]["qc_report_id"],
         "qc_type": "hard_qc",

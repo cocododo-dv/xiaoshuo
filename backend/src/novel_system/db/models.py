@@ -1122,8 +1122,16 @@ class AuthorPreferenceProfile(Base):
     __tablename__ = "author_preference_profiles"
     __table_args__ = (
         CheckConstraint(
+            "scope_type IN ('global','genre','project','chapter')",
+            name="ck_author_preference_profiles_scope_type",
+        ),
+        CheckConstraint(
             "status IN ('draft','approved','rejected','superseded')",
             name="ck_author_preference_profiles_status",
+        ),
+        CheckConstraint(
+            "runtime_eligible IN (0,1)",
+            name="ck_author_preference_profiles_runtime_eligible",
         ),
     )
 
@@ -1511,6 +1519,18 @@ class ChapterRunJob(Base):
     finished_at: Mapped[str | None] = mapped_column(String, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String, nullable=True)
     error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class BackgroundRecoveryLease(Base):
+    """Short database lease that elects one startup recovery scanner."""
+
+    __tablename__ = "background_recovery_leases"
+
+    lease_key: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String)
+    lease_expires_at: Mapped[str] = mapped_column(String)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
@@ -2363,13 +2383,24 @@ class StyleReferenceRun(Base):
     __tablename__ = "style_reference_runs"
     __table_args__ = (
         Index("ix_style_reference_runs_book_status", "book_id", "status"),
+        Index("ix_style_reference_runs_dispatch_state", "dispatch_state"),
     )
 
     run_id: Mapped[str] = mapped_column(String, primary_key=True)
     book_id: Mapped[str] = mapped_column(ForeignKey("style_reference_books.book_id"))
     status: Mapped[str] = mapped_column(String, default="pending")
     phase: Mapped[str] = mapped_column(String, default="ingest")
+    # ``status`` describes the domain run while ``dispatch_state`` describes
+    # durable background ownership.  Keeping them separate lets startup
+    # recovery re-dispatch work that never started without pretending that a
+    # partially executed extraction can be resumed safely.
+    dispatch_state: Mapped[str] = mapped_column(String, default="completed")
+    requested_layers_json: Mapped[list[str]] = mapped_column(JSON, default=list)
     coverage_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    heartbeat_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retryable: Mapped[bool] = mapped_column(Boolean, default=False)
     started_at: Mapped[str | None] = mapped_column(String, nullable=True)
     finished_at: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
@@ -2559,6 +2590,10 @@ class StyleReferenceValidationReport(Base):
             "ix_style_reference_validation_reports_verdict",
             "verdict",
         ),
+        Index(
+            "ix_style_reference_validation_reports_status",
+            "status",
+        ),
     )
 
     report_id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -2566,6 +2601,13 @@ class StyleReferenceValidationReport(Base):
     target_kind: Mapped[str] = mapped_column(String)
     target_ref_id: Mapped[str | None] = mapped_column(String, nullable=True)
     verdict: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="completed")
+    error_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retryable: Mapped[bool] = mapped_column(Boolean, default=False)
+    started_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    heartbeat_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    finished_at: Mapped[str | None] = mapped_column(String, nullable=True)
     quantitative_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     semantic_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     plagiarism_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

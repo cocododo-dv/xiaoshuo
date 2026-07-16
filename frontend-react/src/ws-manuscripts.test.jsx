@@ -89,6 +89,24 @@ describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
     expect(body.scenes[0].sceneId).toBe("s1");
     expect(body.scenes[0].paras).toEqual(["潮水退去，她看清了闸门上的名字。"]);
     expect(body.scenes[0].live).toBe(true);
+    expect(mod.WsManuStore.snapshot("c1").status).toBe("ready");
+  });
+
+  it("显式区分 idle / loading / ready，不用 null 猜测加载阶段", async () => {
+    const client = await import("./lib/client.js");
+    installApiRouter(client);
+    let resolveDetail;
+    client.apiGet.mockReturnValueOnce(new Promise(resolve => { resolveDetail = resolve; }));
+    const mod = await import("./ws-manuscripts-store.jsx");
+
+    expect(mod.WsManuStore.snapshot("c1")).toEqual({ status: "idle", body: null, error: null });
+    const pending = mod.WsManuStore.refresh("c1");
+    expect(mod.WsManuStore.snapshot("c1")).toEqual({ status: "loading", body: null, error: null });
+
+    resolveDetail(ARCHIVED_DETAIL);
+    await pending;
+    expect(mod.WsManuStore.snapshot("c1").status).toBe("ready");
+    expect(mod.WsManuStore.snapshot("c1").body.scenes[0].live).toBe(true);
   });
 
   it("aggregate 由成稿中心触发 final aggregate，并在成功后刷新同章正文", async () => {
@@ -126,10 +144,12 @@ describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
     expect(body.scenes[0].paras).toEqual([]);
   });
 
-  it("detail 拉取失败：body 返回 null（视图显示待生成，不炸）", async () => {
+  it("detail 拉取失败：进入 error 并保留服务端错误，body 不伪造正文", async () => {
     const { mod } = await loadStore({});
     await mod.WsManuStore.refresh("c1");
     expect(mod.WsManuStore.body("c1")).toBeNull();
+    expect(mod.WsManuStore.snapshot("c1").status).toBe("error");
+    expect(mod.WsManuStore.snapshot("c1").error.message).toContain("not found");
   });
 
   it("计划中章节一旦有归档场景，也必须进入成稿中心以提供首次聚合入口", async () => {
@@ -145,5 +165,39 @@ describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
       scenes: [{ state: "planned" }],
     })).toBe(false);
     expect(mod.manuscriptDisplayState("planned")).toBe("plan");
+  });
+
+  it("送审与退回等待目录服务端确认，不做本地假流转", async () => {
+    const { mod, client } = await loadStore();
+
+    await mod.WsManuStore.setReviewState("p1", "c1", "review");
+    await mod.WsManuStore.setReviewState("p1", "c1", "draft");
+
+    expect(client.apiPatch).toHaveBeenNthCalledWith(1, "/api/v2/projects/p1/catalog/chapters/c1", { state: "review" });
+    expect(client.apiPatch).toHaveBeenNthCalledWith(2, "/api/v2/projects/p1/catalog/chapters/c1", { state: "draft" });
+    await expect(mod.WsManuStore.setReviewState("p1", "c1", "approved")).rejects.toThrow("审阅状态无效");
+  });
+
+  it("批准终稿严格按通读确认 → 项目批准两步调用", async () => {
+    const { mod, client } = await loadStore();
+    client.apiPost.mockResolvedValue({ project: { status: "chapter_ready" }, approved_chapter_id: "c1" });
+
+    await mod.WsManuStore.confirmRead("p1", "c1", "已核对人物与时间线");
+    await mod.WsManuStore.approveFinal("p1", "c1", "下一章承接盐钟线索");
+
+    expect(client.apiPost).toHaveBeenNthCalledWith(1, "/api/v1/projects/p1/chapters/c1/read-confirm", { note: "已核对人物与时间线" });
+    expect(client.apiPost).toHaveBeenNthCalledWith(2, "/api/v1/projects/p1/chapters/c1/approve-final", { revision_notes: "下一章承接盐钟线索" });
+  });
+
+  it("重新打开终稿必须给出理由并调用项目级审计端点", async () => {
+    const { mod, client } = await loadStore();
+    await expect(mod.WsManuStore.reopenFinal("p1", "c1", "  ")).rejects.toThrow("请填写");
+
+    await mod.WsManuStore.reopenFinal("p1", "c1", "需要修正第三场的时间线");
+
+    expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v1/projects/p1/chapters/c1/reopen-final",
+      { reason: "需要修正第三场的时间线" },
+    );
   });
 });

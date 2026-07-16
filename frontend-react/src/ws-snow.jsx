@@ -3,6 +3,7 @@ import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { ControlTower } from "./ct-app.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
+import { onRovingTabKeyDown } from "./a11y-tabs.js";
 
 /* global React, I */
 /* ==========================================================
@@ -256,6 +257,29 @@ function s2MaterializeApply(preview) {
   });
   WsCatalog.set(next);
   return { newCh, newSc, skipSc };
+}
+
+/* 单一「大纲 → 章节目录」采用入口。
+   顶部主按钮与 07 长篇大纲共用这段契约，避免一个只切演示页签、另一个才真正物化。
+   ready 时由 WsCatalog 走后端 materialize；未 ready 时走带场景的本地确定性降级。 */
+async function s2AdoptOutline(chapters, { scaffolds = null, confirmFn = (message) => window.confirm(message) } = {}) {
+  if (!WsCatalog) throw new Error("章节目录尚未就绪，请稍后重试。");
+  const adoptable = (chapters || []).filter(c => (c.title || "").trim() && !c.title.includes("待补"));
+  if (!adoptable.length) throw new Error("07 长篇大纲还没有可采用的章节，请先补全至少一个章节标题。");
+  const existing = WsCatalog.get().length;
+  const ready = !!(window.SnowSync && window.SnowSync.readyToMaterialize && window.SnowSync.readyToMaterialize());
+  const preview = !ready && scaffolds ? s2MaterializePreview(scaffolds) : null;
+  const pathNote = ready
+    ? "构思闸门已全过：走后端物化主路径——章、场、三拍一起落库，之后构思改动可一键回流同步。"
+    : preview && preview.ok
+      ? `构思闸门还没全过：采用本地确定性路径——${preview.total} 场会按脊柱锚点写入章节，其中 ${preview.planned} 场带完整规划。`
+      : `构思闸门还没全过，且当前还不能生成场景预览（${(preview && preview.reason) || "场景规划尚未就绪"}）；本次会先建立可用章节，之后可再次物化补齐场景。`;
+  const accepted = confirmFn(
+    `把大纲中的 ${adoptable.length} 章并入目录？（同名章自动跳过${existing ? `；目录现有 ${existing} 章` : ""}）\n\n${pathNote}`,
+  );
+  if (!accepted) return { cancelled: true, adopted: 0, ready, adoptable };
+  const adopted = await WsCatalog.adoptOutline(adoptable, scaffolds);
+  return { cancelled: false, adopted: Number(adopted) || 0, ready, adoptable };
 }
 
 /* 物化后回查：预览里的某一场在目录里的真实 sid（写正文深链用） */
@@ -977,6 +1001,11 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const [history, setHistory] = useSS(() => saved.history || []);
   const sigRef = useSR(null);
   const [savedAt, setSavedAt] = useSS(saved._t || null);
+  const snowWorkId = String(myKey || "").split("::")[1] || "";
+  const [syncState, setSyncState] = useSS(() => {
+    try { return (window.SnowSync && window.SnowSync.syncState && window.SnowSync.syncState(snowWorkId)) || { phase: "idle", error: null }; } catch (e) { return { phase: "idle", error: null }; }
+  });
+  const [syncRetryBusy, setSyncRetryBusy] = useSS(false);
   const [toast, setToast] = useSS(null);
   const [importOpen, setImportOpen] = useSS(false);
   const [importText, setImportText] = useSS("");
@@ -993,6 +1022,16 @@ function WsSnowflake({ go, initialStep, onOverview }) {
      （hydrate 全量 + 每次保存后 PATCH 回包增量），与「实时自评」的本地正则估算区分展示 */
   const [beHealth, setBeHealth] = useSS(() => { try { return (window.SnowSync && window.SnowSync.health()) || {}; } catch (e) { return {}; } });
   useSE(() => {
+    const refresh = (event) => {
+      const detail = (event && event.detail) || {};
+      if (detail.workId && detail.workId !== snowWorkId) return;
+      try { setSyncState((window.SnowSync && window.SnowSync.syncState && window.SnowSync.syncState(snowWorkId)) || detail.state || { phase: "idle", error: null }); } catch (e) {}
+    };
+    window.addEventListener("ws:snow-sync-state", refresh);
+    window.addEventListener("ws:work-changed", refresh);
+    return () => { window.removeEventListener("ws:snow-sync-state", refresh); window.removeEventListener("ws:work-changed", refresh); };
+  }, [snowWorkId]);
+  useSE(() => {
     const refresh = () => { try { setBeHealth((window.SnowSync && window.SnowSync.health()) || {}); } catch (e) {} };
     window.addEventListener("ws:snow-health", refresh);
     window.addEventListener("ws:snow-hydrated", refresh);
@@ -1003,6 +1042,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
      pendingCount>0 时顶部横幅给一键「同步到目录」——不同步，写作台/AI 起草台拿到的是旧三拍 */
   const [resyncInfo, setResyncInfo] = useSS(() => { try { return (window.SnowSync && window.SnowSync.resyncStatus()) || { pendingCount: 0, pendingScenes: [] }; } catch (e) { return { pendingCount: 0, pendingScenes: [] }; } });
   const [resyncBusy, setResyncBusy] = useSS(false);
+  const [materializeBusy, setMaterializeBusy] = useSS(false);
   useSE(() => {
     const refresh = () => { try { setResyncInfo((window.SnowSync && window.SnowSync.resyncStatus()) || { pendingCount: 0, pendingScenes: [] }); } catch (e) {} };
     window.addEventListener("ws:snow-resync", refresh);
@@ -1019,6 +1059,29 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     } catch (e) {
       window.alert("同步到目录失败：" + ((e && e.message) || "请稍后重试"));
     } finally { setResyncBusy(false); }
+  };
+  const materializeFromHeader = async () => {
+    if (materializeBusy) return;
+    setMaterializeBusy(true);
+    try {
+      const result = await s2AdoptOutline((scaffolds.outline && scaffolds.outline.chapters) || [], { scaffolds });
+      if (result.cancelled) return;
+      setActiveKey("outline");
+      setTabFor("outline", "edit");
+      showToast(
+        result.adopted
+          ? `已整理并写入 ${result.adopted} 章 · 可到章节编排复核`
+          : "章节目录已是最新 · 未重复写入同名章节",
+        "sage",
+      );
+    } catch (e) {
+      const message = (e && e.message) || "请稍后重试";
+      setActiveKey("outline");
+      setTabFor("outline", "edit");
+      window.alert("整理章节结构失败：" + message);
+    } finally {
+      setMaterializeBusy(false);
+    }
   };
   const toastTimer = useSR(null);
 
@@ -1412,7 +1475,13 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   /* persist to localStorage (debounced) */
   useSE(() => {
     const id = setTimeout(() => {
-      try { localStorage.setItem(myKey, JSON.stringify({ drafts, scaffolds, checks, states, revs, confirmRevs, history, _t: Date.now() })); setSavedAt(Date.now()); window.dispatchEvent(new CustomEvent("ws:snow-saved", { detail: myKey })); } catch (e) {}
+      try {
+        localStorage.setItem(myKey, JSON.stringify({ drafts, scaffolds, checks, states, revs, confirmRevs, history, _t: Date.now() }));
+        setSavedAt(Date.now());
+        window.dispatchEvent(new CustomEvent("ws:snow-saved", { detail: myKey }));
+      } catch (e) {
+        try { window.SnowSync && window.SnowSync.markLocalFailure && window.SnowSync.markLocalFailure(e, snowWorkId); } catch (ignored) {}
+      }
     }, 450);
     return () => clearTimeout(id);
   }, [drafts, scaffolds, checks, states, revs, confirmRevs, history]);
@@ -1421,7 +1490,12 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const latestRef = useSR();
   latestRef.current = { drafts, scaffolds, checks, states, revs, confirmRevs, history };
   useSE(() => () => {
-    try { localStorage.setItem(myKey, JSON.stringify({ ...latestRef.current, _t: Date.now() })); window.dispatchEvent(new CustomEvent("ws:snow-saved", { detail: myKey })); } catch (e) {}
+    try {
+      localStorage.setItem(myKey, JSON.stringify({ ...latestRef.current, _t: Date.now() }));
+      window.dispatchEvent(new CustomEvent("ws:snow-saved", { detail: myKey }));
+    } catch (e) {
+      try { window.SnowSync && window.SnowSync.markLocalFailure && window.SnowSync.markLocalFailure(e, snowWorkId); } catch (ignored) {}
+    }
   }, []);
 
   /* FE-ALIGN F3 授权接缝：后端水合（SnowSync）落盘后重读缓存，刷新本组件状态 */
@@ -1516,7 +1590,28 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const curChecks = checks[activeKey] || [];
   const checkDone = curChecks.filter(Boolean).length;
   const allChecked = curChecks.length > 0 && checkDone === curChecks.length;
-  const savedLabel = savedAt ? `已自动保存 · ${new Date(savedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}` : "本地自动保存已开启";
+  const syncPhase = (syncState && syncState.phase) || "idle";
+  const syncError = syncState && syncState.error;
+  const savedLabel = syncPhase === "synced"
+    ? `服务器已同步${syncState.lastSyncedAt ? ` · ${new Date(syncState.lastSyncedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}` : ""}`
+    : syncPhase === "syncing"
+      ? "本机已保存 · 正在同步服务器…"
+      : syncPhase === "error"
+        ? (syncError && syncError.scope === "local" ? "本机保存失败 · 请立即导出" : "仅本机已保存 · 服务器同步失败")
+        : savedAt
+          ? `仅本机已保存 · ${new Date(savedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`
+          : "本机自动保存已开启 · 尚未同步服务器";
+  const retrySnowSync = async () => {
+    if (syncRetryBusy || !window.SnowSync || !window.SnowSync.retry) return;
+    setSyncRetryBusy(true);
+    try {
+      await window.SnowSync.retry(snowWorkId);
+    } catch (error) {
+      // SnowSync.retry 会自行记录远端 PATCH / approve 错误。这里的兜底异常
+      // 不能被误标成“本机保存失败”，否则会把可重试的服务端故障变成导出告警。
+      showToast(`同步重试失败：${error && error.message ? error.message : "请稍后再试"}`, "crimson");
+    } finally { setSyncRetryBusy(false); }
+  };
 
   return (
     <div className="snow-page" data-screen-label="snowflake">
@@ -1547,14 +1642,16 @@ function WsSnowflake({ go, initialStep, onOverview }) {
             ))}
           </div>
           <div className="snow-strip-actions">
-            {onOverview && <button className="btn btn-ghost btn-sm" onClick={onOverview} title="回到控制塔总览"><I.Grid size={13} /> 控制塔总览</button>}
+            {onOverview && (() => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return false; } })()
+              ? <button className="btn btn-ghost btn-sm" onClick={onOverview} title="示例作品的结构控制塔"><I.Grid size={13} /> 控制塔总览 · 演示</button>
+              : null}
             <button className="btn btn-ghost btn-sm" onClick={resetAll} title="清空本地草稿，恢复示例"><I.Refresh size={13} /> 重置</button>
             <button className="btn btn-ghost btn-sm" data-testid="snow-import-open" onClick={() => { setImportError(""); setImportOpen(true); }} title="从已有策划稿导入十步规范 JSON；仍逐步经过后端保存与批准闸门"><I.Download size={13} /> 导入结构</button>
             <button className="btn btn-ghost btn-sm" onClick={exportOutline} title="导出全书大纲为 Markdown"><I.UploadCloud size={13} /> 导出大纲</button>
-            <button className="btn btn-accent btn-sm" onClick={() => {
-              if (onOverview) { onOverview(); setTimeout(() => window.dispatchEvent(new CustomEvent("ws:ct-tab", { detail: "downstream" })), 60); }
-              else if (go) go("author");
-            }} title="09 场景 + 10 规划 → 章节目录（可预览后写入）"><I.Layout size={13} /> 整理为章节结构</button>
+            <button className="btn btn-accent btn-sm" data-testid="snow-materialize-top" disabled={materializeBusy}
+              onClick={materializeFromHeader} title="07 章节 + 09 场景 + 10 规划 → 章节目录（确认后写入）">
+              <I.Layout size={13} /> {materializeBusy ? "整理中…" : "整理为章节结构"}
+            </button>
           </div>
         </div>
       </div>
@@ -1666,7 +1763,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
               </div>
             )}
 
-            <div className="snow-tabs">
+            <div className="snow-tabs" role="tablist" aria-label={`${active.name}工作区`}>
               <S2Tab id="edit" cur={tab} on={setTab}>编辑</S2Tab>
               <S2Tab id="candidates" cur={tab} on={setTab}>候选 <span className="cand-tab-num">{cands.length}</span></S2Tab>
               <S2Tab id="coach" cur={tab} on={setTab}>教练{coachHist.filter(t => t.step_key === S2_BE_KEY[activeKey]).length ? <span className="cand-tab-num">{coachHist.filter(t => t.step_key === S2_BE_KEY[activeKey]).length}</span> : null}</S2Tab>
@@ -1700,7 +1797,25 @@ function WsSnowflake({ go, initialStep, onOverview }) {
 
           <footer className="snow-canvas-foot">
             <button className="btn btn-ghost" disabled={idx === 0} onClick={() => goStep(idx - 1)}><I.ChevronLeft size={14} /> 上一步</button>
-            <div className="flex items-center gap-3 text-muted text-sm"><I.Check size={12} /> {savedLabel}</div>
+            <div
+              className={`sf-sync-state is-${syncPhase}`}
+              data-testid="snow-sync-status"
+              role="status"
+              aria-live="polite"
+              title={(syncError && syncError.message) || savedLabel}
+            >
+              {syncPhase === "error" ? <I.AlertTriangle size={12} /> : syncPhase === "syncing" ? <I.Refresh size={12} className="sf-spin" /> : <I.Check size={12} />}
+              <span>{savedLabel}</span>
+              {syncPhase === "error" && syncError && <em>{syncError.offline ? "当前离线" : syncError.message}</em>}
+              {syncPhase === "error" && syncError && syncError.scope !== "local" && (
+                <button type="button" data-testid="snow-sync-retry" disabled={syncRetryBusy} onClick={retrySnowSync}>
+                  {syncRetryBusy ? "重试中…" : "重试"}
+                </button>
+              )}
+              {syncPhase === "error" && syncError && syncError.scope === "local" && (
+                <button type="button" onClick={exportOutline}>立即导出</button>
+              )}
+            </div>
             <div className="flex items-center gap-2">
               <button className="btn btn-ghost" onClick={skipStep}>略过此步</button>
               {curChecks.length > 0 && (
@@ -1817,7 +1932,8 @@ function S2Spine({ active, go, para }) {
 }
 
 function S2Tab({ id, cur, on, children }) {
-  return <button className={`snow-tab ${cur === id ? "is-active" : ""}`} onClick={() => on(id)}>{children}</button>;
+  return <button role="tab" aria-selected={cur === id} tabIndex={cur === id ? 0 : -1} onKeyDown={onRovingTabKeyDown}
+    className={`snow-tab ${cur === id ? "is-active" : ""}`} onClick={() => on(id)}>{children}</button>;
 }
 
 /* ====== Collapsible flat section (shared rail primitive) ====== */
@@ -2042,7 +2158,7 @@ function S2Scaffold({ kind, scaffold, onScaffold, hints, refs, go, ai }) {
       {kind === "audience" && <S2Audience scaffold={scaffold} onScaffold={onScaffold} />}
       {kind === "charsheet" && <S2CharSheet scaffold={scaffold} onScaffold={onScaffold} ai={ai} />}
       {kind === "synopsisbeats" && <S2SynopsisBeats scaffold={scaffold} onScaffold={onScaffold} refs={refs} />}
-      {kind === "chapters" && <S2ChapterOutline scaffold={scaffold} onScaffold={onScaffold} />}
+      {kind === "chapters" && <S2ChapterOutline scaffold={scaffold} onScaffold={onScaffold} refs={refs} />}
       {kind === "backstory" && <S2CharDeep scaffold={scaffold} onScaffold={onScaffold} ai={ai} fields={S2_BACKSTORY_FIELDS} roster={(refs && refs.characters) || null} go={go} note={<><b>角色继承自 04 角色摘要表</b>，在这里为每人写半页来路——不是户口簿，是那件把她变成今天的事。</>} icon="BookOpen" />}
       {kind === "profile" && <S2CharDeep scaffold={scaffold} onScaffold={onScaffold} ai={ai} fields={S2_PROFILE_FIELDS} roster={(refs && refs.characters) || null} go={go} note={<><b>角色继承自 04 角色摘要表</b>，为每人建一份「角色圣经」：四维度 + 矛盾 + 两个版本的她。</>} icon="Users" />}
       {kind === "scenelist" && <S2SceneList scaffold={scaffold} onScaffold={onScaffold} refs={refs} ai={ai} />}
@@ -2373,7 +2489,7 @@ const S2_ACTS = [
   { act: 2, label: "第二幕", desc: "灾难二（中点翻转）", tone: "gold" },
   { act: 3, label: "第三幕", desc: "灾难三 → 收尾", tone: "crimson" },
 ];
-function S2ChapterOutline({ scaffold, onScaffold }) {
+function S2ChapterOutline({ scaffold, onScaffold, refs }) {
   const chapters = scaffold.chapters || [];
   const setCh = (id, f, v) => onScaffold(s => ({ ...s, chapters: s.chapters.map(c => c.id === id ? { ...c, [f]: v } : c) }));
   const delCh = (id) => onScaffold(s => ({ ...s, chapters: s.chapters.filter(c => c.id !== id) }));
@@ -2389,15 +2505,9 @@ function S2ChapterOutline({ scaffold, onScaffold }) {
   const [adopted, setAdopted] = useSS(null);
   const adoptable = chapters.filter(c => (c.title || "").trim() && !c.title.includes("待补"));
   const adopt = async () => {
-    if (!WsCatalog || !adoptable.length) return;
-    const existing = WsCatalog.get().length;
-    const ready = !!(window.SnowSync && window.SnowSync.readyToMaterialize && window.SnowSync.readyToMaterialize());
-    const pathNote = ready
-      ? "构思闸门已全过：走后端物化主路径——章、场、三拍一起落库，之后构思改动可一键回流同步。"
-      : "构思闸门还没全过（有未确认步骤或「重写」场）：降级为目录直建——会把 07 的章和 09/10 的场按脊柱锚点一起写入目录；等闸门过了再物化，同名章会自动跳过。";
-    if (!window.confirm(`把大纲中的 ${adoptable.length} 章并入目录？（同名章自动跳过${existing ? `；目录现有 ${existing} 章` : ""}）\n\n${pathNote}`)) return;
     try {
-      setAdopted(await WsCatalog.adoptOutline(adoptable));
+      const result = await s2AdoptOutline(chapters, { scaffolds: refs });
+      if (!result.cancelled) setAdopted(result.adopted);
     } catch (e) {
       window.alert("并入章节失败：" + (e && e.message ? e.message : "请稍后重试，或检查构思各步是否已确认。"));
     }
@@ -4039,6 +4149,6 @@ Object.assign(window, { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2Gener
   s2Materialize: { preview: s2MaterializePreview, apply: s2MaterializeApply, sid: s2MaterializedSid, planState: s2PlanState } });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, S2_PREMISE, s2PacingRuns, s2LineStats, s2ReadWorkbench, s2StepSummary, s2ExportState, s2NormalizeState };
+export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, S2_PREMISE, s2PacingRuns, s2LineStats, s2ReadWorkbench, s2StepSummary, s2ExportState, s2NormalizeState, s2AdoptOutline };
 export const S2_SCENE_SEED = S2_SCAFFOLD_SEED.scenes;
 export const s2Materialize = { preview: s2MaterializePreview, apply: s2MaterializeApply, sid: s2MaterializedSid, planState: s2PlanState };

@@ -196,7 +196,7 @@ function Lf3Audit({ audit, fixDone, onFix, newDone, onArchiveNew, onArchive, arc
               <div className="lf3-drift-line">「{dr.line}」</div>
               <div className="lf3-drift-at">{dr.at}</div>
               <div className="lf3-drift-fixes">
-                {done ? <button className="lf3-fix is-done"><I.Check size={12} /> 已处理 · 已送入下一轮</button> : dr.fixes.map((f, i) => <button key={i} className={`lf3-fix ${i === 0 ? "is-primary" : ""}`} onClick={() => onFix(dr.id, i)}>{f}</button>)}
+                {done ? <button className="lf3-fix is-done" disabled><I.Check size={12} /> 已处理 · 已送入下一轮</button> : dr.fixes.map((f, i) => <button key={i} className={`lf3-fix ${i === 0 ? "is-primary" : ""}`} onClick={() => onFix(dr.id, i)}>{f}</button>)}
               </div>
             </div>
           );
@@ -213,7 +213,7 @@ function Lf3Audit({ audit, fixDone, onFix, newDone, onArchiveNew, onArchive, arc
               <span className="lf3-new-text">{n.text}</span>
               <p className="lf3-new-note">{n.note}</p>
               <div className="lf3-new-actions">
-                {done ? <button className="lf3-fix is-done"><I.Check size={12} /> 已归档</button> : n.actions.map((act, i) => <button key={i} className="lf3-fix is-primary" onClick={() => onArchiveNew(n.id, i)}>{act}</button>)}
+                {done ? <button className="lf3-fix is-done" disabled><I.Check size={12} /> 已归档</button> : n.actions.map((act, i) => <button key={i} className="lf3-fix is-primary" onClick={() => onArchiveNew(n.id, i)}>{act}</button>)}
               </div>
             </div>
           );

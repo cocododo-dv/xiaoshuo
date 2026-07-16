@@ -12,8 +12,10 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from novel_system.db.models import StyleReferenceValidationReport, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.llm_accounting import (
     LLMAccountingError,
@@ -181,6 +183,11 @@ class ValidationOrchestrator:
             plagiarism_json=plagiarism_json,
             forbidden_hits_json=forbidden_hits_json,
             mode_executed=mode.value,
+            status=("completed" if mode == ValidationMode.SYNC_ONLY else "queued"),
+            retryable=False,
+            started_at=(utcnow() if mode == ValidationMode.SYNC_ONLY else None),
+            heartbeat_at=utcnow(),
+            finished_at=(utcnow() if mode == ValidationMode.SYNC_ONLY else None),
         )
         return report_id
 
@@ -193,9 +200,12 @@ def _async_worker(
     llm_client: Any | None,
     llm_enabled: bool,
 ) -> None:
-    """后台 thread 入口:独立 session,跑 4 路,更新 report 行。"""
+    """Run async validation after winning the durable queued->running CAS."""
+
+    from novel_system.services.style_reference.policy import cloud_llm_allowed
     from novel_system.services.style_reference.validation import (
         _compute_full_verdict,
+        _load_plagiarism_corpus,
         check_forbidden_semantic,
         check_plagiarism,
         check_quantitative,
@@ -207,29 +217,47 @@ def _async_worker(
 
     try:
         with SessionLocal() as bg_session:
+            claimed_at = utcnow()
+            claimed = bg_session.execute(
+                update(StyleReferenceValidationReport)
+                .where(
+                    StyleReferenceValidationReport.report_id == report_id,
+                    StyleReferenceValidationReport.status == "queued",
+                )
+                .values(
+                    status="running",
+                    started_at=claimed_at,
+                    heartbeat_at=claimed_at,
+                    finished_at=None,
+                    error_code=None,
+                    error_text=None,
+                    retryable=False,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if claimed.rowcount != 1:
+                bg_session.rollback()
+                logger.info("async validation %s dispatch was already claimed", report_id)
+                return
+            bg_session.commit()
+
             bg_repo = StyleReferenceRepository(bg_session)
             profile = bg_repo.get_profile(profile_id)
             if profile is None:
-                logger.warning("async_worker: profile %s vanished", profile_id)
-                return
-
-            # 语料 = 全书段落(+ 合成 quotes 不在段落表,此处不补:counter_example
-            # 是 LLM 生成的反例而非原文,不构成抄袭对照)
-            from novel_system.services.style_reference.validation import (
-                _load_plagiarism_corpus,
-            )
+                raise DomainError(
+                    "STYLE_REFERENCE_PROFILE_NOT_FOUND",
+                    "style reference profile disappeared before validation started",
+                    status_code=404,
+                )
 
             corpus = _load_plagiarism_corpus(bg_repo, profile.book_id)
             plag = check_plagiarism(generated_text, corpus)
             forbid_local = check_forbidden_local(generated_text, profile_id, bg_session)
             quant = check_quantitative(generated_text, profile)
-
-            # 附录 B — local_only 的书跳过语义路(派生 statement 也不送云)
-            from novel_system.services.style_reference.policy import cloud_llm_allowed
+            _heartbeat_report(bg_session, report_id)
 
             book = bg_repo.get_book(profile.book_id)
             policy_allows_llm = cloud_llm_allowed(book) if book is not None else True
-
             semantic: list = []
             forbid_sem: list = []
             semantic_degraded = False
@@ -249,6 +277,7 @@ def _async_worker(
                         raise
                     semantic_degraded = True
                     logger.warning("async_worker semantic failed: %s", exc)
+                _heartbeat_report(bg_session, report_id)
                 try:
                     forbid_sem = check_forbidden_semantic(
                         generated_text,
@@ -264,6 +293,7 @@ def _async_worker(
                         raise
                     semantic_degraded = True
                     logger.warning("async_worker forbidden_semantic failed: %s", exc)
+                _heartbeat_report(bg_session, report_id)
 
             all_forbid = list(forbid_local) + list(forbid_sem)
             verdict = _compute_full_verdict(
@@ -273,32 +303,90 @@ def _async_worker(
                 forbid=all_forbid,
                 semantic_degraded=semantic_degraded,
             )
-
-            row = bg_repo.get_validation_report(report_id)
-            if row is None:
-                logger.warning("async_worker: report %s vanished", report_id)
+            finished_at = utcnow()
+            completed = bg_session.execute(
+                update(StyleReferenceValidationReport)
+                .where(
+                    StyleReferenceValidationReport.report_id == report_id,
+                    StyleReferenceValidationReport.status == "running",
+                )
+                .values(
+                    verdict=verdict.value,
+                    status="completed",
+                    quantitative_json=[q.model_dump() for q in quant],
+                    semantic_json=[s.model_dump() for s in semantic],
+                    plagiarism_json=plag.model_dump(),
+                    forbidden_hits_json=[h.model_dump() for h in all_forbid],
+                    heartbeat_at=finished_at,
+                    finished_at=finished_at,
+                    error_code=None,
+                    error_text=None,
+                    retryable=False,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if completed.rowcount != 1:
+                bg_session.rollback()
+                logger.warning("async validation %s lost its running state", report_id)
                 return
-            row.verdict = verdict.value
-            row.quantitative_json = [q.model_dump() for q in quant]
-            row.semantic_json = [s.model_dump() for s in semantic]
-            row.plagiarism_json = plag.model_dump()
-            row.forbidden_hits_json = [h.model_dump() for h in all_forbid]
-            bg_session.flush()
             bg_session.commit()
     except Exception as exc:  # pylint: disable=broad-except
-        if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
-            raise
         logger.exception("async_worker fatal: %s", exc)
-        try:
-            with SessionLocal() as fb_session:
-                fb_row = fb_session.get(
-                    __import__(
-                        "novel_system.db.models", fromlist=["StyleReferenceValidationReport"]
-                    ).StyleReferenceValidationReport,
-                    report_id,
+        _mark_validation_failed(report_id, exc)
+
+
+def _heartbeat_report(session: Session, report_id: str) -> None:
+    """Publish progress without persisting any copy of the validated prose."""
+
+    touched = session.execute(
+        update(StyleReferenceValidationReport)
+        .where(
+            StyleReferenceValidationReport.report_id == report_id,
+            StyleReferenceValidationReport.status == "running",
+        )
+        .values(heartbeat_at=utcnow())
+        .execution_options(synchronize_session=False)
+    )
+    if touched.rowcount != 1:
+        session.rollback()
+        raise DomainError(
+            "STYLE_REFERENCE_VALIDATION_OWNER_LOST",
+            "async validation no longer owns its report",
+            status_code=409,
+        )
+    session.commit()
+
+
+def _mark_validation_failed(report_id: str, exc: Exception) -> None:
+    if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
+        error_code = "STYLE_REFERENCE_VALIDATION_CONTROL_PLANE_FAILED"
+    elif isinstance(exc, DomainError):
+        error_code = exc.code
+    else:
+        error_code = "STYLE_REFERENCE_VALIDATION_FAILED"
+    try:
+        with SessionLocal() as session:
+            finished_at = utcnow()
+            failed = session.execute(
+                update(StyleReferenceValidationReport)
+                .where(
+                    StyleReferenceValidationReport.report_id == report_id,
+                    StyleReferenceValidationReport.status.in_(("queued", "running")),
                 )
-                if fb_row is not None:
-                    fb_row.verdict = "fail"
-                    fb_session.commit()
-        except Exception:  # pylint: disable=broad-except
-            pass
+                .values(
+                    verdict="fail",
+                    status="failed",
+                    error_code=error_code,
+                    error_text="async validation failed; submit the text again to retry",
+                    retryable=True,
+                    heartbeat_at=finished_at,
+                    finished_at=finished_at,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if failed.rowcount:
+                session.commit()
+            else:
+                session.rollback()
+    except Exception:  # pragma: no cover - final worker boundary
+        logger.exception("failed to persist async validation failure for %s", report_id)

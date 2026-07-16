@@ -3,9 +3,31 @@ import { I } from "./icons.jsx";
 import { WsDemoTag } from "./ws-catalog.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { rvPush } from "./ws-review.jsx";
+import { onRovingTabKeyDown } from "./a11y-tabs.js";
 
 /* global React, I */
 const { useState: useStSR } = React;
+
+const SR_CLOUD_POLICIES = [
+  {
+    id: "local_only",
+    label: "仅保存在本机",
+    badge: "默认 · 最私密",
+    detail: "原文不发送给云端模型。可以导入与本地分段，但云端风格抽取会保持关闭。",
+  },
+  {
+    id: "segments_only",
+    label: "只发送所需段落",
+    badge: "折中",
+    detail: "抽取时仅发送任务需要的分段，不上传整本；适合希望使用云端分析又控制出域范围的情况。",
+  },
+  {
+    id: "allow_full_cloud",
+    label: "允许全文上云",
+    badge: "能力完整",
+    detail: "服务可按任务发送更大范围乃至全文给已配置的模型供应商；只应在你确认拥有授权时使用。",
+  },
+];
 
 /* ==========================================================
    风格参考 — Style Reference Module
@@ -338,6 +360,7 @@ function WsStyleRef({ go }) {
   const [stage, setStage] = useStSR("matrix");
   const [headerBusy, setHeaderBusy] = useStSR(null);
   const [delBusy, setDelBusy] = useStSR(null);
+  const [importOpen, setImportOpen] = useStSR(false);
   const book = SR_BOOKS.find(b => b.id === bookId) || SR_BOOKS[0];
 
   /* FE-ALIGN F5 授权接缝：书库由后端背书，变化时重渲染 */
@@ -399,7 +422,7 @@ function WsStyleRef({ go }) {
               <div className="page-eyebrow" style={{margin:0, display:"flex", alignItems:"center", gap:8}}>风格参考 {WsDemoTag && <WsDemoTag note="全流程已接后端 style-reference v2：导入/抽取/审核/画像/注入/回测/禁用词均为真实数据。标「演示」的内置样书仅用于预览界面形态，导入真实参考书后各页只显示这本书的真实产物（未抽取时给空态引导）。" />}</div>
               <h2 className="text-serif" style={{fontSize:18, margin:"4px 0 0"}}>参考书库</h2>
             </div>
-            <button className="btn btn-accent btn-sm" onClick={() => window.srImportBook && window.srImportBook()}><I.Plus size={13} /></button>
+            <button className="btn btn-accent btn-sm" aria-label="导入参考书" onClick={() => setImportOpen(true)}><I.Plus size={13} /></button>
           </header>
 
           <ul className="sr-book-list">
@@ -433,13 +456,13 @@ function WsStyleRef({ go }) {
             ))}
           </ul>
 
-          <div className="sr-books-import" style={{ cursor: "pointer" }} onClick={() => window.srImportBook && window.srImportBook()}>
+          <button type="button" className="sr-books-import" onClick={() => setImportOpen(true)}>
             <I.FileInput size={16} />
             <div>
               <div className="fw-600 text-sm">导入参考书</div>
-              <div className="text-xs text-muted">epub · docx · txt · md</div>
+              <div className="text-xs text-muted">epub · docx · txt · md · 先选择隐私边界</div>
             </div>
-          </div>
+          </button>
           <p className="sr-safe-note">
             <I.ShieldCheck size={12} />
             <span>只学习抽象风格画像，不复刻原文表达、人物或桥段。</span>
@@ -503,11 +526,89 @@ function WsStyleRef({ go }) {
         </section>
       </div>
 
+      <SrImportDialog
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onChoose={(policy) => {
+          setImportOpen(false);
+          if (window.srImportBook) window.srImportBook(policy);
+        }}
+      />
+
       <style dangerouslySetInnerHTML={{ __html: srCss }} />
       <style dangerouslySetInnerHTML={{ __html: "@keyframes srSpin{to{transform:rotate(360deg)}}.sr-spin{animation:srSpin .9s linear infinite}.sr-stage-head .btn:disabled{opacity:.65;cursor:default}" }} />
     </div>
   );
 };
+
+function SrImportDialog({ open, onClose, onChoose }) {
+  const [policy, setPolicy] = useStSR("local_only");
+  const dialogRef = React.useRef(null);
+  const returnFocusRef = React.useRef(null);
+
+  React.useEffect(() => {
+    if (!open) return undefined;
+    setPolicy("local_only");
+    returnFocusRef.current = document.activeElement;
+    const focusTimer = setTimeout(() => {
+      const first = dialogRef.current && dialogRef.current.querySelector("input, button");
+      if (first) first.focus();
+    }, 0);
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") { event.preventDefault(); onClose(); return; }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = Array.from(dialogRef.current.querySelectorAll('input:not([disabled]), button:not([disabled])'));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      clearTimeout(focusTimer);
+      document.removeEventListener("keydown", onKeyDown);
+      const target = returnFocusRef.current;
+      if (target && target.focus) target.focus();
+    };
+  }, [open, onClose]);
+
+  if (!open) return null;
+  return (
+    <div className="sr-import-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section ref={dialogRef} className="sr-import-dialog" role="dialog" aria-modal="true" aria-labelledby="sr-import-title" aria-describedby="sr-import-desc">
+        <header className="sr-import-head">
+          <div>
+            <div className="page-eyebrow">导入前先定边界</div>
+            <h2 id="sr-import-title" className="text-serif">这本参考书可以离开本机吗？</h2>
+          </div>
+          <button type="button" className="sr-import-x" aria-label="关闭导入设置" onClick={onClose}><I.X size={16} /></button>
+        </header>
+        <p id="sr-import-desc" className="sr-import-desc">
+          选择会随参考书保存，并约束后续抽取。默认不让原文出域；系统只学习抽象技法，不复刻人物、桥段或原句。
+        </p>
+        <fieldset className="sr-policy-list">
+          <legend className="sr-policy-legend">原文数据使用范围</legend>
+          {SR_CLOUD_POLICIES.map((item) => (
+            <label key={item.id} className={`sr-policy ${policy === item.id ? "is-selected" : ""}`}>
+              <input type="radio" name="sr-cloud-policy" value={item.id} checked={policy === item.id} onChange={() => setPolicy(item.id)} />
+              <span className="sr-policy-mark" aria-hidden="true" />
+              <span className="sr-policy-copy">
+                <span className="sr-policy-title">{item.label}<em>{item.badge}</em></span>
+                <span className="sr-policy-detail">{item.detail}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+        <div className="sr-import-notice"><I.ShieldCheck size={14} /><span>“仅本机”不会静默降级为上云；需要云端抽取时，必须重新以更开放的策略导入。</span></div>
+        <footer className="sr-import-actions">
+          <button type="button" className="btn btn-ghost" onClick={onClose}>取消</button>
+          <button type="button" className="btn btn-accent" data-testid="sr-import-choose-file" onClick={() => onChoose(policy)}><I.FileInput size={14} /> 选择文件</button>
+        </footer>
+      </section>
+    </div>
+  );
+}
 
 function SrBookState({ s }) {
   const map = {
@@ -1040,9 +1141,11 @@ function SrProfile({ book, go }) {
             </div>
           )}
 
-          <div className="sr-profile-tabs">
-            <button className={`sr-pt ${tab === "summary" ? "is-active" : ""}`} onClick={() => setTab("summary")}>维度摘要</button>
-            <button className={`sr-pt ${tab === "preview" ? "is-active" : ""}`} onClick={() => setTab("preview")}>预览示例</button>
+          <div className="sr-profile-tabs" role="tablist" aria-label="风格画像视图">
+            <button role="tab" aria-selected={tab === "summary"} tabIndex={tab === "summary" ? 0 : -1} onKeyDown={onRovingTabKeyDown}
+              className={`sr-pt ${tab === "summary" ? "is-active" : ""}`} onClick={() => setTab("summary")}>维度摘要</button>
+            <button role="tab" aria-selected={tab === "preview"} tabIndex={tab === "preview" ? 0 : -1} onKeyDown={onRovingTabKeyDown}
+              className={`sr-pt ${tab === "preview" ? "is-active" : ""}`} onClick={() => setTab("preview")}>预览示例</button>
           </div>
 
           {tab === "summary" && (
@@ -1712,8 +1815,8 @@ function SrApply({ go, book }) {
           ) : (
             <ul className="sr-bindings">
               <li><span className="pill pill-crimson text-xs"><span className="pill-dot" />项目</span><span className="text-sm">潮汐档案 · 全局</span><I.Check size={13} style={{color:"var(--sage)"}} /></li>
-              <li><span className="pill pill-gold text-xs"><span className="pill-dot" />角色</span><span className="text-sm">林岑 POV</span><button className="btn btn-quiet btn-sm">解绑</button></li>
-              <li><span className="pill pill-sage text-xs"><span className="pill-dot" />场景</span><span className="text-sm">CH08 · SC01</span><button className="btn btn-quiet btn-sm">解绑</button></li>
+              <li><span className="pill pill-gold text-xs"><span className="pill-dot" />角色</span><span className="text-sm">林岑 POV</span><button className="btn btn-quiet btn-sm" disabled title="演示绑定不可修改">演示绑定</button></li>
+              <li><span className="pill pill-sage text-xs"><span className="pill-dot" />场景</span><span className="text-sm">CH08 · SC01</span><button className="btn btn-quiet btn-sm" disabled title="演示绑定不可修改">演示绑定</button></li>
             </ul>
           )}
         </div>
@@ -1949,7 +2052,8 @@ const srCss = `
 .sr-book-del:disabled { cursor: default; }
 .sr-books-import {
   display: flex; align-items: center; gap: 12px; margin: 0 10px 8px; padding: 12px 14px;
-  border: 1px dashed var(--line-2); border-radius: 10px; color: var(--ink-3); cursor: pointer;
+  width: calc(100% - 20px); border: 1px dashed var(--line-2); border-radius: 10px;
+  background: transparent; color: var(--ink-3); cursor: pointer; text-align: left; font: inherit;
 }
 .sr-books-import:hover { border-color: var(--ink-3); color: var(--ink-1); }
 .sr-safe-note {
@@ -2273,6 +2377,44 @@ const srCss = `
 .sr-bindings li { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--paper-0); border-radius: 8px; }
 .sr-bindings li .text-sm { flex: 1; }
 
+/* Import privacy dialog — quiet editorial sheet, with the data boundary as the main decision. */
+.sr-import-scrim {
+  position: fixed; inset: 0; z-index: 2200; display: grid; place-items: center; padding: 24px;
+  background: color-mix(in srgb, var(--ink-1) 52%, transparent); backdrop-filter: blur(5px);
+}
+.sr-import-dialog {
+  width: min(680px, 100%); max-height: min(780px, calc(100vh - 48px)); overflow-y: auto;
+  padding: 24px; border: 1px solid var(--line-2); border-radius: 18px;
+  background: linear-gradient(145deg, var(--paper-0), var(--paper-1)); box-shadow: var(--shadow-lg);
+}
+.sr-import-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.sr-import-head h2 { margin: 5px 0 0; font-size: 25px; letter-spacing: -.02em; }
+.sr-import-x {
+  display: grid; place-items: center; flex: 0 0 auto; width: 34px; height: 34px;
+  border: 1px solid var(--line-1); border-radius: 10px; background: var(--paper-0); color: var(--ink-3); cursor: pointer;
+}
+.sr-import-desc { max-width: 62ch; margin: 14px 0 18px; color: var(--ink-2); font-size: 13.5px; line-height: 1.75; }
+.sr-policy-list { display: grid; gap: 9px; margin: 0; padding: 0; border: 0; }
+.sr-policy-legend { margin-bottom: 7px; color: var(--ink-3); font-size: 11px; font-weight: 700; letter-spacing: .1em; }
+.sr-policy {
+  display: grid; grid-template-columns: 18px 1fr; gap: 12px; align-items: start; padding: 14px 15px;
+  border: 1px solid var(--line-1); border-radius: 12px; background: var(--paper-0); cursor: pointer;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), transform var(--t-fast);
+}
+.sr-policy:hover { border-color: var(--line-2); transform: translateY(-1px); }
+.sr-policy.is-selected { border-color: var(--sage); box-shadow: 0 0 0 3px var(--sage-wash); }
+.sr-policy input { position: absolute; opacity: 0; pointer-events: none; }
+.sr-policy-mark { width: 17px; height: 17px; margin-top: 2px; border: 1.5px solid var(--line-3); border-radius: 50%; box-shadow: inset 0 0 0 4px var(--paper-0); }
+.sr-policy input:focus-visible + .sr-policy-mark { outline: 2px solid var(--crimson); outline-offset: 3px; }
+.sr-policy.is-selected .sr-policy-mark { border-color: var(--sage); background: var(--sage); }
+.sr-policy-copy { display: grid; gap: 5px; }
+.sr-policy-title { display: flex; align-items: center; gap: 9px; color: var(--ink-1); font-size: 14px; font-weight: 650; }
+.sr-policy-title em { padding: 2px 7px; border-radius: 999px; background: var(--sage-wash); color: var(--sage); font-size: 10px; font-style: normal; font-weight: 700; }
+.sr-policy-detail { color: var(--ink-3); font-size: 12.5px; line-height: 1.6; }
+.sr-import-notice { display: flex; gap: 9px; align-items: flex-start; margin-top: 15px; padding: 11px 13px; border-radius: 10px; background: var(--gold-wash); color: var(--ink-2); font-size: 12px; line-height: 1.6; }
+.sr-import-notice svg { flex: 0 0 auto; margin-top: 2px; color: var(--gold); }
+.sr-import-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line-1); }
+
 @media (max-width: 1280px) {
   .sr-matrix-wrap { grid-template-columns: 1fr; }
   .sr-findings { position: static; max-height: none; }
@@ -2283,6 +2425,11 @@ const srCss = `
   .sr-cols { grid-template-columns: 240px 1fr; }
   .sr-matrix-cells, .sr-strat-row { grid-template-columns: repeat(2, 1fr); }
   .sr-metric-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 640px) {
+  .sr-import-scrim { align-items: end; padding: 0; }
+  .sr-import-dialog { max-height: 92vh; padding: 20px 16px; border-radius: 18px 18px 0 0; }
+  .sr-policy-title { align-items: flex-start; flex-direction: column; gap: 4px; }
 }
 `;
 
@@ -2329,7 +2476,10 @@ async function srSyncBooks() {
 }
 
 /* 导入参考书：文件选择 → POST import-upload（multipart，带幂等键） */
-function srImportBook() {
+function srImportBook(cloudPolicy = "local_only") {
+  if (!SR_CLOUD_POLICIES.some((item) => item.id === cloudPolicy)) {
+    throw new Error("未知的参考书数据策略");
+  }
   const input = document.createElement("input");
   input.type = "file";
   input.accept = ".txt,.md,.epub,.docx";
@@ -2339,16 +2489,21 @@ function srImportBook() {
     const title = (window.prompt("书名（用于书库显示）", f.name.replace(/\.[^.]+$/, "")) || "").trim();
     if (!title) return;
     try {
-      const { buildUrl, getOperatorRef } = await import("./lib/client.js");
+      const { buildUrl, getOperatorRef, getRemoteAccessToken } = await import("./lib/client.js");
       const fd = new FormData();
       fd.append("file", f, f.name);
       fd.append("title", title);
-      // segments_only:抽取按段落分批送 LLM(从不整本上送)。local_only 会被后端
-      // 策略层拒绝一切云端抽取(STYLE_REFERENCE_CLOUD_POLICY_BLOCKED),仅适合纯本地场景。
-      fd.append("cloud_policy", "segments_only");
+      // 策略必须来自作者在导入前的显式选择；默认 local_only，绝不静默放宽出域范围。
+      fd.append("cloud_policy", cloudPolicy);
+      const headers = {
+        "X-Idempotency-Key": "sr-import-" + Date.now().toString(36),
+        "X-Operator-Ref": getOperatorRef(),
+      };
+      const accessToken = getRemoteAccessToken();
+      if (accessToken) headers["X-Novel-Access-Token"] = accessToken;
       const res = await fetch(buildUrl("/api/v2/style-reference/books/import-upload"), {
         method: "POST",
-        headers: { "X-Idempotency-Key": "sr-import-" + Date.now().toString(36), "X-Operator-Ref": getOperatorRef() },
+        headers,
         body: fd,
       });
       const body = await res.json();
@@ -2419,12 +2574,18 @@ async function srPollRun(runId) {
 }
 
 async function srDeleteBook(bookId) {
-  const { buildUrl, getOperatorRef } = await import("./lib/client.js");
+  const { buildUrl, getOperatorRef, getRemoteAccessToken } = await import("./lib/client.js");
+  const headers = {
+    "X-Idempotency-Key": `sr-del-${bookId}-${Date.now().toString(36)}`,
+    "X-Operator-Ref": getOperatorRef(),
+  };
+  const accessToken = getRemoteAccessToken();
+  if (accessToken) headers["X-Novel-Access-Token"] = accessToken;
   const res = await fetch(buildUrl(`/api/v2/style-reference/books/${bookId}`), {
     method: "DELETE",
     // book_id 由内容 checksum 决定（同内容重导=同 id），删除键必须带熵，
     // 否则幂等层会重放上一次的成功响应而不真正执行
-    headers: { "X-Idempotency-Key": `sr-del-${bookId}-${Date.now().toString(36)}`, "X-Operator-Ref": getOperatorRef() },
+    headers,
   });
   const body = await res.json();
   if (!body.ok) throw new Error((body.error && body.error.message) || "删除失败");
@@ -2566,4 +2727,4 @@ Object.assign(window, {
 });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsStyleRef };
+export { WsStyleRef, SrImportDialog, SR_CLOUD_POLICIES, srImportBook };

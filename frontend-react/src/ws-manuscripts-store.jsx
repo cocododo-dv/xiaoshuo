@@ -9,11 +9,26 @@
    键 = 后端 chapter_id（目录卡的 backendId），不是 FE slug。
    ========================================================== */
 
-import { apiGet, apiPost } from "./lib/client.js";
+import { apiGet, apiPatch, apiPost } from "./lib/client.js";
 
-// chapterBackendId → { detail } | { error: true }
+// chapterBackendId → { status: idle|loading|ready|error, detail, error }
 const manuCache = {};
 const manuInflight = {};
+
+function dispatchManuscriptState(chapterId, status) {
+  try {
+    window.dispatchEvent(new CustomEvent("ws:manuscripts-loaded", {
+      detail: { chapterId, status },
+    }));
+  } catch (e) {}
+}
+
+function normalizedLoadError(error) {
+  return {
+    code: (error && error.code) || "MANUSCRIPT_LOAD_FAILED",
+    message: (error && error.message) || "服务端正文加载失败。",
+  };
+}
 
 function toParas(content) {
   return String(content || "")
@@ -34,19 +49,24 @@ function manuscriptDisplayState(state) {
 }
 
 const WsManuStore = {
-  /** 拉后端章节聚合（幂等去重并发）；失败缓存 error 标记，body() 返回 null。 */
+  /**
+   * 拉取权威章节聚合。状态是显式的，不再把“未加载”和“服务端失败”折成同一个 null。
+   * 并发请求仍幂等去重；重试会从 error 重新进入 loading。
+   */
   async refresh(chapterId) {
     if (!chapterId) return null;
     if (manuInflight[chapterId]) return manuInflight[chapterId];
+    manuCache[chapterId] = { status: "loading", detail: null, error: null };
+    dispatchManuscriptState(chapterId, "loading");
     manuInflight[chapterId] = (async () => {
       try {
         const detail = await apiGet(`/api/v1/chapter-manuscripts/${chapterId}`);
-        manuCache[chapterId] = { detail };
+        manuCache[chapterId] = { status: "ready", detail, error: null };
       } catch (e) {
-        manuCache[chapterId] = { error: true };
+        manuCache[chapterId] = { status: "error", detail: null, error: normalizedLoadError(e) };
       } finally {
         delete manuInflight[chapterId];
-        try { window.dispatchEvent(new CustomEvent("ws:manuscripts-loaded", { detail: chapterId })); } catch (e) {}
+        dispatchManuscriptState(chapterId, manuCache[chapterId].status);
       }
       return manuCache[chapterId];
     })();
@@ -58,14 +78,57 @@ const WsManuStore = {
     if (!chapterId) throw new Error("缺少章节标识，无法生成章节汇总。");
     const result = await apiPost(`/api/v1/chapters/${chapterId}/runtime/aggregate/final`, {});
     delete manuCache[chapterId];
-    await this.refresh(chapterId);
+    const loaded = await this.refresh(chapterId);
+    if (!loaded || loaded.status !== "ready") {
+      throw new Error((loaded && loaded.error && loaded.error.message) || "章节汇总已生成，但重新加载服务端正文失败。");
+    }
+    return result;
+  },
+
+  /**
+   * 章节流转必须等待服务端确认，不能只改本地目录状态。
+   * review/draft 仍由目录端点维护；approved 只能走项目终稿闸门。
+   */
+  async setReviewState(projectId, chapterId, state) {
+    if (!projectId || !chapterId) throw new Error("缺少作品或章节标识，无法更新审阅状态。");
+    if (!['review', 'draft'].includes(state)) throw new Error("审阅状态无效。");
+    return apiPatch(`/api/v2/projects/${projectId}/catalog/chapters/${chapterId}`, { state });
+  },
+
+  /** 明确记录作者已经通读当前服务端正文；批准接口会复核同一正文哈希。 */
+  async confirmRead(projectId, chapterId, note = "") {
+    if (!projectId || !chapterId) throw new Error("缺少作品或章节标识，无法确认通读。");
+    return apiPost(`/api/v1/projects/${projectId}/chapters/${chapterId}/read-confirm`, { note });
+  },
+
+  /** 终稿批准是项目级权威操作，不允许由目录 PATCH 冒充。 */
+  async approveFinal(projectId, chapterId, revisionNotes = "") {
+    if (!projectId || !chapterId) throw new Error("缺少作品或章节标识，无法批准终稿。");
+    const result = await apiPost(
+      `/api/v1/projects/${projectId}/chapters/${chapterId}/approve-final`,
+      { revision_notes: revisionNotes },
+    );
+    this.invalidate(chapterId);
+    return result;
+  },
+
+  /** 重开终稿会由服务端级联撤销该章及其后的批准链，并留下审计记录。 */
+  async reopenFinal(projectId, chapterId, reason) {
+    if (!projectId || !chapterId) throw new Error("缺少作品或章节标识，无法重新打开终稿。");
+    const cleanReason = String(reason || "").trim();
+    if (!cleanReason) throw new Error("请填写重新打开终稿的原因。");
+    const result = await apiPost(
+      `/api/v1/projects/${projectId}/chapters/${chapterId}/reopen-final`,
+      { reason: cleanReason },
+    );
+    this.invalidate(chapterId);
     return result;
   },
 
   /** 同步读：{ completion, assembled, aggregate, scenes:[{sceneId, paras, live, charCount}] } | null */
   body(chapterId) {
     const hit = manuCache[chapterId];
-    if (!hit || hit.error || !hit.detail) return null;
+    if (!hit || hit.status !== "ready" || !hit.detail) return null;
     const detail = hit.detail;
     const scenes = (detail.scenes || []).map((entry) => {
       const finalScene = entry.final_scene;
@@ -73,6 +136,7 @@ const WsManuStore = {
       return {
         sceneId: entry.scene_id,
         sceneSeq: entry.scene_seq,
+        title: entry.title || entry.scene_title || "",
         live,
         paras: live ? toParas(finalScene.content) : [],
         charCount: finalScene ? finalScene.char_count || 0 : 0,
@@ -87,9 +151,20 @@ const WsManuStore = {
     };
   },
 
-  /** 是否有已装载的数据（区分 loading 与真无稿） */
+  /** 同步状态快照；视图只能在 ready 时把 body 当作服务端事实。 */
+  snapshot(chapterId) {
+    const hit = chapterId && manuCache[chapterId];
+    if (!hit) return { status: "idle", body: null, error: null };
+    return {
+      status: hit.status,
+      body: hit.status === "ready" ? this.body(chapterId) : null,
+      error: hit.error || null,
+    };
+  },
+
+  /** 兼容旧调用：只有 ready/error 才算一次加载已终止。 */
   loaded(chapterId) {
-    return !!manuCache[chapterId];
+    return ["ready", "error"].includes((manuCache[chapterId] || {}).status);
   },
 
   /** 作品切换/归档后失效重拉 */

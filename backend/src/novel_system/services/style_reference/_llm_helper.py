@@ -21,6 +21,7 @@ from novel_system.services.llm_accounting import (
     execute_accounted_call,
     is_llm_control_plane_failure,
 )
+from novel_system.services.llm_audit import sanitize_audit_summary
 from novel_system.services.llm_client import LLMRequest, load_model_routing_config
 from novel_system.services.prompt_builder import load_prompt_templates
 from novel_system.services.style_reference.untrusted_data import (
@@ -154,10 +155,12 @@ def call_llm_node(
             "LLM_ACCOUNTING_PARENT_ID_MISSING",
             f"accounted LLM parent disappeared for {node_id!r}",
         )
-    parent.response_payload_summary = {
-        **dict(parent.response_payload_summary or {}),
-        "structured_output_present": bool(structured),
-        "structured_output_keys": sorted(str(key) for key in structured),
-    }
+    parent.response_payload_summary = sanitize_audit_summary(
+        {
+            **dict(parent.response_payload_summary or {}),
+            "structured_output_present": bool(structured),
+            "structured_output_keys": sorted(str(key) for key in structured),
+        }
+    )
     session.commit()
     return structured

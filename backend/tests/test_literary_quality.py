@@ -12,7 +12,10 @@ from novel_system.db.models import (
     SceneCard,
     SceneRunState,
 )
-from novel_system.services.literary_quality import analyze_literary_quality
+from novel_system.services.literary_quality import (
+    adversarial_rank_score,
+    analyze_literary_quality,
+)
 
 
 def _seed_quality_scene(session, *, chapter_id: str = "LQ100", scene_id: str = "LQ100_SC01") -> str:
@@ -425,6 +428,23 @@ def test_literary_quality_expanded_model_voice_catches_chinese_cliches() -> None
     )
     signals, findings = analyze_literary_quality(text)
     assert signals["model_voice"]["risk"] is True
+
+
+def test_action_keyword_bundle_is_insufficient_evidence_not_literary_perfection() -> None:
+    text = "必须选择，付出代价，她推开门。"
+
+    signals, findings = analyze_literary_quality(text)
+    score = adversarial_rank_score(text)
+
+    # The phrase can satisfy several structural word lists, but it is not
+    # enough prose to support an upper-bound literary judgment.
+    assert signals["no_choice_scene"]["risk"] is False
+    assert signals["choice_pressure"]["risk"] is False
+    assert signals["automated_evidence_sufficiency"]["risk"] is True
+    assert signals["automated_evidence_sufficiency"]["human_judgment_required"] is True
+    assert score < 0.6
+    assert score != 1.0
+    assert findings == []
 
 
 def test_literary_quality_dimension_weights_sum_to_one() -> None:

@@ -313,6 +313,8 @@ function TweakRadio({ label, value, options, onChange }) {
   };
 
   const onPointerDown = (e) => {
+    // 按钮自身的 click 负责键盘/指针选择；不要再让轨道拖拽逻辑触发第二次 change。
+    if (e.target && e.target.closest && e.target.closest('button')) return;
     setDragging(true);
     const v0 = segAt(e.clientX);
     if (v0 !== valueRef.current) onChange(v0);
@@ -332,13 +334,14 @@ function TweakRadio({ label, value, options, onChange }) {
 
   return (
     <TweakRow label={label}>
-      <div ref={trackRef} role="radiogroup" onPointerDown={onPointerDown}
+      <div ref={trackRef} role="radiogroup" aria-label={label} onPointerDown={onPointerDown}
            className={dragging ? 'twk-seg dragging' : 'twk-seg'}>
         <div className="twk-seg-thumb"
              style={{ left: `calc(2px + ${idx} * (100% - 4px) / ${n})`,
                       width: `calc((100% - 4px) / ${n})` }} />
         {opts.map((o) => (
-          <button key={o.value} type="button" role="radio" aria-checked={o.value === value}>
+          <button key={o.value} type="button" role="radio" aria-checked={o.value === value} aria-label={o.label}
+            onClick={() => onChange(o.value)}>
             {o.label}
           </button>
         ))}

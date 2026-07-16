@@ -40,16 +40,20 @@ def test_independence_slots_cover_section_5_7():
         "writer_explorer",
         "critic_independent",
         "judge_advisory",
+        "chapter_judge_advisory",
         "extractor_fast",
     } <= slots
 
 
-def test_default_routing_writer_and_critic_are_independent(session):
-    # 默认（离线）路由：writer style_draft=gpt-5，critic soft_qc=gpt-5-mini → 不同模型
+def test_default_routing_reports_correlated_near_final_judges(session):
+    # critic 异源并不能掩盖两个 near-final judge 与 writer 同源。
     result = mi.judge_independence(session)
-    assert result["correlated_judge"] is False
-    assert result["independent"] is True
+    assert result["correlated_judge"] is True
+    assert result["independent"] is False
     assert result["writer"]["model"] != result["critic"]["model"]
+    assert result["comparisons"]["critic_independent"]["status"] == "independent"
+    assert result["comparisons"]["judge_advisory"]["status"] == "correlated"
+    assert result["comparisons"]["chapter_judge_advisory"]["status"] == "correlated"
 
 
 def test_same_model_marks_correlated_and_downweights(session, monkeypatch):
@@ -61,6 +65,43 @@ def test_same_model_marks_correlated_and_downweights(session, monkeypatch):
     assert result["correlated_judge"] is True
     assert result["independent"] is False
     assert result["weight_hint"] == "downweight"
+    assert set(result["correlated_roles"]) == {
+        "critic_independent",
+        "judge_advisory",
+        "chapter_judge_advisory",
+    }
+
+
+def test_all_review_roles_can_be_independent(session, monkeypatch):
+    routes = {
+        "style_draft": ("writer_provider", "writer_model"),
+        "soft_qc": ("critic_provider", "critic_model"),
+        "near_final_acceptance_review": ("judge_provider", "judge_model"),
+        "chapter_near_final_review": ("chapter_provider", "chapter_model"),
+    }
+
+    def _fake_route(_session, node_id):
+        provider, model = routes[node_id]
+        return {"provider": provider, "model": model, "degraded": False}
+
+    monkeypatch.setattr(mi, "_node_route", _fake_route)
+    result = mi.judge_independence(session)
+    assert result["independence_status"] == "independent"
+    assert result["correlated_judge"] is False
+    assert result["correlated_roles"] == []
+
+
+def test_unknown_judge_route_is_not_claimed_independent(session, monkeypatch):
+    def _fake_route(_session, node_id):
+        if node_id == "chapter_near_final_review":
+            return {"provider": None, "model": None, "degraded": True}
+        return {"provider": node_id, "model": node_id, "degraded": False}
+
+    monkeypatch.setattr(mi, "_node_route", _fake_route)
+    result = mi.judge_independence(session)
+    assert result["independence_status"] == "unknown"
+    assert result["independent"] is False
+    assert result["unknown_roles"] == ["chapter_judge_advisory"]
 
 
 def test_resolve_slot_degrades_gracefully_when_route_unknown(session, monkeypatch):
@@ -81,6 +122,8 @@ def test_observed_correlated_judge_from_recorded_calls(session):
     observed = mi.observed_correlated_judge(session, scene_id)
     assert observed is not None
     assert observed["correlated_judge"] is True
+    assert observed["correlated_roles"] == ["judge_advisory"]
+    assert observed["role_evidence"]["judge_advisory"]["shared_sources"] == ["p/gpt-5"]
 
 
 def test_observed_independent_when_review_uses_other_model(session):
@@ -90,6 +133,77 @@ def test_observed_independent_when_review_uses_other_model(session):
     observed = mi.observed_correlated_judge(session, scene_id)
     assert observed is not None
     assert observed["correlated_judge"] is False
+    assert observed["independent"] is False
+    assert observed["independence_status"] == "independent_observed_partial"
+
+
+def test_observed_chapter_judge_is_compared_separately(session):
+    scene_id = "scene_obs_chapter_judge"
+    _seed_call(session, node_id="style_draft", provider="p", model="gpt-5", scene_id=scene_id)
+    _seed_call(session, node_id="soft_qc", provider="p", model="gpt-5-mini", scene_id=scene_id)
+    _seed_call(session, node_id="chapter_near_final_review", provider="p", model="gpt-5", scene_id=scene_id)
+
+    observed = mi.observed_correlated_judge(session, scene_id)
+
+    assert observed is not None
+    assert observed["role_evidence"]["critic_independent"]["status"] == "independent"
+    assert observed["role_evidence"]["chapter_judge_advisory"]["status"] == "correlated"
+    assert observed["correlated_roles"] == ["chapter_judge_advisory"]
+
+
+def test_observed_evidence_includes_literary_rewrite_as_writer(session):
+    scene_id = "scene_obs_rewrite"
+    _seed_call(session, node_id="style_draft", provider="p", model="writer-a", scene_id=scene_id)
+    _seed_call(
+        session,
+        node_id="scene_literary_rewrite",
+        provider="p",
+        model="writer-b",
+        scene_id=scene_id,
+    )
+    _seed_call(
+        session,
+        node_id="near_final_acceptance_review",
+        provider="p",
+        model="writer-b",
+        scene_id=scene_id,
+    )
+
+    observed = mi.observed_correlated_judge(session, scene_id)
+
+    assert observed is not None
+    assert "scene_literary_rewrite" in observed["writer_node_ids"]
+    assert observed["writer_sources_by_node"]["scene_literary_rewrite"] == [
+        "p/writer-b"
+    ]
+    assert observed["role_evidence"]["judge_advisory"]["shared_sources"] == [
+        "p/writer-b"
+    ]
+
+
+def test_observed_chapter_scope_uses_all_calls_in_chapter(session):
+    _seed_call(session, node_id="style_draft", provider="p", model="gpt-5", scene_id="chapter_scene_1")
+    _seed_call(
+        session,
+        node_id="chapter_near_final_review",
+        provider="p",
+        model="gpt-5",
+        scene_id="chapter_scene_2",
+    )
+    for row in session.query(LlmCall).filter(LlmCall.scene_id.in_(("chapter_scene_1", "chapter_scene_2"))):
+        row.chapter_id = "chapter_scope_1"
+    session.flush()
+
+    observed = mi.observed_correlated_judge(
+        session,
+        None,
+        chapter_id="chapter_scope_1",
+    )
+
+    assert observed is not None
+    assert observed["scope_type"] == "chapter"
+    assert observed["scope_id"] == "chapter_scope_1"
+    assert observed["correlated_roles"] == ["chapter_judge_advisory"]
 
 
 def test_observed_none_when_no_review_call(session):

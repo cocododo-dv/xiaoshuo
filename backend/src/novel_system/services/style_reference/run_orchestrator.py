@@ -14,7 +14,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
+
+from novel_system.db.models import StyleReferenceRun
 
 from novel_system.services.errors import DomainError
 from novel_system.services.style_reference.dimensions import Layer
@@ -179,7 +182,11 @@ class RunOrchestrator:
             book_id=book_id,
             status=RunStatus.RUNNING.value,
             phase=RunPhase.EXTRACT.value,
+            dispatch_state="queued" if background else "running",
+            requested_layers_json=[layer.value for layer in layers],
             coverage_json=coverage_json,
+            heartbeat_at=_utcnow_iso(),
+            retryable=False,
             started_at=_utcnow_iso(),
         )
 
@@ -188,8 +195,7 @@ class RunOrchestrator:
 
         # 后台模式:先把 run 行落盘,worker 用独立 session 接管
         self.session.commit()
-        _RUN_EXECUTOR.submit(
-            _background_run_worker,
+        start_style_reference_run_worker(
             run_id=run_id,
             book_id=book_id,
             layer_values=[layer.value for layer in layers],
@@ -233,6 +239,8 @@ class RunOrchestrator:
                             self.repo.update_run(
                                 run_id,
                                 status=RunStatus.CANCELLED.value,
+                                dispatch_state="cancelled",
+                                heartbeat_at=_utcnow_iso(),
                                 finished_at=_utcnow_iso(),
                             )
                             self.session.commit()
@@ -261,12 +269,23 @@ class RunOrchestrator:
                     rng=self._rng,
                     # 后台模式每 sub_dim commit:不让写事务跨分钟级 LLM 调用持锁
                     # (否则并发 UI 写操作等满 busy_timeout 报 database is busy)
-                    checkpoint=(self.session.commit if progress_commits else None),
+                    checkpoint=(
+                        (lambda: self._checkpoint_background_run(run_id))
+                        if progress_commits
+                        else None
+                    ),
                 )
                 sub_dim_results.extend(extractor.extract_all_sub_dimensions())
         except Exception:
             self.repo.update_run(
-                run_id, status=RunStatus.FAILED.value, finished_at=_utcnow_iso()
+                run_id,
+                status=RunStatus.FAILED.value,
+                dispatch_state="failed",
+                heartbeat_at=_utcnow_iso(),
+                finished_at=_utcnow_iso(),
+                error_code="STYLE_REFERENCE_EXTRACTION_FAILED",
+                error_text="style reference extraction failed; start a new run to retry",
+                retryable=True,
             )
             if progress_commits:
                 self.session.commit()
@@ -290,7 +309,12 @@ class RunOrchestrator:
             run_id,
             status=RunStatus.DONE.value,
             phase=RunPhase.DONE.value,
+            dispatch_state="completed",
+            heartbeat_at=_utcnow_iso(),
             finished_at=_utcnow_iso(),
+            error_code=None,
+            error_text=None,
+            retryable=False,
             coverage_json=coverage,
         )
         if progress_commits:
@@ -330,7 +354,17 @@ class RunOrchestrator:
             "layers_done": layers_done,
             "current_layer": current.value if current is not None else None,
         }
-        self.repo.update_run(run_id, coverage_json=coverage)
+        self.repo.update_run(
+            run_id,
+            coverage_json=coverage,
+            heartbeat_at=_utcnow_iso(),
+        )
+
+    def _checkpoint_background_run(self, run_id: str) -> None:
+        """Commit a sub-dimension and renew its durable heartbeat together."""
+
+        self.repo.update_run(run_id, heartbeat_at=_utcnow_iso())
+        self.session.commit()
 
     def _reap_stale_runs(self, book_id: str) -> int:
         """把同书超时仍 RUNNING 的僵尸 run 降级 FAILED,返回回收数量。
@@ -341,21 +375,51 @@ class RunOrchestrator:
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=STALE_RUN_TIMEOUT_MINUTES)
         reaped = 0
         for run in self.repo.list_runs(book_id=book_id, status=RunStatus.RUNNING.value):
-            started = _parse_iso(run.started_at or run.created_at)
-            if started is None or started > cutoff:
+            heartbeat = _parse_iso(run.heartbeat_at or run.started_at or run.created_at)
+            if heartbeat is None or heartbeat > cutoff:
                 continue
             self.repo.update_run(
                 run.run_id,
                 status=RunStatus.FAILED.value,
+                dispatch_state="failed",
+                heartbeat_at=_utcnow_iso(),
                 finished_at=_utcnow_iso(),
+                error_code="STYLE_REFERENCE_RUN_INTERRUPTED",
+                error_text="background extraction heartbeat expired; start a new run to retry",
+                retryable=True,
                 coverage_json={
                     **(run.coverage_json or {}),
                     "failure_reason": "stale_running_reaped",
+                    "retryable": True,
                 },
             )
             reaped += 1
             logger.warning("reaped stale RUNNING run %s (book %s)", run.run_id, book_id)
         return reaped
+
+
+def start_style_reference_run_worker(
+    *,
+    run_id: str,
+    book_id: str,
+    layer_values: list[str],
+    llm_client: Any,
+    retry_policy: ExtractionRetryPolicy | None = None,
+) -> None:
+    """Submit a durable extraction dispatch.
+
+    The worker performs the queued->running CAS, so duplicate submissions from
+    concurrent ASGI startup hooks are harmless.
+    """
+
+    _RUN_EXECUTOR.submit(
+        _background_run_worker,
+        run_id=run_id,
+        book_id=book_id,
+        layer_values=list(layer_values),
+        llm_client=llm_client,
+        retry_policy=retry_policy or ExtractionRetryPolicy(),
+    )
 
 
 def _background_run_worker(
@@ -375,12 +439,43 @@ def _background_run_worker(
 
     try:
         with SessionLocal() as session:
+            claimed = session.execute(
+                update(StyleReferenceRun)
+                .where(
+                    StyleReferenceRun.run_id == run_id,
+                    StyleReferenceRun.status == RunStatus.RUNNING.value,
+                    StyleReferenceRun.dispatch_state == "queued",
+                )
+                .values(
+                    dispatch_state="running",
+                    heartbeat_at=_utcnow_iso(),
+                    error_code=None,
+                    error_text=None,
+                    retryable=False,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if claimed.rowcount != 1:
+                session.rollback()
+                logger.info("background extract run %s dispatch was already claimed", run_id)
+                return
+            session.commit()
             orch = RunOrchestrator(
                 session,
                 llm_client=llm_client,
                 llm_enabled=True,
                 retry_policy=retry_policy,
             )
+            book = orch.repo.get_book(book_id)
+            if book is None:
+                raise DomainError(
+                    "STYLE_REFERENCE_BOOK_NOT_FOUND",
+                    "style reference book disappeared before extraction started",
+                    status_code=404,
+                )
+            # Re-check at dispatch time: an operator may tighten the book's
+            # cloud policy while it is still queued after the HTTP response.
+            ensure_cloud_llm_allowed(book, operation="start_extract_run")
             orch._execute(
                 run_id,
                 book_id,
@@ -389,6 +484,40 @@ def _background_run_worker(
             )
     except Exception:  # pylint: disable=broad-except
         logger.exception("background extract run %s failed", run_id)
+        _mark_background_run_failed(run_id)
+
+
+def _mark_background_run_failed(run_id: str) -> None:
+    """Close failures that happen outside ``_execute`` (including setup)."""
+
+    from novel_system.db.session import SessionLocal
+
+    try:
+        with SessionLocal() as session:
+            changed = session.execute(
+                update(StyleReferenceRun)
+                .where(
+                    StyleReferenceRun.run_id == run_id,
+                    StyleReferenceRun.status == RunStatus.RUNNING.value,
+                    StyleReferenceRun.dispatch_state == "running",
+                )
+                .values(
+                    status=RunStatus.FAILED.value,
+                    dispatch_state="failed",
+                    heartbeat_at=_utcnow_iso(),
+                    finished_at=_utcnow_iso(),
+                    error_code="STYLE_REFERENCE_EXTRACTION_FAILED",
+                    error_text="style reference extraction failed; start a new run to retry",
+                    retryable=True,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if changed.rowcount:
+                session.commit()
+            else:
+                session.rollback()
+    except Exception:  # pragma: no cover - final worker boundary
+        logger.exception("failed to persist extraction worker failure for %s", run_id)
 
 
 def _utcnow_iso() -> str:

@@ -547,7 +547,7 @@ def test_orphan_pending_report_degrades_to_fail_on_poll():
     assert resp.status_code == 200
     report = resp.json()["data"]["report"]
     assert report["verdict"] == "fail"
-    assert report["status"] == "done"
+    assert report["status"] == "failed"
 
 
 # ---------------------------------------------------------------------------

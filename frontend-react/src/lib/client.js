@@ -8,6 +8,8 @@ const FALLBACK_API_BASE = "http://127.0.0.1:8000";
 const DEFAULT_API_BASE = (import.meta.env.VITE_NOVEL_SYSTEM_API_BASE || FALLBACK_API_BASE).trim();
 const OPERATOR_REF_KEY = "novel-system-operator-ref";
 const DEFAULT_OPERATOR_REF = "operator";
+const REMOTE_ACCESS_TOKEN_KEY = "novel-system-remote-access-token";
+const DEFAULT_REMOTE_ACCESS_TOKEN = (import.meta.env.VITE_NOVEL_SYSTEM_ACCESS_TOKEN || "").trim();
 
 function isLoopbackApiBase(value) {
   try {
@@ -71,6 +73,29 @@ export function setOperatorRef(value) {
     window.localStorage.setItem(OPERATOR_REF_KEY, normalized);
   }
   return normalized;
+}
+
+export function getRemoteAccessToken() {
+  if (typeof window === "undefined") {
+    return DEFAULT_REMOTE_ACCESS_TOKEN;
+  }
+  return (window.sessionStorage.getItem(REMOTE_ACCESS_TOKEN_KEY) || DEFAULT_REMOTE_ACCESS_TOKEN).trim();
+}
+
+export function setRemoteAccessToken(value) {
+  const normalized = String(value || "").trim();
+  if (typeof window !== "undefined") {
+    if (normalized) window.sessionStorage.setItem(REMOTE_ACCESS_TOKEN_KEY, normalized);
+    else window.sessionStorage.removeItem(REMOTE_ACCESS_TOKEN_KEY);
+  }
+  return normalized;
+}
+
+function withAccessToken(headers = {}) {
+  const result = { ...headers };
+  const token = getRemoteAccessToken();
+  if (token) result["X-Novel-Access-Token"] = token;
+  return result;
 }
 
 export function buildUrl(path) {
@@ -215,7 +240,10 @@ async function parseEnvelope(response, clientRequestId = null) {
 export async function apiGet(path, { signal } = {}) {
   const clientRequestId = buildClientRequestId();
   try {
-    const response = await fetch(buildUrl(path), { signal });
+    const response = await fetch(buildUrl(path), {
+      headers: withAccessToken({ "X-Client-Request-Id": clientRequestId }),
+      signal,
+    });
     return parseEnvelope(response, clientRequestId);
   } catch (error) {
     throw normalizeRequestError(error, clientRequestId);
@@ -228,12 +256,12 @@ export async function apiPost(path, body = {}, { signal } = {}) {
   try {
     const response = await fetch(buildUrl(path), {
       method: "POST",
-      headers: {
+      headers: withAccessToken({
         "Content-Type": "application/json",
         "X-Idempotency-Key": key,
         "X-Operator-Ref": getOperatorRef(),
         "X-Client-Request-Id": clientRequestId,
-      },
+      }),
       body: JSON.stringify(body),
       signal,
     });
@@ -263,11 +291,11 @@ export async function apiPatch(path, body = {}) {
   try {
     const response = await fetch(buildUrl(path), {
       method: "PATCH",
-      headers: {
+      headers: withAccessToken({
         "Content-Type": "application/json",
         "X-Operator-Ref": getOperatorRef(),
         "X-Client-Request-Id": clientRequestId,
-      },
+      }),
       body: JSON.stringify(body),
     });
     return parseEnvelope(response, clientRequestId);
@@ -281,11 +309,11 @@ export async function apiPut(path, body = {}) {
   try {
     const response = await fetch(buildUrl(path), {
       method: "PUT",
-      headers: {
+      headers: withAccessToken({
         "Content-Type": "application/json",
         "X-Operator-Ref": getOperatorRef(),
         "X-Client-Request-Id": clientRequestId,
-      },
+      }),
       body: JSON.stringify(body),
     });
     return parseEnvelope(response, clientRequestId);
@@ -301,7 +329,7 @@ export async function apiPut(path, body = {}) {
 export async function apiAdminGet(path, adminToken = "") {
   const clientRequestId = buildClientRequestId();
   try {
-    const headers = { "X-Client-Request-Id": clientRequestId };
+    const headers = withAccessToken({ "X-Client-Request-Id": clientRequestId });
     if (adminToken) headers["X-Admin-Token"] = adminToken;
     const response = await fetch(buildUrl(path), { headers });
     return parseEnvelope(response, clientRequestId);
@@ -314,12 +342,12 @@ export async function apiAdminPost(path, body = {}, adminToken = "") {
   const clientRequestId = buildClientRequestId();
   const { key, signature } = acquireIdempotencyKey("POST", path, body);
   try {
-    const headers = {
+    const headers = withAccessToken({
       "Content-Type": "application/json",
       "X-Idempotency-Key": key,
       "X-Operator-Ref": getOperatorRef(),
       "X-Client-Request-Id": clientRequestId,
-    };
+    });
     if (adminToken) headers["X-Admin-Token"] = adminToken;
     const response = await fetch(buildUrl(path), {
       method: "POST",
@@ -342,11 +370,11 @@ export async function apiAdminDelete(path, adminToken = "") {
   const clientRequestId = buildClientRequestId();
   const { key, signature } = acquireIdempotencyKey("DELETE", path, undefined);
   try {
-    const headers = {
+    const headers = withAccessToken({
       "X-Idempotency-Key": key,
       "X-Operator-Ref": getOperatorRef(),
       "X-Client-Request-Id": clientRequestId,
-    };
+    });
     if (adminToken) headers["X-Admin-Token"] = adminToken;
     const response = await fetch(buildUrl(path), { method: "DELETE", headers });
     const data = await parseEnvelope(response, clientRequestId);
@@ -367,11 +395,11 @@ export async function apiDelete(path) {
   try {
     const response = await fetch(buildUrl(path), {
       method: "DELETE",
-      headers: {
+      headers: withAccessToken({
         "X-Idempotency-Key": key,
         "X-Operator-Ref": getOperatorRef(),
         "X-Client-Request-Id": clientRequestId,
-      },
+      }),
     });
     const data = await parseEnvelope(response, clientRequestId);
     releaseIdempotencyKey(signature);

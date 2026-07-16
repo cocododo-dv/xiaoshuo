@@ -21,11 +21,11 @@ from novel_system.db.models import (
     SceneCard,
     SceneMemory,
     SceneRunState,
-    StoryProject,
 )
 from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.chapter_approval import require_chapter_mutation_allowed
 from novel_system.services.errors import DomainError
 from novel_system.services.final_text_gate import FinalTextGateService
 
@@ -178,15 +178,9 @@ class CanonicalSceneService:
 
         scene = self.lifecycle.require_active_scene(draft.object_id)
         chapter = self.session.get(ChapterGoal, scene.chapter_id)
-        project_id = scene.project_id or (chapter.project_id if chapter is not None else None)
-        project = self.session.get(StoryProject, project_id) if project_id else None
-        if project is not None and scene.chapter_id in set(project.approved_chapter_ids_json or []):
-            raise DomainError(
-                "CHAPTER_APPROVED_LOCKED",
-                "approved chapter must be explicitly reopened before its canonical text can change",
-                status_code=409,
-                details={"project_id": project.project_id, "chapter_id": scene.chapter_id},
-            )
+        project_id = scene.project_id or (
+            chapter.project_id if chapter is not None else None
+        )
 
         state = self.session.get(SceneRunState, scene.scene_id)
         state_is_new = False
@@ -260,6 +254,19 @@ class CanonicalSceneService:
                     "already_current": True,
                     "derivation_reused": True,
                     "scene_status": state.scene_status,
+                    "safe_to_archive": bool(
+                        existing_derivation["final_text_gate"].get(
+                            "safe_to_archive",
+                            existing_derivation["final_text_gate"].get("archivable", True),
+                        )
+                    ),
+                    "literary_warnings_unresolved": False,
+                    "author_confirmed_final": True,
+                    "finality": {
+                        "safe_to_archive": True,
+                        "literary_warnings_unresolved": False,
+                        "author_confirmed_final": True,
+                    },
                     "scene_memory_row_id": existing_derivation["scene_memory_row_id"],
                     "chapter_memory_row_id": existing_derivation["chapter_memory_row_id"],
                     "narrative_sync_status": "synced",
@@ -273,11 +280,21 @@ class CanonicalSceneService:
                     },
                 }
 
+        if chapter is not None:
+            require_chapter_mutation_allowed(
+                self.session,
+                chapter,
+                changed_fields=["canonical_final_scene"],
+                operation="canonical_manuscript.promote_author_draft",
+            )
+
         source_bundle = self._source_bundle(state, current_final)
         final_text_gate = FinalTextGateService(self.session).evaluate(
             scene_id=scene.scene_id,
             content=canonical_text,
             source_bundle_id=source_bundle.bundle_id if source_bundle is not None else None,
+            author_confirmed_final=True,
+            accepted_warning_codes=accepted_warning_codes,
         )
         gate_content_hash = str(final_text_gate.get("content_hash") or "")
         if gate_content_hash != content_hash:
@@ -415,6 +432,8 @@ class CanonicalSceneService:
             scene.scene_id,
             final.row_id,
             carry_notes_json=carry_notes,
+            author_confirmed_final=True,
+            accepted_warning_codes=accepted_warning_codes,
         )
         aggregate_result = Aggregator(self.session).run_final_aggregate(scene.chapter_id)
         if not aggregate_result or aggregate_result.get("status") != "created":
@@ -458,6 +477,12 @@ class CanonicalSceneService:
             "content_hash": content_hash,
             "already_current": same_author_revision,
             "scene_status": state.scene_status,
+            "safe_to_archive": archive_result["safe_to_archive"],
+            "literary_warnings_unresolved": archive_result[
+                "literary_warnings_unresolved"
+            ],
+            "author_confirmed_final": archive_result["author_confirmed_final"],
+            "finality": archive_result["finality"],
             "scene_memory_row_id": archive_result["scene_memory_row_id"],
             "chapter_memory_row_id": aggregate_result["chapter_memory_row_id"],
             "narrative_sync_status": "synced",
@@ -605,6 +630,9 @@ class CanonicalSceneService:
             final_text_gate = {
                 "content_hash": canonical_content_hash(final.content or ""),
                 "archivable": True,
+                "safe_to_archive": True,
+                "literary_warnings_unresolved": False,
+                "author_confirmed_final": True,
                 "status": "reused_existing_canonical",
             }
         return {

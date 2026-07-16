@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import difflib
+import re
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
@@ -20,11 +22,13 @@ from novel_system.db.models import (
     ChapterState,
     FinalScene,
     PassagePatchCandidate,
+    ReviewItem,
     SceneCard,
     SceneRunState,
     StoryProject,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.chapter_approval import require_author_target_mutation_allowed
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_accounting import LLMCallContext
@@ -277,6 +281,7 @@ class AuthorDraftService:
 
     def save(self, draft_id: str, payload: dict[str, Any], *, actor_ref: str = "operator") -> dict[str, Any]:
         draft = self._require_draft(draft_id)
+        previous_content = draft.content or ""
         base_revision_no = payload.get("base_revision_no")
         if int(base_revision_no or 0) != int(draft.revision_no):
             raise DomainError(
@@ -288,11 +293,51 @@ class AuthorDraftService:
         content = payload.get("content")
         if not isinstance(content, str):
             raise DomainError("AUTHOR_DRAFT_INVALID", "content must be a string", status_code=400)
+        content_changed = content != previous_content
+        require_author_target_mutation_allowed(
+            self.session,
+            object_type=draft.object_type,
+            object_id=draft.object_id,
+            changed_fields=["author_draft.content"] if content_changed else [],
+            operation="author_draft.save",
+        )
+        if not content_changed:
+            response = self._draft_response(draft)
+            response["changed"] = False
+            return response
         new_words = count_words(content)
-        words_delta = new_words - count_words(draft.content)
-        draft.content = content
-        draft.revision_no += 1
-        draft.updated_by = actor_ref or draft.updated_by
+        words_delta = new_words - count_words(previous_content)
+        next_revision_no = int(draft.revision_no) + 1
+        updated = self.session.execute(
+            update(AuthorDraft)
+            .where(
+                AuthorDraft.draft_id == draft_id,
+                AuthorDraft.revision_no == int(base_revision_no),
+                AuthorDraft.status == "current",
+            )
+            .values(
+                content=content,
+                revision_no=next_revision_no,
+                updated_by=actor_ref or draft.updated_by,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if updated.rowcount != 1:
+            # The pre-check above gives fast feedback in the common case; this
+            # database compare-and-swap is the actual concurrency guarantee.
+            self.session.rollback()
+            current = self.session.get(AuthorDraft, draft_id)
+            raise DomainError(
+                "AUTHOR_DRAFT_CONFLICT",
+                "author draft has changed; refresh before saving",
+                status_code=409,
+                details={
+                    "current_revision_no": current.revision_no if current else None,
+                    "current_status": current.status if current else None,
+                },
+            )
+        self.session.expire(draft)
+        self.session.refresh(draft)
         # FE-ALIGN P2 字数埋点（D2）：保存主路径上报 words_delta，统计按 project 聚合。
         project_id = self._resolve_project_id(draft.object_type, draft.object_id)
         if words_delta and project_id:
@@ -319,9 +364,16 @@ class AuthorDraftService:
             note=_optional_text(payload, "note"),
             payload={"base_revision_no": base_revision_no, "revision_no": draft.revision_no},
         )
+        self._record_direct_edit_preferences(
+            draft,
+            before_text=previous_content,
+            after_text=content,
+            actor_ref=actor_ref,
+        )
         self._snapshot_revision(draft, actor_ref=actor_ref, origin="edited")
         self.session.flush()
         response = self._draft_response(draft)
+        response["changed"] = True
         if words_rollup is not None:
             response["words_rollup"] = words_rollup
         return response
@@ -329,6 +381,22 @@ class AuthorDraftService:
     def derive_from_generation(self, draft_id: str, *, actor_ref: str = "operator") -> dict[str, Any]:
         draft = self._require_draft(draft_id)
         source = self._source_for_target(draft.object_type, draft.object_id)
+        changed_fields = []
+        if draft.content != source["content"]:
+            changed_fields.append("author_draft.content")
+        if draft.source_text_ref != source["source_text_ref"]:
+            changed_fields.append("author_draft.source_text_ref")
+        require_author_target_mutation_allowed(
+            self.session,
+            object_type=draft.object_type,
+            object_id=draft.object_id,
+            changed_fields=changed_fields,
+            operation="author_draft.derive_from_generation",
+        )
+        if not changed_fields:
+            response = self._draft_response(draft)
+            response["changed"] = False
+            return response
         draft.content = source["content"]
         draft.source_text_ref = source["source_text_ref"]
         draft.revision_no += 1
@@ -346,7 +414,9 @@ class AuthorDraftService:
         )
         self._snapshot_revision(draft, actor_ref=actor_ref, origin="derived")
         self.session.flush()
-        return self._draft_response(draft)
+        response = self._draft_response(draft)
+        response["changed"] = True
+        return response
 
     def proposals(self, draft_id: str) -> dict[str, Any]:
         draft = self._require_draft(draft_id)
@@ -485,7 +555,16 @@ class AuthorDraftService:
         apply_mode = _normalize_apply_mode(_optional_text(request_payload, "apply_mode"), proposal)
         if apply_mode not in AUTHOR_PROPOSAL_APPLY_MODES:
             raise DomainError("AUTHOR_DRAFT_PROPOSAL_APPLY_MODE_INVALID", "unsupported proposal apply_mode", status_code=400)
-        draft.content = _apply_proposal_to_content(current, proposal, apply_mode)
+        next_content = _apply_proposal_to_content(current, proposal, apply_mode)
+        require_author_target_mutation_allowed(
+            self.session,
+            object_type=draft.object_type,
+            object_id=draft.object_id,
+            changed_fields=["author_draft.revision_no", "proposal.status"]
+            + (["author_draft.content"] if next_content != current else []),
+            operation="author_draft.apply_proposal",
+        )
+        draft.content = next_content
         draft.revision_no += 1
         draft.updated_by = actor_ref or draft.updated_by
         proposal.status = "accepted"
@@ -535,7 +614,17 @@ class AuthorDraftService:
         decision_reason = _optional_text(request_payload, "decision_reason")
         affected_excerpt = _optional_text(request_payload, "affected_excerpt")
 
-        draft.content = _apply_proposal_to_content(draft.content or "", proposal, apply_mode)
+        current_content = draft.content or ""
+        next_content = _apply_proposal_to_content(current_content, proposal, apply_mode)
+        require_author_target_mutation_allowed(
+            self.session,
+            object_type=draft.object_type,
+            object_id=draft.object_id,
+            changed_fields=["author_draft.revision_no", "proposal.status"]
+            + (["author_draft.content"] if next_content != current_content else []),
+            operation="author_draft.apply_proposal",
+        )
+        draft.content = next_content
         draft.revision_no += 1
         draft.updated_by = actor_ref or draft.updated_by
         proposal.status = "accepted"
@@ -732,6 +821,13 @@ class AuthorDraftService:
 
     def apply_patch_option(self, draft_id: str, payload: dict[str, Any], *, actor_ref: str = "operator") -> dict[str, Any]:
         draft = self._require_draft(draft_id)
+        require_author_target_mutation_allowed(
+            self.session,
+            object_type=draft.object_type,
+            object_id=draft.object_id,
+            changed_fields=["author_draft.revision_no", "passage_patch.status"],
+            operation="author_draft.apply_patch_option",
+        )
         patch_id = _required_text(payload, "patch_id")
         patch = self.session.get(PassagePatchCandidate, patch_id)
         if patch is None:
@@ -1046,6 +1142,13 @@ class AuthorDraftService:
                 "project structure candidates must be applied through apply-to-snowflake",
                 status_code=400,
             )
+        require_author_target_mutation_allowed(
+            self.session,
+            object_type=candidate.object_type,
+            object_id=candidate.object_id,
+            changed_fields=["writer_brief_json", "structure_candidate.status"],
+            operation="author_draft.apply_structure_candidate",
+        )
         if candidate.object_type == "scene":
             scene = self.lifecycle.require_active_scene(candidate.object_id)
             current = normalize_scene_writer_brief(scene.writer_brief_json)
@@ -1252,32 +1355,42 @@ class AuthorDraftService:
             raise DomainError("AUTHOR_DRAFT_PROPOSAL_TARGET_MISMATCH", "proposal target does not match author draft", status_code=409)
 
     def _proposal_preference_summary(self, draft: AuthorDraft, target: dict[str, Any]) -> dict[str, Any]:
-        scope_candidates: list[tuple[str, str]] = []
+        scope_candidates: list[tuple[str, str]] = [("global", "global")]
         project_id = str(target.get("project_id") or "").strip()
         chapter_id = str(target.get("chapter_id") or "").strip()
+        project = self.session.get(StoryProject, project_id) if project_id else None
+        genre = _normalized_preference_scope_ref(project.genre if project else None)
+        if genre:
+            scope_candidates.append(("genre", genre))
         if project_id:
             scope_candidates.append(("project", project_id))
         if chapter_id:
             scope_candidates.append(("chapter", chapter_id))
-        scope_candidates.append(("global", "global"))
 
         merged: dict[str, Any] = {}
-        for scope_type, scope_ref_id in reversed(scope_candidates):
-            profile = self.session.execute(
+        applied_scopes: list[dict[str, str]] = []
+        for scope_type, scope_ref_id in scope_candidates:
+            profiles = self.session.execute(
                 select(AuthorPreferenceProfile)
                 .where(
                     AuthorPreferenceProfile.scope_type == scope_type,
                     AuthorPreferenceProfile.scope_ref_id == scope_ref_id,
+                    AuthorPreferenceProfile.status == "approved",
+                    AuthorPreferenceProfile.runtime_eligible == 1,
                 )
-                .order_by(AuthorPreferenceProfile.updated_at.desc(), AuthorPreferenceProfile.profile_id.desc())
-            ).scalars().first()
-            if profile is None:
-                continue
-            summary = profile.summary_json or {}
-            if isinstance(summary, dict):
-                merged.update(summary)
-                merged["scope_type"] = scope_type
-                merged["scope_ref_id"] = scope_ref_id
+                .order_by(AuthorPreferenceProfile.updated_at.asc(), AuthorPreferenceProfile.profile_id.asc())
+            ).scalars().all()
+            for profile in profiles:
+                summary = profile.summary_json or {}
+                if isinstance(summary, dict):
+                    merged = _merge_preference_summaries(merged, summary)
+                    applied_scopes.append(
+                        {"scope_type": scope_type, "scope_ref_id": scope_ref_id, "profile_id": profile.profile_id}
+                    )
+        if applied_scopes:
+            merged["scope_type"] = applied_scopes[-1]["scope_type"]
+            merged["scope_ref_id"] = applied_scopes[-1]["scope_ref_id"]
+            merged["applied_scopes"] = applied_scopes
         return _safe_preference_summary_for_prompt(merged)
 
     def _refresh_proposal_preference_profile(
@@ -1288,12 +1401,41 @@ class AuthorDraftService:
         decision_reason: str | None = None,
         rejected_ai_trace: str | None = None,
     ) -> AuthorPreferenceProfile:
-        profile = self.session.get(AuthorPreferenceProfile, "author_pref_global_global_proposals")
+        draft = self._require_draft(proposal.draft_id)
+        target = self._target_payload(draft.object_type, draft.object_id)
+        scopes = self._preference_learning_scopes(target)
+        profiles = [
+            self._refresh_scoped_proposal_preference(
+                proposal,
+                scope_type=scope_type,
+                scope_ref_id=scope_ref_id,
+                project_id=str(target.get("project_id") or "") or None,
+                actor_ref=actor_ref,
+                decision_reason=decision_reason,
+                rejected_ai_trace=rejected_ai_trace,
+            )
+            for scope_type, scope_ref_id in scopes
+        ]
+        return profiles[0]
+
+    def _refresh_scoped_proposal_preference(
+        self,
+        proposal: AuthorDraftProposal,
+        *,
+        scope_type: str,
+        scope_ref_id: str,
+        project_id: str | None,
+        actor_ref: str,
+        decision_reason: str | None,
+        rejected_ai_trace: str | None,
+    ) -> AuthorPreferenceProfile:
+        profile_id = _preference_profile_id(scope_type, scope_ref_id, "proposals")
+        profile = self.session.get(AuthorPreferenceProfile, profile_id)
         if profile is None:
             profile = AuthorPreferenceProfile(
-                profile_id="author_pref_global_global_proposals",
-                scope_type="global",
-                scope_ref_id="global",
+                profile_id=profile_id,
+                scope_type=scope_type,
+                scope_ref_id=scope_ref_id,
                 status="draft",
                 runtime_eligible=0,
                 summary_json={},
@@ -1346,7 +1488,102 @@ class AuthorDraftService:
         profile.runtime_eligible = 0
         profile.summary_json = summary
         profile.created_by = actor_ref or profile.created_by
+        self._upsert_preference_review(profile, project_id=project_id)
         return profile
+
+    def _preference_learning_scopes(self, target: dict[str, Any]) -> list[tuple[str, str]]:
+        project_id = str(target.get("project_id") or "").strip()
+        project = self.session.get(StoryProject, project_id) if project_id else None
+        scopes: list[tuple[str, str]] = []
+        if project_id:
+            scopes.append(("project", project_id))
+        genre = _normalized_preference_scope_ref(project.genre if project else None)
+        if genre:
+            scopes.append(("genre", genre))
+        return scopes or [("global", "global")]
+
+    def _record_direct_edit_preferences(
+        self,
+        draft: AuthorDraft,
+        *,
+        before_text: str,
+        after_text: str,
+        actor_ref: str,
+    ) -> None:
+        observation = _direct_edit_preference_observation(
+            before_text,
+            after_text,
+            draft_id=draft.draft_id,
+            revision_no=draft.revision_no,
+            object_type=draft.object_type,
+            object_id=draft.object_id,
+        )
+        if observation is None:
+            return
+        target = self._target_payload(draft.object_type, draft.object_id)
+        project_id = str(target.get("project_id") or "").strip() or None
+        for scope_type, scope_ref_id in self._preference_learning_scopes(target):
+            profile_id = _preference_profile_id(scope_type, scope_ref_id, "manual_edits")
+            profile = self.session.get(AuthorPreferenceProfile, profile_id)
+            if profile is None:
+                profile = AuthorPreferenceProfile(
+                    profile_id=profile_id,
+                    scope_type=scope_type,
+                    scope_ref_id=scope_ref_id,
+                    status="draft",
+                    runtime_eligible=0,
+                    summary_json={},
+                    source_patch_ids_json=[],
+                    created_by=actor_ref or "author_manual_edit",
+                )
+                self.session.add(profile)
+            summary = dict(profile.summary_json or {})
+            observations = [row for row in summary.get("manual_edit_observations", []) if isinstance(row, dict)]
+            observations.append(observation)
+            summary["manual_edit_observations"] = observations[-30:]
+            hints = [str(item) for item in summary.get("safe_preference_hints", []) if str(item).strip()]
+            hints.extend(str(label) for label in observation.get("labels", []) if str(label).strip())
+            summary["safe_preference_hints"] = _unique_tail(hints, limit=20)
+            summary["manual_edit_count"] = len(observations[-30:])
+            profile.status = "draft"
+            profile.runtime_eligible = 0
+            profile.summary_json = summary
+            profile.created_by = actor_ref or profile.created_by
+            self._upsert_preference_review(profile, project_id=project_id)
+
+    def _upsert_preference_review(self, profile: AuthorPreferenceProfile, *, project_id: str | None) -> ReviewItem:
+        review_id = f"review_{profile.profile_id}"
+        summary = profile.summary_json or {}
+        payload = {
+            "profile_id": profile.profile_id,
+            "scope_type": profile.scope_type,
+            "scope_ref_id": profile.scope_ref_id,
+            "summary": summary,
+            "source_patch_ids": profile.source_patch_ids_json or [],
+        }
+        review = self.session.get(ReviewItem, review_id)
+        if review is None:
+            review = ReviewItem(
+                review_id=review_id,
+                project_id=project_id,
+                item_type="author_preference_profile",
+                status="pending",
+                candidate_text=json.dumps(summary, ensure_ascii=False, sort_keys=True),
+                candidate_payload_json=payload,
+                active_on_approve=1,
+                materialize_status="pending",
+            )
+            self.session.add(review)
+            return review
+        review.project_id = project_id or review.project_id
+        review.status = "pending"
+        review.candidate_text = json.dumps(summary, ensure_ascii=False, sort_keys=True)
+        review.candidate_payload_json = payload
+        review.active_on_approve = 1
+        review.materialize_status = "pending"
+        review.approved_item_row_id = None
+        review.approved_item_id = None
+        return review
 
     def _source_for_target(self, object_type: str, object_id: str) -> dict[str, str]:
         if object_type == "project":
@@ -1945,6 +2182,122 @@ def _safe_preference_signal(
     }
 
 
+def _normalized_preference_scope_ref(value: str | None) -> str:
+    return " ".join(str(value or "").strip().lower().split())[:120]
+
+
+def _preference_profile_id(scope_type: str, scope_ref_id: str, source: str) -> str:
+    digest = hashlib.sha256(f"{scope_type}:{scope_ref_id}".encode("utf-8")).hexdigest()[:16]
+    return f"author_pref_{scope_type}_{digest}_{source}"
+
+
+def _merge_preference_summaries(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in incoming.items():
+        if key in {"safe_preference_hints", "rejected_ai_traces"} and isinstance(value, list):
+            current = [str(item) for item in merged.get(key, []) if str(item).strip()]
+            current.extend(str(item) for item in value if str(item).strip())
+            merged[key] = _unique_tail(current, limit=20)
+            continue
+        if key in {"preference_signals", "manual_edit_observations"} and isinstance(value, list):
+            rows = [row for row in merged.get(key, []) if isinstance(row, dict)]
+            rows.extend(row for row in value if isinstance(row, dict))
+            seen: set[str] = set()
+            unique_rows: list[dict[str, Any]] = []
+            for row in rows:
+                marker = canonical_json(row)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                unique_rows.append(row)
+            merged[key] = unique_rows[-30:]
+            continue
+        merged[key] = value
+    return merged
+
+
+def _direct_edit_preference_observation(
+    before_text: str,
+    after_text: str,
+    *,
+    draft_id: str,
+    revision_no: int,
+    object_type: str,
+    object_id: str,
+) -> dict[str, Any] | None:
+    before = before_text.strip()
+    after = after_text.strip()
+    # Initial drafting and tiny corrections are not reliable preference evidence.
+    if before == after or min(len(before), len(after)) < 80:
+        return None
+    similarity = difflib.SequenceMatcher(a=before, b=after, autojunk=False).ratio()
+    change_ratio = round(1.0 - similarity, 4)
+    if change_ratio < 0.12:
+        return None
+
+    before_len = len(before)
+    after_len = len(after)
+    length_ratio = after_len / max(before_len, 1)
+    before_dialogue = _dialogue_line_ratio(before)
+    after_dialogue = _dialogue_line_ratio(after)
+    before_paragraph = _average_paragraph_length(before)
+    after_paragraph = _average_paragraph_length(after)
+    before_sentence = _average_sentence_length(before)
+    after_sentence = _average_sentence_length(after)
+    labels: list[str] = []
+    if length_ratio <= 0.85:
+        labels.append("prefer_concise")
+    elif length_ratio >= 1.15:
+        labels.append("prefer_expansion")
+    if after_dialogue - before_dialogue >= 0.12:
+        labels.append("prefer_more_dialogue")
+    elif before_dialogue - after_dialogue >= 0.12:
+        labels.append("prefer_less_dialogue")
+    if before_paragraph and after_paragraph <= before_paragraph * 0.78:
+        labels.append("prefer_shorter_paragraphs")
+    elif before_paragraph and after_paragraph >= before_paragraph * 1.28:
+        labels.append("prefer_longer_paragraphs")
+    if before_sentence and after_sentence <= before_sentence * 0.78:
+        labels.append("prefer_shorter_sentences")
+    elif before_sentence and after_sentence >= before_sentence * 1.28:
+        labels.append("prefer_longer_sentences")
+    labels = _unique_tail(labels, limit=8)
+    if not labels:
+        return None
+    return {
+        "source_draft_id": draft_id,
+        "source_revision_no": int(revision_no),
+        "object_type": object_type,
+        "object_id": object_id,
+        "labels": labels,
+        "metrics": {
+            "change_ratio": change_ratio,
+            "length_ratio": round(length_ratio, 4),
+            "dialogue_ratio_delta": round(after_dialogue - before_dialogue, 4),
+            "paragraph_length_ratio": round(after_paragraph / max(before_paragraph, 1.0), 4),
+            "sentence_length_ratio": round(after_sentence / max(before_sentence, 1.0), 4),
+        },
+    }
+
+
+def _dialogue_line_ratio(text: str) -> float:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return 0.0
+    dialogue = sum(1 for line in lines if line.startswith(("“", '"', "「", "『", "—")))
+    return dialogue / len(lines)
+
+
+def _average_paragraph_length(text: str) -> float:
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n|\n", text) if part.strip()]
+    return sum(len(part) for part in paragraphs) / max(len(paragraphs), 1)
+
+
+def _average_sentence_length(text: str) -> float:
+    sentences = [part.strip() for part in re.split(r"[。！？!?；;]+", text) if part.strip()]
+    return sum(len(part) for part in sentences) / max(len(sentences), 1)
+
+
 def _safe_preference_summary_for_prompt(summary: dict[str, Any]) -> dict[str, Any]:
     if not summary:
         return {}
@@ -1956,6 +2309,8 @@ def _safe_preference_summary_for_prompt(summary: dict[str, Any]) -> dict[str, An
         "rejected_by_type",
         "scope_type",
         "scope_ref_id",
+        "manual_edit_count",
+        "applied_scopes",
     ):
         if key in summary:
             safe[key] = summary[key]
@@ -1982,6 +2337,23 @@ def _safe_preference_summary_for_prompt(summary: dict[str, Any]) -> dict[str, An
     if hints:
         safe["safe_preference_hints"] = _unique_tail(hints, limit=20)
 
+    for key in (
+        "preferred_revision_moves",
+        "rejected_revision_moves",
+        "preferred_patch_categories",
+        "rejected_patch_categories",
+        "preference_tags",
+        "ai_trace_terms_to_watch",
+    ):
+        source_values = summary.get(key, [])
+        values = []
+        for value in source_values if isinstance(source_values, list) else []:
+            sanitized = _safe_trace_for_prompt(value)
+            if sanitized:
+                values.append(sanitized)
+        if values:
+            safe[key] = _unique_tail(values, limit=20)
+
     traces = []
     source_traces = summary.get("rejected_ai_traces", [])
     for trace in source_traces if isinstance(source_traces, list) else []:
@@ -1998,7 +2370,20 @@ def _safe_trace_for_prompt(value: Any) -> str:
     if not text:
         return ""
     lowered = text.lower()
-    blocked = ("ignore previous", "ignore all", "system prompt", "developer message", "tool call", "execute ")
+    blocked = (
+        "ignore previous",
+        "ignore all",
+        "system prompt",
+        "developer message",
+        "tool call",
+        "execute ",
+        "忽略以上",
+        "忽略之前",
+        "系统提示",
+        "开发者消息",
+        "调用工具",
+        "执行命令",
+    )
     if any(marker in lowered for marker in blocked):
         return ""
     return text[:120]

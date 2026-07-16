@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
@@ -17,6 +18,38 @@ from novel_system.services.projects import (
 )
 
 router = APIRouter(tags=["projects"])
+
+
+class ProjectChapterRunJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    offline_demo: StrictBool = False
+
+
+class ProjectChapterReadConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class ProjectChapterApproveFinalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    revision_notes: str | None = Field(default=None, max_length=2000)
+
+
+class ProjectChapterReopenFinalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    reason: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        reason = value.strip()
+        if not reason:
+            raise ValueError("reason must not be blank")
+        return reason
 
 
 @router.post("/api/v1/projects")
@@ -148,12 +181,16 @@ def run_project_chapter(
 def run_project_chapter_job(
     project_id: str,
     chapter_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: ProjectChapterRunJobRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload or {}
-    result = ProjectChapterFlowService(session).prepare_chapter_run_job(project_id, chapter_id, body)
+    offline_demo = payload.offline_demo if payload is not None else False
+    result = ProjectChapterFlowService(session).prepare_chapter_run_job(
+        project_id,
+        chapter_id,
+        offline_demo=offline_demo,
+    )
     should_start_worker = bool(result.pop("_start_worker", False))
     session.commit()
     if should_start_worker:
@@ -165,11 +202,11 @@ def run_project_chapter_job(
 def approve_project_chapter_final(
     project_id: str,
     chapter_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: ProjectChapterApproveFinalRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload or {}
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
@@ -184,15 +221,43 @@ def approve_project_chapter_final(
     return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
+@router.post("/api/v1/projects/{project_id}/chapters/{chapter_id}/reopen-final")
+def reopen_project_chapter_final(
+    project_id: str,
+    chapter_id: str,
+    payload: ProjectChapterReopenFinalRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    body = payload.model_dump(mode="json")
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/projects/{project_id}/chapters/{chapter_id}/reopen-final",
+        payload={"project_id": project_id, "chapter_id": chapter_id, **body},
+        action=lambda: ProjectChapterFlowService(session).reopen_final(
+            project_id,
+            chapter_id,
+            reason=body["reason"],
+            actor_ref=actor_ref,
+        ),
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+
+
 @router.post("/api/v1/projects/{project_id}/chapters/{chapter_id}/read-confirm")
 def confirm_project_chapter_read(
     project_id: str,
     chapter_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: ProjectChapterReadConfirmRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload or {}
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result = ProjectChapterFlowService(session).confirm_read(project_id, chapter_id, body, actor_ref=actor_ref)
     session.commit()
