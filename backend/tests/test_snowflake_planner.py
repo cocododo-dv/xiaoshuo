@@ -193,6 +193,38 @@ def test_snowflake_long_synopsis_can_be_skipped_with_reason_and_characters_are_s
     assert any((character.bible_json.get("psychological_profile") or {}).get("deepest_fear") for character in characters)
 
 
+def test_snowflake_long_synopsis_materializes_reverse_causal_skeleton(client) -> None:
+    project = _create_project(client, key="causal-skeleton")
+    for step_key in [
+        "book_brief",
+        "one_sentence_summary",
+        "one_paragraph_summary",
+        "character_sheets",
+        "short_synopsis",
+        "character_synopses",
+    ]:
+        _approve_step(client, project["project_id"], step_key)
+
+    long_synopsis = _generate_step(client, project["project_id"], "long_synopsis")
+    skeleton = long_synopsis["artifact_json"].get("causal_skeleton")
+
+    assert skeleton is not None
+    assert skeleton["chain"]
+    assert skeleton["schema_version"] == "reverse_causal_skeleton_v1"
+    assert skeleton["chain_order"] == "opening_to_ending"
+    assert skeleton["ending_state"]
+    assert skeleton["chain"][-1]["description"] == skeleton["ending_state"]
+    assert all(
+        "character_state_before" in link and "character_state_after" in link
+        for link in skeleton["chain"]
+    )
+    assert skeleton["integrity_evaluated"] is False
+    assert skeleton["integrity_valid"] is None
+    assert skeleton["integrity_issues"] == []
+    assert "integrity unknown" in skeleton["prompt_text"]
+    assert "Reverse Causal Skeleton" in skeleton["prompt_text"]
+
+
 def test_snowflake_materializes_outline_plan_and_scene_details_into_runtime_cards(client, session) -> None:
     project = _create_project(client, key="materialize")
     _approve_required_snowflake(client, project["project_id"])

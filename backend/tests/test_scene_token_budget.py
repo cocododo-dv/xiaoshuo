@@ -1263,21 +1263,28 @@ def test_concurrent_three_dimensional_topups_are_atomic_and_each_audited_once(se
     barrier = Barrier(2)
 
     def topup(ordinal: int) -> tuple[int, dict]:
-        with TestClient(create_app()) as worker_client:
-            barrier.wait(timeout=10)
-            response = worker_client.post(
-                f"/api/v1/scenes/{SCENE_ID}/budget/topup",
-                json={
-                    "extra_tokens": 100,
-                    "extra_attempts": 2,
-                    "extra_provider_attempts": 3,
-                },
-                headers={"X-Idempotency-Key": f"task6-concurrent-topup-{ordinal}"},
-            )
-            return response.status_code, response.json()
+        worker_client = worker_clients[ordinal - 1]
+        barrier.wait(timeout=10)
+        response = worker_client.post(
+            f"/api/v1/scenes/{SCENE_ID}/budget/topup",
+            json={
+                "extra_tokens": 100,
+                "extra_attempts": 2,
+                "extra_provider_attempts": 3,
+            },
+            headers={"X-Idempotency-Key": f"task6-concurrent-topup-{ordinal}"},
+        )
+        return response.status_code, response.json()
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        outcomes = list(pool.map(topup, (1, 2)))
+    # Build the two ASGI applications serially: this test exercises concurrent
+    # budget transactions, not concurrent mutation of FastAPI's shared router
+    # metadata during application assembly.  Creating both apps inside worker
+    # threads races FastAPI/Pydantic field cloning and emits a spurious
+    # UnsupportedFieldAttributeWarning unrelated to the budget contract.
+    with TestClient(create_app()) as first_client, TestClient(create_app()) as second_client:
+        worker_clients = (first_client, second_client)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(topup, (1, 2)))
 
     assert [status for status, _ in outcomes] == [200, 200]
     session.expire_all()

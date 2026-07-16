@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.request_types import WriterBriefJsonInput
 from novel_system.api.response import ok
 from novel_system.db.models import ChapterGoal, ChapterState, SceneCard, SceneRunState
 from novel_system.services.author_lifecycle import AuthorLifecycleService
@@ -45,7 +46,9 @@ class ChapterUpsertRequest(BaseModel):
     ending_effect: str | None = None
     must_not: str | None = None
     notes: str | None = None
-    writer_brief_json: dict[str, Any] | None = None
+    # Shape validation belongs to normalize_chapter_writer_brief() so chapter
+    # and scene endpoints share WRITER_BRIEF_INVALID / HTTP 400 semantics.
+    writer_brief_json: WriterBriefJsonInput = None
 
 
 @router.get("/api/v1/chapters")
@@ -71,6 +74,12 @@ def create_chapter(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(exclude_unset=True)
+    # Reject/normalize the domain payload before claiming an idempotency key.
+    # Invalid requests must never poison a key that the author can correct and
+    # retry, while semantically equivalent briefs should hash identically.
+    body["writer_brief_json"] = normalize_chapter_writer_brief(
+        body.get("writer_brief_json")
+    )
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,

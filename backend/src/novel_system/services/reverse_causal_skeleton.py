@@ -12,12 +12,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+CausalChainOrder = Literal["opening_to_ending", "ending_to_opening"]
+CANONICAL_CAUSAL_CHAIN_ORDER: CausalChainOrder = "opening_to_ending"
+CAUSAL_SKELETON_SCHEMA_VERSION = "reverse_causal_skeleton_v1"
 
 
 @dataclass(slots=True)
@@ -57,6 +62,20 @@ class ReverseCausalSkeleton:
             return "scene_id"
         return "partial"
 
+    @property
+    def integrity_evaluated(self) -> bool:
+        """Whether adjacent state transitions provide any comparable evidence.
+
+        An empty issue list is not evidence of integrity when every persisted
+        character state is blank. At least one adjacent ``after``/``before``
+        pair must be present before callers may report a validity result.
+        """
+        return any(
+            bool(str(previous.character_state_after or "").strip())
+            and bool(str(current.character_state_before or "").strip())
+            for previous, current in zip(self.chain, self.chain[1:])
+        )
+
     def validate_chain_integrity(self) -> list[str]:
         """Check that each link's before-state matches the previous link's after-state."""
         issues: list[str] = []
@@ -77,21 +96,31 @@ def build_reverse_skeleton(
     major_turning_points: list[dict[str, str]] | None = None,
     *,
     ending_scene_id: str | None = None,
+    turning_points_order: CausalChainOrder = "ending_to_opening",
 ) -> ReverseCausalSkeleton:
-    """Build a reverse causal skeleton from ending to beginning.
+    """Derive a causal skeleton backwards and return it in narrative order.
 
     This is the offline/deterministic builder. When LLM is enabled, a separate
     LLM-powered version can refine the chain by asking "for this step to be
-    credible, what must have happened before?"
+    credible, what must have happened before?"  Although the reasoning input
+    traditionally runs from ending back toward opening, the returned chain is
+    always normalized to ``opening_to_ending``.  This makes ``step_index`` a
+    stable zero-based narrative position for scene execution.
 
     Args:
         controlling_idea: The one-sentence theme judgment (e.g., "残缺本身也可以是完整的")
         ending_description: What happens at the ending
         major_turning_points: Optional list of dicts with 'description' and 'why' keys,
-            ordered from ending backward toward opening. Each point may carry a
-            ``scene_id`` anchor.
+            ordered according to ``turning_points_order``. Each point may carry
+            a ``scene_id`` anchor.
         ending_scene_id: Optional stable scene anchor for the ending link.
+        turning_points_order: The input list order. It defaults to the legacy
+            ``ending_to_opening`` contract; chronological callers can opt into
+            ``opening_to_ending`` without changing existing integrations.
     """
+    if turning_points_order not in {"opening_to_ending", "ending_to_opening"}:
+        raise ValueError(f"unsupported turning_points_order: {turning_points_order}")
+
     skeleton = ReverseCausalSkeleton(
         controlling_idea=controlling_idea,
         ending_state=ending_description,
@@ -108,7 +137,12 @@ def build_reverse_skeleton(
         ))
         return skeleton
 
-    for i, point in enumerate(reversed(major_turning_points)):
+    points_in_narrative_order = (
+        list(major_turning_points)
+        if turning_points_order == "opening_to_ending"
+        else list(reversed(major_turning_points))
+    )
+    for i, point in enumerate(points_in_narrative_order):
         desc = point.get("description", "")
         why = point.get("why", f"必须发生才能使第 {i + 1} 步可信")
         skeleton.chain.append(CausalLink(
@@ -132,6 +166,113 @@ def build_reverse_skeleton(
     ))
 
     return skeleton
+
+
+def serialize_skeleton(skeleton: ReverseCausalSkeleton) -> dict[str, Any]:
+    """Serialize a skeleton without dropping execution-relevant fields.
+
+    The explicit order marker prevents the reverse *derivation* direction from
+    being confused with the chronological order consumed by scene execution.
+    """
+    return {
+        "schema_version": CAUSAL_SKELETON_SCHEMA_VERSION,
+        "chain_order": CANONICAL_CAUSAL_CHAIN_ORDER,
+        "controlling_idea": skeleton.controlling_idea,
+        "ending_state": skeleton.ending_state,
+        "chain": [
+            {
+                "step_index": link.step_index,
+                "description": link.description,
+                "why_necessary": link.why_necessary,
+                "character_state_before": link.character_state_before,
+                "character_state_after": link.character_state_after,
+                "depends_on_index": link.depends_on_index,
+                "scene_id": link.scene_id,
+            }
+            for link in skeleton.chain
+        ],
+    }
+
+
+def deserialize_skeleton(payload: dict[str, Any]) -> ReverseCausalSkeleton:
+    """Load canonical and legacy skeleton payloads into narrative order.
+
+    Legacy payloads omitted ``chain_order``/``ending_state`` and used either
+    ``state_before``/``state_after`` or the canonical character-state names.
+    Missing order retains the historical scene-execution interpretation
+    (opening to ending). Explicit reverse-order payloads are normalized while
+    remapping their dependency indices.
+    """
+    raw_chain = payload.get("chain") or []
+    if not isinstance(raw_chain, list):
+        raw_chain = []
+    chain_order = payload.get("chain_order") or CANONICAL_CAUSAL_CHAIN_ORDER
+    if chain_order not in {"opening_to_ending", "ending_to_opening"}:
+        chain_order = CANONICAL_CAUSAL_CHAIN_ORDER
+
+    indexed_links: list[tuple[int, dict[str, Any]]] = []
+    for position, raw_link in enumerate(raw_chain):
+        if not isinstance(raw_link, dict):
+            continue
+        raw_index = raw_link.get("step_index", position)
+        try:
+            normalized_raw_index = int(raw_index)
+        except (TypeError, ValueError):
+            normalized_raw_index = position
+        indexed_links.append((normalized_raw_index, raw_link))
+
+    if chain_order == "ending_to_opening":
+        indexed_links.reverse()
+
+    normalized_index_by_raw_index = {
+        raw_index: normalized_index
+        for normalized_index, (raw_index, _raw_link) in enumerate(indexed_links)
+    }
+    chain: list[CausalLink] = []
+    for normalized_index, (_raw_index, raw_link) in enumerate(indexed_links):
+        dependency = raw_link.get("depends_on_index")
+        try:
+            dependency_index = int(dependency) if dependency is not None else None
+        except (TypeError, ValueError):
+            dependency_index = None
+        if chain_order == "ending_to_opening" and dependency_index is not None:
+            dependency_index = normalized_index_by_raw_index.get(dependency_index)
+
+        state_before = raw_link.get("character_state_before")
+        if state_before is None:
+            state_before = raw_link.get("state_before")
+        state_after = raw_link.get("character_state_after")
+        if state_after is None:
+            state_after = raw_link.get("state_after")
+        chain.append(CausalLink(
+            step_index=(
+                normalized_index
+                if chain_order == "ending_to_opening"
+                else _coerce_step_index(raw_link.get("step_index"), normalized_index)
+            ),
+            description=str(raw_link.get("description") or ""),
+            why_necessary=str(raw_link.get("why_necessary") or raw_link.get("why") or ""),
+            character_state_before=str(state_before or ""),
+            character_state_after=str(state_after or ""),
+            depends_on_index=dependency_index,
+            scene_id=_normalized_scene_id(raw_link.get("scene_id")),
+        ))
+
+    ending_state = payload.get("ending_state")
+    if ending_state is None and chain:
+        ending_state = chain[-1].description
+    return ReverseCausalSkeleton(
+        controlling_idea=str(payload.get("controlling_idea") or ""),
+        ending_state=str(ending_state or ""),
+        chain=chain,
+    )
+
+
+def _coerce_step_index(value: Any, fallback: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
 
 
 _REFINE_SYSTEM_PROMPT = (
@@ -291,7 +432,10 @@ def format_causal_gaps_for_prompt(gaps: list[CausalGap]) -> str:
 
 def format_skeleton_for_prompt(skeleton: ReverseCausalSkeleton) -> str:
     """Format the reverse causal skeleton as a prompt section for planning."""
-    lines = ["## Reverse Causal Skeleton (ending → opening)"]
+    lines = [
+        "## Reverse Causal Skeleton "
+        "(derived ending → opening; execution order opening → ending)"
+    ]
     lines.append(f"Controlling Idea: {skeleton.controlling_idea}")
     lines.append(f"Ending: {skeleton.ending_state}")
     lines.append("")
@@ -306,6 +450,10 @@ def format_skeleton_for_prompt(skeleton: ReverseCausalSkeleton) -> str:
         lines.append("\n⚠ Chain integrity issues:")
         for issue in issues:
             lines.append(f"  - {issue}")
+    elif not skeleton.integrity_evaluated:
+        lines.append(
+            "\nℹ Chain integrity unknown: adjacent character-state evidence is absent."
+        )
     return "\n".join(lines)
 
 

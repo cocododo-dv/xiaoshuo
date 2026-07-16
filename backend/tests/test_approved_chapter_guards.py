@@ -351,6 +351,12 @@ def test_review_read_confirmation_and_approval_require_complete_canonical_manusc
         f"/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/scenes",
         {"title": "Second scene"},
     )
+    noncurrent_chapter = _create_chapter(
+        client,
+        project_id,
+        "Structural review only",
+        current=False,
+    )
     scenes = list(
         session.execute(
             select(SceneCard)
@@ -363,6 +369,16 @@ def test_review_read_confirmation_and_approval_require_complete_canonical_manusc
     assert project is not None
     project.status = "chapter_final_review"
     session.commit()
+
+    # ``review`` remains a structural/editorial catalog label for chapters
+    # other than the one actually submitted through the project final-review
+    # flow.  A project-wide status must not make every unfinished chapter look
+    # like the current chapter's terminal submission.
+    noncurrent_review = client.patch(
+        f"/api/v2/projects/{project_id}/catalog/chapters/{noncurrent_chapter['chapter_id']}",
+        json={"state": "review"},
+    )
+    assert noncurrent_review.status_code == 200, noncurrent_review.text
 
     submit_incomplete = client.patch(
         f"/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}",

@@ -155,6 +155,10 @@ def retry_verify(job_id: str, request: Request, session: Session = Depends(get_s
         path_template="/api/v1/index/verify/{job_id}/retry",
         payload={"job_id": job_id},
         action=lambda: VectorLifecycleService(session).run_verify(job_id),
+        owned_failure_callback=lambda error: VectorLifecycleService.publish_owned_verify_failure(
+            session,
+            error,
+        ),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}

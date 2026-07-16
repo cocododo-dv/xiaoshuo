@@ -4,8 +4,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from novel_system.db.models import ReindexJob, ReviewItem, VectorAliasRegistry, VerifyJob
+from novel_system.db.models import (
+    ReindexJob,
+    ReviewItem,
+    VectorAliasRegistry,
+    VerifyJob,
+    VersionRegistry,
+)
 from novel_system.services.errors import DomainError
 from novel_system.services.knowledge_registry import descriptor_for_object_type
 from novel_system.services.versioning.base import VersioningServiceBase
@@ -65,6 +72,8 @@ class VectorLifecycleService(VersioningServiceBase):
             raise DomainError("REVIEW_NOT_FOUND", f"review {job.review_id} not found", status_code=404)
         descriptor = descriptor_for_object_type(job.object_type)
 
+        expected_job_status = job.status
+        expected_job_attempt_no = int(job.attempt_no or 0)
         job.status = "running"
         job.worker_id = "verify-worker"
         job.attempt_no += 1
@@ -94,8 +103,30 @@ class VectorLifecycleService(VersioningServiceBase):
 
         result_ids = {item.get("id") for item in results}
         if not results or approved_row.row_id not in result_ids:
-            self._mark_verify_failed(job, alias, registry, approved_row_id=approved_row.row_id)
-            raise DomainError("VECTOR_VERIFY_FAILED", "candidate alias verify failed", status_code=409)
+            raise DomainError(
+                "VECTOR_VERIFY_FAILED",
+                "candidate alias verify failed",
+                status_code=409,
+                details={
+                    "job_id": job.job_id,
+                    "alias_scope": alias.alias_scope,
+                    "approved_row_id": approved_row.row_id,
+                    "candidate_alias": alias.candidate_alias,
+                    "target_snapshot_version": job.target_snapshot_version,
+                    "target_embedding_version": job.target_embedding_version,
+                    "expected_job_status": expected_job_status,
+                    "expected_job_attempt_no": expected_job_attempt_no,
+                    "failed_job_worker_id": job.worker_id,
+                    "failed_job_attempt_no": job.attempt_no,
+                    "failed_job_started_at": job.started_at,
+                    "failed_job_heartbeat_at": job.heartbeat_at,
+                    "failed_job_lease_expires_at": job.lease_expires_at,
+                    "expected_alias_verify_status": alias.verify_status,
+                    "expected_alias_sample_query_success": alias.sample_query_success,
+                    "expected_registry_verify_status": registry.verify_status,
+                    "expected_registry_sample_query_success": registry.sample_query_success,
+                },
+            )
 
         alias.verify_status = "succeeded"
         alias.sample_query_success = 1
@@ -119,3 +150,89 @@ class VectorLifecycleService(VersioningServiceBase):
             )
 
         return {"job_id": job_id, "status": "succeeded", "alias_scope": alias.alias_scope}
+
+    @classmethod
+    def publish_owned_verify_failure(cls, session: Session, error: DomainError) -> bool:
+        """Publish verify failure state after the idempotency owner CAS.
+
+        The failed action has already been rolled back when this callback runs.
+        We therefore reload and lock the exact job, alias, and registry rows
+        described by the failure. A superseded candidate or already successful
+        verification is left untouched. The idempotency boundary owns commit.
+        """
+
+        if error.code != "VECTOR_VERIFY_FAILED":
+            return False
+        details = error.details or {}
+        required = {
+            "job_id",
+            "alias_scope",
+            "approved_row_id",
+            "candidate_alias",
+            "target_snapshot_version",
+            "target_embedding_version",
+            "expected_job_status",
+            "expected_job_attempt_no",
+            "failed_job_worker_id",
+            "failed_job_attempt_no",
+            "failed_job_started_at",
+            "failed_job_heartbeat_at",
+            "failed_job_lease_expires_at",
+            "expected_alias_verify_status",
+            "expected_alias_sample_query_success",
+            "expected_registry_verify_status",
+            "expected_registry_sample_query_success",
+        }
+        if not required.issubset(details):
+            return False
+
+        job = session.execute(
+            select(VerifyJob)
+            .where(VerifyJob.job_id == str(details["job_id"]))
+            .with_for_update()
+        ).scalar_one_or_none()
+        alias = session.execute(
+            select(VectorAliasRegistry)
+            .where(VectorAliasRegistry.alias_scope == str(details["alias_scope"]))
+            .with_for_update()
+        ).scalar_one_or_none()
+        registry = session.execute(
+            select(VersionRegistry)
+            .where(VersionRegistry.physical_row_id == str(details["approved_row_id"]))
+            .with_for_update()
+        ).scalar_one_or_none()
+
+        if job is None or alias is None or registry is None:
+            return False
+        expected_snapshot = str(details["target_snapshot_version"])
+        expected_embedding = str(details["target_embedding_version"])
+        if (
+            job.alias_scope != str(details["alias_scope"])
+            or job.target_snapshot_version != expected_snapshot
+            or job.target_embedding_version != expected_embedding
+            or alias.candidate_alias != str(details["candidate_alias"])
+            or alias.candidate_snapshot_version != expected_snapshot
+            or alias.candidate_embedding_version != expected_embedding
+            or job.status != str(details["expected_job_status"])
+            or int(job.attempt_no or 0) != int(details["expected_job_attempt_no"])
+            or alias.verify_status != str(details["expected_alias_verify_status"])
+            or alias.sample_query_success != int(details["expected_alias_sample_query_success"])
+            or registry.verify_status != str(details["expected_registry_verify_status"])
+            or registry.sample_query_success != int(details["expected_registry_sample_query_success"])
+        ):
+            return False
+
+        service = cls(session)
+        service._mark_verify_failed(
+            job,
+            alias,
+            registry,
+            approved_row_id=str(details["approved_row_id"]),
+        )
+        job.worker_id = str(details["failed_job_worker_id"])
+        job.attempt_no = int(details["failed_job_attempt_no"])
+        job.started_at = str(details["failed_job_started_at"])
+        job.heartbeat_at = str(details["failed_job_heartbeat_at"])
+        job.lease_expires_at = str(details["failed_job_lease_expires_at"])
+        job.error_text = error.message
+        return True

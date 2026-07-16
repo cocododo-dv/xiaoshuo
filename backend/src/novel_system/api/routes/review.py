@@ -29,7 +29,11 @@ from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.knowledge_registry import descriptor_for_item_type
 from novel_system.services.pagination import paginate_items, resolve_pagination_request
 from novel_system.services.review_cards import CARD_KINDS, ReviewCardService
-from novel_system.services.versioning import PromotionService, ReviewMaterializationService
+from novel_system.services.versioning import (
+    PromotionService,
+    ReviewMaterializationService,
+    VectorLifecycleService,
+)
 
 router = APIRouter(tags=["review"])
 
@@ -777,6 +781,10 @@ def human_review_event_action(event_id: str, payload: dict, request: Request, se
         path_template="/api/v1/human-review-events/{event_id}/actions",
         payload={"event_id": event_id, **payload},
         action=lambda: HumanReviewManager(session).run_action(event_id, action_name, actor_ref=actor_ref, payload=payload),
+        owned_failure_callback=lambda error: VectorLifecycleService.publish_owned_verify_failure(
+            session,
+            error,
+        ),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}

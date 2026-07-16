@@ -281,17 +281,21 @@ print(f"elapsed={elapsed:.6f}")
 '''
 
     try:
+        # ``timeout`` 这里只是防止灾难性回溯把测试进程永久挂住，不能拿来
+        # 衡量扫描耗时：在 Windows 挂载盘 / 并发分片环境中，冷启动解释器并
+        # 导入 style_reference 包本身就可能需要数秒。真正的复杂度契约由
+        # probe 内只包围三次 render 调用的 ``elapsed < 1.0`` 负责。
         completed = subprocess.run(
             [sys.executable, "-c", probe],
             cwd=backend_root,
             env=env,
             capture_output=True,
             text=True,
-            timeout=2.0,
+            timeout=15.0,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        pytest.fail("boundary detection probe exceeded 2 seconds")
+        pytest.fail("boundary detection probe exceeded 15-second watchdog")
 
     assert completed.returncode == 0, completed.stderr
     assert "elapsed=" in completed.stdout

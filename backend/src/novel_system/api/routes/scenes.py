@@ -8,6 +8,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.request_types import WriterBriefJsonInput
 from novel_system.api.response import ok
 from novel_system.db.models import (
     AttemptTracker,
@@ -84,7 +85,10 @@ class SceneUpsertRequest(BaseModel):
     forbidden_text: str | None = None
     exit_change: str | None = None
     hook: str | None = None
-    writer_brief_json: dict[str, Any] | None = None
+    # Keep the established domain-error contract for malformed writer briefs:
+    # normalize_scene_writer_brief() validates the JSON shape and returns the
+    # stable WRITER_BRIEF_INVALID / HTTP 400 response used by API clients.
+    writer_brief_json: WriterBriefJsonInput = None
     target_length_band: str | None = None
     scene_type: str | None = None
     is_chapter_last: int = Field(default=0, ge=0, le=1)
@@ -157,6 +161,11 @@ def create_scene(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(exclude_unset=True)
+    # Domain validation precedes the durable idempotency claim.  A malformed
+    # brief therefore cannot reserve a key needed by the corrected request.
+    body["writer_brief_json"] = normalize_scene_writer_brief(
+        body.get("writer_brief_json")
+    )
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,

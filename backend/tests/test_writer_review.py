@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from novel_system.db.models import (
@@ -7,6 +8,7 @@ from novel_system.db.models import (
     ChapterMemory,
     ChapterState,
     FinalScene,
+    IdempotencyKey,
     LlmCall,
     RevisionCandidate,
     SceneCard,
@@ -15,6 +17,7 @@ from novel_system.db.models import (
     WriterEvaluation,
 )
 from novel_system.services.bundle_builder import BundleBuilder
+from novel_system.services.errors import DomainError
 from novel_system.services.llm_client import LLMResponse, OnlineAccountedExecution
 from novel_system.services.writer_review import WRITER_REVIEW_LENSES, WriterReviewService
 
@@ -243,6 +246,132 @@ def test_chapter_and_scene_writer_brief_round_trip_and_invalid_type_is_rejected(
     )
     assert invalid_response.status_code == 400
     assert invalid_response.json()["error"]["code"] == "WRITER_BRIEF_INVALID"
+
+
+@pytest.mark.parametrize(
+    ("path", "bad_payload", "fixed_payload", "idempotency_key"),
+    [
+        (
+            "/api/v1/chapters",
+            {
+                "chapter_id": "CH_WRITER_BAD_KEY",
+                "chapter_goal": "非法章节戏剧卡。",
+                "writer_brief_json": ["not", "an", "object"],
+            },
+            {
+                "chapter_id": "CH_WRITER_BAD_KEY",
+                "chapter_goal": "修正后的章节戏剧卡。",
+                "writer_brief_json": {"core_promise": "修正后可以创建。"},
+            },
+            "writer-brief-reusable-chapter-key",
+        ),
+        (
+            "/api/v1/scenes",
+            {
+                "scene_id": "CH_WRITER_KEY_PARENT_SC01",
+                "chapter_id": "CH_WRITER_KEY_PARENT",
+                "scene_goal": "非法场景戏剧卡。",
+                "writer_brief_json": ["not", "an", "object"],
+            },
+            {
+                "scene_id": "CH_WRITER_KEY_PARENT_SC01",
+                "chapter_id": "CH_WRITER_KEY_PARENT",
+                "scene_goal": "修正后的场景戏剧卡。",
+                "writer_brief_json": {"character_desire": "修正后可以创建。"},
+            },
+            "writer-brief-reusable-scene-key",
+        ),
+    ],
+)
+def test_invalid_writer_brief_precedes_idempotency_and_does_not_claim_key(
+    client: TestClient,
+    session,
+    path: str,
+    bad_payload: dict,
+    fixed_payload: dict,
+    idempotency_key: str,
+) -> None:
+    if path.endswith("/scenes"):
+        parent = client.post(
+            "/api/v1/chapters",
+            json={
+                "chapter_id": "CH_WRITER_KEY_PARENT",
+                "chapter_goal": "承载场景契约测试。",
+            },
+            headers={"X-Idempotency-Key": "writer-brief-parent-chapter"},
+        )
+        assert parent.status_code == 200
+
+    without_key = client.post(path, json=bad_payload)
+    assert without_key.status_code == 400
+    assert without_key.json()["error"]["code"] == "WRITER_BRIEF_INVALID"
+
+    with_key = client.post(
+        path,
+        json=bad_payload,
+        headers={"X-Idempotency-Key": idempotency_key},
+    )
+    assert with_key.status_code == 400
+    assert with_key.json()["error"]["code"] == "WRITER_BRIEF_INVALID"
+    session.expire_all()
+    assert session.get(IdempotencyKey, idempotency_key) is None
+
+    corrected = client.post(
+        path,
+        json=fixed_payload,
+        headers={"X-Idempotency-Key": idempotency_key},
+    )
+    assert corrected.status_code == 200
+    session.expire_all()
+    record = session.get(IdempotencyKey, idempotency_key)
+    assert record is not None
+    assert record.status == "succeeded"
+
+    replay = client.post(
+        path,
+        json=fixed_payload,
+        headers={"X-Idempotency-Key": idempotency_key},
+    )
+    assert replay.status_code == 200
+    assert replay.headers["X-Idempotency-Status"] == "replayed"
+
+
+def test_writer_brief_openapi_is_object_or_null_while_domain_layer_revalidates(
+    client: TestClient,
+    session,
+) -> None:
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    for model_name in ("ChapterUpsertRequest", "SceneUpsertRequest"):
+        writer_brief_schema = schemas[model_name]["properties"]["writer_brief_json"]
+        assert {branch.get("type") for branch in writer_brief_schema["anyOf"]} == {
+            "object",
+            "null",
+        }
+
+    # Route pre-validation is not the only guard: direct domain-action callers
+    # remain protected if another transport is added later.
+    from novel_system.api.routes.chapters import _create_chapter
+    from novel_system.api.routes.scenes import _create_scene
+
+    with pytest.raises(DomainError, match="chapter writer_brief_json must be an object"):
+        _create_chapter(
+            session,
+            {
+                "chapter_id": "CH_DIRECT_BAD_BRIEF",
+                "chapter_goal": "领域层必须再次验证。",
+                "writer_brief_json": ["invalid"],
+            },
+        )
+    with pytest.raises(DomainError, match="scene writer_brief_json must be an object"):
+        _create_scene(
+            session,
+            {
+                "scene_id": "SC_DIRECT_BAD_BRIEF",
+                "chapter_id": "CH_DOES_NOT_NEED_TO_EXIST",
+                "scene_goal": "领域层必须在查章节前验证。",
+                "writer_brief_json": ["invalid"],
+            },
+        )
 
 
 def test_scene_writer_review_creates_evaluation_and_candidate_without_overwriting_final(client: TestClient, session) -> None:

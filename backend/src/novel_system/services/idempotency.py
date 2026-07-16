@@ -244,6 +244,7 @@ def execute_with_idempotency(
     path_template: str,
     payload: Any,
     action: Callable[..., dict],
+    owned_failure_callback: Callable[[DomainError], None] | None = None,
     actor_ref: str = "operator",
     worker_id: str | None = None,
 ) -> tuple[dict, str | None]:
@@ -343,8 +344,14 @@ def execute_with_idempotency(
         )
         session.commit()
         return result, None
-    except DomainError:
-        _mark_owned_idempotency_failed(session, lease=lease, actor_ref=actor_ref)
+    except DomainError as exc:
+        _mark_owned_idempotency_failed(
+            session,
+            lease=lease,
+            actor_ref=actor_ref,
+            error=exc,
+            owned_failure_callback=owned_failure_callback,
+        )
         raise
     except OperationalError as exc:
         _mark_owned_idempotency_failed(session, lease=lease, actor_ref=actor_ref)
@@ -395,7 +402,12 @@ def _mark_owned_idempotency_failed(
     *,
     lease: IdempotencyLease,
     actor_ref: str,
+    error: DomainError | None = None,
+    owned_failure_callback: Callable[[DomainError], None] | None = None,
 ) -> None:
+    # Discard every write made by the failed action before trying to publish a
+    # durable failure. This prevents a domain failure from committing unrelated
+    # caller state that happened to be pending in the request session.
     session.rollback()
     now_iso = utcnow().isoformat()
     failed = session.execute(
@@ -411,20 +423,31 @@ def _mark_owned_idempotency_failed(
         .execution_options(synchronize_session=False)
     )
     if failed.rowcount == 1:
-        session.add(
-            OperationLog(
-                event_type="idempotency_failed",
-                object_type="idempotency_key",
-                object_ref=lease.idempotency_key,
-                payload_json={
-                    "request_hash": lease.request_hash,
-                    "attempt_no": lease.attempt_no,
-                    "worker_id": lease.worker_id,
-                    "actor_ref": actor_ref,
-                },
+        try:
+            # Only the current worker/attempt reaches this callback. It shares
+            # the transaction with the owner CAS above and must not commit on
+            # its own. A reclaimed (stale) worker misses the CAS and cannot
+            # mutate domain failure state.
+            if owned_failure_callback is not None and error is not None:
+                owned_failure_callback(error)
+            session.add(
+                OperationLog(
+                    event_type="idempotency_failed",
+                    object_type="idempotency_key",
+                    object_ref=lease.idempotency_key,
+                    payload_json={
+                        "request_hash": lease.request_hash,
+                        "attempt_no": lease.attempt_no,
+                        "worker_id": lease.worker_id,
+                        "actor_ref": actor_ref,
+                        "error_code": error.code if error is not None else None,
+                    },
+                )
             )
-        )
-        session.commit()
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
     else:
         session.rollback()
 

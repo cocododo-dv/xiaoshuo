@@ -112,6 +112,39 @@ def test_local_only_rejects_forwarded_requests_even_from_loopback_proxy() -> Non
     assert response.json()["error"]["details"]["forwarded_request_rejected"] is True
 
 
+@pytest.mark.parametrize(
+    ("configured_admin_token", "request_admin_token"),
+    [
+        (None, None),
+        ("configured-secret", None),
+        ("configured-secret", "configured-secret"),
+    ],
+)
+def test_local_only_remote_system_config_rejection_does_not_leak_admin_state(
+    monkeypatch,
+    configured_admin_token: str | None,
+    request_admin_token: str | None,
+) -> None:
+    if configured_admin_token is None:
+        monkeypatch.delenv("NOVEL_SYSTEM_ADMIN_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", configured_admin_token)
+    headers = {}
+    if request_admin_token is not None:
+        headers["X-Admin-Token"] = request_admin_token
+
+    with TestClient(create_app(), client=("192.0.2.42", 50000)) as remote_client:
+        response = remote_client.post(
+            "/api/v1/system-config/llm/providers",
+            headers=headers,
+            json={"provider_id": "must-not-reach-admin-auth"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "REMOTE_ACCESS_DISABLED"
+    assert "admin" not in response.text.lower()
+
+
 def test_remote_mode_requires_token_at_startup(monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_LOCAL_ONLY", "false")
     monkeypatch.delenv("NOVEL_SYSTEM_REMOTE_ACCESS_TOKEN", raising=False)

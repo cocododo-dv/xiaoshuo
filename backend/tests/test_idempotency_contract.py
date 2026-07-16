@@ -5,10 +5,11 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Lock
 
 import pytest
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as SqlAlchemySession
 
-from novel_system.db.models import IdempotencyKey
+from novel_system.db.models import IdempotencyKey, OperationLog
 from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import (
@@ -126,6 +127,153 @@ def test_failed_idempotent_action_reenters_with_same_execution_and_new_attempt(s
         ("idempotency:retry-same-execution", 1),
         ("idempotency:retry-same-execution", 2),
     ]
+
+
+def test_owned_failure_callback_commits_only_controlled_failure_state(session) -> None:
+    def fail_with_unrelated_pending_write() -> dict:
+        session.add(
+            OperationLog(
+                event_type="unrelated_action_write",
+                object_type="test",
+                object_ref="must-rollback",
+                payload_json={},
+            )
+        )
+        raise DomainError("EXPECTED_FAILURE", "publish controlled failure")
+
+    def publish_owned_failure(error: DomainError) -> None:
+        assert error.code == "EXPECTED_FAILURE"
+        session.add(
+            OperationLog(
+                event_type="controlled_failure_write",
+                object_type="test",
+                object_ref="must-commit",
+                payload_json={"error_code": error.code},
+            )
+        )
+
+    with pytest.raises(DomainError, match="publish controlled failure"):
+        execute_with_idempotency(
+            session,
+            idempotency_key="controlled-failure-publish",
+            method="POST",
+            path_template="/controlled-failure",
+            payload={},
+            action=fail_with_unrelated_pending_write,
+            owned_failure_callback=publish_owned_failure,
+            worker_id="failure-owner",
+        )
+
+    event_types = session.execute(
+        select(OperationLog.event_type).where(OperationLog.object_type == "test")
+    ).scalars().all()
+    record = session.get(IdempotencyKey, "controlled-failure-publish")
+    assert event_types == ["controlled_failure_write"]
+    assert record is not None
+    assert record.status == "failed"
+
+
+def test_reclaimed_worker_cannot_run_owned_failure_callback_or_commit_pending_writes(session) -> None:
+    callback_errors: list[str] = []
+    request_hash = canonical_request_hash("POST", "/stale-failure", {})
+
+    def fail_after_lease_reclaim() -> dict:
+        observed_owner = session.get(IdempotencyKey, "stale-failure-owner")
+        assert observed_owner is not None
+        assert observed_owner.worker_id == "old-worker"
+        session.add(
+            OperationLog(
+                event_type="stale_action_write",
+                object_type="test",
+                object_ref="must-rollback",
+                payload_json={},
+            )
+        )
+        contender = SessionLocal()
+        try:
+            expired = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
+            contender.execute(
+                update(IdempotencyKey)
+                .where(
+                    IdempotencyKey.idempotency_key == "stale-failure-owner",
+                    IdempotencyKey.worker_id == "old-worker",
+                    IdempotencyKey.attempt_no == 1,
+                )
+                .values(lease_expires_at=expired, heartbeat_at=expired)
+            )
+            contender.commit()
+            replacement = IdempotencyLeaseService(contender).claim(
+                idempotency_key="stale-failure-owner",
+                request_hash=request_hash,
+                worker_id="new-worker",
+                lease_seconds=30,
+            )
+            contender.commit()
+            assert replacement.attempt_no == 2
+        finally:
+            contender.close()
+        raise DomainError("STALE_WORKER_FAILURE", "old worker finished late")
+
+    with pytest.raises(DomainError, match="old worker finished late"):
+        execute_with_idempotency(
+            session,
+            idempotency_key="stale-failure-owner",
+            method="POST",
+            path_template="/stale-failure",
+            payload={},
+            action=fail_after_lease_reclaim,
+            owned_failure_callback=lambda error: callback_errors.append(error.code),
+            worker_id="old-worker",
+        )
+
+    session.expire_all()
+    record = session.get(IdempotencyKey, "stale-failure-owner")
+    stale_write = session.execute(
+        select(OperationLog).where(OperationLog.event_type == "stale_action_write")
+    ).scalar_one_or_none()
+    assert callback_errors == []
+    assert stale_write is None
+    assert record is not None
+    assert record.status == "started"
+    assert record.worker_id == "new-worker"
+    assert record.attempt_no == 2
+
+
+def test_owned_failure_callback_error_rolls_back_owner_and_domain_updates(session) -> None:
+    def fail() -> dict:
+        raise DomainError("EXPECTED_FAILURE", "domain operation failed")
+
+    def broken_publisher(_error: DomainError) -> None:
+        session.add(
+            OperationLog(
+                event_type="partial_failure_publish",
+                object_type="test",
+                object_ref="must-rollback",
+                payload_json={},
+            )
+        )
+        raise RuntimeError("failure publisher unavailable")
+
+    with pytest.raises(RuntimeError, match="failure publisher unavailable"):
+        execute_with_idempotency(
+            session,
+            idempotency_key="broken-failure-publisher",
+            method="POST",
+            path_template="/broken-failure-publisher",
+            payload={},
+            action=fail,
+            owned_failure_callback=broken_publisher,
+            worker_id="failure-owner",
+        )
+
+    session.expire_all()
+    record = session.get(IdempotencyKey, "broken-failure-publisher")
+    partial_write = session.execute(
+        select(OperationLog).where(OperationLog.event_type == "partial_failure_publish")
+    ).scalar_one_or_none()
+    assert record is not None
+    assert record.status == "started"
+    assert partial_write is None
 
 
 def test_unexpected_idempotent_action_error_is_sanitized(session) -> None:

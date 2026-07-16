@@ -274,6 +274,10 @@ def test_auto_rewrite_uses_llm_candidate_when_live(client, session, monkeypatch)
 
 
 def test_auto_rewrite_scans_actual_candidate_instead_of_safe_source(client, session, monkeypatch) -> None:
+    # Source-specific names are deliberately not process-wide defaults.  Bind
+    # the protected term explicitly so this test exercises the active safety
+    # policy instead of depending on a hidden, work-specific global blacklist.
+    monkeypatch.setenv("NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON", '["路明非"]')
     _install_llm_candidate(
         monkeypatch,
         "林岑握住盐钟残片，把幸存者阿砚推给许望。路明非站在门口等她选择。",
@@ -294,11 +298,13 @@ def test_auto_rewrite_scans_actual_candidate_instead_of_safe_source(client, sess
     assert run["status"] == "blocked"
     assert run["candidate_draft_row_id"]
     assert "source_safety" in run["promotion_blockers"]
+    assert any(item.startswith("literary:") for item in run["promotion_blockers"])
     assert run["gate_results"]["source_safety"]["safe"] is False
     assert "路明非" in session.get(SceneDraft, run["candidate_draft_row_id"]).content
 
 
 def test_auto_rewrite_safe_candidate_can_repair_unsafe_source(client, session, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_PROTECTED_SOURCE_TERMS_JSON", '["路明非"]')
     monkeypatch.setattr(
         "novel_system.services.final_text_gate.analyze_literary_quality",
         _all_clear_literary_analysis,

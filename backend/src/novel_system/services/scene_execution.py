@@ -437,8 +437,7 @@ class SceneExecutionContractService:
             return None
         try:
             from novel_system.services.reverse_causal_skeleton import (
-                ReverseCausalSkeleton,
-                CausalLink,
+                deserialize_skeleton,
                 validate_scene_causal_readiness,
             )
             # Load causal skeleton from the scene_details or long_synopsis artifact
@@ -455,27 +454,12 @@ class SceneExecutionContractService:
             else:
                 return None  # no skeleton found
 
-            # Reconstruct skeleton from JSON
-            chain_data = skeleton_data.get("chain", [])
-            if not chain_data:
+            # Reconstruct through the shared compatibility codec so legacy
+            # state aliases/missing ending fields and explicit chain order are
+            # interpreted consistently with the planner.
+            skeleton = deserialize_skeleton(skeleton_data)
+            if not skeleton.chain:
                 return None
-            chain = [
-                CausalLink(
-                    step_index=link.get("step_index", i),
-                    description=link.get("description", ""),
-                    why_necessary=link.get("why_necessary", ""),
-                    character_state_before=link.get("state_before") or link.get("character_state_before"),
-                    character_state_after=link.get("state_after") or link.get("character_state_after"),
-                    depends_on_index=link.get("depends_on_index"),
-                    scene_id=link.get("scene_id"),
-                )
-                for i, link in enumerate(chain_data)
-            ]
-            skeleton = ReverseCausalSkeleton(
-                controlling_idea=skeleton_data.get("controlling_idea", ""),
-                ending_state=skeleton_data.get("ending_state", ""),
-                chain=chain,
-            )
 
             # Skeleton step indices are project-wide narrative positions. A
             # chapter-local scene_seq cannot distinguish CH01/SC01 from
@@ -508,7 +492,10 @@ class SceneExecutionContractService:
                 completed_scenes=completed_scene_step_indices,
                 scene_id=scene.scene_id,
                 completed_scene_ids=sorted(completed_scene_ids),
-                strict=False,  # advisory by default — author can enable strict per-project
+                # Unanchored skeletons depend on catalog ordinals, which can
+                # move. Until every link has a stable scene_id, fallback
+                # readiness is diagnostic/advisory and must never hard-block.
+                strict=False,
             )
             return SceneCausalReadinessAssessment(
                 warning=readiness.format_for_prompt() if readiness.unresolved else None,

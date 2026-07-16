@@ -512,7 +512,8 @@ def test_system_config_local_setup_mode_rejects_non_loopback_writes(monkeypatch)
         )
 
     assert response.status_code == 403
-    assert response.json()["error"]["code"] == "ADMIN_TOKEN_REQUIRED"
+    assert response.json()["error"]["code"] == "REMOTE_ACCESS_DISABLED"
+    assert "admin" not in response.text.lower()
 
 
 def test_api_config_draft_encrypts_secret_and_active_snapshot_feeds_settings(client, monkeypatch) -> None:

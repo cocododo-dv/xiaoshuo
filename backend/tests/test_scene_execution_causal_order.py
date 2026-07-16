@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 from novel_system.db.models import (
     ChapterGoal,
@@ -321,7 +322,10 @@ def test_causal_readiness_internal_error_is_logged_and_diagnosed(
 
 
 def test_builder_preserves_complete_scene_anchors() -> None:
-    from novel_system.services.reverse_causal_skeleton import build_reverse_skeleton
+    from novel_system.services.reverse_causal_skeleton import (
+        build_reverse_skeleton,
+        format_skeleton_for_prompt,
+    )
 
     skeleton = build_reverse_skeleton(
         "effects require causes",
@@ -331,11 +335,174 @@ def test_builder_preserves_complete_scene_anchors() -> None:
             {"description": "later", "scene_id": "SCENE_B"},
         ],
         ending_scene_id="SCENE_C",
+        turning_points_order="opening_to_ending",
     )
 
     assert skeleton.scene_anchor_mode == "scene_id"
+    assert [link.description for link in skeleton.chain] == [
+        "earlier",
+        "later",
+        "ending",
+    ]
     assert {link.scene_id for link in skeleton.chain} == {
         "SCENE_A",
         "SCENE_B",
         "SCENE_C",
     }
+    assert "execution order opening → ending" in format_skeleton_for_prompt(skeleton)
+
+    # The builder's documented legacy default remains reverse input, so callers
+    # that already provide ending-to-opening points keep the same result.
+    legacy = build_reverse_skeleton(
+        "effects require causes",
+        "ending",
+        [
+            {"description": "later"},
+            {"description": "earlier"},
+        ],
+    )
+    assert [link.description for link in legacy.chain] == [
+        "earlier",
+        "later",
+        "ending",
+    ]
+
+
+def test_snowflake_skeleton_round_trip_preserves_chronology_for_scene_execution(
+    session,
+) -> None:
+    from novel_system.services.snowflake_planner import (
+        _build_causal_skeleton_from_synopsis,
+    )
+
+    project_id = "CAUSAL_SNOWFLAKE_ROUND_TRIP"
+    chapter_id = "CAUSAL_SNOWFLAKE_CHAPTER"
+    project = StoryProject(
+        project_id=project_id,
+        title="Chronological causal round trip",
+        outline_text="Consequences require established causes.",
+    )
+    chapter = ChapterGoal(
+        chapter_id=chapter_id,
+        project_id=project_id,
+        display_order=1,
+        planned_scene_count=3,
+        chapter_goal="execute a three-step causal chain",
+    )
+    scenes = [
+        SceneCard(
+            scene_id=f"CAUSAL_SNOWFLAKE_SCENE_{ordinal}",
+            chapter_id=chapter_id,
+            project_id=project_id,
+            scene_seq=ordinal,
+            scene_goal=f"causal step {ordinal}",
+        )
+        for ordinal in range(1, 4)
+    ]
+    synopsis = SimpleNamespace(artifact_json={
+        "paragraphs": [
+            "Opening context before the causal turning points.",
+            {
+                "text": "The earliest cause is established.",
+                "character_state_before": "unaware",
+                "character_state_after": "clue known",
+            },
+            {
+                "text": "The later consequence becomes possible.",
+                "state_before": "clue known",
+                "state_after": "decision made",
+            },
+            "The ending proves the controlling idea.",
+        ]
+    })
+    skeleton_payload = _build_causal_skeleton_from_synopsis(
+        project,
+        synopsis,
+        zh=False,
+    )
+
+    assert skeleton_payload is not None
+    assert skeleton_payload["chain_order"] == "opening_to_ending"
+    assert skeleton_payload["ending_state"] == (
+        "The ending proves the controlling idea."
+    )
+    assert [link["description"] for link in skeleton_payload["chain"]] == [
+        "The earliest cause is established.",
+        "The later consequence becomes possible.",
+        "The ending proves the controlling idea.",
+    ]
+    assert skeleton_payload["chain"][0]["character_state_before"] == "unaware"
+    assert skeleton_payload["chain"][0]["character_state_after"] == "clue known"
+    assert skeleton_payload["chain"][1]["character_state_before"] == "clue known"
+    assert skeleton_payload["chain"][1]["character_state_after"] == "decision made"
+    assert skeleton_payload["integrity_evaluated"] is True
+    assert skeleton_payload["integrity_valid"] is True
+
+    artifact = SnowflakeArtifact(
+        artifact_id="CAUSAL_SNOWFLAKE_ARTIFACT",
+        project_id=project_id,
+        step_key="long_synopsis",
+        version=1,
+        status="approved",
+        artifact_json={"causal_skeleton": skeleton_payload},
+    )
+    session.add(project)
+    session.flush()
+    session.add(chapter)
+    session.flush()
+    session.add_all([*scenes, artifact])
+    session.commit()
+
+    # The second catalog scene consumes skeleton step 1. Its only unresolved
+    # prerequisite must be the earliest cause (step 0), not the later point
+    # that the old accidental reversal placed at step 0.
+    contract = SceneExecutionContractService(session).generate(scenes[1].scene_id)
+    warning = contract.payload_json.get("causal_readiness_warning") or ""
+    assert "The earliest cause is established." in warning
+    assert "The later consequence becomes possible." not in warning
+    assert _diagnostic_codes(contract) == {
+        "CAUSAL_READINESS_ORDINAL_FALLBACK"
+    }
+    assert "causal_prerequisite(advisory)" in contract.missing_fields_json
+
+
+def test_skeleton_deserializer_accepts_legacy_aliases_and_missing_ending() -> None:
+    from novel_system.services.reverse_causal_skeleton import deserialize_skeleton
+
+    skeleton = deserialize_skeleton({
+        "controlling_idea": "legacy remains readable",
+        "chain": [
+            {
+                "step_index": 0,
+                "description": "legacy ending",
+                "state_before": "before",
+                "state_after": "after",
+            }
+        ],
+    })
+
+    assert skeleton.ending_state == "legacy ending"
+    assert skeleton.chain[0].character_state_before == "before"
+    assert skeleton.chain[0].character_state_after == "after"
+
+    explicitly_reversed = deserialize_skeleton({
+        "chain_order": "ending_to_opening",
+        "ending_state": "ending",
+        "chain": [
+            {
+                "step_index": 0,
+                "description": "ending",
+                "depends_on_index": 1,
+            },
+            {
+                "step_index": 1,
+                "description": "cause",
+            },
+        ],
+    })
+    assert [link.description for link in explicitly_reversed.chain] == [
+        "cause",
+        "ending",
+    ]
+    assert [link.step_index for link in explicitly_reversed.chain] == [0, 1]
+    assert explicitly_reversed.chain[1].depends_on_index == 0

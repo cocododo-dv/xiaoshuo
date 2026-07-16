@@ -654,9 +654,8 @@ def _build_causal_skeleton_from_synopsis(
         from novel_system.services.reverse_causal_skeleton import (
             build_reverse_skeleton,
             format_skeleton_for_prompt,
-            validate_chain_integrity,
+            serialize_skeleton,
         )
-        from novel_system.services.theme_anchor import ThemeAnchorService
 
         if short_synopsis_artifact is None:
             return None
@@ -673,10 +672,25 @@ def _build_causal_skeleton_from_synopsis(
             if idx == len(paragraphs) - 1:
                 ending = text
             elif idx > 0:
-                turning_points.append({
+                point = {
                     "description": text[:200],
                     "why": f"Step {idx} in the causal chain",
-                })
+                }
+                if isinstance(para, dict):
+                    point.update({
+                        "state_before": (
+                            para.get("character_state_before")
+                            or para.get("state_before")
+                            or ""
+                        ),
+                        "state_after": (
+                            para.get("character_state_after")
+                            or para.get("state_after")
+                            or ""
+                        ),
+                        "scene_id": para.get("scene_id"),
+                    })
+                turning_points.append(point)
 
         if not ending:
             return None
@@ -693,25 +707,21 @@ def _build_causal_skeleton_from_synopsis(
             controlling_idea=controlling_idea or (project.title or ""),
             ending_description=ending,
             major_turning_points=turning_points,
+            # Synopsis paragraphs are already chronological. The builder keeps
+            # its legacy reverse-input default for external callers, so state
+            # the order explicitly instead of silently reversing execution.
+            turning_points_order="opening_to_ending",
         )
 
-        validation = validate_chain_integrity(skeleton)
+        integrity_issues = skeleton.validate_chain_integrity()
+        integrity_evaluated = skeleton.integrity_evaluated
         prompt_text = format_skeleton_for_prompt(skeleton)
 
         return {
-            "chain": [
-                {
-                    "step_index": link.step_index,
-                    "description": link.description,
-                    "why_necessary": link.why_necessary,
-                    "depends_on_index": link.depends_on_index,
-                    "scene_id": link.scene_id,
-                }
-                for link in skeleton.chain
-            ],
-            "controlling_idea": skeleton.controlling_idea,
-            "integrity_valid": validation.valid,
-            "integrity_issues": validation.issues,
+            **serialize_skeleton(skeleton),
+            "integrity_evaluated": integrity_evaluated,
+            "integrity_valid": not integrity_issues if integrity_evaluated else None,
+            "integrity_issues": integrity_issues,
             "prompt_text": prompt_text,
         }
     except Exception:

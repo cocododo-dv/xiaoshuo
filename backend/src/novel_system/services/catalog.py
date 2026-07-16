@@ -28,7 +28,10 @@ from novel_system.services.chapter_approval import (
 )
 from novel_system.services.chapter_state import ensure_chapter_state
 from novel_system.services.errors import DomainError
-from novel_system.services.projects import ProjectService
+from novel_system.services.projects import (
+    PROJECT_STATUS_CHAPTER_FINAL_REVIEW,
+    ProjectService,
+)
 
 CHAPTER_STATES = ("planned", "todo", "writing", "draft", "review", "approved")
 SCENE_STATES = ("todo", "writing", "done")
@@ -211,7 +214,17 @@ class CatalogService:
                     "approved chapter state can change only after reopening its final",
                     status_code=409,
                 )
-            if state == "review":
+            # ``review`` is also used by the catalog as an editorial/structural
+            # label while an approved outline is being maintained.  Canonical
+            # FinalScene coverage is required only when this PATCH is the
+            # project's real final-review submission; outline materialization
+            # and re-materialization happen in ``chapter_ready`` before prose
+            # exists and must remain valid structural operations.
+            if (
+                state == "review"
+                and project.status == PROJECT_STATUS_CHAPTER_FINAL_REVIEW
+                and project.current_chapter_id == chapter.chapter_id
+            ):
                 from novel_system.services.chapter_manuscripts import (
                     ChapterManuscriptService,
                 )
