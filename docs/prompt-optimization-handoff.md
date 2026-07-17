@@ -56,7 +56,7 @@
 ### 你没有的信息（防幻觉声明）
 你看到的是模板与机制，**看不到运行时的真实上下文实例**（bundle 分节内容、参考书 findings 等）。涉及输入实态的判断请以「假设：…」标注；不要虚构本文档未记载的字段名、路由或代码行为。
 
-> 本文档由 `python -m novel_system.tools.export_prompt_handoff` 生成；数字对账见 §12（模板 54、注册节点 60、调用点 38）。
+> 本文档由 `python -m novel_system.tools.export_prompt_handoff` 生成；数字对账见 §12（模板 57、注册节点 63、调用点 39）。
 
 ## §1 系统与调用架构速览
 
@@ -115,40 +115,43 @@
 | 24 | `snowflake_scene_triage` | snowflake | 活跃 | yaml:`snowflake_scene_triage_suggest` | `backend/src/novel_system/services/snowflake_workspace_llm.py:485` |
 | 25 | `scene_blueprint` | scene_generation | 活跃 | yaml:`scene_blueprint` | `backend/src/novel_system/services/scene_blueprint.py:100` |
 | 26 | `character_pressure_blueprint` | scene_generation | 活跃 | yaml:`character_pressure_blueprint` | `backend/src/novel_system/services/near_final.py:270` |
-| 27 | `chapter_story_architecture` | scene_generation | 活跃 | yaml:`chapter_story_architecture` | `backend/src/novel_system/services/near_final.py:211` |
-| 28 | `neutral_draft` | scene_generation | 活跃 | yaml:`neutral_draft` | `backend/src/novel_system/services/scene_generation.py:325` |
-| 29 | `style_draft` | scene_generation | 活跃 | yaml:`style_draft` | `backend/src/novel_system/services/scene_generation.py:1360` |
-| 30 | `style_patch` | scene_generation | 活跃 | yaml:`style_draft` | `backend/src/novel_system/services/scene_generation.py:1360`；`backend/src/novel_system/services/scene_generation.py:1547` |
-| 31 | `scene_literary_rewrite` | rewrite | 活跃 | yaml:`scene_literary_rewrite` | `backend/src/novel_system/services/scene_generation.py:1360` |
-| 32 | `scene_auto_rewrite` | rewrite | 活跃 | 内联:`scene_quality.py` | `backend/src/novel_system/services/scene_quality.py:624` |
-| 33 | `long_form_continuation` | scene_generation | 活跃 | yaml:`long_form_continuation` | `backend/src/novel_system/services/scene_generation.py:858` |
-| 34 | `hard_qc` | quality | 活跃 | yaml:`hard_qc` | `backend/src/novel_system/services/qc_engine.py:857` |
-| 35 | `soft_qc` | quality | 活跃 | yaml:`soft_qc` | `backend/src/novel_system/services/qc_engine.py:1542` |
-| 36 | `scene_quality_contract` | quality | 孤儿·无模板 | 无 | — |
-| 37 | `near_final_acceptance_review` | quality | 活跃 | yaml:`near_final_acceptance_review` | `backend/src/novel_system/services/near_final.py:514` |
-| 38 | `chapter_near_final_review` | quality | 活跃 | yaml:`chapter_near_final_review` | `backend/src/novel_system/services/near_final.py:593` |
-| 39 | `literary_eval_live` | evaluation | 活跃 | 内联:`literary_eval.py` | `backend/src/novel_system/services/literary_eval.py:264` |
-| 40 | `writer_scene_diagnosis` | writer_review | 模板载体（镜头节点共用，不直接调用） | yaml:`writer_scene_diagnosis` | — |
-| 41 | `writer_scene_story_diagnosis` | writer_review | 活跃 | yaml:`writer_scene_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
-| 42 | `writer_scene_character_diagnosis` | writer_review | 活跃 | yaml:`writer_scene_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
-| 43 | `writer_scene_prose_diagnosis` | writer_review | 活跃 | yaml:`writer_scene_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
-| 44 | `writer_scene_reader_diagnosis` | writer_review | 活跃 | yaml:`writer_scene_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
-| 45 | `writer_scene_revision` | writer_review | 活跃 | yaml:`writer_scene_revision` | `backend/src/novel_system/services/writer_review.py:844` |
-| 46 | `writer_chapter_diagnosis` | writer_review | 模板载体（镜头节点共用，不直接调用） | yaml:`writer_chapter_diagnosis` | — |
-| 47 | `writer_chapter_story_diagnosis` | writer_review | 活跃 | yaml:`writer_chapter_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
-| 48 | `writer_chapter_character_diagnosis` | writer_review | 活跃 | yaml:`writer_chapter_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
-| 49 | `writer_chapter_prose_diagnosis` | writer_review | 活跃 | yaml:`writer_chapter_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
-| 50 | `writer_chapter_reader_diagnosis` | writer_review | 活跃 | yaml:`writer_chapter_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
-| 51 | `writer_chapter_revision` | writer_review | 活跃 | yaml:`writer_chapter_revision` | `backend/src/novel_system/services/writer_review.py:881` |
-| 52 | `writer_passage_patch` | rewrite | 活跃 | yaml:`writer_passage_patch` | `backend/src/novel_system/services/writer_deep_review.py:613` |
-| 53 | `writer_deep_review` | deep_review | 活跃 | yaml:`writer_deep_review` | `backend/src/novel_system/services/writer_deep_review.py:467` |
-| 54 | `author_structure_extract` | evaluation | 活跃 | yaml:`author_structure_extract` | `backend/src/novel_system/services/author_drafts.py:1073` |
-| 55 | `author_proposal_generate` | writer_review | 活跃 | yaml:`author_proposal_generate` | `backend/src/novel_system/services/author_drafts.py:780` |
-| 56 | `writer_reference_application_review` | evaluation | 孤儿 | yaml:`writer_reference_application_review` | — |
-| 57 | `chapter_summary` | local | 保留 | yaml:`chapter_summary` | — |
-| 58 | `continuity_compression` | local | 保留 | yaml:`continuity_compression` | — |
-| 59 | `archive` | local | 本地保留 | 无 | — |
-| 60 | `chapter_aggregate` | local | 本地保留 | 无 | — |
+| 27 | `chapter_story_architecture` | scene_generation | 活跃 | yaml:`chapter_story_architecture` | `backend/src/novel_system/services/near_final.py:211`；`backend/src/novel_system/services/chapter_plan_llm.py:547` |
+| 28 | `chapter_scene_plan_candidates` | project | 活跃 | yaml:`chapter_scene_plan_candidates` | `backend/src/novel_system/services/chapter_plan_llm.py:547` |
+| 29 | `chapter_scene_plan_fill` | project | 活跃 | yaml:`chapter_scene_plan_fill` | `backend/src/novel_system/services/chapter_plan_llm.py:547` |
+| 30 | `chapter_plan_review` | project | 活跃 | yaml:`chapter_plan_review` | `backend/src/novel_system/services/chapter_plan_llm.py:547` |
+| 31 | `neutral_draft` | scene_generation | 活跃 | yaml:`neutral_draft` | `backend/src/novel_system/services/scene_generation.py:325` |
+| 32 | `style_draft` | scene_generation | 活跃 | yaml:`style_draft` | `backend/src/novel_system/services/scene_generation.py:1360` |
+| 33 | `style_patch` | scene_generation | 活跃 | yaml:`style_draft` | `backend/src/novel_system/services/scene_generation.py:1360`；`backend/src/novel_system/services/scene_generation.py:1547` |
+| 34 | `scene_literary_rewrite` | rewrite | 活跃 | yaml:`scene_literary_rewrite` | `backend/src/novel_system/services/scene_generation.py:1360` |
+| 35 | `scene_auto_rewrite` | rewrite | 活跃 | 内联:`scene_quality.py` | `backend/src/novel_system/services/scene_quality.py:624` |
+| 36 | `long_form_continuation` | scene_generation | 活跃 | yaml:`long_form_continuation` | `backend/src/novel_system/services/scene_generation.py:858` |
+| 37 | `hard_qc` | quality | 活跃 | yaml:`hard_qc` | `backend/src/novel_system/services/qc_engine.py:857` |
+| 38 | `soft_qc` | quality | 活跃 | yaml:`soft_qc` | `backend/src/novel_system/services/qc_engine.py:1542` |
+| 39 | `scene_quality_contract` | quality | 孤儿·无模板 | 无 | — |
+| 40 | `near_final_acceptance_review` | quality | 活跃 | yaml:`near_final_acceptance_review` | `backend/src/novel_system/services/near_final.py:514` |
+| 41 | `chapter_near_final_review` | quality | 活跃 | yaml:`chapter_near_final_review` | `backend/src/novel_system/services/near_final.py:593` |
+| 42 | `literary_eval_live` | evaluation | 活跃 | 内联:`literary_eval.py` | `backend/src/novel_system/services/literary_eval.py:264` |
+| 43 | `writer_scene_diagnosis` | writer_review | 模板载体（镜头节点共用，不直接调用） | yaml:`writer_scene_diagnosis` | — |
+| 44 | `writer_scene_story_diagnosis` | writer_review | 活跃 | yaml:`writer_scene_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
+| 45 | `writer_scene_character_diagnosis` | writer_review | 活跃 | yaml:`writer_scene_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
+| 46 | `writer_scene_prose_diagnosis` | writer_review | 活跃 | yaml:`writer_scene_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
+| 47 | `writer_scene_reader_diagnosis` | writer_review | 活跃 | yaml:`writer_scene_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
+| 48 | `writer_scene_revision` | writer_review | 活跃 | yaml:`writer_scene_revision` | `backend/src/novel_system/services/writer_review.py:844` |
+| 49 | `writer_chapter_diagnosis` | writer_review | 模板载体（镜头节点共用，不直接调用） | yaml:`writer_chapter_diagnosis` | — |
+| 50 | `writer_chapter_story_diagnosis` | writer_review | 活跃 | yaml:`writer_chapter_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
+| 51 | `writer_chapter_character_diagnosis` | writer_review | 活跃 | yaml:`writer_chapter_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
+| 52 | `writer_chapter_prose_diagnosis` | writer_review | 活跃 | yaml:`writer_chapter_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
+| 53 | `writer_chapter_reader_diagnosis` | writer_review | 活跃 | yaml:`writer_chapter_diagnosis` | `backend/src/novel_system/services/writer_review.py:774` |
+| 54 | `writer_chapter_revision` | writer_review | 活跃 | yaml:`writer_chapter_revision` | `backend/src/novel_system/services/writer_review.py:881` |
+| 55 | `writer_passage_patch` | rewrite | 活跃 | yaml:`writer_passage_patch` | `backend/src/novel_system/services/writer_deep_review.py:613` |
+| 56 | `writer_deep_review` | deep_review | 活跃 | yaml:`writer_deep_review` | `backend/src/novel_system/services/writer_deep_review.py:467` |
+| 57 | `author_structure_extract` | evaluation | 活跃 | yaml:`author_structure_extract` | `backend/src/novel_system/services/author_drafts.py:1073` |
+| 58 | `author_proposal_generate` | writer_review | 活跃 | yaml:`author_proposal_generate` | `backend/src/novel_system/services/author_drafts.py:780` |
+| 59 | `writer_reference_application_review` | evaluation | 孤儿 | yaml:`writer_reference_application_review` | — |
+| 60 | `chapter_summary` | local | 保留 | yaml:`chapter_summary` | — |
+| 61 | `continuity_compression` | local | 保留 | yaml:`continuity_compression` | — |
+| 62 | `archive` | local | 本地保留 | 无 | — |
+| 63 | `chapter_aggregate` | local | 本地保留 | 无 | — |
 | — | `auto_critique_llm`（run_task 任务名） | — | 顾问·活跃（别名→soft_qc） | 内联:`auto_critique.py` | `backend/src/novel_system/services/auto_critique.py:431` |
 | — | `narrative_event_extract`（run_task 任务名） | — | 顾问·活跃（别名→extraction） | 内联:`prose_event_extractor.py` | `backend/src/novel_system/services/prose_event_extractor.py:211` |
 | — | `consistency_extract`（run_task 任务名） | — | 顾问·休眠（无路由无注册） | 内联:`narrative_event_log.py` | `backend/src/novel_system/services/narrative_event_log.py:633` |
@@ -156,7 +159,7 @@
 | — | `stylize`（task_routing 键） | — | 别名/兜底路由 | 别名/兜底路由：style_draft 与 style_patch 节点的注… | — |
 | — | 连通性探针 / 模型列表 | — | 管理路径（无业务提示词） | 无 | `backend/src/novel_system/services/llm_accounting.py:210`；`backend/src/novel_system/services/system_config.py:397`；`backend/src/novel_system/services/system_config.py:978` |
 
-**调用点合计 38 处**：21× `LLMNodeRunner.run` + 4× `run_task`（2 休眠）+ 7× `call_llm_node` + 3× 专用 accounted 调用 + 1× accounted 探针 POST + 2× 无 token 的管理 GET。
+**调用点合计 39 处**：21× `LLMNodeRunner.run` + 4× `run_task`（2 休眠）+ 7× `call_llm_node` + 3× 专用 accounted 调用 + 1× accounted 探针 POST + 2× 无 token 的管理 GET。
 
 ### 查证过不存在的调用形态（负面证据）
 
@@ -1114,8 +1117,8 @@ anti_summary_rule must name the one specific closing move this scene must avoid 
 - **模板**：`config/prompts.yaml` → `chapter_story_architecture`（version `2026-07-04.v2`，input_token_budget 2400）
 - **路由（yaml 兜底，DB 优先）** `默认路由`：model=`gpt-5`，temperature=0.25，max_output_tokens=2200，response_format=`json_object`
 - **用途**：近终稿规划：章级承诺-兑现结构、场景间的势能分配（写进后续生成的上下文分节）。
-- **触发**：场景执行契约生成（POST /api/v1/scenes/{id}/execution-contract → NearFinalPlanningService）。
-- **调用链**：`backend/src/novel_system/services/near_final.py:211`（_generate_chapter_architecture，经 PromptBuilder）
+- **触发**：场景执行契约生成（POST /api/v1/scenes/{id}/execution-contract → NearFinalPlanningService，存在 active 蓝图即复用）；2026-07-16 起章节编排台可显式生成/作者改写（POST …/catalog/chapters/{id}/architecture/generate → ChapterPlanService，上下文换 ChapterPlanningContextBuilder 底座）。
+- **调用链**：`backend/src/novel_system/services/near_final.py:211`（_generate_chapter_architecture，经 PromptBuilder）；`backend/src/novel_system/services/chapter_plan_llm.py:145`（generate_architecture，经 _run_structured_task）
 - **输入组装**：PromptBuilder：章/场景快照（不含既有架构）+ _planning_user_prompt 附加段。
 - **输出契约**：架构 payload，经 _normalize_chapter_architecture_payload 归一。（解析/校验：`backend/src/novel_system/services/near_final.py:211`）
 - **失败与降级**：离线 → _fallback_chapter_architecture_payload（skip_runner_when_offline）。
@@ -5507,10 +5510,10 @@ confidence 三档:high / medium / low。若一段同时具备 2 类强特征,降
 
 - 生成命令：`cd backend && python -m novel_system.tools.export_prompt_handoff`（2026-07-16）
 - 模板来源：config/prompts.yaml（无生效的 DB prompts 快照）
-- prompts 模板：**54** 个，全部出现在 §3–§8（脚本断言双向覆盖）
-- 注册节点：**60** 个，全部出现在 §2 总表；未进单元的仅 `archive`、`chapter_aggregate`、`scene_quality_contract`（无提示词，§11 说明）
-- models.yaml task_routing：**59** 键，全部为注册节点或已说明的别名（`stylize`）
-- 调用点：**38** 处，锚点全部在当前源码命中（行号为生成时解析）
+- prompts 模板：**57** 个，全部出现在 §3–§8（脚本断言双向覆盖）
+- 注册节点：**63** 个，全部出现在 §2 总表；未进单元的仅 `archive`、`chapter_aggregate`、`scene_quality_contract`（无提示词，§11 说明）
+- models.yaml task_routing：**62** 键，全部为注册节点或已说明的别名（`stylize`）
+- 调用点：**39** 处，锚点全部在当前源码命中（行号为生成时解析）
 - Python 内联提示词：**6** 组（AST 字面量提取 + 函数内联逐字拷贝经源码包含性断言）
 - 运行时片段：**10** 组；评测用例：**9** 个
 - 负面证据（无 SDK 直连 / 无 embedding API / 前端无提示词 / RAG 注入无 LLM 等）见 §2 末尾

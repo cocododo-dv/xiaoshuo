@@ -740,3 +740,64 @@ item 7 React 路由级懒加载（主 chunk <500KB gzip）——纯结构重构�
 
 - 本项只关闭 C2 证据点名的**状态一致性工程债务**，不推进 C2 本身、五章发布门、真人盲评
   或 30 章耐久门的任何状态；harness 六阶段自动回执在 5 章 × 3 场规模下仍未有通过记录。
+
+## 盲评实验模块重构：从最小 1×1 链路升级为可用工作台（2026-07-16）
+
+产品诉求：Wave 5 交付的是最小可用链（手贴实验 ID、裸样式、无进度、无管理面），本轮把
+「盲评实验」重构为完整工作台。行为契约（盲化、幂等、fail-closed 策略门、可复算报告的
+全部既有键）保持不变，全部为增量。
+
+### 后端（`services/evaluation_experiment.py` + `api/routes/evaluation_experiments.py`）
+
+1. **实验清单/详情端点**：`GET /api/v1/evaluation-experiments`（全部实验 + 进度摘要：
+   total/contrastive/voted/remaining、can_freeze、freeze_required_contrastive=30）、
+   `GET …/{id}/overview`（摘要 + 两臂策略登记 + 冻结哈希）。摘要只含实验元信息与纯计数，
+   无映射/token/快照哈希（测试断言响应全文不含隐藏键词）。
+2. **next-pair 形状升级**：`{pair, done, progress}` 包裹——`pair` 仍只出
+   pair_id + 左右纯文本三键（盲化契约不变），`progress` 只含
+   total_pairs/voted_pairs/remaining_pairs 纯计数。投票判定查询由全库扫描收口为按实验 join；
+   `reviewer_ref` 参数保留仅作审计（每对一票结论，无按 reviewer 的独立队列——修正原误导性
+   docstring）。
+3. **加对路由补 `scene_function` 透传**（服务层原本就校验 FUNCTION_TAGS 并参与冻结哈希/
+   策略格，路由此前无法到达）；加对回执同步回显 scene_function。冻结阈值抽为常量
+   `MIN_CONTRASTIVE_PAIRS_TO_FREEZE`。零 ORM/schema 改动，无迁移。
+
+### 前端（`ws-eval.jsx` 整体重写，约 200→820 行）
+
+三视图工作台（hub/arena/report），沿用工作台设计语言（rv-*/card/pill/btn 体系 + 全局 I 图标）：
+
+- **实验中心（hub）**：挂载自动拉清单，告别手贴实验 ID；实验卡片带状态/证据来源/隔离 pill、
+  盲评进度条、「继续盲评/看报告/冻结题包」动作（冻结带 confirm；真人票未冻结时投票按钮禁用
+  并解释）；新建实验表单（名称/假设/证据来源/隔离声明/来源标注）；手动加对管理面（目标实验/
+  快照标识+随机生成/题材/场景功能/双臂文本/双臂 token；正式实验仍走评测工具批量入库）。
+  评审人标识持久化在 localStorage（UI 偏好，键 `ws-eval:reviewer`）。
+- **投票竞技场（arena）**：进度条 +「第 n/N 对 · 还剩 m 对」；甲/乙双栏 serif 阅读卡
+  （56vh 内滚动）；键盘快捷键 ←/→/0；乐观推进 + 失败回滚改为行内错误（弃 window.alert）；
+  投完出完成卡直达报告。
+- **报告页（report）**：策略判定横幅（按 decision 着色，六种判定中文化）+ 六统计卡
+  （偏好率/p 值/统计判定/平局·未投·无对比/token 倍率/平均用时）+ 偏好率 95% Wilson 区间
+  SVG（50% 中立参考线）+ 策略门合格性清单（8 类不合格原因逐条中文化，fail-closed 语义直给）
+  + 分题材表 + 题材×场景功能策略格（折叠）。
+- 盲化纵深防御保持：store 对 pair 只带入三键、对 progress 只带入三计数，后端多回字段也
+  不落 store（测试仍以「后端故意多回隐藏键」断言）。
+
+### 测试与验证
+
+- 后端定向：`test_evaluation_experiment_{service,routes,store}.py` + `test_best_of_n_blind_eval.py`
+  57 passed（含新增清单/详情/scene_function 透传/包裹形状泄漏断言）；下游消费方
+  `test_outcome_evidence.py` + `test_quality_evidence_stage2.py` + `test_database_preflight.py`
+  217 passed。
+- 前端：`ws-eval.test.jsx` 重写为 11 项（盲化过滤/乐观推进/失败回滚行内错误不弹 alert/
+  done 态/清单成败/建实验成败/加对透传/冻结）；全量 vitest 223 passed + 1 failed——失败项
+  `tweaks-panel.test.jsx` 系本机 Node 16 缺 `Array.prototype.findLastIndex`（jsdom 依赖
+  @asamuzakjp/css-color 需 Node 18+），干净树同样复现，与本轮无关；`npm run build` 过。
+- 隔离后端 E2E（scratch sqlite + `:8017`，`alembic upgrade head` 建库）实跑全链：
+  建实验→加对（genre/scene_function/token_cost 落库、回执含 scene_function）→next-pair
+  包裹形状且响应全文无隐藏键→投票→进度推进（1/2）→清单/详情/报告全通；synthetic 票
+  报告正确 fail-closed（`not_eligible_for_policy`，策略格 2 格 + Wilson CI 正常）。
+
+### 诚实边界
+
+- 本轮是工作台可用性/体验重构，不改变任何证据门语义：synthetic 票仍不能动生产默认，
+  升级默认仍须真人票 + 隐藏基准绑定 + `apply_evaluation_report` 策略门。
+- 真人 30 组盲评实跑、隐藏基准双臂生成入库仍归 §9.3 发布门，未在本轮发生。

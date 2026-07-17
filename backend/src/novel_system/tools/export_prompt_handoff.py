@@ -38,8 +38,8 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 DOC_PATH = REPO_ROOT / "docs" / "prompt-optimization-handoff.md"
 
 # 审计结论的固定期望值（漂移时提醒重新盘点，而不是静默出错文档）
-EXPECTED_TEMPLATE_COUNT = 54
-EXPECTED_NODE_COUNT = 60
+EXPECTED_TEMPLATE_COUNT = 57
+EXPECTED_NODE_COUNT = 63
 EXPECTED_ORPHAN_ACTIVE_NODES = {
     "reference_sample_ranker",
     "reference_style_structure_extract",

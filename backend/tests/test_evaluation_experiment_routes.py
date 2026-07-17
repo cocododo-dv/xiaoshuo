@@ -50,7 +50,9 @@ def test_next_pair_response_leaks_no_metadata(client) -> None:
                    params={"reviewer_ref": "u1"})
     assert r.status_code == 200, r.text
     view = r.json()["data"]
-    assert set(view.keys()) == {"pair_id", "left_text", "right_text"}
+    assert set(view.keys()) == {"pair", "done", "progress"}
+    assert set(view["pair"].keys()) == {"pair_id", "left_text", "right_text"}
+    assert view["progress"] == {"total_pairs": 1, "voted_pairs": 0, "remaining_pairs": 1}
     blob = r.text
     assert "treatment_slot" not in blob and "blind_mapping" not in blob
     assert "scene_snapshot_hash" not in blob and "token_cost" not in blob
@@ -62,7 +64,57 @@ def test_next_pair_empty_when_all_voted(client) -> None:
     _vote(client, pair['pair_id'], "left", duration_ms=400)
     r = client.get(f"/api/v1/evaluation-experiments/{exp['experiment_id']}/next-pair",
                    params={"reviewer_ref": "u1"})
-    assert r.json()["data"] is None
+    data = r.json()["data"]
+    assert data["pair"] is None
+    assert data["done"] is True
+    assert data["progress"] == {"total_pairs": 1, "voted_pairs": 1, "remaining_pairs": 0}
+
+
+def test_list_and_overview_endpoints(client) -> None:
+    exp = _create(client, name="工作台清单实验")
+    pair = _add_pair(client, exp["experiment_id"], "h1", "a", "b")
+    _vote(client, pair["pair_id"], "tie")
+
+    r = client.get("/api/v1/evaluation-experiments")
+    assert r.status_code == 200, r.text
+    rows = r.json()["data"]
+    row = next(x for x in rows if x["experiment_id"] == exp["experiment_id"])
+    assert row["name"] == "工作台清单实验"
+    assert row["total_pairs"] == 1 and row["voted_pairs"] == 1 and row["remaining_pairs"] == 0
+    assert row["can_freeze"] is False
+    blob = r.text
+    assert "treatment_slot" not in blob and "blind_mapping" not in blob and "token_cost" not in blob
+
+    r2 = client.get(f"/api/v1/evaluation-experiments/{exp['experiment_id']}/overview")
+    assert r2.status_code == 200, r2.text
+    overview = r2.json()["data"]
+    assert overview["voted_pairs"] == 1
+    assert overview["treatment_policy"] == {"best_of_n": True}
+
+    r3 = client.get("/api/v1/evaluation-experiments/exp_missing/overview")
+    assert r3.status_code == 404
+    assert r3.json()["error"]["code"] == "EXPERIMENT_NOT_FOUND"
+
+
+def test_add_pair_scene_function_passthrough(client) -> None:
+    exp = _create(client)
+    r = client.post(
+        f"/api/v1/evaluation-experiments/{exp['experiment_id']}/pairs",
+        json={"scene_snapshot_hash": "sf1", "treatment_text": "a", "control_text": "b",
+              "genre": "悬疑", "scene_function": "reveal"},
+        headers={"X-Idempotency-Key": "pair-sf1"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["scene_function"] == "reveal"
+
+    bad = client.post(
+        f"/api/v1/evaluation-experiments/{exp['experiment_id']}/pairs",
+        json={"scene_snapshot_hash": "sf2", "treatment_text": "a", "control_text": "b",
+              "scene_function": "not-a-tag"},
+        headers={"X-Idempotency-Key": "pair-sf2"},
+    )
+    assert bad.status_code == 422
+    assert bad.json()["error"]["code"] == "EVALUATION_SCENE_FUNCTION_INVALID"
 
 
 def test_vote_idempotent_replay(client) -> None:

@@ -79,3 +79,29 @@ def test_empty_project_does_not_500(client):
     assert r.status_code == 200, r.text
     data = r.json()["data"]
     assert data["summary"]["total_cost"] == 0
+
+
+def test_cost_dashboard_route(client, session):
+    _seed(session)
+    r = client.get("/api/v2/projects/RP/cost-dashboard", params={"days": 7})
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    assert data["project_id"] == "RP"
+    assert data["summary"]["total_cost"] > 0
+    assert data["trend"]["days"] == 7
+    assert len(data["trend"]["series"]) == 7
+    assert isinstance(data["by_model"], list)
+    assert "top" in data["by_node"]
+    assert isinstance(data["by_chapter"], list)
+    assert isinstance(data["top_calls"], list)
+    # 额度快照与 cost-summary 同源
+    assert "daily_tokens" in data["quota"]
+
+
+def test_cost_dashboard_empty_project_does_not_500(client):
+    r = client.get("/api/v2/projects/NOPE/cost-dashboard")
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    assert data["summary"]["call_count"] == 0
+    assert data["by_model"] == []
+    assert data["top_calls"] == []

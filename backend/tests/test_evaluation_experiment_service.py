@@ -87,9 +87,13 @@ def test_next_pair_leaks_no_metadata(session) -> None:
                  token_cost={"treatment": 5000, "control": 1000})
     session.commit()
     view = svc.next_pair(exp.experiment_id, reviewer_ref="u1")
-    assert set(view.keys()) == {"pair_id", "left_text", "right_text"}   # 只出这三键
-    assert "treatment_slot" not in view and "blind_mapping" not in view
-    assert "token_cost" not in view and "scene_snapshot_hash" not in view
+    assert set(view.keys()) == {"pair", "done", "progress"}
+    assert set(view["pair"].keys()) == {"pair_id", "left_text", "right_text"}   # 盲化视图只出这三键
+    assert set(view["progress"].keys()) == {"total_pairs", "voted_pairs", "remaining_pairs"}
+    import json as _json
+    blob = _json.dumps(view, ensure_ascii=False)
+    assert "treatment_slot" not in blob and "blind_mapping" not in blob
+    assert "token_cost" not in blob and "scene_snapshot_hash" not in blob
 
 
 def test_next_pair_advances_and_exhausts(session) -> None:
@@ -99,9 +103,45 @@ def test_next_pair_advances_and_exhausts(session) -> None:
                      treatment_text="a", control_text="b")
     session.commit()
     v1 = svc.next_pair(exp.experiment_id, reviewer_ref="u1")
-    assert v1["pair_id"] == p.pair_id
+    assert v1["pair"]["pair_id"] == p.pair_id
+    assert v1["done"] is False
+    assert v1["progress"] == {"total_pairs": 1, "voted_pairs": 0, "remaining_pairs": 1}
     svc.record_vote(p.pair_id, choice="left", reviewer_ref="u1", duration_ms=500)
-    assert svc.next_pair(exp.experiment_id, reviewer_ref="u1") is None   # 投完无剩
+    exhausted = svc.next_pair(exp.experiment_id, reviewer_ref="u1")   # 投完无剩
+    assert exhausted["pair"] is None
+    assert exhausted["done"] is True
+    assert exhausted["progress"] == {"total_pairs": 1, "voted_pairs": 1, "remaining_pairs": 0}
+
+
+def test_list_experiments_and_overview_progress(session) -> None:
+    svc = _svc(session)
+    other = svc.create_experiment(name="较早的实验")
+    svc.add_pair(other.experiment_id, scene_snapshot_hash="o1", treatment_text="a", control_text="b")
+    exp = svc.create_experiment(name="进行中的实验", hypothesis="BoN 更好",
+                                experiment_id="exp_zzz_newest")
+    p1 = svc.add_pair(exp.experiment_id, scene_snapshot_hash="h1", treatment_text="T", control_text="C")
+    svc.add_pair(exp.experiment_id, scene_snapshot_hash="h2", treatment_text="SAME", control_text="SAME")
+    svc.record_vote(p1.pair_id, choice="tie", reviewer_ref="u1")
+    session.commit()
+
+    listing = svc.list_experiments()
+    assert [row["name"] for row in listing][0] == "进行中的实验"   # 新建在前
+    row = next(r for r in listing if r["experiment_id"] == exp.experiment_id)
+    assert row["total_pairs"] == 2 and row["contrastive_pairs"] == 1
+    assert row["voted_pairs"] == 1 and row["remaining_pairs"] == 1
+    assert row["can_freeze"] is False and row["freeze_required_contrastive"] == 30
+    # 摘要不含盲化隐藏键
+    import json as _json
+    blob = _json.dumps(listing, ensure_ascii=False)
+    assert "treatment_slot" not in blob and "blind_mapping" not in blob and "token_cost" not in blob
+
+    overview = svc.experiment_overview(exp.experiment_id)
+    assert overview["voted_pairs"] == 1 and overview["total_pairs"] == 2
+    assert overview["treatment_policy"] == {} and "frozen_pair_manifest_hash" in overview
+
+    with pytest.raises(DomainError) as missing:
+        svc.experiment_overview("exp_missing")
+    assert missing.value.code == "EXPERIMENT_NOT_FOUND"
 
 
 def test_record_vote_rejects_bad_choice(session) -> None:

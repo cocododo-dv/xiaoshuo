@@ -171,6 +171,17 @@ def test_classify_phase_maps_known_nodes():
     assert ca.classify_phase("scene_auto_rewrite", "x") == "revision"
     assert ca.classify_phase("writer_deep_review", "x") == "review"
     assert ca.classify_phase("style_profile_extract", "x") == "other"
+    # 构思/案头生成类也是候选生成——真实项目的成本大头不落「其他」
+    assert ca.classify_phase("snowflake_step_generate", "x") == "candidate_generation"
+    assert ca.classify_phase("snowflake_step_candidates", "x") == "candidate_generation"
+    assert ca.classify_phase("snowflake_workspace_assistant", "x") == "candidate_generation"
+    assert ca.classify_phase("author_proposal_generate", "x") == "candidate_generation"
+    assert ca.classify_phase("project_outline_plan", "x") == "candidate_generation"
+    assert ca.classify_phase("scene_generation", "x") == "candidate_generation"
+    assert ca.classify_phase("snowflake_scene_triage_suggest", "x") == "review"
+    # 风格参考验证/评审仍先被 QC/review 关键词抓走，不受生成词干扰
+    assert ca.classify_phase("style_ref_validate_semantic", "x") == "quality_check"
+    assert ca.classify_phase("chapter_near_final_review", "x") == "quality_check"
 
 
 # ---- scene_cost --------------------------------------------------------------
@@ -392,3 +403,129 @@ def test_project_cost_rollup(session):
     assert result["chapter_count"] == 2
     assert "judge_independence" in result
     assert result["archived_scene_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# project_cost_dashboard：趋势 / 模型 / 节点 / 章节构成 + Top 调用
+# ---------------------------------------------------------------------------
+
+def _today_iso(offset_days=0, seq=0):
+    from datetime import UTC, datetime, timedelta
+
+    at = datetime.now(UTC) - timedelta(days=offset_days)
+    return at.strftime("%Y-%m-%d") + f"T08:00:{seq:02d}Z"
+
+
+def _dash_seed(session):
+    _scene(session, "D1S1", chapter_id="DCH1", project_id="DP")
+    _scene(session, "D1S2", chapter_id="DCH2", project_id="DP", seq=2)
+    # 今天：草稿 300 tok；昨天：QC 100 tok（另一 provider/model）；8 天前：草稿 200 tok
+    _call(session, "D1S1", node_id="style_draft", tokens=300, chapter_id="DCH1",
+          project_id="DP", created_at=_today_iso(0, 1))
+    _call(session, "D1S2", node_id="hard_qc", tokens=100, chapter_id="DCH2",
+          project_id="DP", provider="anthropic", model="claude-x",
+          created_at=_today_iso(1, 2))
+    _call(session, "D1S1", node_id="style_draft", tokens=200, chapter_id="DCH1",
+          project_id="DP", created_at=_today_iso(8, 3))
+    session.flush()
+
+
+def test_dashboard_trend_dense_window_and_bucketing(session):
+    _dash_seed(session)
+    dash = ca.project_cost_dashboard(session, "DP", days=7)
+    trend = dash["trend"]
+    assert trend["days"] == 7
+    assert len(trend["series"]) == 7
+    # 稠密补零：窗口内无调用的天也在
+    assert all("date" in item for item in trend["series"])
+    # 8 天前的调用不进 7 天窗口
+    assert trend["window_tokens"] == 400
+    assert trend["window_call_count"] == 2
+    today_bucket = trend["series"][-1]
+    assert today_bucket["tokens"] == 300
+    assert today_bucket["call_count"] == 1
+    assert today_bucket["cost"] > 0
+    yesterday_bucket = trend["series"][-2]
+    assert yesterday_bucket["tokens"] == 100
+
+
+def test_dashboard_summary_covers_all_calls_regardless_of_window(session):
+    _dash_seed(session)
+    dash = ca.project_cost_dashboard(session, "DP", days=7)
+    assert dash["summary"]["total_tokens"] == 600
+    assert dash["summary"]["call_count"] == 3
+    # summary 与 project_cost 同口径
+    assert dash["summary"]["total_cost"] == ca.project_cost(session, "DP")["total_cost"]
+
+
+def test_dashboard_by_model_sorted_by_cost(session):
+    _dash_seed(session)
+    dash = ca.project_cost_dashboard(session, "DP")
+    by_model = dash["by_model"]
+    assert len(by_model) == 2
+    assert by_model[0]["cost"] >= by_model[1]["cost"]
+    assert {(m["provider"], m["model"]) for m in by_model} == {
+        ("openai_compatible", "gpt-5"),
+        ("anthropic", "claude-x"),
+    }
+    gpt = next(m for m in by_model if m["model"] == "gpt-5")
+    assert gpt["tokens"] == 500
+    assert gpt["call_count"] == 2
+    assert gpt["is_estimate"] is True
+
+
+def test_dashboard_by_node_top_and_remainder(session):
+    _dash_seed(session)
+    dash = ca.project_cost_dashboard(session, "DP", node_limit=1)
+    by_node = dash["by_node"]
+    assert len(by_node["top"]) == 1
+    assert by_node["top"][0]["node_id"] == "style_draft"
+    assert by_node["top"][0]["phase"] == "candidate_generation"
+    assert by_node["top"][0]["tokens"] == 500
+    assert by_node["remainder"]["node_count"] == 1
+    assert by_node["remainder"]["tokens"] == 100
+
+
+def test_dashboard_by_chapter_rollup(session):
+    _dash_seed(session)
+    # 未关联章节的项目级调用排最后
+    _call(session, None, node_id="outline_expand", tokens=50, chapter_id=None, project_id="DP")
+    session.flush()
+    dash = ca.project_cost_dashboard(session, "DP")
+    by_chapter = dash["by_chapter"]
+    assert by_chapter[0]["chapter_id"] == "DCH1"
+    assert by_chapter[0]["tokens"] == 500
+    assert by_chapter[0]["scene_count"] == 1
+    assert by_chapter[-1]["chapter_id"] is None
+    assert by_chapter[-1]["tokens"] == 50
+
+
+def test_dashboard_top_calls_ordered_and_limited(session):
+    _dash_seed(session)
+    dash = ca.project_cost_dashboard(session, "DP", call_limit=2)
+    top = dash["top_calls"]
+    assert len(top) == 2
+    assert top[0]["cost"] >= top[1]["cost"]
+    assert top[0]["total_tokens"] == 300
+    for row in top:
+        assert row["phase"] in {"candidate_generation", "quality_check"}
+        assert row["accounting_status"]
+        assert row["currency"]
+
+
+def test_dashboard_days_clamped_and_bad_input_safe(session):
+    _dash_seed(session)
+    assert ca.project_cost_dashboard(session, "DP", days=0)["trend"]["days"] == 1
+    assert ca.project_cost_dashboard(session, "DP", days=9999)["trend"]["days"] == ca.DASHBOARD_MAX_DAYS
+    assert ca.project_cost_dashboard(session, "DP", days="oops")["trend"]["days"] == ca.DASHBOARD_DEFAULT_DAYS
+
+
+def test_dashboard_empty_project_returns_empty_shapes(session):
+    dash = ca.project_cost_dashboard(session, "NOPE")
+    assert dash["summary"]["call_count"] == 0
+    assert dash["by_model"] == []
+    assert dash["by_node"] == {"top": [], "remainder": None}
+    assert dash["by_chapter"] == []
+    assert dash["top_calls"] == []
+    assert len(dash["trend"]["series"]) == ca.DASHBOARD_DEFAULT_DAYS
+    assert dash["trend"]["window_cost"] == 0

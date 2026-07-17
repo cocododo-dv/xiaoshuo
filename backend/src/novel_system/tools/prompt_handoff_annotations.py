@@ -106,7 +106,7 @@ EXTRA_ROUTING_KEYS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# 全部 38 个调用点（file + anchor → 生成时解析行号）
+# 全部 39 个调用点（file + anchor → 生成时解析行号）
 # ---------------------------------------------------------------------------
 
 
@@ -175,7 +175,7 @@ CALL_SITES: list[dict[str, Any]] = [
     ),
     _cs(f"{SVC}/style_reference/validation/semantic.py", "raw = call_llm_node(", ["style_ref_validate_semantic"], "语义评审校验"),
     _cs(f"{SVC}/style_reference/validation/forbidden_semantic.py", "raw = call_llm_node(", ["style_ref_validate_forbidden"], "禁忌模式触发判定"),
-    # -- 专用请求组装器，经 execute_accounted_call 统一记账（3 处）--
+    # -- 专用请求组装器，经 execute_accounted_call 统一记账（4 处）--
     _cs(
         f"{SVC}/snowflake_workspace_llm.py",
         "response = execute_accounted_call(",
@@ -189,6 +189,12 @@ CALL_SITES: list[dict[str, Any]] = [
         "段落分类（锚定集 + 批量，分批循环调用）",
     ),
     _cs(f"{SVC}/literary_eval.py", "response = execute_accounted_call(", ["literary_eval_live"], "文学评测 live 场景生成（内联提示词）"),
+    _cs(
+        f"{SVC}/chapter_plan_llm.py",
+        "response = execute_accounted_call(",
+        ["chapter_story_architecture", "chapter_scene_plan_candidates", "chapter_scene_plan_fill", "chapter_plan_review"],
+        "章节编排规划 4 任务共用出口（_run_structured_task；蓝图显式生成复用 chapter_story_architecture 节点）",
+    ),
     # -- 管理 HTTP（completion POST 已纳入 system/provider_probe 记账；模型 GET 不计 token）--
     _cs(f"{SVC}/llm_accounting.py", "response = httpx.post(", [], "连通性探针：最小补全请求（system/provider_probe 记账，无业务提示词）"),
     _cs(f"{SVC}/system_config.py", "httpx.get(list_request.url, headers=list_request.headers", [], "test_provider 模型列表拉取"),
@@ -489,7 +495,7 @@ FRAGMENTS: list[dict[str, Any]] = [
 ]
 
 # ---------------------------------------------------------------------------
-# 60 个优化单元
+# 63 个优化单元
 # ---------------------------------------------------------------------------
 
 _SNOWFLAKE_STEPS: list[tuple[str, str, str]] = [
@@ -673,8 +679,15 @@ UNITS: list[dict[str, Any]] = [
         "status": "活跃",
         "priority": "P0",
         "purpose": "近终稿规划：章级承诺-兑现结构、场景间的势能分配（写进后续生成的上下文分节）。",
-        "trigger": "场景执行契约生成（POST /api/v1/scenes/{id}/execution-contract → NearFinalPlanningService）。",
-        "call_chain": [(f"{SVC}/near_final.py", "node_id=CHAPTER_ARCHITECTURE_ARTIFACT", 1, "_generate_chapter_architecture，经 PromptBuilder")],
+        "trigger": (
+            "场景执行契约生成（POST /api/v1/scenes/{id}/execution-contract → NearFinalPlanningService，"
+            "存在 active 蓝图即复用）；2026-07-16 起章节编排台可显式生成/作者改写"
+            "（POST …/catalog/chapters/{id}/architecture/generate → ChapterPlanService，上下文换 ChapterPlanningContextBuilder 底座）。"
+        ),
+        "call_chain": [
+            (f"{SVC}/near_final.py", "node_id=CHAPTER_ARCHITECTURE_ARTIFACT", 1, "_generate_chapter_architecture，经 PromptBuilder"),
+            (f"{SVC}/chapter_plan_llm.py", "task_key=CHAPTER_ARCHITECTURE_ARTIFACT", 1, "generate_architecture，经 _run_structured_task"),
+        ],
         "inputs": "PromptBuilder：章/场景快照（不含既有架构）+ _planning_user_prompt 附加段。",
         "output_contract": "架构 payload，经 _normalize_chapter_architecture_payload 归一。",
         "parser_refs": [(f"{SVC}/near_final.py", "node_id=CHAPTER_ARCHITECTURE_ARTIFACT", 1)],
@@ -1571,6 +1584,64 @@ UNITS: list[dict[str, Any]] = [
         "failure": "任何异常 → []。",
         "opt_notes": "P2：同上，接线前不投入。",
     },
+    # ================= 批次 G（2026-07-16 章节编排 LLM 规划，docs/chapter-arrangement-llm-design-2026-07-16.md） =================
+    {
+        "unit_id": "chapter_scene_plan_candidates",
+        "batch": "G",
+        "title": "chapter_scene_plan_candidates — 章节编排 3 方向候选",
+        "node_ids": ["chapter_scene_plan_candidates"],
+        "template_key": "chapter_scene_plan_candidates",
+        "inline_key": None,
+        "adhoc_task": None,
+        "status": "活跃",
+        "priority": "P1",
+        "purpose": "章节编排台「三个方向」：给整章场景序列出 3 个结构策略互斥的编排候选（无状态咨询，不落库）。",
+        "trigger": "POST /api/v2/projects/{id}/catalog/chapters/{chid}/plan/candidates（api/routes/chapter_plan.py）。",
+        "call_chain": [(f"{SVC}/chapter_plan_llm.py", 'task_key="chapter_scene_plan_candidates"', 1, "candidates，经 _run_structured_task")],
+        "inputs": "ChapterPlanningContextBuilder 十槽位底座（章卡/现有场景卡/邻章交接/章蓝图/雪花 canon/叙事状态/伏笔债/张力邻域/人物位置/作者约束）+ 可选 direction_hint。",
+        "output_contract": "candidates[3]（label/rationale/risk/scene_plan）；_normalize_candidates_output 归一（坏 ref_scene_id 置 None、上限 3）。",
+        "parser_refs": [(f"{SVC}/chapter_plan_llm.py", "def _normalize_candidates_output", 1)],
+        "failure": "LLM 未启用 → {source:\"fallback\", candidates:[], author_action}；路由缺失 → CHAPTER_PLAN_LLM_ROUTE_OR_PROMPT_MISSING（引导一键补齐）。",
+        "opt_notes": "「结构策略互斥」是核心（提示词已要求 rationale 引用上下文事实、tension_note 换压力类型不加形容词）；弱模型易出三条同质候选。",
+    },
+    {
+        "unit_id": "chapter_scene_plan_fill",
+        "batch": "G",
+        "title": "chapter_scene_plan_fill — 场景卡保真补全（只填空补丁）",
+        "node_ids": ["chapter_scene_plan_fill"],
+        "template_key": "chapter_scene_plan_fill",
+        "inline_key": None,
+        "adhoc_task": None,
+        "status": "活跃",
+        "priority": "P1",
+        "purpose": "对本章场景卡产出咨询式填空补丁（三拍/POV/exit_change/hook/占位标题）；adopt 模式把选中候选保真合并。覆盖型意见降级为 notes。",
+        "trigger": "POST …/plan/fill（fill|adopt 两模式）；应用走 POST …/plan/apply（幂等、锁章 409、服务端再 sanitize 后经 CatalogService 单事务回写）。",
+        "call_chain": [(f"{SVC}/chapter_plan_llm.py", 'task_key="chapter_scene_plan_fill"', 1, "fill，经 _run_structured_task")],
+        "inputs": "十槽位底座 + mode + adopted_candidate（adopt 时）。",
+        "output_contract": "{patch{scenes[set 只填空],append_scenes},notes,gaps}；服务端 sanitize_plan_patch 强制只填空/按 scene_id 对位/追加上限/不删不覆盖，拒写进 dropped。",
+        "parser_refs": [(f"{SVC}/chapter_plan_llm.py", "def sanitize_plan_patch", 1)],
+        "failure": "LLM 未启用 → fallback 返回 _empty_slot_gaps 空槽清单 + author_action（UI 仍有可执行清单）。",
+        "opt_notes": "补丁纪律由服务端兜底，提示词优化空间在「值必须扎根上下文」（decision 拍要能生成下一场 goal）与 adopt 模式的差异保留。",
+    },
+    {
+        "unit_id": "chapter_plan_review",
+        "batch": "G",
+        "title": "chapter_plan_review — 章节编排结构体检",
+        "node_ids": ["chapter_plan_review"],
+        "template_key": "chapter_plan_review",
+        "inline_key": None,
+        "adhoc_task": None,
+        "status": "活跃",
+        "priority": "P1",
+        "purpose": "结构性 findings（10 个枚举 code：伏笔逾期/张力不升级/承接错位/POV 疲劳等），每条必须带 evidence；可选 suggestion_patch 同过 sanitize。",
+        "trigger": "POST …/plan/review（锁章只读放行）；前端合流进章节体检块（规则版免费兜底，AI findings 带标识）。",
+        "call_chain": [(f"{SVC}/chapter_plan_llm.py", 'task_key="chapter_plan_review"', 1, "review，经 _run_structured_task")],
+        "inputs": "十槽位底座（重点消费邻章交接/叙事状态/伏笔债/张力邻域）。",
+        "output_contract": "findings[]；_normalize_review_output 归一（无 evidence 直接丢弃、code 白名单、suggestion_patch 过 sanitize_plan_patch）。",
+        "parser_refs": [(f"{SVC}/chapter_plan_llm.py", "def _normalize_review_output", 1)],
+        "failure": "LLM 未启用 → _rule_based_findings 规则版体检（戏剧卡缺项/三拍不全/缺反应场）。",
+        "opt_notes": "「无据断言丢弃」由服务端执行——优化时强化 evidence 必须指认注入槽位里的具体事实，而非复述 summary。",
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -1594,4 +1665,4 @@ NEGATIVE_EVIDENCE: list[str] = [
 ]
 
 # 生成脚本运行时须核对的调用点总数
-EXPECTED_CALL_SITE_COUNT = 38
+EXPECTED_CALL_SITE_COUNT = 39

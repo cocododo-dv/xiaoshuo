@@ -2059,3 +2059,266 @@ templates:
               repair_patch:
                 type: object
                 additionalProperties: true
+
+  # ---- 章节编排 LLM 规划（docs/chapter-arrangement-llm-design-2026-07-16.md §4） ----
+
+  chapter_scene_plan_candidates:
+    version: "2026-07-16.v1"
+    input_token_budget: 3200
+    system_prompt: |
+      You are a senior long-form fiction structure editor working inside a chapter-arrangement workbench.
+      You receive a deterministic context bundle: the chapter card (drama fields, entry/exit), current scene cards,
+      neighbor-chapter handoff, the chapter story architecture, snowflake canon digests, narrative state,
+      open foreshadow debts, the tension neighborhood, character positions, and hard author constraints.
+      Propose exactly 3 candidate scene-sequence plans whose STRUCTURAL STRATEGIES are mutually exclusive
+      (e.g. compress into a two-scene collision vs. slow-burn triptych vs. reactive-led detour) — not the same
+      plan with different wording. Never violate author_constraints.forbidden or must_not. Write all string
+      values in Chinese while keeping the English schema keys.
+    task_prompt: |
+      Build 3 divergent chapter scene plans from the supplied context.
+      Rules:
+      - Each candidate.rationale MUST cite concrete facts from the context (a specific foreshadow debt,
+        the previous chapter's exit, a tension value, a character position) — no generic advice.
+      - Existing scene cards are established facts: when a planned scene corresponds to one, set ref_scene_id
+        to that scene_id and keep its non-empty fields unchanged in your plan.
+      - Each scene entry needs a working title, kind (proactive/reactive), the three-beat brief
+        (goal/conflict/setback for proactive, reaction/dilemma/decision for reactive), a POV character name,
+        exit_change (what changed in the world/relations when the scene ends), a hook, and a tension_note
+        describing how pressure escalates by a NEW kind of pressure (new obstacle type, relationship cost,
+        information, deadline) — never the same pressure with a bigger adjective.
+      - risk states the real cost of choosing this direction.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - candidates
+      properties:
+        candidates:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - label
+              - rationale
+              - risk
+              - scene_plan
+            properties:
+              label:
+                type: string
+              rationale:
+                type: string
+              risk:
+                type: string
+              scene_plan:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required:
+                    - ref_scene_id
+                    - title
+                    - kind
+                    - brief
+                    - pov_character_name
+                    - exit_change
+                    - hook
+                    - tension_note
+                  properties:
+                    ref_scene_id:
+                      type: string
+                    title:
+                      type: string
+                    kind:
+                      type: string
+                      enum:
+                        - proactive
+                        - reactive
+                    brief:
+                      type: object
+                      additionalProperties: true
+                    pov_character_name:
+                      type: string
+                    exit_change:
+                      type: string
+                    hook:
+                      type: string
+                    tension_note:
+                      type: string
+
+  chapter_scene_plan_fill:
+    version: "2026-07-16.v1"
+    input_token_budget: 3200
+    system_prompt: |
+      You are a consultative scene-card assistant inside a chapter-arrangement workbench.
+      You receive the same deterministic context bundle as the planner, plus a mode:
+      "fill" (complete the empty slots of existing scene cards) or "adopt" (merge an adopted candidate plan
+      while keeping every non-empty author value untouched).
+      Your patch is ADVISORY and FILL-ONLY: never overwrite a non-empty field, never delete or reorder scenes.
+      Overwrite-style opinions (rename, change kind, cut a scene) go into notes, not the patch.
+      Never violate author_constraints.forbidden or must_not. Write all string values in Chinese
+      while keeping the English schema keys.
+    task_prompt: |
+      Produce a fill-only patch for this chapter's scene cards.
+      Rules:
+      - patch.scenes[*].set may only contain values for fields that are currently EMPTY on that scene:
+        three-beat brief keys matching the scene kind (goal/conflict/setback or reaction/dilemma/decision),
+        pov_character_name (only when the scene has no POV), exit_change, hook, and title only when the
+        current title is a placeholder (未命名/新场景/开场).
+      - Values must be grounded in the context: chapter promise, neighbor handoff, foreshadow debts,
+        narrative state. A decision beat must create the next scene's goal.
+      - In adopt mode, append_scenes carries the adopted candidate's NEW scenes (those with ref_scene_id null),
+        in order, to be appended at the end of the chapter. In fill mode leave append_scenes empty unless an
+        obvious structural hole (e.g. missing reactive beat) needs exactly one new scene.
+      - notes carries overwrite-style suggestions the patch is not allowed to make; gaps lists what you could
+        not infer from the context (do not invent facts).
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - patch
+        - notes
+        - gaps
+      properties:
+        patch:
+          type: object
+          additionalProperties: false
+          required:
+            - scenes
+            - append_scenes
+          properties:
+            scenes:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - scene_id
+                  - set
+                properties:
+                  scene_id:
+                    type: string
+                  set:
+                    type: object
+                    additionalProperties: true
+            append_scenes:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required:
+                  - title
+                  - kind
+                  - brief
+                properties:
+                  title:
+                    type: string
+                  kind:
+                    type: string
+                    enum:
+                      - proactive
+                      - reactive
+                  brief:
+                    type: object
+                    additionalProperties: true
+                  pov_character_name:
+                    type: string
+                  exit_change:
+                    type: string
+                  hook:
+                    type: string
+        notes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - suggestion
+            properties:
+              scene_id:
+                type: string
+              field:
+                type: string
+              suggestion:
+                type: string
+              reason:
+                type: string
+        gaps:
+          type: array
+          items:
+            type: string
+
+  chapter_plan_review:
+    version: "2026-07-16.v1"
+    input_token_budget: 3200
+    system_prompt: |
+      You are a structural chapter-plan reviewer inside a chapter-arrangement workbench.
+      You receive the deterministic context bundle (chapter card, scene cards, neighbor handoff,
+      chapter architecture, canon digests, narrative state, foreshadow debts, tension neighborhood,
+      character positions, author constraints). You diagnose STRUCTURE, not prose style.
+      Every finding MUST cite concrete evidence from the supplied context; findings without evidence are
+      discarded by the server. Write all string values in Chinese while keeping the English schema keys.
+    task_prompt: |
+      Review this chapter's scene plan and return findings.
+      Allowed codes and what they mean:
+      - PROMISE_UNGROUNDED: the chapter promise/drama card is not carried by any scene.
+      - SCENE_FUNCTION_DUPLICATE: two scenes perform the same structural function with no escalation.
+      - REACTIVE_MISSING: consecutive proactive scenes leave no room to absorb costs.
+      - TENSION_FLAT: pressure does not escalate versus the tension neighborhood, or repeats the same kind.
+      - FORESHADOW_OVERDUE: an open foreshadow debt due here is not planned for payoff.
+      - POV_FATIGUE: POV distribution over recent chapters makes this chapter's POV choice tiring.
+      - HANDOFF_MISMATCH: the chapter entry/exit does not align with the neighbor chapters' exit/entry.
+      - EXIT_NO_CHANGE: a scene ends without changing world/relations (empty or cosmetic exit_change).
+      - BRIEF_INCOMPLETE: a scene card is missing three-beat/POV fields the drafting contract needs.
+      - OTHER: anything structural that does not fit above.
+      severity is warn (should fix before drafting) or info (worth knowing).
+      suggestion_patch, when present, must be FILL-ONLY (same rules as the fill task: only empty fields,
+      by scene_id, appends only) — never overwrite non-empty author text.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - findings
+      properties:
+        findings:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - code
+              - severity
+              - evidence
+              - summary
+            properties:
+              code:
+                type: string
+                enum:
+                  - PROMISE_UNGROUNDED
+                  - SCENE_FUNCTION_DUPLICATE
+                  - REACTIVE_MISSING
+                  - TENSION_FLAT
+                  - FORESHADOW_OVERDUE
+                  - POV_FATIGUE
+                  - HANDOFF_MISMATCH
+                  - EXIT_NO_CHANGE
+                  - BRIEF_INCOMPLETE
+                  - OTHER
+              severity:
+                type: string
+                enum:
+                  - warn
+                  - info
+              scene_id:
+                type: string
+              field:
+                type: string
+              evidence:
+                type: string
+              summary:
+                type: string
+              suggestion_patch:
+                type: object
+                additionalProperties: true

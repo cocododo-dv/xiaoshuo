@@ -1,7 +1,8 @@
-"""Wave 5 — 质量实验通道路由（结果闭环治理 §6.2/§6.3）。
+"""质量实验通道路由（结果闭环治理 §6.2/§6.3）。
 
-匿名 A/B 人类盲评：建实验 → 冻结文本对入库（服务端盲化）→ next-pair（只出 pair_id
-+ 左右纯文本）→ 投票 → 可复算报告。映射/策略/token/快照哈希在投票前一律不下发。
+匿名 A/B 人类盲评：建实验 → 加对（服务端盲化落库）→ 冻结题包 → next-pair
+（盲化视图只出 pair_id + 左右纯文本，另附纯计数进度）→ 投票 → 可复算报告。
+映射/策略/token/快照哈希在投票前一律不下发；实验清单/详情同样只含元信息与计数。
 """
 from __future__ import annotations
 
@@ -42,6 +43,7 @@ class AddPairRequest(BaseModel):
     control_ref: str | None = None
     token_cost: dict[str, Any] = {}
     genre: str | None = None
+    scene_function: str | None = None
 
 
 class VoteRequest(BaseModel):
@@ -77,6 +79,7 @@ def _pair_admin_dict(pair: EvaluationPair) -> dict[str, Any]:
         "scene_snapshot_hash": pair.scene_snapshot_hash,
         "no_contrast": pair.no_contrast,
         "genre": pair.genre,
+        "scene_function": pair.scene_function,
     }
 
 
@@ -88,6 +91,19 @@ def _vote_dict(vote: EvaluationVote) -> dict[str, Any]:
         "reviewer_ref": vote.reviewer_ref,
         "duration_ms": vote.duration_ms,
     }
+
+
+@router.get("/api/v1/evaluation-experiments")
+def list_experiments(request: Request, session: Session = Depends(get_session)):
+    """盲评工作台入口：全部实验 + 进度摘要（纯元信息与计数，不含盲化隐藏键）。"""
+    data = EvaluationExperimentService(session).list_experiments()
+    return ok(data, req_id=getattr(request.state, "request_id", None))
+
+
+@router.get("/api/v1/evaluation-experiments/{experiment_id}/overview")
+def experiment_overview(experiment_id: str, request: Request, session: Session = Depends(get_session)):
+    data = EvaluationExperimentService(session).experiment_overview(experiment_id)
+    return ok(data, req_id=getattr(request.state, "request_id", None))
 
 
 @router.post("/api/v1/evaluation-experiments")
@@ -153,6 +169,7 @@ def add_pair(experiment_id: str, payload: AddPairRequest, request: Request, sess
                 control_ref=payload.control_ref,
                 token_cost=payload.token_cost,
                 genre=payload.genre,
+                scene_function=payload.scene_function,
             )
         ),
         actor_ref=actor_ref,

@@ -1,7 +1,9 @@
 """成本看板端点（结果闭环治理设计 §5.8/§6.3/§10，Wave 6）。
 
-GET /api/v2/projects/{project_id}/cost-summary —— 场景/章节/全书级 token 与费用聚合。
-默认返回项目级；``?scene_id=`` / ``?chapter_id=`` 下钻。只读，不改任何状态。
+GET /api/v2/projects/{project_id}/cost-summary   —— 场景/章节/全书级 token 与费用聚合。
+默认返回项目级；``?scene_id=`` / ``?chapter_id=`` 下钻。
+GET /api/v2/projects/{project_id}/cost-dashboard —— 看板一读聚合：summary + 近 N 天
+趋势 + 模型/节点/章节构成 + Top 调用 + 全局额度。两者均只读，不改任何状态。
 """
 from __future__ import annotations
 
@@ -30,5 +32,17 @@ def project_cost_summary(
         payload = {"level": "chapter", "summary": cost_aggregation.chapter_cost(session, chapter_id)}
     else:
         payload = {"level": "project", "summary": cost_aggregation.project_cost(session, project_id)}
+    payload["quota"] = llm_quota_snapshot(session, project_id=project_id)
+    return ok(payload, req_id=getattr(request.state, "request_id", None))
+
+
+@router.get("/api/v2/projects/{project_id}/cost-dashboard")
+def project_cost_dashboard(
+    project_id: str,
+    request: Request,
+    days: int = cost_aggregation.DASHBOARD_DEFAULT_DAYS,
+    session: Session = Depends(get_session),
+):
+    payload = cost_aggregation.project_cost_dashboard(session, project_id, days=days)
     payload["quota"] = llm_quota_snapshot(session, project_id=project_id)
     return ok(payload, req_id=getattr(request.state, "request_id", None))

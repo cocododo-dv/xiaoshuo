@@ -185,6 +185,9 @@ class CatalogService:
             "brief": {"kind": kind, **{key: str(brief_json.get(key) or "") for key in keys}},
             "pov_character_id": pov_id,
             "pov_character_name": pov_name,
+            # 章节编排 LLM 规划（2026-07-16）可填的两个交接槽；可加性扩展，旧前端忽略即可。
+            "exit_change": str(scene.exit_change or ""),
+            "hook": str(scene.hook or ""),
         }
 
     # ---------- 写 ----------

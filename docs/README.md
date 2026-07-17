@@ -18,6 +18,7 @@
 ## 当前专项记录
 
 - [结果治理路线图](outcome-governance-roadmap-2026-07-15.md)与[实施账本](outcome-governance-progress.md)：工程门已完成，真实模型五章、真人盲评和 30 章耐久仍以各自证据门为准。
+- [章节编排 LLM 接入设计（2026-07-16，已实现）](chapter-arrangement-llm-design-2026-07-16.md)：章节蓝图一等公民 + 上下文底座 + 候选/补全/体检三通道与只填空补丁纪律。
 - [风格参考设计](style_reference_module_design_v1.1.md)、[实施账本](style-reference-progress.md)与[Phase 3 完成记录](style-reference-phase3-backlog.md)：后两者是历史实施依据，Phase 3 A/B/C 已全部完成。
 - `docs/superpowers/`：保留 2026 年 7 月结果治理工作的计划、规格和机器证据。文件中的 revision、路径和结论只对应其原始运行时间。
 

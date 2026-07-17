@@ -4,8 +4,9 @@
 默认策略判据）之上，加数据库持久化与 §6.2 有效性约束：
 
 - 每个 ``scene_snapshot_hash`` 至多一个有效对比对（防伪重复，破坏检验独立性）。
-- ``next_pair`` 只出 ``pair_id`` + 左右纯文本；映射/策略/token/快照哈希一律不下发
-  （盲化威胁模型：防无意识偏倚，非防蓄意作弊——本地读库可破盲，按此设定即可）。
+- ``next_pair`` 的盲化视图只出 ``pair_id`` + 左右纯文本；映射/策略/token/快照哈希
+  一律不下发（盲化威胁模型：防无意识偏倚，非防蓄意作弊——本地读库可破盲，按此
+  设定即可）。视图外只附带纯计数进度（总对数/已投/剩余），不含任何隐藏键。
 - 投票后方可 reveal；报告折叠隐藏键 → treatment/control/tie，产出可复算结论。
 - 实验通道**不写 FinalScene**，只写三张实验表（§5.1）；实验失败不影响生产状态。
 
@@ -43,6 +44,9 @@ _VALID_CHOICES = ("left", "right", "tie")
 _VALID_PROVENANCE = ("synthetic", "human")
 _VALID_ISOLATION_MODES = ("seed_project", "time_isolated", "external_holdout")
 _AUTOMATED_REVIEWER_PREFIXES = ("model:", "llm:", "ai:", "bot:", "auto:", "synthetic:")
+
+# §6.2：冻结题包的最小有效样本——30 组来自互异快照的对比对。
+MIN_CONTRASTIVE_PAIRS_TO_FREEZE = 30
 
 
 class EvaluationExperimentService:
@@ -251,12 +255,16 @@ class EvaluationExperimentService:
         if experiment.status != "collecting":
             raise DomainError("EXPERIMENT_NOT_COLLECTING", "experiment cannot be frozen from its current status", 409)
         contrast_count = sum(1 for pair in pairs if not pair.no_contrast)
-        if contrast_count < 30:
+        if contrast_count < MIN_CONTRASTIVE_PAIRS_TO_FREEZE:
             raise DomainError(
                 "EVALUATION_POOL_TOO_SMALL",
                 "at least 30 contrastive pairs from distinct snapshots are required before freezing",
                 status_code=422,
-                details={"total_pairs": len(pairs), "contrastive_pairs": contrast_count, "required": 30},
+                details={
+                    "total_pairs": len(pairs),
+                    "contrastive_pairs": contrast_count,
+                    "required": MIN_CONTRASTIVE_PAIRS_TO_FREEZE,
+                },
             )
         if experiment.evidence_provenance == "human":
             if experiment.isolation_mode not in _VALID_ISOLATION_MODES or not str(
@@ -283,11 +291,81 @@ class EvaluationExperimentService:
         return experiment
 
     # ------------------------------------------------------------------
+    # 实验清单 / 进度总览（盲评工作台入口——不含任何盲化隐藏键）
+    # ------------------------------------------------------------------
+
+    def list_experiments(self) -> list[dict[str, Any]]:
+        """全部实验的进度摘要，新建在前。只含实验元信息 + 纯计数，无映射/token/快照哈希。"""
+        experiments = self.session.execute(
+            select(EvaluationExperiment).order_by(
+                EvaluationExperiment.created_at.desc(), EvaluationExperiment.experiment_id.desc()
+            )
+        ).scalars().all()
+        tallies = self._pair_tallies()
+        return [self._experiment_summary(exp, tallies.get(exp.experiment_id)) for exp in experiments]
+
+    def experiment_overview(self, experiment_id: str) -> dict[str, Any]:
+        """单实验详情：摘要 + 假设/策略声明（策略是实验登记信息，非盲化隐藏键）。"""
+        experiment = self.session.get(EvaluationExperiment, experiment_id)
+        if experiment is None:
+            raise DomainError("EXPERIMENT_NOT_FOUND", f"experiment {experiment_id} not found", status_code=404)
+        summary = self._experiment_summary(experiment, self._pair_tallies(experiment_id).get(experiment_id))
+        summary["treatment_policy"] = experiment.treatment_policy_json or {}
+        summary["control_policy"] = experiment.control_policy_json or {}
+        summary["frozen_pair_manifest_hash"] = experiment.frozen_pair_manifest_hash
+        summary["benchmark_manifest_id"] = experiment.benchmark_manifest_id
+        return summary
+
+    def _pair_tallies(self, experiment_id: str | None = None) -> dict[str, dict[str, int]]:
+        stmt = select(EvaluationPair.experiment_id, EvaluationPair.pair_id, EvaluationPair.no_contrast)
+        if experiment_id is not None:
+            stmt = stmt.where(EvaluationPair.experiment_id == experiment_id)
+        pair_rows = self.session.execute(stmt).all()
+        voted_ids = set(self.session.execute(select(EvaluationVote.pair_id)).scalars().all())
+        tallies: dict[str, dict[str, int]] = {}
+        for exp_id, pair_id, no_contrast in pair_rows:
+            tally = tallies.setdefault(exp_id, {"total": 0, "contrastive": 0, "voted": 0})
+            tally["total"] += 1
+            if not no_contrast:
+                tally["contrastive"] += 1
+            if pair_id in voted_ids:
+                tally["voted"] += 1
+        return tallies
+
+    @staticmethod
+    def _experiment_summary(
+        experiment: EvaluationExperiment, tally: dict[str, int] | None
+    ) -> dict[str, Any]:
+        tally = tally or {"total": 0, "contrastive": 0, "voted": 0}
+        return {
+            "experiment_id": experiment.experiment_id,
+            "name": experiment.name,
+            "hypothesis": experiment.hypothesis,
+            "status": experiment.status,
+            "evidence_provenance": experiment.evidence_provenance,
+            "isolation_mode": experiment.isolation_mode,
+            "snapshot_source_ref": experiment.snapshot_source_ref,
+            "frozen_at": experiment.frozen_at,
+            "created_at": experiment.created_at,
+            "total_pairs": tally["total"],
+            "contrastive_pairs": tally["contrastive"],
+            "voted_pairs": tally["voted"],
+            "remaining_pairs": tally["total"] - tally["voted"],
+            "can_freeze": (
+                experiment.status == "collecting"
+                and tally["contrastive"] >= MIN_CONTRASTIVE_PAIRS_TO_FREEZE
+            ),
+            "freeze_required_contrastive": MIN_CONTRASTIVE_PAIRS_TO_FREEZE,
+        }
+
+    # ------------------------------------------------------------------
     # 盲化取对 / 投票
     # ------------------------------------------------------------------
 
-    def next_pair(self, experiment_id: str, *, reviewer_ref: str | None = None) -> dict[str, str] | None:
-        """返回下一个（该 reviewer）未投票的对——**只出 pair_id + 左右纯文本**，无任何元数据。"""
+    def next_pair(self, experiment_id: str, *, reviewer_ref: str | None = None) -> dict[str, Any]:
+        """盲化取对 + 进度：``pair`` 只出 pair_id + 左右纯文本三键，无任何元数据；
+        ``progress`` 只含纯计数。每对只有一票结论（单作者盲评，保持二项检验独立性），
+        故不存在按 reviewer 的独立队列——``reviewer_ref`` 仅作审计参数保留。"""
         experiment = self.session.get(EvaluationExperiment, experiment_id)
         if experiment is None:
             raise DomainError("EXPERIMENT_NOT_FOUND", f"experiment {experiment_id} not found", status_code=404)
@@ -300,6 +378,8 @@ class EvaluationExperimentService:
         voted_pair_ids = set(
             self.session.execute(
                 select(EvaluationVote.pair_id)
+                .join(EvaluationPair, EvaluationVote.pair_id == EvaluationPair.pair_id)
+                .where(EvaluationPair.experiment_id == experiment_id)
             ).scalars().all()
         )
         pairs = self.session.execute(
@@ -307,15 +387,26 @@ class EvaluationExperimentService:
             .where(EvaluationPair.experiment_id == experiment_id)
             .order_by(EvaluationPair.created_at.asc(), EvaluationPair.pair_id.asc())
         ).scalars().all()
+        pair_view: dict[str, str] | None = None
         for pair in pairs:
             if pair.pair_id in voted_pair_ids:
                 continue
-            return {
+            pair_view = {
                 "pair_id": pair.pair_id,
                 "left_text": pair.left_text,
                 "right_text": pair.right_text,
             }
-        return None
+            break
+        voted = sum(1 for pair in pairs if pair.pair_id in voted_pair_ids)
+        return {
+            "pair": pair_view,
+            "done": pair_view is None,
+            "progress": {
+                "total_pairs": len(pairs),
+                "voted_pairs": voted,
+                "remaining_pairs": len(pairs) - voted,
+            },
+        }
 
     def record_vote(
         self,

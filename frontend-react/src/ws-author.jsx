@@ -7,6 +7,7 @@ import { ArrPacingLens } from "./ws-author-pacing.jsx";
 import { ArrDoctor } from "./ws-author-doctor.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
 import { ArrChapterRunAction } from "./ws-chapter-run.jsx";
+import { ArrBlueprintCard, ArrPlanPanel, ArrAiHealthBlock } from "./ws-author-plan.jsx";
 
 /* global React, I, ARR_ACTS, ARR_CHAPTERS, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE, ARR_ARCHIVED, ArrThreadLoom, ArrPacingLens, ArrThreadMini, arrDeriveThreads, ArrDoctor */
 const { useState: useStA, useRef: useRefA, useEffect: useEfA, useMemo: useMemoA } = React;
@@ -494,6 +495,8 @@ function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDra
               </div>
             </div>
           </div>
+          {/* 章节蓝图（chapter_story_architecture 一等公民）：作者确认的蓝图注入本章每场起草 */}
+          <ArrBlueprintCard ch={ch} locked={locked} />
         </section>
 
         {/* scene board */}
@@ -537,6 +540,9 @@ function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDra
             </div>
           )}
         </section>
+
+        {/* AI 编排：三方向候选 + 一键补全，咨询式补丁经作者逐条确认后原子回写目录 */}
+        <ArrPlanPanel ch={ch} locked={locked} />
       </div>
     </section>
   );
@@ -577,6 +583,9 @@ function ArrChapterContext({ ch, chapters, numOf, snow }) {
           <ArrCheckRow ok={carry === 0} warn={carry > 0} label="线索待交接" val={`${carry} 项`} />
         </ul>
       </div>
+
+      {/* AI 体检：LLM findings 与上面的规则体检合流（规则免费兜底，AI 补结构性判断） */}
+      <ArrAiHealthBlock ch={ch} locked={ch.state === "approved"} />
 
       <div className="ctx-block">
         <div className="ctx-head"><I.Activity size={13} /><span>字数预算</span></div>
