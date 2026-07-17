@@ -61,6 +61,9 @@ const CP_FIELD_LABELS = {
   goal: "目标", conflict: "阻碍", setback: "出口",
   reaction: "反应", dilemma: "困境", decision: "决定",
   pov_character_name: "POV", exit_change: "出口变化", hook: "钩子", title: "标题",
+  "drama.promise": "核心承诺", "drama.spine": "主线推进",
+  "drama.arc": "人物变化", "drama.problem": "章节问题",
+  "drama.aftertaste": "结尾余味", "drama.ending": "结尾效果",
 };
 const cpFieldLabel = (key) => CP_FIELD_LABELS[key] || key;
 const CP_DROP_REASONS = {
@@ -186,6 +189,13 @@ function ArrBlueprintCard({ ch, locked }) {
 /* 补丁 → 可勾选行的展开：每行 = 一处填空或一张追加卡 */
 function cpPatchRows(patch, sceneNameOf) {
   const rows = [];
+  Object.entries(patch.drama || {}).forEach(([field, value]) => {
+    rows.push({
+      key: `drama:${field}`,
+      kind: "drama", field, value,
+      label: `章节戏剧卡 · ${cpFieldLabel(`drama.${field}`)}`,
+    });
+  });
   (patch.scenes || []).forEach((item) => {
     Object.entries(item.set || {}).forEach(([field, value]) => {
       rows.push({
@@ -207,18 +217,21 @@ function cpPatchRows(patch, sceneNameOf) {
 }
 
 function cpRowsToPatch(rows, checked) {
+  const drama = {};
   const sceneMap = {};
   const appends = [];
   rows.forEach((row) => {
     if (!checked[row.key]) return;
-    if (row.kind === "set") {
+    if (row.kind === "drama") {
+      drama[row.field] = row.value;
+    } else if (row.kind === "set") {
       sceneMap[row.sceneId] = sceneMap[row.sceneId] || { scene_id: row.sceneId, set: {} };
       sceneMap[row.sceneId].set[row.field] = row.value;
     } else {
       appends.push(row.append);
     }
   });
-  return { scenes: Object.values(sceneMap), append_scenes: appends };
+  return { drama, scenes: Object.values(sceneMap), append_scenes: appends };
 }
 
 function ArrPlanPanel({ ch, locked }) {
@@ -249,7 +262,7 @@ function ArrPlanPanel({ ch, locked }) {
   const applyChecked = () => {
     const rows = cpPatchRows(snap.fill.patch, sceneNameOf);
     const patch = cpRowsToPatch(rows, checked);
-    if (!patch.scenes.length && !patch.append_scenes.length) { window.alert("没有勾选任何改动。"); return; }
+    if (!Object.keys(patch.drama).length && !patch.scenes.length && !patch.append_scenes.length) { window.alert("没有勾选任何改动。"); return; }
     WsChapterPlan.applyPatch(chapterId, patch)
       .catch((e) => window.alert("应用补丁失败：" + ((e && e.message) || "目录未被改动，可重试。")));
   };
@@ -365,7 +378,7 @@ function ArrPlanPanel({ ch, locked }) {
 
       {snap.applied && (
         <div className="arr-sync" style={{ marginTop: 8 }} role="status">
-          <I.Check size={13} /> 已写入 {snap.applied.scenes} 处填空、追加 {snap.applied.appended} 场
+          <I.Check size={13} /> 已补全戏剧卡 {snap.applied.drama} 项、写入 {snap.applied.scenes} 张场景卡、追加 {snap.applied.appended} 场
           {snap.applied.skipped.length ? `；${snap.applied.skipped.length} 条因已有内容被跳过` : ""}。
         </div>
       )}
@@ -443,4 +456,4 @@ function ArrAiHealthBlock({ ch, locked }) {
 
 Object.assign(window, { ArrBlueprintCard, ArrPlanPanel, ArrAiHealthBlock });
 
-export { ArrBlueprintCard, ArrPlanPanel, ArrAiHealthBlock };
+export { ArrBlueprintCard, ArrPlanPanel, ArrAiHealthBlock, cpPatchRows, cpRowsToPatch };

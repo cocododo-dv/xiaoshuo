@@ -115,7 +115,7 @@ describe("WsChapterPlan（章节编排 LLM 规划 store）", () => {
     client.apiPost.mockResolvedValueOnce({
       source: "llm",
       llm_call_id: "llm_1",
-      patch: { scenes: [{ scene_id: "s1", set: { conflict: "祖父半夜起身" } }], append_scenes: [] },
+      patch: { drama: { spine: "旧工牌把调查推向父亲" }, scenes: [{ scene_id: "s1", set: { conflict: "祖父半夜起身" } }], append_scenes: [] },
       notes: [{ scene_id: "s1", field: "kind", suggestion: "建议反应场", reason: "太密" }],
       gaps: ["POV 无法推断"],
       dropped: [{ scene_id: "s1", field: "goal", reason: "field_not_empty" }],
@@ -127,6 +127,7 @@ describe("WsChapterPlan（章节编排 LLM 规划 store）", () => {
       { mode: "fill" },
     );
     expect(fill.patch.scenes[0].set.conflict).toBe("祖父半夜起身");
+    expect(fill.patch.drama.spine).toContain("旧工牌");
     expect(fill.dropped[0].reason).toBe("field_not_empty");
     expect(fill.offline).toBe(false);
 
@@ -152,21 +153,49 @@ describe("WsChapterPlan（章节编排 LLM 规划 store）", () => {
     );
   });
 
+  it("戏剧卡补丁会进入逐项确认，并按勾选结果回传 apply", async () => {
+    await loadStore();
+    const ui = await import("./ws-author-plan.jsx");
+    const rows = ui.cpPatchRows(
+      {
+        drama: { promise: "读者发现旧工牌指向父亲", spine: "调查转向家人" },
+        scenes: [],
+        append_scenes: [],
+      },
+      (id) => id,
+    );
+    expect(rows.map((row) => row.label)).toEqual([
+      "章节戏剧卡 · 核心承诺",
+      "章节戏剧卡 · 主线推进",
+    ]);
+    const patch = ui.cpRowsToPatch(rows, { [rows[0].key]: true, [rows[1].key]: false });
+    expect(patch).toEqual({
+      drama: { promise: "读者发现旧工牌指向父亲" },
+      scenes: [],
+      append_scenes: [],
+    });
+  });
+
   it("applyPatch 成功：记录 applied、清空已消费补丁、重拉目录收敛", async () => {
     const { mod, client } = await loadStore();
     client.apiPost.mockImplementation((url) => {
       if (url.endsWith("/plan/fill")) {
-        return Promise.resolve({ source: "llm", patch: { scenes: [{ scene_id: "s1", set: { conflict: "x" } }], append_scenes: [] }, notes: [], gaps: [], dropped: [] });
+        return Promise.resolve({ source: "llm", patch: { drama: { spine: "推进" }, scenes: [{ scene_id: "s1", set: { conflict: "x" } }], append_scenes: [] }, notes: [], gaps: [], dropped: [] });
       }
       if (url.endsWith("/plan/apply")) {
-        return Promise.resolve({ applied: { scenes: 1, appended: 1 }, skipped: [{ scene_id: "s1", field: "goal", reason: "field_not_empty" }], chapter: {} });
+        return Promise.resolve({ applied: { drama: 1, scenes: 1, appended: 1 }, skipped: [{ scene_id: "s1", field: "goal", reason: "field_not_empty" }], chapter: {} });
       }
       return Promise.resolve({});
     });
     await mod.WsChapterPlan.requestFill("c1", {});
     const before = catalogGetCount(client);
-    const applied = await mod.WsChapterPlan.applyPatch("c1", { scenes: [{ scene_id: "s1", set: { conflict: "x" } }], append_scenes: [] });
-    expect(applied).toEqual({ scenes: 1, appended: 1, skipped: [{ scene_id: "s1", field: "goal", reason: "field_not_empty" }] });
+    const patch = { drama: { spine: "推进" }, scenes: [{ scene_id: "s1", set: { conflict: "x" } }], append_scenes: [] };
+    const applied = await mod.WsChapterPlan.applyPatch("c1", patch);
+    expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v2/projects/tide/catalog/chapters/c1/plan/apply",
+      { patch },
+    );
+    expect(applied).toEqual({ drama: 1, scenes: 1, appended: 1, skipped: [{ scene_id: "s1", field: "goal", reason: "field_not_empty" }] });
     const snap = mod.WsChapterPlan.snapshot("c1");
     expect(snap.fill).toBeNull();
     await vi.waitFor(() => expect(catalogGetCount(client)).toBeGreaterThan(before), T);

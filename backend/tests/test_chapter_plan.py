@@ -260,6 +260,39 @@ def test_sanitize_append_cap(client, session) -> None:
     assert any(d["reason"] == "append_cap_reached" for d in dropped)
 
 
+def test_sanitize_drama_patch_is_fill_only(client, session) -> None:
+    pid = _create_project(client)
+    chapter_payload = _create_chapter(client, pid)
+    chapter = session.get(ChapterGoal, chapter_payload["chapter_id"])
+    assert chapter is not None
+    narrative = dict(chapter.narrative_json or {})
+    narrative["drama"] = {"promise": "作者已经写好的承诺"}
+    chapter.narrative_json = narrative
+    session.flush()
+    scenes = list(session.query(SceneCard).filter(SceneCard.chapter_id == chapter.chapter_id))
+
+    clean, dropped = sanitize_plan_patch(
+        scenes,
+        {
+            "drama": {
+                "promise": "试图覆盖作者承诺",
+                "spine": "旧工牌把调查推向父亲",
+                "arc": "",
+                "forbidden": "试图改写护栏",
+            },
+            "scenes": [],
+            "append_scenes": [],
+        },
+        chapter=chapter,
+    )
+
+    assert clean["drama"] == {"spine": "旧工牌把调查推向父亲"}
+    reasons = {d["field"]: d["reason"] for d in dropped}
+    assert reasons["drama.promise"] == "field_not_empty"
+    assert reasons["drama.arc"] == "empty_value"
+    assert reasons["drama.forbidden"] == "field_not_allowed"
+
+
 # ---------- apply（P2） ----------
 
 
@@ -300,7 +333,7 @@ def test_apply_fill_only_idempotent_replay_and_skip_non_empty(client) -> None:
     )
     assert first.status_code == 200, first.text
     data = first.json()["data"]
-    assert data["applied"] == {"scenes": 1, "appended": 1}
+    assert data["applied"] == {"drama": 0, "scenes": 1, "appended": 1}
     assert any(item["field"] == "goal" and item["reason"] == "field_not_empty" for item in data["skipped"])
     scenes = data["chapter"]["scenes"]
     assert len(scenes) == 2
@@ -319,10 +352,51 @@ def test_apply_fill_only_idempotent_replay_and_skip_non_empty(client) -> None:
     )
     assert replay.status_code == 200, replay.text
     assert replay.headers.get("X-Idempotency-Status") == "replayed"
-    assert replay.json()["data"]["applied"] == {"scenes": 1, "appended": 1}
+    assert replay.json()["data"]["applied"] == {"drama": 0, "scenes": 1, "appended": 1}
     tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
     target = next(c for c in tree["chapters"] if c["chapter_id"] == chid)
     assert len(target["scenes"]) == 2  # 没有第三张卡
+
+
+def test_apply_fills_empty_drama_fields_and_preserves_author_values(client) -> None:
+    pid = _create_project(client)
+    chapter = _create_chapter(client, pid)
+    chid = chapter["chapter_id"]
+    seeded = client.patch(
+        f"/api/v2/projects/{pid}/catalog/chapters/{chid}",
+        json={"drama": {"promise": "作者承诺", "forbidden": "不得梦醒"}, "promise": "作者承诺"},
+    )
+    assert seeded.status_code == 200, seeded.text
+
+    response = client.post(
+        f"/api/v2/projects/{pid}/catalog/chapters/{chid}/plan/apply",
+        json={
+            "patch": {
+                "drama": {
+                    "promise": "AI 不能覆盖",
+                    "spine": "旧工牌把调查推向父亲",
+                    "arc": "林岑从旁观转为主动追查",
+                },
+                "scenes": [],
+                "append_scenes": [],
+            }
+        },
+        headers={"X-Idempotency-Key": _key("apply-drama")},
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["applied"] == {"drama": 2, "scenes": 0, "appended": 0}
+    assert any(
+        item["field"] == "drama.promise" and item["reason"] == "field_not_empty"
+        for item in data["skipped"]
+    )
+    assert data["chapter"]["drama"] == {
+        "promise": "作者承诺",
+        "forbidden": "不得梦醒",
+        "spine": "旧工牌把调查推向父亲",
+        "arc": "林岑从旁观转为主动追查",
+    }
+    assert data["chapter"]["promise"] == "作者承诺"
 
 
 def test_apply_locked_chapter_409(client, session) -> None:
@@ -366,9 +440,9 @@ def test_fill_offline_fallback_lists_gaps(client) -> None:
     data = response.json()["data"]
     assert data["source"] == "fallback"
     assert data["author_action"]["target_view"] == "config"
-    assert data["patch"] == {"scenes": [], "append_scenes": []}
+    assert data["patch"] == {"drama": {}, "scenes": [], "append_scenes": []}
     # 默认开场卡缺 conflict/setback/pov → 降级 gaps 列出空槽清单
-    assert data["gaps"] and "conflict" in data["gaps"][0]
+    assert data["gaps"] and any("conflict" in gap for gap in data["gaps"])
 
 
 def test_fill_llm_patch_sanitized_and_notes_kept(client, monkeypatch) -> None:
@@ -380,6 +454,10 @@ def test_fill_llm_patch_sanitized_and_notes_kept(client, monkeypatch) -> None:
     captured: list = []
     payload = {
         "patch": {
+            "drama": {
+                "promise": "读者发现旧工牌指向林岑的父亲",
+                "forbidden": "试图改写护栏",
+            },
             "scenes": [
                 {
                     "scene_id": scene_id,
@@ -404,12 +482,14 @@ def test_fill_llm_patch_sanitized_and_notes_kept(client, monkeypatch) -> None:
     assert response.status_code == 200, response.text
     data = response.json()["data"]
     assert data["source"] == "llm"
+    assert data["patch"]["drama"] == {"promise": "读者发现旧工牌指向林岑的父亲"}
     assert data["patch"]["scenes"] == [
         {"scene_id": scene_id, "set": {"conflict": "祖父半夜起身坐在堂屋"}}
     ]
     dropped = {(d["scene_id"], d["field"]): d["reason"] for d in data["dropped"]}
     assert dropped[(scene_id, "goal")] == "field_not_empty"
     assert dropped[(scene_id, "state")] == "field_not_allowed"
+    assert dropped[("", "drama.forbidden")] == "field_not_allowed"
     assert data["notes"][0]["suggestion"] == "建议改为反应场"
     assert data["gaps"] == ["第 1 场 POV 无法从上下文推断"]
     # 上下文底座在提示词里

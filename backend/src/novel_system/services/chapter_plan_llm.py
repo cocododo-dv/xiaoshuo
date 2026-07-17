@@ -74,6 +74,14 @@ _ARCHITECTURE_LIST_FIELDS = {"escalation_path", "reveal_plan"}
 
 # 填空补丁允许触碰的场景字段（brief 键按 kind 另行校验）。
 _PATCH_SCENE_FIELDS = ("title", "pov_character_name", "exit_change", "hook")
+_PATCH_DRAMA_FIELDS = (
+    "promise",
+    "spine",
+    "arc",
+    "problem",
+    "aftertaste",
+    "ending",
+)
 # 视为「空槽」的占位文本（目录/物化两侧的历史占位词）。
 _PLACEHOLDER_VALUES = {"", "—", "待定", "（待规划）", "(待规划)", "待补"}
 _PLACEHOLDER_TITLE_PREFIXES = ("未命名", "新场景", "开场")
@@ -275,9 +283,9 @@ class ChapterPlanService:
         if not self._llm_enabled():
             return {
                 "source": "fallback",
-                "patch": {"scenes": [], "append_scenes": []},
+                "patch": {"drama": {}, "scenes": [], "append_scenes": []},
                 "notes": [],
-                "gaps": _empty_slot_gaps(context.scenes),
+                "gaps": _empty_slot_gaps(context.scenes, context.chapter),
                 "dropped": [],
                 "author_action": self._llm_action(),
                 "degraded_slots": context.degraded_slots,
@@ -302,7 +310,11 @@ class ChapterPlanService:
             normalize_output=lambda output: output if isinstance(output, dict) else {},
         )
         raw = result["output"]
-        patch, dropped = sanitize_plan_patch(context.scenes, raw.get("patch"))
+        patch, dropped = sanitize_plan_patch(
+            context.scenes,
+            raw.get("patch"),
+            chapter=context.chapter,
+        )
         return {
             "source": "llm",
             "llm_call_id": result["llm_call_id"],
@@ -354,10 +366,15 @@ class ChapterPlanService:
     ) -> dict[str, Any]:
         chapter = self._require_chapter(project_id, chapter_id)
         scenes = self._catalog.scene_rows(chapter_id)
-        patch, dropped = sanitize_plan_patch(scenes, (body or {}).get("patch"))
+        patch, dropped = sanitize_plan_patch(
+            scenes,
+            (body or {}).get("patch"),
+            chapter=chapter,
+        )
+        drama_updates = patch.get("drama") or {}
         scene_items = patch["scenes"]
         append_items = patch["append_scenes"]
-        changed_fields: list[str] = []
+        changed_fields: list[str] = [f"chapter:drama:{key}" for key in drama_updates]
         for item in scene_items:
             changed_fields.extend(f"scene:{item['scene_id']}:{key}" for key in item["set"])
         if append_items:
@@ -372,6 +389,14 @@ class ChapterPlanService:
         by_id = {scene.scene_id: scene for scene in scenes}
         applied_scenes = 0
         skipped = list(dropped)
+        if drama_updates:
+            narrative = dict(chapter.narrative_json or {})
+            drama = {**dict(narrative.get("drama") or {}), **drama_updates}
+            chapter_body: dict[str, Any] = {"drama": drama}
+            # 目录历史上同时保留了 chapter.promise 与 drama.promise；写核心承诺时保持两者一致。
+            if "promise" in drama_updates:
+                chapter_body["promise"] = drama_updates["promise"]
+            self._catalog.update_chapter(project_id, chapter_id, chapter_body)
         for item in scene_items:
             scene = by_id[item["scene_id"]]
             catalog_body: dict[str, Any] = {}
@@ -406,7 +431,11 @@ class ChapterPlanService:
             None,
         )
         return {
-            "applied": {"scenes": applied_scenes, "appended": appended},
+            "applied": {
+                "drama": len(drama_updates),
+                "scenes": applied_scenes,
+                "appended": appended,
+            },
             "skipped": skipped,
             "chapter": chapter_payload,
         }
@@ -675,7 +704,10 @@ def _clean_text(value: Any, limit: int = _MAX_FIELD_CHARS) -> str:
 
 
 def sanitize_plan_patch(
-    scenes: list[SceneCard], patch: Any
+    scenes: list[SceneCard],
+    patch: Any,
+    *,
+    chapter: ChapterGoal | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """把 LLM 补丁裁剪成「只填空」的安全子集。
 
@@ -687,6 +719,24 @@ def sanitize_plan_patch(
     clean_appends: list[dict[str, Any]] = []
     if not isinstance(patch, dict):
         return {"scenes": [], "append_scenes": []}, dropped
+    clean_drama: dict[str, str] = {}
+    raw_drama = patch.get("drama")
+    if isinstance(raw_drama, dict):
+        current_drama = dict(dict(chapter.narrative_json or {}).get("drama") or {}) if chapter else {}
+        for raw_key, raw_value in raw_drama.items():
+            key = str(raw_key)
+            field = f"drama.{key}"
+            value = _clean_text(raw_value)
+            if not value:
+                dropped.append({"scene_id": "", "field": field, "reason": "empty_value"})
+                continue
+            if key not in _PATCH_DRAMA_FIELDS or chapter is None:
+                dropped.append({"scene_id": "", "field": field, "reason": "field_not_allowed"})
+                continue
+            if not _is_empty_slot(current_drama.get(key)):
+                dropped.append({"scene_id": "", "field": field, "reason": "field_not_empty"})
+                continue
+            clean_drama[key] = value
     by_id = {scene.scene_id: scene for scene in scenes}
 
     for item in patch.get("scenes") or []:
@@ -768,12 +818,22 @@ def sanitize_plan_patch(
                 clean_append[key] = value
         clean_appends.append(clean_append)
 
-    return {"scenes": clean_scenes, "append_scenes": clean_appends}, dropped
+    clean_patch = {"scenes": clean_scenes, "append_scenes": clean_appends}
+    if isinstance(raw_drama, dict):
+        clean_patch["drama"] = clean_drama
+    return clean_patch, dropped
 
 
-def _empty_slot_gaps(scenes: list[SceneCard]) -> list[str]:
+def _empty_slot_gaps(
+    scenes: list[SceneCard], chapter: ChapterGoal | None = None
+) -> list[str]:
     """离线降级：列出每张卡待补的空槽，让 UI 依然给出可执行清单。"""
     gaps: list[str] = []
+    if chapter is not None:
+        drama = dict(dict(chapter.narrative_json or {}).get("drama") or {})
+        missing_drama = [key for key in _PATCH_DRAMA_FIELDS if _is_empty_slot(drama.get(key))]
+        if missing_drama:
+            gaps.append(f"章节戏剧卡：待补 {', '.join(missing_drama)}")
     for scene in scenes:
         kind = scene_kind(scene)
         brief = dict(scene.writer_brief_json or {})

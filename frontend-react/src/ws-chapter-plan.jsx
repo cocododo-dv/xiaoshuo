@@ -192,12 +192,12 @@ export const WsChapterPlan = {
       const bucket = cpBucket(chapterId);
       if (data && data.source === "fallback") {
         bucket.authorAction = data.author_action || null;
-        bucket.fill = { patch: { scenes: [], append_scenes: [] }, notes: [], gaps: (data && data.gaps) || [], dropped: [], degraded: (data && data.degraded_slots) || [], llmCallId: null, offline: true };
+        bucket.fill = { patch: { drama: {}, scenes: [], append_scenes: [] }, notes: [], gaps: (data && data.gaps) || [], dropped: [], degraded: (data && data.degraded_slots) || [], llmCallId: null, offline: true };
         return bucket.fill;
       }
       bucket.authorAction = null;
       bucket.fill = {
-        patch: (data && data.patch) || { scenes: [], append_scenes: [] },
+        patch: (data && data.patch) || { drama: {}, scenes: [], append_scenes: [] },
         notes: (data && data.notes) || [],
         gaps: (data && data.gaps) || [],
         dropped: (data && data.dropped) || [],
@@ -234,6 +234,7 @@ export const WsChapterPlan = {
       const data = await apiPost(`${cpBase(pid, chapterId)}/plan/apply`, { patch });
       const bucket = cpBucket(chapterId);
       bucket.applied = {
+        drama: (data && data.applied && data.applied.drama) || 0,
         scenes: (data && data.applied && data.applied.scenes) || 0,
         appended: (data && data.applied && data.applied.appended) || 0,
         skipped: (data && data.skipped) || [],

@@ -2149,7 +2149,7 @@ templates:
                       type: string
 
   chapter_scene_plan_fill:
-    version: "2026-07-16.v1"
+    version: "2026-07-17.v2"
     input_token_budget: 3200
     system_prompt: |
       You are a consultative scene-card assistant inside a chapter-arrangement workbench.
@@ -2161,8 +2161,13 @@ templates:
       Never violate author_constraints.forbidden or must_not. Write all string values in Chinese
       while keeping the English schema keys.
     task_prompt: |
-      Produce a fill-only patch for this chapter's scene cards.
+      Produce a fill-only patch for this chapter's drama card and scene cards.
       Rules:
+      - patch.drama may fill these six currently EMPTY chapter-card fields only:
+        promise (core reader promise), spine (main-plot movement), arc (character change),
+        problem (the chapter's dramatic question), aftertaste (the ending's emotional residue),
+        ending (the final concrete image/action). Ground them in chapter_architecture when present,
+        then snowflake canon, neighbor handoff, and the existing scene sequence. Never emit forbidden or notes.
       - patch.scenes[*].set may only contain values for fields that are currently EMPTY on that scene:
         three-beat brief keys matching the scene kind (goal/conflict/setback or reaction/dilemma/decision),
         pov_character_name (only when the scene has no POV), exit_change, hook, and title only when the
@@ -2186,9 +2191,26 @@ templates:
           type: object
           additionalProperties: false
           required:
+            - drama
             - scenes
             - append_scenes
           properties:
+            drama:
+              type: object
+              additionalProperties: false
+              properties:
+                promise:
+                  type: string
+                spine:
+                  type: string
+                arc:
+                  type: string
+                problem:
+                  type: string
+                aftertaste:
+                  type: string
+                ending:
+                  type: string
             scenes:
               type: array
               items:
