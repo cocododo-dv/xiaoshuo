@@ -23,6 +23,28 @@ from novel_system.services.llm_client import LLMResponse
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 
 
+import pytest as _pytest_sk
+from tests.real_llm_fakes import install_skeleton_snowflake as _install_skeleton_snowflake
+
+
+import pytest as _pytest_au
+from tests.real_llm_fakes import install_online_author_pipeline as _install_online_author_pipeline
+
+
+@_pytest_au.fixture(autouse=True)
+def _auto_online_author(monkeypatch):
+    """假生成已退役：作者稿 AI 建议 / 结构反提取走在线记账替身（按 node_id 派发）。"""
+    _install_online_author_pipeline(monkeypatch)
+
+
+
+@_pytest_sk.fixture(autouse=True)
+def _auto_skeleton_snowflake(monkeypatch):
+    """假生成已退役：雪花 generate_step 走规划器骨架直通（仅回归物化/失效/收口链路）。"""
+    _install_skeleton_snowflake(monkeypatch)
+
+
+
 def _patch_accounted_generate(monkeypatch, generate):
     def generate_accounted(self, request, *, accounting_hook):  # noqa: ANN001
         handle = accounting_hook.before_dispatch(

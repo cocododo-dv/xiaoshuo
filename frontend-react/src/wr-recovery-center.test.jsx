@@ -24,7 +24,7 @@ async function loadRecovery() {
     draft: { draft_id: "d1", revision_no: 2, content: body.content },
   }));
   await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("tide"), T);
+  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
   await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
   const store = await import("./wr-doc-store.jsx");
   const ui = await import("./wr-recovery-center.jsx");

@@ -27,6 +27,61 @@ from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.errors import DomainError
 
 
+@pytest.fixture(autouse=True)
+def _online_author_llm(monkeypatch):
+    """假生成已退役：作者稿 AI 建议/结构反提取统一走在线记账替身（按 node_id 派发）。
+
+    单个 candidate_brief 同时带 scene 与 chapter 两套字段——结构反提取的归一化各取所需、
+    忽略无关键，故场景稿/章节稿共用同一替身即可。显式设 llm_enabled 过路由闸；
+    自带 monkeypatch 的用例（355/540）在测试体内二次 setattr 覆盖此替身。"""
+    import json as _json
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+
+    def fake_generate(self, request, *, accounting_hook=None):  # noqa: ANN001
+        node_id = request.node_id
+        if node_id == "author_proposal_generate":
+            payload = {
+                "content": "在线替身：保留作者的场景，但把选择的代价显性化。",
+                "rationale": "遵循作者指令，并规避被否决的套路。",
+            }
+        elif node_id == "author_structure_extract":
+            payload = {
+                "candidate_brief": {
+                    "character_desire": "主角想立刻查清那晚的真相。",
+                    "reader_question": "袖口里的东西会不会被发现？",
+                    "obstacle": "对方守着关键物件不肯松口。",
+                    "choice_under_pressure": "是当场拆穿，还是暂时压下。",
+                    "core_promise": "真相与保护不能同时兑现。",
+                    "plot_movement": "旧信把主角带回事发地。",
+                    "character_shift": "从回避转向承担代价。",
+                    "chapter_question": "谁在暗处盯着？",
+                    "ending_aftertaste": "真相是新的风险，而不是终点。",
+                },
+                "uncertainty_notes": [],
+                "rationale": "从作者稿反向提取戏剧意图。",
+            }
+        else:
+            raise AssertionError(f"unexpected author-draft node: {node_id}")
+        response = LLMResponse(
+            request_id=f"resp_{node_id}",
+            provider="test-online-provider",
+            model=request.model,
+            text=_json.dumps(payload, ensure_ascii=False),
+            structured_output=payload,
+            response_format="json_object",
+            raw_response={"id": f"resp_{node_id}", "usage": {"input_tokens": 12, "output_tokens": 24, "total_tokens": 36}},
+            usage={"input_tokens": 12, "output_tokens": 24, "total_tokens": 36},
+            finish_reason="stop",
+        )
+        if accounting_hook is not None:
+            handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            accounting_hook.after_response(handle, request=request, response=response, latency_ms=1)
+        return response
+
+    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+
+
 def test_scene_target_uses_scene_project_when_legacy_chapter_has_no_project(session) -> None:
     project_id = "PROJECT_SCENE_AUTHORITY"
     session.add(StoryProject(project_id=project_id, title="Scene authority", outline_text=""))

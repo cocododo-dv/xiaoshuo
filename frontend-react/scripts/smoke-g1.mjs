@@ -50,7 +50,7 @@ await check("② 水合：LF3_* 由审计层背书", async () => {
     o1: (window.LF3_ORPHANS || [])[0] && window.LF3_ORPHANS[0].reveal,
   }));
   if (snap.orphans !== 2 || snap.causal !== 3 || snap.clues !== 4) throw new Error(JSON.stringify(snap));
-  if (!/周岚早就认识/.test(snap.o1 || "")) throw new Error(`o1: ${snap.o1}`);
+  if (!/角色乙早就认识/.test(snap.o1 || "")) throw new Error(`o1: ${snap.o1}`);
 });
 
 await check("③ 塔渲染空降/断链 + canon 页不被 LF3 污染", async () => {

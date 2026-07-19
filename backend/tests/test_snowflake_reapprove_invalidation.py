@@ -9,7 +9,31 @@ ChapterState（session.get 看不到 pending 新对象）→ 同一 flush 批次
 """
 from __future__ import annotations
 
+import pytest
+
 from novel_system.db.models import ChapterState
+
+
+@pytest.fixture(autouse=True)
+def _skeleton_snowflake_generate(monkeypatch):
+    """假生成已退役：本文件只回归物化/再批准链路，不关心生成质量——
+    把 generate_step 打成「规划器骨架直通」（与旧离线 fallback 同形），并开 llm_enabled 过路由闸。"""
+    from novel_system.services.hash_engine import normalize
+    from novel_system.services.snowflake_planner import SnowflakePlannerService
+    from novel_system.services.snowflake_workspace_llm import (
+        SnowflakeWorkspaceLLMService,
+        WorkspaceLLMResult,
+    )
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+
+    def fake_generate_step(self, *, project, step_key, latest_by_step, **kwargs):
+        payload = SnowflakePlannerService(self.session)._build_artifact_json(
+            project, step_key, dict(latest_by_step)
+        )
+        return WorkspaceLLMResult(source="llm", llm_call_id=None, payload=normalize(payload))
+
+    monkeypatch.setattr(SnowflakeWorkspaceLLMService, "generate_step", fake_generate_step)
 
 ALL_STEPS = [
     "book_brief",
@@ -33,7 +57,7 @@ def _create_project(client, key: str) -> dict:
             "genre": "悬疑",
             "target_chapter_count": 2,
             "target_word_count": 120000,
-            "outline_text": "旧潮汐记录正被改写。\n档案修复师追查真相。\n她必须决定真相值不值得。",
+            "outline_text": "样例大纲第一行。\n样例大纲第二行。\n样例大纲第三行。",
         },
         headers={"X-Idempotency-Key": f"qa3-reappr-create-{key}"},
     )
@@ -61,7 +85,7 @@ def _approve(client, pid: str, step_key: str):
 
 def _drop_chapter_states(session) -> int:
     """复现 BUG-1 触发条件：章节存在但无 ChapterState 行。
-    seed_fe_demo_works（tide/salt）与 catalog.py（FE 章节编排冷启动/导入）建章时都不建 ChapterState，
+    seed_fixture_works（work-a/work-b）与 catalog.py（FE 章节编排冷启动/导入）建章时都不建 ChapterState，
     只有 approve_outline_plan 会建——本测试经后者建章，故显式删去 ChapterState 以还原 demo/目录态。"""
     rows = session.query(ChapterState).all()
     n = len(rows)

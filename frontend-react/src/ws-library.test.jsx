@@ -41,8 +41,8 @@ function libResponse() {
 
 function routeApiGet(client, lib) {
   client.apiGet.mockImplementation((url) => {
-    if (url === "/api/v2/projects") return Promise.resolve({ items: [{ project_id: "tide", title: "潮汐档案" }] });
-    if (/\/api\/v2\/projects\/tide\/library$/.test(url)) return Promise.resolve(lib);
+    if (url === "/api/v2/projects") return Promise.resolve({ items: [{ project_id: "prj-main", title: "北岸手记" }] });
+    if (/\/api\/v2\/projects\/prj-main\/library$/.test(url)) return Promise.resolve(lib);
     return Promise.resolve({});
   });
   client.apiPost.mockResolvedValue({});
@@ -55,7 +55,7 @@ async function loadLib(lib = libResponse()) {
   routeApiGet(client, lib);
   // 先让 WsWorks 落到真实激活作品，再 import 数据层（其 import 期 libFetch 才会真正拉取）
   await import("./ws-works.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("tide"), T);
+  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
   const data = await import("./ws-library-data.jsx");
   const edit = await import("./ws-library-edit.jsx");
   await window.LIB_refetch();   // 等内联 IIFE 拉取 settle（resolve 在 LIB_ENTRIES 赋值之后）
@@ -99,7 +99,7 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
     client.apiPatch.mockClear();
     edit.LIB_persist({ lin: { name: "林岑·改", kind: "新角色", blurb: "新简述" } });
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith(
-      "/api/v2/projects/tide/library/characters/lin",
+      "/api/v2/projects/prj-main/library/characters/lin",
       expect.objectContaining({
         name: "林岑·改",
         role: "新角色",
@@ -112,7 +112,7 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
     client.apiPatch.mockClear();
     edit.LIB_persist({ e1: { name: "事件改名", blurb: "新备注" } });
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith(
-      "/api/v2/projects/tide/library/timeline/e1",
+      "/api/v2/projects/prj-main/library/timeline/e1",
       { label: "事件改名", note: "新备注" }), T);
   });
 
@@ -123,9 +123,9 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
     // lin 原有 →zhou(r1)。新 links 仅含 →arch：应删 r1、增 lin→arch。
     edit.LIB_persist({ lin: { links: [{ id: "arch", type: "ally", rel: "工作于" }] } });
     await vi.waitFor(() => expect(client.apiDelete).toHaveBeenCalledWith(
-      "/api/v2/projects/tide/library/relations/r1"), T);
+      "/api/v2/projects/prj-main/library/relations/r1"), T);
     await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith(
-      "/api/v2/projects/tide/library/relations",
+      "/api/v2/projects/prj-main/library/relations",
       { from_ref: "character:lin", to_ref: "entity:arch", kind: "ally", note: "工作于" }), T);
   });
 
@@ -160,7 +160,7 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
     edit.LIB_persistAdds([ne]);
     edit.LIB_persistAdds([ne]); // 第二次应被 libSentAdds 去重
     await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith(
-      "/api/v2/projects/tide/library/characters",
+      "/api/v2/projects/prj-main/library/characters",
       expect.objectContaining({ name: "新人物" })), T);
     const charPosts = client.apiPost.mock.calls.filter(c => /\/library\/characters$/.test(c[0]));
     expect(charPosts.length).toBe(1); // 去重可证伪

@@ -28,7 +28,9 @@ from novel_system.services.near_final import (
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
+from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_generation import SceneGenerationService
+from tests.real_llm_fakes import ScenePipelineOnlineFake
 
 
 CHAPTER_ID = "CHNF01"
@@ -349,7 +351,7 @@ def test_near_final_acceptance_blocks_model_voice_even_when_scene_machinery_exis
 
 def test_orchestrator_archives_only_after_near_final_acceptance(session) -> None:
     _seed_scene(session)
-    planning_client = SequencedClient([{}, {}])
+    planning_client = ScenePipelineOnlineFake()
     scene_client = SequencedClient(
         [
             {"scene_text": "林岑想公开录音，但录音会暴露阿砚。她把录音带分成两份，递给许望一份，转身藏起另一份。", "continuity_notes": []},
@@ -364,6 +366,9 @@ def test_orchestrator_archives_only_after_near_final_acceptance(session) -> None
         soft_qc_engine=SoftQcEngine(session, llm_client=SequencedClient([_soft_pass()])),
         planning_service=NearFinalPlanningService(session, llm_client=planning_client),
         near_final_service=NearFinalAcceptanceService(session, llm_client=near_final_client),
+    )
+    orchestrator.scene_blueprint_service = SceneBlueprintService(
+        session, llm_client=ScenePipelineOnlineFake()
     )
 
     result = orchestrator.run_scene(SCENE_ID)
@@ -392,7 +397,7 @@ def test_orchestrator_runs_one_full_literary_rewrite_when_near_final_review_fail
     state.attempt_budget = 20
     state.provider_attempt_budget = 20
     session.commit()
-    planning_client = SequencedClient([{}, {}])
+    planning_client = ScenePipelineOnlineFake()
     scene_client = SequencedClient(
         [
             {
@@ -420,6 +425,9 @@ def test_orchestrator_runs_one_full_literary_rewrite_when_near_final_review_fail
         ),
         planning_service=NearFinalPlanningService(session, llm_client=planning_client),
         near_final_service=NearFinalAcceptanceService(session, llm_client=near_final_client),
+    )
+    orchestrator.scene_blueprint_service = SceneBlueprintService(
+        session, llm_client=ScenePipelineOnlineFake()
     )
 
     result = orchestrator.run_scene(SCENE_ID)

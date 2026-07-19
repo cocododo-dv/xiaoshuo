@@ -19,7 +19,9 @@ mkdirSync(vectorStoreDir, { recursive: true });
 
 const backendEnv = {
   ...process.env,
-  PYTHONPATH: path.resolve(backendDir, "src"),
+  // 夹具（tests/fixture_runtime）已从产品 tools 里迁出——把 backend/ 一并放进
+  // PYTHONPATH，使 `tests.*` 可导入；src 仍在其中供 novel_system.* 使用。
+  PYTHONPATH: [backendDir, path.resolve(backendDir, "src")].join(path.delimiter),
   NOVEL_SYSTEM_DATABASE_URL: `sqlite:///${databasePath.replace(/\\/g, "/")}`,
   NOVEL_SYSTEM_CHROMA_DIR: vectorStoreDir,
   NOVEL_SYSTEM_VECTOR_BACKEND: "memory",
@@ -32,10 +34,10 @@ const seedResult = spawnSync(
     [
       "from novel_system.db.base import Base",
       "from novel_system.db.session import engine, reset_engine",
-      "from novel_system.tools.seed_demo import seed_demo",
+      "from tests.fixture_runtime import seed_runtime_fixture",
       "reset_engine()",
       "Base.metadata.create_all(bind=engine())",
-      'seed_demo(fixture="all_e2e")',
+      'seed_runtime_fixture(fixture="all_e2e")',
     ].join("; "),
   ],
   {

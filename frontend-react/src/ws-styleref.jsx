@@ -1,6 +1,5 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { WsDemoTag } from "./ws-catalog.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { rvPush } from "./ws-review.jsx";
 import { onRovingTabKeyDown } from "./a11y-tabs.js";
@@ -76,184 +75,8 @@ const SR_LAYERS = [
 ];
 
 /* ---- findings for a couple of sub-dims (rich), with evidence ---- */
-const SR_FINDINGS = {
-  "language.sentence_structure": {
-    observations: [
-      { id: "o1", conf: "high", statement: "以短句为主，常用单句独立成段，制造冷峻停顿。", evidence: [
-        { p: "P-142", quote: "我到现在终于没有见——大约孔乙己的确死了。", dims: ["language.sentence_structure", "theme.emotional_tone"] },
-        { p: "P-088", quote: "然而我的母亲虽然高兴，也藏着许多凄凉的神情。", dims: ["language.sentence_structure"] },
-      ]},
-      { id: "o2", conf: "high", statement: "并列短句之间多用逗号顿连，少用关联词，节奏靠停顿而非连接词推进。", evidence: [
-        { p: "P-051", quote: "他不回答，对柜里说，温两碗酒，要一碟茴香豆。", dims: ["language.sentence_structure", "scene.dialogue"] },
-        { p: "P-203", quote: "苍黄的天底下，远近横着几个萧索的荒村，没有一些活气。", dims: ["language.sentence_structure", "scene.environment"] },
-      ]},
-      { id: "o3", conf: "medium", statement: "偶用长句铺陈，但长句内部仍以短促分句切分，不堆砌从句。", evidence: [
-        { p: "P-019", quote: "这是鲁镇的习惯，本家和朋友们家里有事，便须用钱去雇人来做。", dims: ["language.sentence_structure"] },
-        { p: "P-167", quote: "我冒了严寒，回到相隔二千余里，别了二十余年的故乡去。", dims: ["language.sentence_structure"] },
-      ]},
-    ],
-    forbidden_patterns: [
-      { id: "f1", statement: "作者从不使用排比堆叠的华丽长句来抒情。", evidence: [
-        { kind: "author_avoidance", note: "全文 sentence_length_std=12.1，长句率仅 6%，且无连续三句以上排比。" },
-        { kind: "counter_example", synthetic: true, quote: "（反例）天是那样蓝，云是那样白，风是那样柔，心是那样静……", note: "此类抒情排比与原作冷峻克制完全相悖。" },
-      ]},
-      { id: "f2", statement: "作者从不在对话后追加大段情绪解释。", evidence: [
-        { kind: "paragraph_quote", p: "P-051", quote: "他不回答，对柜里说，温两碗酒。", note: "对话后直接接动作，不解释心理。" },
-        { kind: "author_avoidance", note: "dialogue 段后接 psychology 段的比例仅 4%，远低于通俗小说。" },
-      ]},
-    ],
-  },
-  "language.rhetoric": {
-    observations: [
-      { id: "o4", conf: "medium", statement: "比喻克制、具象，多取自乡土与日常器物，避免抽象修饰。", evidence: [
-        { p: "P-210", quote: "圆规一面愤愤的回转身，一面絮絮的说，慢慢向外走。", dims: ["language.rhetoric", "scene.character_portrayal"] },
-        { p: "P-233", quote: "他的脸色却变作灰黄，仿佛石像一般。", dims: ["language.rhetoric"] },
-      ]},
-    ],
-    forbidden_patterns: [
-      { id: "f3", statement: "作者从不使用「眼睛像星星」式陈词滥调比喻。", evidence: [
-        { kind: "author_avoidance", note: "metaphor_density 不低，但 cliché 比喻命中为 0。" },
-        { kind: "counter_example", synthetic: true, quote: "（反例）她的眼睛像夜空中最亮的星。", note: "陈词滥调，与原作具象取喻习惯相悖。" },
-      ]},
-      { id: "f4", statement: "作者从不在比喻后追加解释性句子。", evidence: [
-        { kind: "paragraph_quote", p: "P-233", quote: "他的脸色却变作灰黄，仿佛石像一般。", note: "喻体之后直接收束，不解释。" },
-        { kind: "author_avoidance", note: "比喻句后接「这说明…」「仿佛在告诉…」类解释句为 0。" },
-      ]},
-    ],
-  },
-  "language.vocabulary": {
-    observations: [
-      { id: "o5", conf: "high", statement: "白话为底，少量文言虚词（之、乎、者）点染，形成半文半白的克制语感。", evidence: [
-        { p: "P-007", quote: "孔乙己是站着喝酒而穿长衫的唯一的人。", dims: ["language.vocabulary"] },
-        { p: "P-061", quote: "多乎哉？不多也。", dims: ["language.vocabulary", "scene.dialogue"] },
-      ]},
-      { id: "o6", conf: "high", statement: "名词偏向具体器物与乡土事物，抽象名词使用率低。", evidence: [
-        { p: "P-044", quote: "温两碗酒，要一碟茴香豆。", dims: ["language.vocabulary"] },
-        { p: "P-219", quote: "深蓝的天空中挂着一轮金黄的圆月，下面是海边的沙地。", dims: ["language.vocabulary", "scene.environment"] },
-      ]},
-    ],
-    forbidden_patterns: [
-      { id: "f5", statement: "作者从不堆砌情绪形容词来替代描写。", evidence: [
-        { kind: "author_avoidance", note: "「悲痛欲绝/震撼人心」类成语命中为 0；情绪靠动作与白描呈现。" },
-        { kind: "counter_example", synthetic: true, quote: "（反例）他悲痛欲绝，心如刀绞，泪如雨下。", note: "成语连缀抒情与原作相悖。" },
-      ]},
-    ],
-  },
-  "language.punctuation": {
-    observations: [
-      { id: "o9", conf: "high", statement: "破折号用于语气延宕与冷峻收束，常落在段末制造停顿。", evidence: [
-        { p: "P-142", quote: "我到现在终于没有见——大约孔乙己的确死了。", dims: ["language.punctuation"] },
-        { p: "P-198", quote: "然而圆规很不平，显出鄙夷的神色——仿佛嗤笑法国人不知道拿破仑。", dims: ["language.punctuation", "language.rhetoric"] },
-      ]},
-      { id: "o10", conf: "medium", statement: "问号多为反诘，不为求答，强化叙述者的冷眼。", evidence: [
-        { p: "P-061", quote: "不多不多！多乎哉？不多也。", dims: ["language.punctuation"] },
-      ]},
-    ],
-    forbidden_patterns: [],
-  },
-  "narrative.perspective": {
-    observations: [
-      { id: "o11", conf: "high", statement: "多用限知的第一人称「我」，与事件保持冷静、略带愧疚的距离。", evidence: [
-        { p: "P-003", quote: "我那时年纪小，只当作一种好玩的事看。", dims: ["narrative.perspective"] },
-        { p: "P-188", quote: "我也还记得，但是模糊了，仿佛一幅画。", dims: ["narrative.perspective", "narrative.time_handling"] },
-      ]},
-      { id: "o12", conf: "high", statement: "叙述者既是见证者也是反思者，事后追忆的口吻贯穿全篇。", evidence: [
-        { p: "P-002", quote: "这是二十多年前的事，现在想来，倒已有些模糊。", dims: ["narrative.perspective"] },
-      ]},
-    ],
-    forbidden_patterns: [
-      { id: "f6", statement: "作者从不切换为全知视角直接剖白人物内心。", evidence: [
-        { kind: "author_avoidance", note: "人物心理一律由外部动作与「我」的推测呈现，无上帝视角内心独白。" },
-      ]},
-    ],
-  },
-  "narrative.pacing": {
-    observations: [
-      { id: "o13", conf: "medium", statement: "以场景白描推进，关键转折处反而放慢、留白。", evidence: [
-        { p: "P-140", quote: "中秋过后，秋风是一天凉比一天，看看将近初冬。", dims: ["narrative.pacing", "narrative.time_handling"] },
-        { p: "P-145", quote: "他从破衣袋里摸出四文大钱，放在我手里。", dims: ["narrative.pacing"] },
-      ]},
-    ],
-    forbidden_patterns: [
-      { id: "f7", statement: "作者从不用悬念钩子强行加速章节结尾。", evidence: [
-        { kind: "author_avoidance", note: "段末多为静景或动作收束，无「欲知后事如何」式悬念。" },
-      ]},
-    ],
-  },
-  "narrative.time_handling": {
-    observations: [
-      { id: "o14", conf: "medium", statement: "时间靠节气与季节标记，以追忆框架嵌套当下。", evidence: [
-        { p: "P-140", quote: "中秋过后，秋风是一天凉比一天。", dims: ["narrative.time_handling"] },
-        { p: "P-002", quote: "这是二十多年前的事。", dims: ["narrative.time_handling", "narrative.perspective"] },
-      ]},
-    ],
-    forbidden_patterns: [],
-  },
-  "narrative.information_density": {
-    observations: [
-      { id: "o15", conf: "low", statement: "信息密度偏低，靠重复细节累积印象而非一次性交代。", evidence: [
-        { p: "P-007", quote: "孔乙己是站着喝酒而穿长衫的唯一的人。", dims: ["narrative.information_density"] },
-      ]},
-    ],
-    forbidden_patterns: [],
-  },
-  "scene.environment": {
-    observations: [
-      { id: "o16", conf: "high", statement: "环境白描冷色调为主，以萧索荒凉烘托人物处境。", evidence: [
-        { p: "P-203", quote: "苍黄的天底下，远近横着几个萧索的荒村，没有一些活气。", dims: ["scene.environment"] },
-        { p: "P-219", quote: "深蓝的天空中挂着一轮金黄的圆月，下面是海边的沙地。", dims: ["scene.environment", "scene.sensory_priority"] },
-      ]},
-      { id: "o17", conf: "high", statement: "环境描写极简，几笔勾勒即收，不作长段铺陈。", evidence: [
-        { p: "P-040", quote: "鲁镇的酒店的格局，是和别处不同的。", dims: ["scene.environment"] },
-      ]},
-    ],
-    forbidden_patterns: [
-      { id: "f8", statement: "作者从不用唯美辞藻堆叠风景。", evidence: [
-        { kind: "author_avoidance", note: "环境段平均句长 14 字，形容词密度低，无「美轮美奂」式渲染。" },
-      ]},
-    ],
-  },
-  "scene.character_portrayal": {
-    observations: [
-      { id: "o18", conf: "high", statement: "人物以标志性动作与外貌细节定型，反复出现强化印象。", evidence: [
-        { p: "P-045", quote: "孔乙己一到店，所有喝酒的人便都看着他笑。", dims: ["scene.character_portrayal"] },
-        { p: "P-210", quote: "圆规一面愤愤的回转身，一面絮絮的说。", dims: ["scene.character_portrayal", "language.rhetoric"] },
-      ]},
-      { id: "o19", conf: "medium", statement: "用绰号与外号代称人物，带阶层与反讽意味。", evidence: [
-        { p: "P-209", quote: "人都叫伊「豆腐西施」。", dims: ["scene.character_portrayal"] },
-      ]},
-    ],
-    forbidden_patterns: [
-      { id: "f9", statement: "作者从不为人物写「完美无瑕」的理想化外貌。", evidence: [
-        { kind: "author_avoidance", note: "外貌描写均带缺陷或衰败细节，无理想化美化。" },
-      ]},
-    ],
-  },
-  "scene.dialogue": {
-    observations: [
-      { id: "o20", conf: "medium", statement: "对话简短、口语化，常以一句定人物身份与处境。", evidence: [
-        { p: "P-061", quote: "「不多不多！多乎哉？不多也。」", dims: ["scene.dialogue", "language.vocabulary"] },
-        { p: "P-052", quote: "「温一碗酒。」", dims: ["scene.dialogue"] },
-      ]},
-    ],
-    forbidden_patterns: [
-      { id: "f10", statement: "作者从不在对话中夹带大段说明性独白。", evidence: [
-        { kind: "author_avoidance", note: "单句对话占比 78%，无超过三句的连续独白。" },
-      ]},
-    ],
-  },
-  "scene.sensory_priority": {
-    observations: [
-      { id: "o21", conf: "medium", statement: "感官以视觉为主，辅以少量触觉（寒冷），听觉嗅觉克制。", evidence: [
-        { p: "P-219", quote: "深蓝的天空中挂着一轮金黄的圆月。", dims: ["scene.sensory_priority"] },
-        { p: "P-167", quote: "我冒了严寒，回到相隔二千余里的故乡去。", dims: ["scene.sensory_priority"] },
-      ]},
-    ],
-    forbidden_patterns: [],
-  },
-};
 
-/* ---- hard metrics (sample, 鲁迅) ---- */
+/* ---- hard metrics (sample) ---- */
 const SR_METRICS = [
   { name: "平均句长",      key: "avg_sentence_length",     mean: 16.8, std: 11.2, unit: "字" },
   { name: "句长标准差",    key: "sentence_length_std",     mean: 11.2, std: 3.1,  unit: "" },
@@ -265,23 +88,9 @@ const SR_METRICS = [
   { name: "破折号密度/千", key: "dash_em_density_per_1k",  mean: 2.4,  std: 1.1,  unit: "" },
 ];
 
-const SR_PARA_DIST = [
-  { type: "叙述", key: "narration", v: 0.34 },
-  { type: "对话", key: "dialogue", v: 0.23 },
-  { type: "环境", key: "description_env", v: 0.14 },
-  { type: "心理", key: "psychology", v: 0.11 },
-  { type: "动作", key: "action", v: 0.09 },
-  { type: "人物", key: "description_char", v: 0.06 },
-  { type: "转场", key: "transition", v: 0.03 },
-];
 
-/* ---- books ---- */
-let SR_BOOKS = [
-  { id: "b1", title: "呐喊 · 短篇集", author: "鲁迅", chars: 81200, status: "ready",   profiles: 1, run: "16/16 抽取完成", color: "crimson" },
-  { id: "b2", title: "断魂枪 · 月牙儿", author: "老舍", chars: 52400, status: "extracting", profiles: 0, run: "11/16 抽取中", color: "gold" },
-  { id: "b3", title: "边城（节选）", author: "沈从文", chars: 30100, status: "ready",   profiles: 1, run: "12/16（题材层语料不足）", color: "slate" },
-  { id: "b4", title: "荷塘月色 · 背影", author: "朱自清", chars: 18600, status: "pending", profiles: 0, run: "排队中", color: "sage" },
-];
+/* ---- books（真相来自后端 style-reference v2；本地不再内置演示样书）---- */
+let SR_BOOKS = [];
 
 const SR_STAGES = [
   { id: "overview",   name: "概览",     icon: "Activity" },
@@ -291,21 +100,6 @@ const SR_STAGES = [
   { id: "apply",      name: "注入应用", icon: "Sliders" },
 ];
 
-/* ---- per-subdim metric anchor (for matrix hover tooltip) ---- */
-const SR_SUBDIM_TIP = {
-  "language.sentence_structure": { metric: "平均句长 16.8 字 · 短句率 41%", sample: "我到现在终于没有见——大约孔乙己的确死了。" },
-  "language.vocabulary":         { metric: "文言词比率 14% · 抽象名词率 9%", sample: "孔乙己是站着喝酒而穿长衫的唯一的人。" },
-  "language.rhetoric":           { metric: "比喻密度 3.2/千 · cliché 命中 0", sample: "他的脸色却变作灰黄，仿佛石像一般。" },
-  "language.punctuation":        { metric: "破折号 2.4/千 · 反诘问号占 71%", sample: "不多不多！多乎哉？不多也。" },
-  "narrative.perspective":       { metric: "第一人称 92% · 限知视角", sample: "我那时年纪小，只当作一种好玩的事看。" },
-  "narrative.pacing":            { metric: "场景/概述比 2.3 · 转折留白", sample: "中秋过后，秋风是一天凉比一天。" },
-  "narrative.time_handling":     { metric: "追忆框架 · 节气标记 5 处", sample: "这是二十多年前的事。" },
-  "narrative.information_density":{ metric: "信息密度偏低 · 重复累积", sample: "孔乙己是站着喝酒而穿长衫的唯一的人。" },
-  "scene.environment":           { metric: "环境段均长 14 字 · 冷色调", sample: "苍黄的天底下，远近横着几个萧索的荒村。" },
-  "scene.character_portrayal":   { metric: "标志动作复现 · 绰号代称", sample: "圆规一面愤愤的回转身，一面絮絮的说。" },
-  "scene.dialogue":              { metric: "单句对话 78% · 口语化", sample: "「温一碗酒。」" },
-  "scene.sensory_priority":      { metric: "视觉 8.1/千 · 触觉 2.1/千", sample: "深蓝的天空中挂着一轮金黄的圆月。" },
-};
 
 /* ---- extraction cost / coverage trend (last 14 runs) ---- */
 const SR_TREND = [3, 5, 4, 8, 6, 9, 12, 10, 14, 11, 13, 16, 12, 16];
@@ -419,7 +213,7 @@ function WsStyleRef({ go }) {
         <aside className="sr-books">
           <header className="sr-books-head">
             <div>
-              <div className="page-eyebrow" style={{margin:0, display:"flex", alignItems:"center", gap:8}}>风格参考 {WsDemoTag && <WsDemoTag note="全流程已接后端 style-reference v2：导入/抽取/审核/画像/注入/回测/禁用词均为真实数据。标「演示」的内置样书仅用于预览界面形态，导入真实参考书后各页只显示这本书的真实产物（未抽取时给空态引导）。" />}</div>
+              <div className="page-eyebrow" style={{margin:0, display:"flex", alignItems:"center", gap:8}}>风格参考</div>
               <h2 className="text-serif" style={{fontSize:18, margin:"4px 0 0"}}>参考书库</h2>
             </div>
             <button className="btn btn-accent btn-sm" aria-label="导入参考书" onClick={() => setImportOpen(true)}><I.Plus size={13} /></button>
@@ -431,7 +225,7 @@ function WsStyleRef({ go }) {
                 <button className={`sr-book ${bookId === b.id ? "is-active" : ""}`} onClick={() => setBookId(b.id)}>
                   <span className={`sr-book-spine spine-${b.color}`} />
                   <span className="sr-book-body">
-                    <span className="sr-book-title text-serif">{b.title}{!b.real && <span className="sr-book-demo">演示</span>}</span>
+                    <span className="sr-book-title text-serif">{b.title}</span>
                     <span className="sr-book-author">{b.author} · {(b.chars/10000).toFixed(1)} 万字</span>
                     <span className="sr-book-run">{b.run}</span>
                   </span>
@@ -624,14 +418,14 @@ function SrBookState({ s }) {
 function SrOverview({ book, go }) {
   const deep = useSrDeep(book);
   const stats = srStatsOf(deep);
-  /* 真实书绝不回退演示数据:缺数据显示空态,避免把演示书的鲁迅统计当成这本书的 */
+  /* 真实书绝不回退演示数据:缺数据显示空态 */
   const isRealBook = !!(book && book.real);
   const realMetricsArr = stats ? srRealMetrics(stats) : [];
-  const metrics = realMetricsArr.length ? realMetricsArr : (isRealBook ? [] : SR_METRICS);
+  const metrics = realMetricsArr;
   const realInput = stats && stats.input_assessment;
-  const inputRows = SR_LAYERS.map(l => ({ id: l.id, name: l.name, level: (realInput && realInput[l.id]) || (isRealBook ? "low" : l.input) }));
+  const inputRows = SR_LAYERS.map(l => ({ id: l.id, name: l.name, level: (realInput && realInput[l.id]) || "low" }));
   const realDistArr = stats ? srRealParaDist(stats) : [];
-  const dist = realDistArr.length ? realDistArr : (isRealBook ? [] : SR_PARA_DIST);
+  const dist = realDistArr;
   const distMax = Math.max(...dist.map(d => d.v), 0.01);
   const calib = (stats && stats.classifier_calibration) || null;
   const isReal = !!stats;
@@ -789,21 +583,20 @@ function SrMatrix({ go, book }) {
   const isRealBook = !!(book && book.real);
   const realInput = (deep && deep.book && deep.book.stats_json && deep.book.stats_json.input_assessment) || null;
   const realMode = !!(deep && deep.runId && deep.dimCounts && Object.keys(deep.dimCounts).length > 0);
-  /* 真实书但尚无抽取产物:显示真实空态(全 0 + 引导),绝不回退鲁迅演示 findings */
+  /* 真实书但尚无抽取产物:显示真实空态(全 0 + 引导),绝不回退演示 findings */
   const realEmpty = isRealBook && !realMode;
   const [cell, setCell] = useStSR("language.sentence_structure");
   const [kindFilter, setKindFilter] = useStSR("all");
   const [hover, setHover] = useStSR(null);
   const [synthBusy, setSynthBusy] = useStSR(false);
 
-  // 有效单元数据：真模式叠加 dimCounts + input_assessment(skip)，演示书用 SR_LAYERS 演示值
+  // 有效单元数据：真模式叠加 dimCounts + input_assessment(skip)
   const cellData = (layerId, sub) => {
     const path = `${layerId}.${sub.id}`;
     if (realEmpty) {
       const skip = !!(realInput && realInput[layerId] === "skip");
       return { path, name: sub.name, conf: skip ? "skip" : "low", obs: 0, fp: 0, q: 0, skip };
     }
-    if (!realMode) return { path, name: sub.name, conf: sub.conf, obs: sub.obs, fp: sub.fp, q: sub.q, skip: sub.conf === "skip" };
     if (realInput && realInput[layerId] === "skip") return { path, name: sub.name, conf: "skip", obs: 0, fp: 0, q: 0, skip: true };
     const dc = deep.dimCounts[path];
     if (!dc) return { path, name: sub.name, conf: "low", obs: 0, fp: 0, q: 0, skip: false };
@@ -811,11 +604,11 @@ function SrMatrix({ go, book }) {
   };
   const cellsByLayer = SR_LAYERS.map(l => ({ layer: l, cells: l.subs.map(s => cellData(l.id, s)) }));
 
-  // 抽屉 findings：真模式取 deep.findingsByDim[cell] 适配；真实书未抽取 → null(空态)；演示书 → SR_FINDINGS
+  // 抽屉 findings：真模式取 deep.findingsByDim[cell] 适配；未抽取 → null(空态)
   const realGroup = realMode ? deep.findingsByDim[cell] : null;
   const findings = realMode
     ? (realGroup ? { observations: realGroup.observations.map(srAdaptFinding), forbidden_patterns: realGroup.forbidden_patterns.map(srAdaptFinding) } : null)
-    : (realEmpty ? null : SR_FINDINGS[cell]);
+    : null;
   const onReviewFinding = realMode
     ? (findingId, decision) => { if (window.srReviewFinding) window.srReviewFinding(findingId, decision, book.id).catch(() => {}); }
     : null;
@@ -910,7 +703,6 @@ function SrMatrix({ go, book }) {
               </div>
               <div className="sr-matrix-cells">
                 {cells.map(c => {
-                  const tip = SR_SUBDIM_TIP[c.path];
                   const confLabel = c.conf === "high" ? "高置信" : c.conf === "medium" ? "中置信" : "低置信";
                   return (
                     <button
@@ -937,8 +729,6 @@ function SrMatrix({ go, book }) {
                             <span className={`conf-dot conf-${c.conf}`} />
                             {confLabel} · {c.obs} 观察 / {c.q} 引文 / {c.fp} 禁忌
                           </span>
-                          {!realMode && !realEmpty && tip && <span className="sr-cell-tip-metric">{tip.metric}</span>}
-                          {!realMode && !realEmpty && tip && <span className="sr-cell-tip-quote">「{tip.sample}」</span>}
                           <span className="sr-cell-tip-hint">点击查看全部证据 →</span>
                         </span>
                       )}
@@ -1099,8 +889,7 @@ function SrProfile({ book, go }) {
   const realBaseline = baseline ? SR_METRICS.map(m => { const b = baseline[m.key]; if (!b || b.mean == null) return null; return { ...m, mean: Number(b.mean), std: Number(b.std) }; }).filter(Boolean).slice(0, 6) : null;
   const sampleIdx = (pj && pj.scene_samples_index) || null;
   const features = (pj && pj.style_features) || [];
-  const demoDimRows = SR_LAYERS.filter(l => l.input !== "skip").flatMap(l => l.subs.filter(s => s.conf !== "skip").map(s => ({ path: `${l.id}.${s.id}`, abbr: l.abbr, name: s.name, conf: s.conf, obs: s.obs, fp: s.fp, q: s.q })));
-  const dimRows = realDimRows || demoDimRows;
+  const dimRows = realDimRows || [];
 
   /* 真实书还没有画像:显示真实空态,不再把演示画像(冷峻克制白描…)当成这本书的 */
   if (isRealBook && !real) {
@@ -1169,7 +958,7 @@ function SrProfile({ book, go }) {
         <div className="card-flat">
           <div className="ctx-head" style={{marginBottom: 10}}><I.Target size={13} /><span>指标基线</span></div>
           <div className="sr-baseline">
-            {(realBaseline && realBaseline.length ? realBaseline : SR_METRICS.slice(0, 5)).map(m => (
+            {(realBaseline || []).map(m => (
               <div key={m.key} className="sr-baseline-row">
                 <span className="text-sm">{m.name}</span>
                 <span className="tab-num fw-600">{m.pct ? (m.mean*100).toFixed(0)+"%" : (Math.round(m.mean*10)/10)} <span className="text-muted text-xs">±{Math.round(m.std*10)/10}</span></span>
@@ -1279,21 +1068,21 @@ const SR_TASKS = [
 /* layered injection stack — base(project/global) ∪ character(pov+onstage) ∪ scene */
 const SR_LAYER_STACK = [
   { rank: 3, scope: "global",    label: "全局基底", target: "默认风格", weight: 1, tokens: 320, tone: "slate",   frags: 2 },
-  { rank: 2, scope: "project",   label: "项目层",   target: "潮汐档案", weight: 2, tokens: 540, tone: "crimson", frags: 4 },
-  { rank: 1, scope: "character", label: "角色层 · POV", target: "林岑", weight: 3, tokens: 680, tone: "gold",    frags: 3, onstage: ["周岚"] },
+  { rank: 2, scope: "project",   label: "项目层",   target: "示例项目", weight: 2, tokens: 540, tone: "crimson", frags: 4 },
+  { rank: 1, scope: "character", label: "角色层 · POV", target: "示例角色", weight: 3, tokens: 680, tone: "gold",    frags: 3, onstage: ["配角"] },
   { rank: 0, scope: "scene",     label: "场景层",   target: "CH08·SC01", weight: 4, tokens: 880, tone: "sage",    frags: 3 },
 ];
 
 const SR_FEWSHOT = {
-  dialogue:    { id: "q_001", text: "「温一碗酒。」", note: "对话 · 单句定身份" },
-  action:      { id: "q_067", text: "他从破衣袋里摸出四文大钱，放在我手里。", note: "动作 · 不解释心理" },
-  description_env: { id: "q_203", text: "苍黄的天底下，远近横着几个萧索的荒村，没有一些活气。", note: "环境 · 冷色白描" },
+  dialogue:    { id: "q_001", text: "「示例对白。」", note: "对话 · 单句定身份" },
+  action:      { id: "q_067", text: "他从口袋里摸出几枚硬币，放在桌上。", note: "动作 · 不解释心理" },
+  description_env: { id: "q_203", text: "灰白的天底下，远处横着几处安静的屋舍。", note: "环境 · 冷色白描" },
 };
 
 const SR_BANNED_INIT = [
   { term: "文笔优美", hint: "改具体描写", scope: "generation", source: "preset" },
   { term: "震撼人心", hint: "用动作呈现", scope: "generation", source: "preset" },
-  { term: "潮汐之子", hint: "源书专名", scope: "extraction", source: "user" },
+  { term: "示例专名", hint: "源书专名", scope: "extraction", source: "user" },
 ];
 
 function SrApply({ go, book }) {
@@ -1814,8 +1603,8 @@ function SrApply({ go, book }) {
             </ul>
           ) : (
             <ul className="sr-bindings">
-              <li><span className="pill pill-crimson text-xs"><span className="pill-dot" />项目</span><span className="text-sm">潮汐档案 · 全局</span><I.Check size={13} style={{color:"var(--sage)"}} /></li>
-              <li><span className="pill pill-gold text-xs"><span className="pill-dot" />角色</span><span className="text-sm">林岑 POV</span><button className="btn btn-quiet btn-sm" disabled title="演示绑定不可修改">演示绑定</button></li>
+              <li><span className="pill pill-crimson text-xs"><span className="pill-dot" />项目</span><span className="text-sm">示例项目 · 全局</span><I.Check size={13} style={{color:"var(--sage)"}} /></li>
+              <li><span className="pill pill-gold text-xs"><span className="pill-dot" />角色</span><span className="text-sm">示例角色 POV</span><button className="btn btn-quiet btn-sm" disabled title="演示绑定不可修改">演示绑定</button></li>
               <li><span className="pill pill-sage text-xs"><span className="pill-dot" />场景</span><span className="text-sm">CH08 · SC01</span><button className="btn btn-quiet btn-sm" disabled title="演示绑定不可修改">演示绑定</button></li>
             </ul>
           )}
@@ -1831,7 +1620,7 @@ function SrApply({ go, book }) {
           const selLabel = selOpt ? selOpt.label : (scopeRefId || "");
           const scopeName = scope === "project" ? `项目《${workTitle}》`
             : scope === "scene" ? (realMode ? `场景 ${selLabel}` : (isRealBook ? "场景" : "场景 CH08 · SC01"))
-            : (realMode ? `角色 ${selLabel}` : (isRealBook ? "角色" : "角色 林岑 POV"));
+            : (realMode ? `角色 ${selLabel}` : (isRealBook ? "角色" : "角色 示例角色 POV"));
           // 立项 A — scope_ref_id:项目级用 project_id,场景/角色级用所选目标 id(显式传,不靠后端回退)
           const effScopeRefId = scope === "project" ? projId : scopeRefId;
           if (realMode) {
@@ -2435,12 +2224,9 @@ const srCss = `
 
 /* ==========================================================
    FE-ALIGN F5：参考书库接 style_reference v2。
-   - 书库列表/导入/删除/重跑/重分类走真实 API（无 LLM 即可用的部分）；
-   - 后端有真实书时列表以后端为准，否则保留演示书（流水线展示）；
-   - 矩阵/画像/回测/注入各 stage 的内容仍为演示——它们展示的是 LLM
-     抽取产物（findings/profile），LLM 关闭时无真实数据可渲染（账本记录）。
+   - 书库列表/导入/删除/重跑/重分类走真实 API；
+   - 列表一律以后端为准，后端为空即空态引导导入。
    ========================================================== */
-const SR_DEMO_BOOKS = SR_BOOKS.slice();
 let SR_REAL = false;
 
 function srMapStatus(s) {
@@ -2456,7 +2242,7 @@ async function srSyncBooks() {
     rows = ((await apiGet("/api/v2/style-reference/books")) || {}).books || [];
   } catch (e) { return; }
   if (!rows.length) {
-    if (SR_REAL) { SR_BOOKS = SR_DEMO_BOOKS.slice(); SR_REAL = false; window.dispatchEvent(new CustomEvent("sr:books-changed")); }
+    if (SR_REAL || SR_BOOKS.length) { SR_BOOKS = []; SR_REAL = false; window.dispatchEvent(new CustomEvent("sr:books-changed")); }
     return;
   }
   const colors = ["crimson", "gold", "slate", "sage"];

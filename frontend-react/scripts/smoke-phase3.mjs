@@ -29,7 +29,7 @@ await page.evaluate((apiBase) => {
   localStorage.clear();
   localStorage.setItem("novel-system-api-base", apiBase);
   localStorage.setItem("novel-system-api-base-default", "http://127.0.0.1:8000");
-  localStorage.setItem("ws_active_work_v1", "tide");
+  localStorage.setItem("ws_active_work_v1", "work-a");
 }, API);
 await page.reload();
 await page.waitForSelector(".ws-app");
@@ -42,14 +42,14 @@ await check("目录来自后端（tide 10 章，含戏剧卡）", async () => {
     return { n: chs.length, title: ch1 && ch1.title, spine: ch1 && ch1.drama && ch1.drama.spine, sid: ch1 && ch1.scenes[0] && ch1.scenes[0].sid };
   });
   if (res.n !== 10) throw new Error(`chapters: ${res.n}`);
-  if (res.title !== "盐钟残片") throw new Error(`title: ${res.title}`);
+  if (res.title !== "样章01") throw new Error(`title: ${res.title}`);
   if (!res.spine) throw new Error("drama.spine missing");
   if (res.sid !== "ch01s1") throw new Error(`sid: ${res.sid}`);
 });
 
 await check("主页（dashboard 兜底 + 目录同源）渲染", async () => {
   const title = await page.textContent(".hm-title");
-  if (!title.includes("潮汐档案")) throw new Error(title);
+  if (!title.includes("样例长卷")) throw new Error(title);
   const body = await page.textContent(".hm-top");
   if (!body.includes("章")) throw new Error("progress missing");
 });
@@ -57,28 +57,28 @@ await check("主页（dashboard 兜底 + 目录同源）渲染", async () => {
 await check("编排台改章题 → 后端落库 + 主页一致", async () => {
   // 第 1 章已批准并锁定；通过编排台编辑当前进行中的第 8 章，覆盖真实 UI 保存路径。
   await page.evaluate(() => { location.hash = "#author"; });
-  await page.waitForSelector('.arr-card:has-text("返回的潮声")');
-  await page.click('.arr-card:has-text("返回的潮声")');
+  await page.waitForSelector('.arr-card:has-text("样章08")');
+  await page.click('.arr-card:has-text("样章08")');
   const titleInput = page.locator('input[aria-label="章节标题"]');
-  await titleInput.fill("P3改名·返回的潮声");
+  await titleInput.fill("P3改名·样章08");
   await titleInput.press("Enter");
   await page.waitForFunction(async (apiBase) => {
     const body = await fetch(`${apiBase}/api/v2/projects/tide/catalog`).then(r => r.json());
-    return body.data.chapters[7].title === "P3改名·返回的潮声";
+    return body.data.chapters[7].title === "P3改名·样章08";
   }, API);
   const tree = await api("/api/v2/projects/tide/catalog");
-  if (tree.chapters[7].title !== "P3改名·返回的潮声") throw new Error(`backend title: ${tree.chapters[7].title}`);
+  if (tree.chapters[7].title !== "P3改名·样章08") throw new Error(`backend title: ${tree.chapters[7].title}`);
   await page.evaluate(() => { location.hash = "#home"; });
   await page.waitForSelector(".hm-chaps");
-  if (!(await page.textContent(".hm-chaps")).includes("P3改名·返回的潮声")) throw new Error("home title not refreshed");
+  if (!(await page.textContent(".hm-chaps")).includes("P3改名·样章08")) throw new Error("home title not refreshed");
   // 仍经编排台还原，避免后续检查继承临时标题。
   await page.evaluate(() => { location.hash = "#author"; });
   await page.waitForSelector('input[aria-label="章节标题"]');
-  await page.fill('input[aria-label="章节标题"]', "返回的潮声");
+  await page.fill('input[aria-label="章节标题"]', "样章08");
   await page.press('input[aria-label="章节标题"]', "Enter");
   await page.waitForFunction(async (apiBase) => {
     const body = await fetch(`${apiBase}/api/v2/projects/tide/catalog`).then(r => r.json());
-    return body.data.chapters[7].title === "返回的潮声";
+    return body.data.chapters[7].title === "样章08";
   }, API);
 });
 
@@ -112,7 +112,7 @@ await check("写作器正文保存 → words rollup 全链路后端", async () =
   // 直接经 WrDocs 保存（等价于编辑器自动保存路径）
   await page.evaluate(async () => {
     const w = window.WsCatalog.writingScene();
-    await window.WrDocs.save(w.scene.sid, `<p>潮汐表第三页的墨迹还没干透，林岑却已经认出，那不是她昨夜留下的笔迹。</p><p>走廊尽头只剩一盏灯。No.31 的编号在屏幕上轻轻跳了一下。</p><p>这是 P3 冒烟新增的第三段，用来验证字数增量上报。本轮标记：${Date.now().toString(36)}</p>`);
+    await window.WrDocs.save(w.scene.sid, `<p>样例正文第一段：占位句。</p><p>样例正文第二段：占位句。</p><p>这是 P3 冒烟新增的第三段，用来验证字数增量上报。本轮标记：${Date.now().toString(36)}</p>`);
   });
   await page.waitForTimeout(1500);
   const statsAfter = await api("/api/v2/projects/tide/writing-stats");
@@ -127,7 +127,7 @@ await check("跨会话正文水合（清缓存重载后编辑器有服务端正�
     localStorage.clear();
     localStorage.setItem("novel-system-api-base", apiBase);
     localStorage.setItem("novel-system-api-base-default", "http://127.0.0.1:8000");
-    localStorage.setItem("ws_active_work_v1", "tide");
+    localStorage.setItem("ws_active_work_v1", "work-a");
   }, API);
   await page.reload();
   await page.waitForSelector(".ws-app");

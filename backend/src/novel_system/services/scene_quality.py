@@ -32,7 +32,7 @@ from novel_system.services.final_text_gate import (
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.literary_quality import analyze_literary_quality
 from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
-from novel_system.settings import get_settings
+from novel_system.services.llm_fail_closed import raise_llm_domain_error
 
 
 CONTRACT_VERSION = "scene_quality_contract_v1"
@@ -279,24 +279,18 @@ class SceneAutoRewriteService:
         inspected_bundle_id = source_final.source_bundle_id if source_final else None
 
         if branch in {"full_scene", "local_patch"}:
-            candidate_content = None
-            if get_settings().llm_enabled:
-                llm_call_id, candidate_content = self._generate_llm_candidate(
-                    scene=scene,
-                    source_final=source_final,
-                    contract=contract,
-                    branch=branch,
-                    diagnosis=diagnosis,
-                    gate_results={
-                        "promotable": False,
-                        "risky_dimensions": diagnosis.get("risky_dimensions", []),
-                        "status": "candidate_not_yet_evaluated",
-                    },
-                )
-            else:
-                # Deterministic local policy creates a candidate without pretending
-                # that provider execution occurred; there is intentionally no ledger row.
-                llm_call_id = None
+            llm_call_id, candidate_content = self._generate_llm_candidate(
+                scene=scene,
+                source_final=source_final,
+                contract=contract,
+                branch=branch,
+                diagnosis=diagnosis,
+                gate_results={
+                    "promotable": False,
+                    "risky_dimensions": diagnosis.get("risky_dimensions", []),
+                    "status": "candidate_not_yet_evaluated",
+                },
+            )
             candidate_row_id = self._persist_candidate_draft(
                 scene=scene,
                 source_final=source_final,
@@ -625,22 +619,17 @@ class SceneAutoRewriteService:
                 step="scene_auto_rewrite",
                 prompt=prompt,
                 user_prompt=user_prompt,
-                offline_client_factory=lambda: None,
                 source_draft_content=source_final.content if source_final else None,
             )
         except LLMNodeExecutionError as exc:
-            raise DomainError(
-                "SCENE_AUTO_REWRITE_LLM_FAILED",
-                exc.message,
-                status_code=409,
-                details={
-                    "llm_call_id": exc.llm_call_id,
-                    "node_id": "scene_auto_rewrite",
-                    "error_code": exc.error_code,
-                    "next_action": "configure_scene_auto_rewrite_route_and_retry",
-                    "response_summary": exc.response_summary,
-                },
-            ) from exc
+            raise_llm_domain_error(
+                exc,
+                capability_code="SCENE_AUTO_REWRITE_LLM_REQUIRED",
+                failure_code="SCENE_AUTO_REWRITE_LLM_FAILED",
+                operation="scene auto rewrite",
+                node_id="scene_auto_rewrite",
+                next_action="configure_scene_auto_rewrite_route_and_retry",
+            )
         structured = result.response.structured_output or {}
         scene_text = structured.get("scene_text")
         if not isinstance(scene_text, str) or not scene_text.strip():
@@ -660,14 +649,16 @@ class SceneAutoRewriteService:
         contract: SceneQualityContract,
         branch: str,
         llm_call_id: str | None,
-        content_override: str | None = None,
+        content_override: str,
     ) -> str:
         row_id = f"draft_auto_rewrite_{scene.scene_id}_{uuid.uuid4().hex[:10]}"
-        content = content_override or _candidate_content(
-            source_text=source_final.content if source_final else "",
-            contract=contract.payload_json or {},
-            branch=branch,
-        )
+        content = content_override.strip()
+        if not content or not llm_call_id:
+            raise DomainError(
+                "AUTO_REWRITE_LLM_PROVENANCE_REQUIRED",
+                "auto rewrite candidates require non-empty LLM output and an LLM call id",
+                status_code=502,
+            )
         self.session.add(
             SceneDraft(
                 row_id=row_id,
@@ -720,27 +711,6 @@ def _contract_payload(*, scene: SceneCard, chapter: ChapterGoal, source_snapshot
         "author_protected_intent": _first_text(scene_brief.get("reader_aftertaste"), chapter.emotional_target, chapter.notes),
         "forbidden_changes": "；".join(item for item in (chapter.must_not, scene.forbidden_text) if item) or "不得改动已确认人物、事实和连续性。",
     }
-
-
-def _candidate_content(*, source_text: str, contract: dict[str, str], branch: str) -> str:
-    if branch == "local_patch":
-        return (
-            f"{source_text.strip()}\n\n"
-            "【自动局部补丁候选】\n"
-            f"把重复动作和解释性句子改写为围绕“{contract.get('forced_choice', '强迫选择')}”的行动压力；"
-            f"结尾必须落在“{contract.get('ending_action', '不可撤回动作')}”。"
-        ).strip()
-    return (
-        f"{contract.get('pov_or_actor', '主行动者')}在{contract.get('scene_function', '当前场景')}中先暴露"
-        f"“{contract.get('visible_desire', '可见欲望')}”。"
-        f"阻碍不是说明，而是压到眼前：{contract.get('obstacle', '具体阻碍')}。"
-        f"她必须在“{contract.get('forced_choice', '两个不可兼得的选项')}”之间选择，"
-        f"并付出“{contract.get('price_paid', '可见代价')}”。"
-        f"信息通过行动释放：{contract.get('information_release', '关键信息')}。"
-        f"关系因此转向：{contract.get('relationship_turn', '关系或权力变化')}。"
-        f"结尾落在不可撤回的动作上：{contract.get('ending_action', '结尾动作')}，"
-        f"把读者推向下一场：{contract.get('next_scene_pull', '下一场牵引')}。"
-    )
 
 
 def _branch_for(*, mode: str, diagnosis: dict[str, Any], blockers: list[str]) -> str:

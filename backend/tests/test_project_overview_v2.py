@@ -9,7 +9,7 @@ from novel_system.services.writing_stats import (
     WritingStatsService,
     count_words,
 )
-from novel_system.tools.seed_fe_demo_works import seed_fe_demo_works
+from tests.fixture_works import seed_fixture_works
 
 
 _create_seq = 0
@@ -169,18 +169,18 @@ def test_author_draft_save_reports_words_delta(client, session):
 
 
 def test_dashboard_v2_shape_with_demo_seed(client, session):
-    seed_fe_demo_works(session)
+    seed_fixture_works(session)
     session.commit()
 
-    data = client.get("/api/v2/projects/tide/dashboard").json()["data"]
+    data = client.get("/api/v2/projects/work-a/dashboard").json()["data"]
     assert data["resume"]["chapter_no"] == "08"
     assert data["resume"]["scene_slug"] == "ch08s3"
-    assert data["resume"]["scene_title"] == "夜班修复台 · 二次发现"
+    assert data["resume"]["scene_title"] == "样场 8-3"
     assert len(data["resume"]["last_lines"]) == 2
-    assert "潮汐表第三页" in data["resume"]["last_lines"][0]
+    assert "样例正文最后一行甲" in data["resume"]["last_lines"][0]
     assert data["resume"]["scene_words"] > 0
     assert data["brief"]["kind"] == "proactive"
-    assert "No.31" in data["brief"]["goal"]
+    assert "样例场景目标" in data["brief"]["goal"]
 
     board = {row["step_key"]: row["status"] for row in data["snowflake"]}
     assert board["book_brief"] == "done"
@@ -190,7 +190,7 @@ def test_dashboard_v2_shape_with_demo_seed(client, session):
 
     recent = data["chapters_recent"]
     assert len(recent) == 5
-    ch08 = next(r for r in recent if r["title"] == "返回的潮声")
+    ch08 = next(r for r in recent if r["title"] == "样章08")
     assert ch08["active"] is True
     assert ch08["state"] == "writing"
     assert ch08["no"] == "08"
@@ -210,9 +210,9 @@ def test_dashboard_v2_blank_project(client):
 
 
 def test_flow_status_shape(client, session):
-    seed_fe_demo_works(session)
+    seed_fixture_works(session)
     session.commit()
-    data = client.get("/api/v2/projects/tide/flow-status").json()["data"]
+    data = client.get("/api/v2/projects/work-a/flow-status").json()["data"]
     assert data["snowflake_pct"] == 80  # 10 步中 8 步 approved
     assert data["open_review_count"] >= 8  # 统一收件箱口径：5 demo 卡 + 3 canon 卡 + 派生
     assert data["draft_queue_len"] >= 1  # ch08 sc01/sc02 无正文
@@ -222,11 +222,11 @@ def test_flow_status_shape(client, session):
 
 
 def test_demo_seed_idempotent(client, session):
-    seed_fe_demo_works(session)
-    seed_fe_demo_works(session)
+    seed_fixture_works(session)
+    seed_fixture_works(session)
     session.commit()
-    projects = session.query(StoryProject).filter(StoryProject.is_demo == 1).all()
-    assert {p.project_id for p in projects} == {"tide", "salt"}
+    projects = session.query(StoryProject).filter(StoryProject.project_id.in_(["work-a", "work-b"])).all()
+    assert {p.project_id for p in projects} == {"work-a", "work-b"}
     listed = client.get("/api/v2/projects").json()["data"]["items"]
-    demo_rows = [item for item in listed if item["is_demo"]]
-    assert len(demo_rows) == 2
+    fixture_rows = [item for item in listed if item["project_id"] in ("work-a", "work-b")]
+    assert len(fixture_rows) == 2

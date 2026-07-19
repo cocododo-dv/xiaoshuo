@@ -70,7 +70,6 @@ function wsAdaptProject(item, prevHome) {
     wordsToday: stats.words_today || 0,
     wordsTargetDay: item.words_target_daily || 1000,
     streak: stats.streak_days || 0,
-    isDemo: !!item.is_demo,
     home: prevHome || { blank: true },
   };
 }
@@ -127,7 +126,6 @@ function wsLoadCache() {
       greet: wsGreetNow(),
       wordsTotal: 0, wordsTarget: 100000, chaptersWritten: 0, chaptersTotal: 0,
       wordsToday: 0, wordsTargetDay: 1000, streak: 0,
-      isDemo: false,
       home: { blank: true },
     },
   ];
@@ -315,7 +313,6 @@ const WsWorks = {
       synopsis_line: (body.sub || "").trim(),
       target_word_count: Number(body.wordsTarget) || 100000,
       words_target_daily: 1000,
-      is_demo: false,
     });
     WS_WORKS = [...WS_WORKS.filter(w => w.id !== "__loading__"), temp];
     WS_ACTIVE_ID = tempId;
@@ -407,8 +404,7 @@ const WsWorks = {
       wsToastError(error, "保存作品档案失败。");
     });
   },
-  /* FE-ALIGN P4：摘除「种子不可删」前端限制（demo 可删可恢复，由后端 is_demo 表达身份）。
-     视图以 isSeed 作为删除门闩，故恒为 false；演示身份仍在 work.isDemo 上。 */
+  /* FE-ALIGN P4：摘除「种子不可删」前端限制。视图以 isSeed 作为删除门闩，故恒为 false。 */
   isSeed: () => false,
   /* 从回收站整体恢复（POST /api/v2/projects/{id}/restore）；
      keys 参数随 localStorage 时代消亡（签名保留、忽略） */

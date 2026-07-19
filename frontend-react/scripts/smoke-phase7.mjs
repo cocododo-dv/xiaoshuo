@@ -29,7 +29,7 @@ await page.evaluate((apiBase) => {
   localStorage.clear();
   localStorage.setItem("novel-system-api-base", apiBase);
   localStorage.setItem("novel-system-api-base-default", "http://127.0.0.1:8000");
-  localStorage.setItem("ws_active_work_v1", "tide");
+  localStorage.setItem("ws_active_work_v1", "work-a");
 }, API);
 await page.reload();
 await page.waitForSelector(".ws-app");
@@ -48,7 +48,7 @@ await check("塔与待办同源：seed 冲突 c1/c2/c3 双侧可见", async () =
 await check("待办侧裁决 c2 → 塔侧消失（finding adjudicated）", async () => {
   await page.evaluate(() => { location.hash = "#review"; });
   await page.waitForTimeout(1500);
-  await page.click('.rv-item:has-text("盐钟 · 材质")');
+  await page.click('.rv-item:has-text("道具甲 · 材质")');
   await page.waitForTimeout(400);
   await page.click('button:has-text("统一为「铜」并锁定")');
   await page.waitForTimeout(2000);
@@ -87,7 +87,7 @@ await check("归档写回：契约 archived → 章状态 draft + 派生静默�
   const base = `/api/v2/projects/tide/longform/chapters/${ch10.chapter_id}/contract`;
   await page.evaluate(async (args) => {
     const H = { "Content-Type": "application/json" };
-    await fetch(args.api + args.base, { method: "PUT", headers: H, body: JSON.stringify({ constraints: [{ text: "守住盐钟材质=铜" }] }) });
+    await fetch(args.api + args.base, { method: "PUT", headers: H, body: JSON.stringify({ constraints: [{ text: "守住道具甲材质=铜" }] }) });
     for (const s of ["ready", "dispatched"]) {
       await fetch(`${args.api}${args.base}/transition`, { method: "POST", headers: { ...H, "X-Idempotency-Key": "p7-t-" + s + Date.now() }, body: JSON.stringify({ status: s }) });
     }

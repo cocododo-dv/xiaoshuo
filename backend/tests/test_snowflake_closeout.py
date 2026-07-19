@@ -22,6 +22,29 @@ from novel_system.services.snowflake_steps import (
     diagnose_step_pressure,
     get_step_definition,
 )
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _skeleton_snowflake_generate(monkeypatch):
+    """假生成已退役：本文件回归收口三项（行级不可变身份/三幕单向派生/祖先快照失效），
+    不关心生成质量——把 generate_step 打成「规划器骨架直通」，并开 llm_enabled 过路由闸。"""
+    from novel_system.services.hash_engine import normalize
+    from novel_system.services.snowflake_planner import SnowflakePlannerService
+    from novel_system.services.snowflake_workspace_llm import (
+        SnowflakeWorkspaceLLMService,
+        WorkspaceLLMResult,
+    )
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+
+    def fake_generate_step(self, *, project, step_key, latest_by_step, **kwargs):
+        payload = SnowflakePlannerService(self.session)._build_artifact_json(
+            project, step_key, dict(latest_by_step)
+        )
+        return WorkspaceLLMResult(source="llm", llm_call_id=None, payload=normalize(payload))
+
+    monkeypatch.setattr(SnowflakeWorkspaceLLMService, "generate_step", fake_generate_step)
 
 
 def _create_project(client, *, key: str) -> dict:

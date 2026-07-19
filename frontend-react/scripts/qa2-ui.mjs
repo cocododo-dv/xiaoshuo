@@ -47,7 +47,7 @@ await page.goto(BASE); await waitApp();
 
 // ---- NAV-01 writer/advanced 门控 ----
 ctx = "NAV-01";
-await go("tide", "home");
+await go("work-a", "home");
 await page.evaluate(() => localStorage.setItem("ws_tweaks_v1", JSON.stringify({ mode: "writer" })));
 await page.reload(); await waitApp();
 let railText = await page.evaluate(() => (document.querySelector(".ws-rail, nav, aside")?.innerText || ""));
@@ -62,7 +62,7 @@ chk("非法 hash 不崩溃", await page.evaluate(() => !!document.querySelector(
 
 // ---- NAV-02 Ctrl+k 命令面板（纠正旧 FP：用 Control+k）----
 ctx = "NAV-02";
-await go("tide", "home");
+await go("work-a", "home");
 await page.keyboard.press("Control+k").catch(() => {});
 await page.waitForTimeout(600);
 const paletteOpen = await page.evaluate(() => !!document.querySelector(".ws-palette, [class*='palette'], [class*='cmdk'], [role='dialog']"));
@@ -72,7 +72,7 @@ await page.keyboard.press("Escape").catch(() => {});
 // ---- SNOW-12 (P1 回归)：打开构思页不盲发 approve ----
 ctx = "SNOW-12";
 net.length = 0;
-await go("salt", "snowflake");
+await go("work-b", "snowflake");
 await page.waitForTimeout(1800);
 const approve409 = net.filter(n => /\/approve/.test(n.url) && n.status === 409);
 chk("打开构思页无 approve→409 噪声(P1 回归)", approve409.length === 0, `409s=${approve409.length} ${JSON.stringify(approve409.slice(0,2))}`);
@@ -80,7 +80,7 @@ await shot("snow12-salt-construct");
 
 // ---- Q3 UI 体现：tide 构思页物化按钮反映 blocked ----
 ctx = "Q3-UI";
-await go("tide", "snowflake");
+await go("work-a", "snowflake");
 await page.waitForTimeout(1500);
 const bodyTxt = await page.evaluate(() => document.querySelector(".ws-content")?.innerText || "");
 chk("tide 构思页渲染(含物化/章节字样)", /整理为章节结构|章节结构|物化|场景/.test(bodyTxt), bodyTxt.slice(0, 80));
@@ -119,7 +119,7 @@ if (!arcProjectExists) {
 
 // ---- REVIEW-01：待办加载 + 筛选 chip ----
 ctx = "REVIEW-01";
-await go("tide", "review");
+await go("work-a", "review");
 await page.waitForTimeout(1200);
 const reviewLen = await page.evaluate(() => (document.querySelector(".ws-content")?.innerText || "").length);
 chk("待办视图渲染非空", reviewLen > 60, `len=${reviewLen}`);
@@ -127,7 +127,7 @@ await shot("review-tide");
 
 // ---- QUAL-04：文学质量视图渲染 ----
 ctx = "QUAL-04";
-await go("tide", "quality");
+await go("work-a", "quality");
 await page.waitForTimeout(1200);
 const qualLen = await page.evaluate(() => (document.querySelector(".ws-content")?.innerText || "").length);
 chk("文学质量视图渲染非空", qualLen > 60, `len=${qualLen}`);
@@ -136,7 +136,7 @@ await shot("quality-tide");
 // ---- STYLE-12：风格视图渲染 ----
 ctx = "STYLE-12";
 net.length = 0;
-await go("tide", "styleref");
+await go("work-a", "styleref");
 await page.waitForTimeout(1400);
 const styleLen = await page.evaluate(() => (document.querySelector(".ws-content")?.innerText || "").length);
 chk("风格视图渲染非空", styleLen > 60, `len=${styleLen}`);
@@ -146,7 +146,7 @@ await shot("styleref-tide");
 ctx = "console-sweep";
 consoleErrs.length = 0;
 for (const v of ["home", "flowmap", "writer", "library", "manuscripts", "longform", "index", "interop", "settings", "trash"]) {
-  await go("tide", v); await page.waitForTimeout(700);
+  await go("work-a", v); await page.waitForTimeout(700);
 }
 const realErrs = consoleErrs.filter(e => !/favicon|404.*\.png|ResizeObserver/i.test(e.t));
 chk("全视图巡检无 console error", realErrs.length === 0, JSON.stringify(realErrs.slice(0, 4)));

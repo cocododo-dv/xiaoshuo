@@ -32,10 +32,27 @@ from novel_system.db.models import (
 )
 from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.llm_accounting import LLMAccountingRejected
+from novel_system.services.near_final import (
+    NearFinalAcceptanceService,
+    NearFinalPlanningService,
+)
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
+from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_generation import SceneGenerationService
 from tests.accounted_llm_fakes import AccountedGenerateMixin
+from tests.real_llm_fakes import ScenePipelineOnlineFake
+
+
+import pytest as _pytest_ap
+from tests.real_llm_fakes import install_online_pipeline as _install_online_pipeline
+
+
+@_pytest_ap.fixture(autouse=True)
+def _auto_online_pipeline(monkeypatch):
+    """假生成已退役：给场景管线未显式注入的子服务兜底在线记账替身。"""
+    _install_online_pipeline(monkeypatch)
+
 
 PROJECT_ID = "PROJECT300"
 SCENE_ID = "CH300_SC01"
@@ -166,12 +183,17 @@ def _seed_scene(session, *, constraint_intensity: float | None = 0.9) -> None:
 
 
 def _make_orchestrator(session) -> Orchestrator:
-    return Orchestrator(
+    support = ScenePipelineOnlineFake()
+    orchestrator = Orchestrator(
         session,
         scene_generation_service=SceneGenerationService(session, llm_client=FakeSceneClient()),
         hard_qc_engine=HardQcEngine(session, llm_client=FakePassQcClient(_hard_pass())),
         soft_qc_engine=SoftQcEngine(session, llm_client=FakePassQcClient(_soft_pass())),
+        planning_service=NearFinalPlanningService(session, llm_client=support),
+        near_final_service=NearFinalAcceptanceService(session, llm_client=support),
     )
+    orchestrator.scene_blueprint_service = SceneBlueprintService(session, llm_client=support)
+    return orchestrator
 
 
 def _selection_gate(session) -> HumanReviewEvent:

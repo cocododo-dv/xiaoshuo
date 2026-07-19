@@ -7,13 +7,13 @@
 // 它从不 import lib/client.js —— 由调用方把「已 mock 的 client 模块实例」传进来，
 // 避免和 vi.mock 的 hoist/resetModules 语义打架。
 
-/** 默认作品：返回带 project_id="tide" 的一项，使 WsWorks 由 __loading__ 占位切到真实激活作品。 */
+/** 默认作品：返回一个中性真实作品，使 WsWorks 由 __loading__ 占位切到真实激活作品。 */
 export const DEFAULT_PROJECT = {
-  project_id: "tide",
-  title: "潮汐档案",
+  project_id: "prj-main",
+  title: "北岸手记",
   genre: "悬疑",
-  synopsis_line: "一桩跨越三代的盐镇旧案。",
-  is_demo: true,
+  synopsis_line: "一桩跨越三代的旧案。",
+  is_demo: false,
   target_word_count: 100000,
   stats: { words_total: 38000, words_today: 0, streak_days: 3 },
 };
@@ -27,7 +27,7 @@ export const DEFAULT_CHAP = {
   state: "writing",
   act: "act1",
   tension: 0.3,
-  pov: "苏怀梅",
+  pov: "示例POV",
   current: true,
   words: { cur: 0, target: 4000 },
   scenes: [
@@ -71,8 +71,8 @@ export const DEFAULT_FINDING = {
   finding_id: "f1",
   kind: "drift",
   status: "open",
-  text: "盐钟材质前后不一致",
-  evidence: JSON.stringify({ subject: "盐钟材质", value: "黄铜", source: "ch03" }),
+  text: "道具材质前后不一致",
+  evidence: JSON.stringify({ subject: "道具材质", value: "黄铜", source: "ch03" }),
   updated_at: "2026-06-08T00:00:00Z",
 };
 

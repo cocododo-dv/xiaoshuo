@@ -592,7 +592,7 @@ watch(() => router.routeContext.value?.target, (target) => {
               class="control-input"
               rows="4"
               data-testid="writer-flow-revision-reason"
-              placeholder="例如:第 3 场的挫折没有代价,读者不会紧张;或:阿恪的动机在本章前后矛盾。"
+              placeholder="例如:第 3 场的挫折没有代价,读者不会紧张;或:某角色的动机在本章前后矛盾。"
             />
           </label>
           <label class="writer-flow-revision-jump">

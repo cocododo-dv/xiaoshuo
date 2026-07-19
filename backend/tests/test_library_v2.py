@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from novel_system.db.models import StoryCharacter
-from novel_system.tools.seed_fe_demo_works import seed_fe_demo_works
+from tests.fixture_works import seed_fixture_works
 
 _seq = 0
 
@@ -50,7 +50,7 @@ def test_timeline_crud_and_ordering(client):
 
 def test_graph_projection(client, session):
     pid = _create_project(client)
-    session.add(StoryCharacter(character_id="char-g1", project_id=pid, display_name="林岑", status="active"))
+    session.add(StoryCharacter(character_id="char-g1", project_id=pid, display_name="角色甲", status="active"))
     session.commit()
     entity = _post(client, f"/api/v2/projects/{pid}/library/entities", {"name": "旧城档案馆", "kind": "location"})
     _post(
@@ -130,20 +130,20 @@ def test_derive_effects_create_entity_and_timeline_via_resolve(client):
 
 
 def test_demo_seed_populates_library(client, session):
-    seed_fe_demo_works(session)
+    seed_fixture_works(session)
     session.commit()
-    overview = client.get("/api/v2/projects/tide/library").json()["data"]
-    assert any(c["name"] == "林岑" for c in overview["characters"])
-    assert any(e["name"] == "旧城档案馆" for e in overview["entities"])
+    overview = client.get("/api/v2/projects/work-a/library").json()["data"]
+    assert any(c["name"] == "角色甲" for c in overview["characters"])
+    assert any(e["name"] == "设定甲" for e in overview["entities"])
     assert overview["relations"]
     assert overview["timeline"]
-    graph = client.get("/api/v2/projects/tide/library/graph").json()["data"]
+    graph = client.get("/api/v2/projects/work-a/library/graph").json()["data"]
     assert len(graph["nodes"]) >= 10
     assert len(graph["edges"]) >= 5
     # 幂等
-    seed_fe_demo_works(session)
+    seed_fixture_works(session)
     session.commit()
-    overview2 = client.get("/api/v2/projects/tide/library").json()["data"]
+    overview2 = client.get("/api/v2/projects/work-a/library").json()["data"]
     assert len(overview2["entities"]) == len(overview["entities"])
     assert len(overview2["relations"]) == len(overview["relations"])
 

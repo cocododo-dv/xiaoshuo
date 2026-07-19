@@ -1,7 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
-import { ControlTower } from "./ct-app.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
 import { onRovingTabKeyDown } from "./a11y-tabs.js";
 
@@ -46,11 +45,10 @@ const TRACK_LABEL = { plot: "情节", character: "角色", orient: "定位" };
 
 /* The story's structural spine — three disasters + the moral premise
    that flips at the midpoint. Shown in the right rail on every step. */
-const S2_PREMISE = { f: "把真相记下来，就对得起死者", t: "对得起死者的，是让活人不必活在谎里" };
 const S2_DISASTERS = [
-  { id: "灾一", act: "第一幕末", title: "认出周岚的补写笔迹", effect: "逼林岑入局——无法再假装没看见", tone: "crimson" },
-  { id: "灾二", act: "第二幕中点", title: "父亲死于周岚当年的决定", effect: "道德前提翻转：记录即正义 → 记录也能是凶器", tone: "gold" },
-  { id: "灾三", act: "第二幕末", title: "周岚销毁母本、向她摊牌", effect: "逼向终局——公开，还是共谋", tone: "crimson" },
+  { id: "灾一", act: "第一幕末", tone: "crimson" },
+  { id: "灾二", act: "第二幕中点", tone: "gold" },
+  { id: "灾三", act: "第二幕末", tone: "crimson" },
 ];
 
 /* Universal quality ruler — five dimensions every step's output is judged
@@ -307,41 +305,6 @@ function s2Pipeline(stepKey) {
 
 function s2HC(s) { return s >= 80 ? "var(--sage)" : s >= 62 ? "var(--gold)" : "var(--crimson)"; }
 
-/* ---- workbench → control-tower bridge ----
-   Read the persisted workbench truth (states, staleness, live 5-dim health)
-   so the 控制塔 overview can render the SAME numbers the step workbench shows,
-   instead of static seed data. Maps the workbench's Chinese rubric keys to the
-   tower's English dim keys. */
-const S2_TO_CT_DIM = { "分形一致": "fractal", "因果锁链": "causal", "角色驱动": "character", "可落场景": "scenable", "读者契约": "promise" };
-function s2ReadWorkbench() {
-  try {
-    const saved = s2Load();
-    const drafts = { ...s2DefaultDrafts(), ...(saved.drafts || {}) };
-    const scaffolds = s2MergeScaffolds(saved.scaffolds);
-    const states = { ...s2DefaultStates(), ...(saved.states || {}) };
-    const revs = { ...Object.fromEntries(S2_STEPS.map(s => [s.key, 0])), ...(saved.revs || {}) };
-    const confirmRevs = saved.confirmRevs || {};
-    const staleMap = s2StaleMap(states, revs, confirmRevs);
-    const per = {};
-    S2_STEPS.forEach(s => {
-      const data = S2_STEP_DATA[s.key] || {};
-      const text = s2Content(drafts[s.key], scaffolds[s.key]);
-      const sig = s2Signals(text, data.target);
-      const sd = s2ScoreDims(sig);
-      const dims = {}; let sum = 0;
-      Object.keys(S2_TO_CT_DIM).forEach(zh => { const v = Math.round((sd[zh] || {}).score || 0); dims[S2_TO_CT_DIM[zh]] = v; sum += v; });
-      per[s.key] = {
-        state: states[s.key],
-        stale: !!staleMap[s.key],
-        staleAncestors: staleMap[s.key] || [],
-        score: Math.round(sum / 5),
-        dims,
-        hasContent: text.trim().length > 0,
-      };
-    });
-    return { per, t: saved._t || null };
-  } catch (e) { return null; }
-}
 
 /* Per-step content: draft / target / explainer / hints / candidates,
    plus a `scaffold` spec for the four method-critical steps. */
@@ -363,20 +326,10 @@ const S2_STEP_DATA = {
       ],
       note: "Ingermanson：你只有一种读者——你的目标读者。取悦她，忘掉其他人。",
     },
-    hints: [
-      { icon: "Info", tone: "slate", text: "定位偏「文学向」，注意后续候选不要滑向强情节爽文的句式。" },
-      { icon: "Sparkles", tone: "gold", text: "「记录 / 被记录」是智性快感的来源，可在 02 一句话里点题。" },
-    ],
-    cands: [
-      { id: "A", label: "情绪向", tag: "强调共情", text: "为那些相信「把事情写下来就不会忘」的人写——直到她们发现，写下来的也可能是假的。读者要的是被一句克制的话突然击中。", notes: ["落点在情绪", "贴合文学向"] },
-      { id: "B", label: "智性向", tag: "强调主题", text: "为喜欢「真相被结构性掩盖」这一命题的读者写。她们享受一层层揭开档案造假的逻辑，也享受叙述者的不可靠。", notes: ["落点在主题", "智性愉悦"] },
-      { id: "C", label: "市场向", tag: "强调可推广", text: "面向文学悬疑的核心盘，同时让封面与一句话能在社媒被转述——一句「她修复的，是一座城市的谎言」。", notes: ["可传播", "略偏商业"] },
-    ],
   },
   logline: {
     target: 60,
     meter: { target: 42, note: "原书建议 ≤ 25 个英文词；中文约 40 字内最易记忆，也最像一句宣传语。" },
-    draft: "潮汐城档案修复师林岑修复一份旧档时，发现整座城市的灾难记录正被人系统性地重写。",
     guide: {
       task: "雪花的种子：把整部小说压缩成一句话。这是分形的原点——后面所有层都从它长出来。也是你最强的营销工具：让人听完就想说「告诉我更多」。",
       writing: [
@@ -391,10 +344,6 @@ const S2_STEP_DATA = {
       ],
       note: "这句话既是创作罗盘，也是将来印在书封上的那行字。写不出它，说明故事还没想清楚。",
     },
-    hints: [
-      { icon: "AlertTriangle", tone: "rose", text: "别在一句话里点名「恩师周岚是凶手」——那是结局，留给正文揭开。" },
-      { icon: "Info", tone: "slate", text: "聚焦主角林岑 + 她的故事目标（查清档案被谁改写）。" },
-    ],
   },
   paragraph: {
     target: 300,
@@ -413,9 +362,6 @@ const S2_STEP_DATA = {
       ],
       note: "脊柱歪了，后面长多少肉都是歪着长。改五句话只要十分钟；改十万字的初稿要十个月。",
     },
-    hints: [
-      { icon: "Info", tone: "slate", text: "三个灾难已与右栏「故事脊柱」对齐；改这里记得同步回去。" },
-    ],
   },
   characters: {
     target: 240,
@@ -434,10 +380,6 @@ const S2_STEP_DATA = {
       ],
       note: "故事 = 角色被丢进坩埚。坩埚的温度，取决于你把对手写得多认真。",
     },
-    hints: [
-      { icon: "Sparkles", tone: "gold", text: "林岑（白纸黑字）与周岚（为活人改写）价值观正面相撞——全书张力的来源。" },
-      { icon: "AlertTriangle", tone: "rose", text: "周岚 53、林岑 28，请与 06 / 08 中的数字保持一致。" },
-    ],
   },
   synopsis: {
     target: 800,
@@ -456,9 +398,6 @@ const S2_STEP_DATA = {
       ],
       note: "这一页就是你的故事提案。讲不清一页，就讲不清四百页。",
     },
-    hints: [
-      { icon: "Info", tone: "slate", text: "编号 T-0317 与 06 背景里的「三十一个人」呼应，注意全书统一。" },
-    ],
   },
   backstory: {
     target: 800,
@@ -477,10 +416,6 @@ const S2_STEP_DATA = {
       ],
       note: "写不好背景，你就只能让角色听你指挥。写好了，她会自己做决定。",
     },
-    hints: [
-      { icon: "AlertTriangle", tone: "rose", text: "第二段提到「三十一个人」，请确保与 09 场景列表中的灾难数字一致。" },
-      { icon: "Info", tone: "slate", text: "04 角色摘要里周岚的年龄是 53；如要更新背景，记得回填。" },
-    ],
   },
   outline: {
     target: 600,
@@ -499,9 +434,6 @@ const S2_STEP_DATA = {
       ],
       note: "大纲是场景列表的上游：章定不了，场就拆不开。先把骨架立住。",
     },
-    hints: [
-      { icon: "Info", tone: "slate", text: "第二、三幕仍是占位骨架，建议补全后再进入场景列表。" },
-    ],
   },
   profile: {
     target: 700,
@@ -520,10 +452,6 @@ const S2_STEP_DATA = {
       ],
       note: "Ingermanson：到这一步你应该对角色了如指掌。找一张「长得像她」的照片贴在桌旁。",
     },
-    hints: [
-      { icon: "AlertTriangle", tone: "gold", text: "本步状态为「需补」：周岚的童年与第一次改档场景仍空缺。" },
-      { icon: "Info", tone: "slate", text: "心理维度（怕秩序被揭穿）应与 03 灾难二的翻转呼应。" },
-    ],
   },
   scenes: {
     target: 500,
@@ -542,9 +470,6 @@ const S2_STEP_DATA = {
       ],
       note: "冲突是让故事跑起来的汽油。场景没冲突，就是一辆抛锚的车——推它不如砍它。",
     },
-    hints: [
-      { icon: "Info", tone: "slate", text: "S05「找到父亲的名字」＝灾难一，须与 03 脊柱、06 背景一致。" },
-    ],
   },
   planning: {
     target: 400,
@@ -563,127 +488,12 @@ const S2_STEP_DATA = {
       ],
       note: "十步做完，设计阶段结束。从现在起你脑子里只剩一件事：把它写好看。",
     },
-    hints: [
-      { icon: "Sparkles", tone: "gold", text: "出口处「撞见阿恪」可直接喂给下一场 S06，形成主动→反应的顺接。" },
-    ],
   },
 };
 
 /* ---- scaffold seeds (structured per-step data) ---- */
-const S2_SCAFFOLD_SEED = {
-  audience: {
-    genre: "文学悬疑",
-    reader: "25–35 岁、读过一定文学向悬疑的女性读者，要的不是猜凶手，而是情感重量。",
-    pleasure: "一个把谎言维持了二十年的人，最后被最亲近的人拆穿时，那一下胸口发紧。",
-    source: "缓慢揭开的真相、克制叙述下的情感重量、「记录 / 被记录」主题带来的智性愉悦。",
-    exclude: "不写强情节爽感、不写法庭推理、不靠反转密度取胜。",
-  },
-  paragraph: {
-    premiseF: "把真相记下来，就对得起死者",
-    premiseT: "对得起死者的，是让活人不必活在谎里",
-    setup: "潮汐城靠一座庞大的档案馆运转，档案修复师林岑相信白纸黑字胜过记忆。",
-    d1: "她在 T-0317 登记簿上认出恩师周岚的补写笔迹——有人在系统性地重写灾难档案。",
-    d2: "她查到父亲并非「失踪」，而是死于周岚当年的一个决定，「记录即正义」的信念就此崩塌。",
-    d3: "周岚销毁母本、向她摊牌：改写是为了让幸存者活下去。林岑被逼到必须表态。",
-    resolution: "终局对决：林岑选择公开真相，却以自己的方式保留了周岚那句没人认领的「对不起」。苦甜收束。",
-  },
-  characters: {
-    sel: "lin",
-    chars: {
-      lin:  { name: "林岑", role: "主角",   goal: "查清档案被谁改写、改了多少", ambition: "让真相不被任何人随意挪动", values: "白纸黑字", conflict: "唯一的至亲正是篡改者", epiphany: "记录不是正义本身，如何对待活人才是" },
-      zhou: { name: "周岚", role: "对立面", goal: "抹去那场灾难「本可避免」的证据", ambition: "让幸存者不必活在愧疚里", values: "活着的人", conflict: "她最爱的学生正在逼近真相", epiphany: "（反派常无顿悟）" },
-      ake:  { name: "阿恪", role: "次要",   goal: "劝林岑别查下去", ambition: "维持现状里那点安稳", values: "不惹麻烦", conflict: "他早就隐约知情却选择沉默", epiphany: "沉默也是一种共谋" },
-    },
-  },
-  planning: {
-    sel: "S05",
-    plans: {
-      S05: {
-        mode: "proactive", pov: "林岑",
-        goal: "确认改写到底牵涉多深", conflict: "书库权限属于周岚，久留即可疑；调出的副本彼此矛盾，越查越冷", setback: "她找到父亲的名字——转身却撞见阿恪堵在门口",
-        reaction: "", dilemma: "", decision: "",
-      },
-      S06: {
-        mode: "reactive", pov: "林岑",
-        goal: "", conflict: "", setback: "",
-        reaction: "胸口发紧、手抖，几乎站不住——父亲的死原来另有写法", dilemma: "立刻摊牌会打草惊蛇；继续隐忍又怕证据被销毁", decision: "先拍下这一页、装作什么都没发生，回去布一个局",
-      },
-    },
-  },
-  backstory: {
-    sel: "zhou",
-    chars: {
-      zhou: { name: "周岚", role: "对立面", belief: "记录即正义——白纸黑字胜过记忆，盖了章就不会错。", wound: "刚毕业第三年那场潮汐死了三十一人，她独自在馆里翻了一周，把所有「对不起」留在纸上等人认领——没有人来。", desire: "让秩序覆盖混乱，让每一件被记下的事都不出错。", fear: "被人发现她引以为傲的秩序，是建立在一次次改写之上。", relation: "对林岑亦师亦母；越是疼她，越要把真相瞒下去。" },
-      lin:  { name: "林岑", role: "主角",   belief: "父亲只是失踪，总有一天档案会还她一个真相。", wound: "十二岁父亲走后，她靠一摞旧档案和周岚每年的手写信长大。", desire: "让真相不被任何人随意挪动。", fear: "她赖以为生的「白纸黑字」，其实早被最信任的人改过。", relation: "把周岚当唯一至亲，也是她最不敢怀疑的人。" },
-      ake:  { name: "阿恪", role: "次要",   belief: "多一事不如少一事，安稳最要紧。", wound: "他早年也想查，被一次「沉默的代价」吓退过。", desire: "维持现状里那点来之不易的安稳。", fear: "被卷进来，失去现在的位置。", relation: "对林岑有旧情；明明隐约知情，却选择拦着她。" },
-    },
-  },
-  profile: {
-    sel: "zhou",
-    chars: {
-      zhou: { name: "周岚", role: "对立面", physical: "53 岁，瘦高，惯穿藏青，左手一道修复刀留下的旧疤。", psych: "最深的恐惧——被发现她引以为傲的「秩序」建立在谎言上。", environment: "无亲无故，住档案馆顶楼，家即工作。", personality: "克制、井井有条，口头禅「记下来，就不会忘」（反讽）。", contradiction: "嘴上说记录即正义，手上却在系统性地改写记录。", views: "别人眼中：一丝不苟的档案权威 ／ 她自己眼中：一个用秩序赎罪的逃犯。" },
-      lin:  { name: "林岑", role: "主角",   physical: "29 岁，习惯把袖口卷到肘，指尖常年带着显影液的味道。", psych: "怕真相，又比谁都想要真相。", environment: "独居，地下修复室是她最熟悉的地方。", personality: "执拗、较真，认死理。", contradiction: "口口声声要真相，却迟迟不敢碰周岚那一栏。", views: "别人眼中：周岚最得意的接班人 ／ 她自己眼中：一个还没长大的孤儿。" },
-      ake:  { name: "阿恪", role: "次要",   physical: "40 出头，微胖，总穿不合身的旧外套。", psych: "怕事，又良心难安。", environment: "档案馆调度科，捧着一只铁饭碗。", personality: "和稀泥，惯用玩笑岔开正题。", contradiction: "劝林岑放下，自己却偷偷留着一份副本。", views: "别人眼中：没存在感的老好人 ／ 他自己眼中：一个早该说话却始终没说的人。" },
-    },
-  },
-  scenes: {
-    lines: [
-      { id: "main",   name: "主线",   kind: "main",   tone: "crimson", refract: "林岑直面：把真相记下来 → 也可能是凶器" },
-      { id: "father", name: "父亲线", kind: "thread", tone: "gold",    refract: "把缺席的人记成在场——记录的另一面" },
-      { id: "ake",    name: "阿恪线", kind: "sub",     tone: "slate",   refract: "沉默也是一种共谋——主题的低音回声" },
-    ],
-    list: [
-      { id: "S01", type: "proactive", line: "main",   pov: "林岑", place: "地下修复室", event: "收到 T-0317，发现墨迹年份异常", crucible: "工期压着，异常却不敢声张", fn: "起疑", spine: "" },
-      { id: "S02", type: "proactive", line: "main",   pov: "林岑", place: "比对台", event: "调出相邻年份副本，确认补写", crucible: "副本权限有限，越查越冷", fn: "取证", spine: "" },
-      { id: "S03", type: "reactive",  line: "father", pov: "林岑", place: "回忆 · 雨夜", event: "周岚教她修复的那个雨夜", crucible: "记忆里的恩师与眼前的疑点撕扯", fn: "情感锚点", spine: "" },
-      { id: "S04", type: "proactive", line: "main",   pov: "林岑", place: "主任办公室", event: "借故试探周岚", crucible: "对方既是上司也是至亲，不能露馅", fn: "张力", spine: "" },
-      { id: "S05", type: "proactive", line: "main",   pov: "林岑", place: "深层书库", event: "找到父亲的名字", crucible: "书库属周岚，久留即可疑", fn: "灾难一·一幕高潮", spine: "灾一" },
-      { id: "S06", type: "reactive",  line: "father", pov: "林岑", place: "旧公寓", event: "整理父亲遗物，重读那摞旧档案", crucible: "眼前的真相与记忆里的父亲撕扯", fn: "喘息 · 角色", spine: "" },
-      { id: "S07", type: "proactive", line: "ake",    pov: "林岑", place: "调度科", event: "阿恪欲言又止地劝她收手", crucible: "想追问又怕暴露已经查到哪一步", fn: "支线起", spine: "" },
-      { id: "S08", type: "proactive", line: "main",   pov: "林岑", place: "档案库二层", event: "拼出二十年前那场潮汐的全貌", crucible: "线索彼此矛盾，越拼越冷", fn: "推进", spine: "" },
-      { id: "S09", type: "proactive", line: "main",   pov: "林岑", place: "主任办公室", event: "父亲死于周岚当年的决定", crucible: "至亲即元凶，无法回头", fn: "灾难二·中点翻转", spine: "灾二" },
-      { id: "S10", type: "reactive",  line: "ake",    pov: "阿恪", place: "调度科夜班", event: "阿恪偷偷留下一份副本，良心难安", crucible: "说出去会害了林岑，瞒着又活在愧疚里", fn: "支线折射主题", spine: "" },
-      { id: "S11", type: "proactive", line: "main",   pov: "林岑", place: "顶楼档案室", event: "周岚销毁母本、向她摊牌", crucible: "公开还是共谋，必须表态", fn: "灾难三·二幕末", spine: "灾三" },
-      { id: "S12", type: "reactive",  line: "main",   pov: "林岑", place: "地下修复室", event: "最终选择：公开真相，保留那句对不起", crucible: "对得起死者，还是对得起活人", fn: "收束", spine: "" },
-    ],
-  },
-  synopsis: {
-    paras: {
-      setup: "林岑在档案馆地下层做修复，整日与霉味、显影液和别人的过去为伴。这座城市靠档案运转，而她比谁都信白纸黑字。",
-      d1: "一份编号 T-0317 的登记簿送来，记录灾难那页的墨水氧化得比邻页轻了三十年——有人补写过，而那端正的起笔，是恩师周岚的字。",
-      d2: "她私下追查，发现被改写的远不止一页；最深一层副本里，父亲的名字赫然在列——他不是「失踪」，而是死于周岚当年一个本可避免的决定。「记录即正义」的信念就此崩塌。",
-      d3: "周岚销毁母本、向她摊牌：改写是为了让幸存者不必活在愧疚里。林岑被逼到必须表态——揭还是瞒。",
-      resolution: "终局对决：她选择公开真相，却以自己的方式，替周岚保留了那句没人认领的「对不起」。苦甜收尾。",
-    },
-  },
-  outline: {
-    chapters: [
-      { id: "01", act: 1, title: "地下层 · T-0317 送修", summary: "林岑接修旧登记簿，注意到墨迹氧化异常", spine: "" },
-      { id: "02", act: 1, title: "墨迹年份异常", summary: "第一次起疑，私下留样比对", spine: "" },
-      { id: "03", act: 1, title: "认出周岚的笔迹", summary: "不愿相信，却开始追查", spine: "" },
-      { id: "04", act: 1, title: "私下比对副本", summary: "发现改写远不止一页", spine: "" },
-      { id: "05", act: 1, title: "阿恪的劝阻", summary: "被劝退，反而更警觉", spine: "" },
-      { id: "06", act: 1, title: "找到父亲的名字", summary: "第一幕高潮：无法再假装没看见", spine: "灾一" },
-      { id: "07", act: 2, title: "还原那场潮汐", summary: "追查动机，拼出二十年前的真相", spine: "" },
-      { id: "08", act: 2, title: "与周岚的数次试探", summary: "亦师亦敌，步步逼近", spine: "" },
-      { id: "09", act: 2, title: "父亲死于谁的决定", summary: "中点翻转：记录即正义 → 记录也能是凶器", spine: "灾二" },
-      { id: "10", act: 2, title: "（待补）", summary: "", spine: "" },
-      { id: "11", act: 3, title: "周岚摊牌", summary: "改写是为了让幸存者活下去", spine: "灾三" },
-      { id: "12", act: 3, title: "最终选择", summary: "公开真相，保留那句对不起", spine: "" },
-    ],
-  },
-};
 
 /* generic candidate set for steps without a bespoke one */
-function s2GenericCands(draft) {
-  const base = (draft || "").split("\n").filter(Boolean)[0] || "";
-  const clip = (s, n) => s.length > n ? s.slice(0, n) + "…" : s;
-  return [
-    { id: "A", label: "紧凑版", tag: "更短更密", text: clip(base, 80) || "（更紧凑的一版，去掉冗余修饰，只留主干。）", notes: ["句子更短", "信息密度高"] },
-    { id: "B", label: "标准版", tag: "当前方向延续", text: clip(base, 140) || "（沿当前草稿方向，节奏与措辞保持一致。）", notes: ["延续现稿", "措辞稳健"] },
-    { id: "C", label: "展开版", tag: "补足细节", text: (clip(base, 140) || "（在当前基础上补足氛围与具体物件，") + "……补一处可视的细节与一次情绪落点。", notes: ["更具画面", "略长"] },
-  ];
-}
 
 /* ---- AI candidate generation (后端节点 snowflake_step_candidates，G5) ----
    Gather the confirmed upstream layers as context and let the backend
@@ -850,8 +660,7 @@ function s2SnapAncestors(key, revs) {
    真·用户创作（与种子有任何差异）才迁移。旧 v1 键保留不删。 */
 const s2Key = () => (wsKey ? wsKey("ws_snow_state_v2") : "ws_snow_state_v2");
 function s2Load(key) { try { return JSON.parse(localStorage.getItem(key || s2Key())) || {}; } catch (e) { return {}; } }
-/* 种子内容只属于「潮汐档案」；其它作品（含新建）从空白十步开始 */
-const s2SeedOn = () => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return true; } };
+/* 所有作品（含新建）从空白十步开始 */
 function s2BlankScaffolds() {
   return {
     audience: { genre: "", reader: "", pleasure: "", source: "", exclude: "", emotion: "" },
@@ -865,9 +674,9 @@ function s2BlankScaffolds() {
     outline: { chapters: [] },
   };
 }
-function s2DefaultDrafts() { return Object.fromEntries(S2_STEPS.map(s => [s.key, s2SeedOn() ? ((S2_STEP_DATA[s.key] || {}).draft || "") : ""])); }
+function s2DefaultDrafts() { return Object.fromEntries(S2_STEPS.map(s => [s.key, ""])); }
 function s2DefaultChecks() { return Object.fromEntries(S2_STEPS.map(s => [s.key, (((S2_STEP_DATA[s.key] || {}).guide || {}).checklist || []).map(() => false)])); }
-function s2DefaultStates() { return Object.fromEntries(S2_STEPS.map(s => [s.key, s2SeedOn() ? s.state : "todo"])); }
+function s2DefaultStates() { return Object.fromEntries(S2_STEPS.map(s => [s.key, "todo"])); }
 /* 第 10 步旧数据形状（全书只有一张 GCS/RDD 表）→ 逐场 plans 形状的一次性归一 */
 const S2_PLAN_FIELDS = ["goal", "conflict", "setback", "reaction", "dilemma", "decision"];
 function s2NormalizePlanning(p) {
@@ -887,7 +696,7 @@ function s2NormalizePlanning(p) {
   return out;
 }
 function s2MergeScaffolds(stored) {
-  const base = s2SeedOn() ? JSON.parse(JSON.stringify(S2_SCAFFOLD_SEED)) : s2BlankScaffolds();
+  const base = s2BlankScaffolds();
   if (stored) Object.keys(base).forEach(k => {
     if (!stored[k]) return;
     base[k] = { ...base[k], ...stored[k] };
@@ -912,44 +721,6 @@ function s2StepSummary() {
   } catch (e) { return null; }
 }
 
-/* ---- 一次性迁移：ws_snow_state_v1::* → v2 ---- */
-(function s2MigrateV1() {
-  try {
-    if (localStorage.getItem("ws_snow_migrated_v2")) return;
-    const seedDrafts = Object.fromEntries(S2_STEPS.map(s => [s.key, (S2_STEP_DATA[s.key] || {}).draft || ""]));
-    const seedStates = Object.fromEntries(S2_STEPS.map(s => [s.key, s.state]));
-    const seedScafStr = JSON.stringify(S2_SCAFFOLD_SEED);
-    /* 「纯种子拷贝」= 老代码自动写入、用户从未动过：逐项与种子相等 */
-    const isSeedCopy = (saved) => {
-      const d = saved.drafts || {};
-      if (!Object.keys(seedDrafts).every(k => (d[k] === undefined || d[k] === seedDrafts[k]))) return false;
-      const st = saved.states || {};
-      if (!Object.keys(seedStates).every(k => (st[k] === undefined || st[k] === seedStates[k]))) return false;
-      if (saved.scaffolds && JSON.stringify(saved.scaffolds) !== seedScafStr) return false;
-      if (Array.isArray(saved.history) && saved.history.length) return false;
-      if (saved.checks && Object.values(saved.checks).some(a => Array.isArray(a) && a.some(Boolean))) return false;
-      return true;
-    };
-    const keys = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.indexOf("ws_snow_state_v1::") === 0) keys.push(k);
-    }
-    keys.forEach(k => {
-      const workId = k.slice("ws_snow_state_v1::".length);
-      const v2k = "ws_snow_state_v2::" + workId;
-      if (localStorage.getItem(v2k) != null) return;
-      let saved = null;
-      try { saved = JSON.parse(localStorage.getItem(k)); } catch (e) {}
-      if (!saved) return;
-      // tide 的存档直接迁移；其它作品只迁移真·用户创作，种子污染丢弃
-      if (workId === "tide" || !isSeedCopy(saved)) {
-        try { localStorage.setItem(v2k, JSON.stringify(saved)); } catch (e) {}
-      }
-    });
-    localStorage.setItem("ws_snow_migrated_v2", "1");
-  } catch (e) {}
-})();
 function s2MergeChecks(stored) {
   const base = s2DefaultChecks();
   if (stored) Object.keys(base).forEach(k => { if (Array.isArray(stored[k]) && stored[k].length === base[k].length) base[k] = stored[k]; });
@@ -1093,17 +864,14 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const setTab = (v) => setTabFor(activeKey, v);
   const genBusy = !!genBusyMap[activeKey];
   const genErr = genErrMap[activeKey] || null;
-  /* 提示文案是种子作品专属剧情（周岚/林岑…），只在「潮汐档案」展示 */
-  const seedHints = s2SeedOn() ? data.hints : null;
+  const seedHints = null;
   const draft = drafts[activeKey] || "";
   const setDraft = (v) => setDrafts(prev => ({ ...prev, [activeKey]: typeof v === "function" ? v(prev[activeKey]) : v }));
   const updateScaffold = (updater) => setScaffolds(prev => ({ ...prev, [activeKey]: updater(prev[activeKey]) }));
   const toggleCheck = (i) => setChecks(prev => ({ ...prev, [activeKey]: (prev[activeKey] || []).map((v, j) => j === i ? !v : v) }));
   const gen = genCands[activeKey];
-  /* data.cands 是种子作品专属的示例候选（周岚/潮汐剧情），与 seedHints 一样只在「潮汐档案」预置；
-     其它作品未点「AI 生成」时回退到基于自身草稿的本地启发式候选，避免演示剧情泄漏进真实项目 */
-  const seedCands = s2SeedOn() ? data.cands : null;
-  const cands = (gen && gen.list) || seedCands || s2GenericCands(draft);
+  /* 候选只来自后端 AI 生成通道；未生成时列表为空，不再用本地启发式拼假候选 */
+  const cands = (gen && gen.list) || [];
   const candMeta = gen ? { ai: true, at: gen.at } : { ai: false };
   const idx = S2_STEPS.findIndex(s => s.key === activeKey);
   const doneCount = S2_STEPS.filter(s => states[s.key] === "done").length;
@@ -1554,7 +1322,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
 
   /* export the whole snowflake as a Markdown outline (real download) */
   const exportOutline = () => {
-    const workTitle = (() => { try { return WsWorks ? WsWorks.active().title : "潮汐档案"; } catch (e) { return "未命名作品"; } })();
+    const workTitle = (() => { try { return WsWorks ? WsWorks.active().title : "未命名作品"; } catch (e) { return "未命名作品"; } })();
     const lines = [`# 雪花大纲 · ${workTitle}`, "", `> 导出于 ${new Date().toLocaleString("zh-CN")} · 已确认 ${doneCount}/10${staleCount ? ` · ${staleCount} 需复核` : ""}`, ""];
     S2_STEPS.forEach(s => {
       const text = s2Content(drafts[s.key], scaffolds[s.key]).trim();
@@ -1642,10 +1410,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
             ))}
           </div>
           <div className="snow-strip-actions">
-            {onOverview && (() => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return false; } })()
-              ? <button className="btn btn-ghost btn-sm" onClick={onOverview} title="示例作品的结构控制塔"><I.Grid size={13} /> 控制塔总览 · 演示</button>
-              : null}
-            <button className="btn btn-ghost btn-sm" onClick={resetAll} title="清空本地草稿，恢复示例"><I.Refresh size={13} /> 重置</button>
+            <button className="btn btn-ghost btn-sm" onClick={resetAll} title="清空本地草稿"><I.Refresh size={13} /> 重置</button>
             <button className="btn btn-ghost btn-sm" data-testid="snow-import-open" onClick={() => { setImportError(""); setImportOpen(true); }} title="从已有策划稿导入十步规范 JSON；仍逐步经过后端保存与批准闸门"><I.Download size={13} /> 导入结构</button>
             <button className="btn btn-ghost btn-sm" onClick={exportOutline} title="导出全书大纲为 Markdown"><I.UploadCloud size={13} /> 导出大纲</button>
             <button className="btn btn-accent btn-sm" data-testid="snow-materialize-top" disabled={materializeBusy}
@@ -1896,7 +1661,6 @@ function S2Fractal({ progress }) {
 function S2Spine({ active, go, para }) {
   const isPlot = active && active.track === "plot";
   const p = para || {};
-  const seed = s2SeedOn();   // 灾难 effect / 道德前提的样例文案是种子剧情，只在「潮汐档案」回填
   const clip = (s, n) => { s = (s || "").trim(); return s.length > n ? s.slice(0, n) + "…" : s; };
   const rows = [
     { meta: S2_DISASTERS[0], text: p.d1 },
@@ -1907,9 +1671,9 @@ function S2Spine({ active, go, para }) {
     <div className={`ctx-block sf-spine-block ${isPlot ? "is-hot" : ""}`}>
       <header className="sfx-h sfx-spine-head"><I.Activity size={13} /><span>故事脊柱 · 三幕三灾难</span></header>
       <div className="sf-premise-mini" title="道德前提：在第二个灾难处，错误信念翻转为正确信念">
-        <span className="sf-pm-false">{p.premiseF || (seed ? S2_PREMISE.f : "错误信念")}</span>
+        <span className="sf-pm-false">{p.premiseF || "错误信念"}</span>
         <I.ArrowRight size={12} />
-        <span className="sf-pm-true">{p.premiseT || (seed ? S2_PREMISE.t : "正确信念")}</span>
+        <span className="sf-pm-true">{p.premiseT || "正确信念"}</span>
       </div>
       <div className="sf-spine">
         {rows.map((d, i) => (
@@ -1917,7 +1681,7 @@ function S2Spine({ active, go, para }) {
             <span className="sf-spine-id">{d.meta.id}</span>
             <div className="sf-spine-body">
               <span className="sf-spine-title">{clip(d.text, 18) || "（待填）"}</span>
-              <span className="sf-spine-act">{d.meta.act}{seed && d.meta.effect ? ` · ${d.meta.effect}` : ""}</span>
+              <span className="sf-spine-act">{d.meta.act}</span>
             </div>
           </div>
         ))}
@@ -4105,7 +3869,7 @@ function S2Styles() {
 }
 
 /* 构思模块包装：俯视(控制塔) ⇄ 细看(逐步工作台) 两个视图共享同一模块。
-   结构总览的 DAG 种子目前只属于《潮汐档案》——其它作品默认进入逐步
+   结构总览的 DAG 骨架对所有作品通用——默认进入逐步
    工作台，总览给引导态，避免把别的书的结构图硬塞过来。 */
 /* 非潮汐作品的总览引导态：结构图谱会随十步确认逐步点亮 */
 function SnowOverviewEmpty({ go, onSteps }) {
@@ -4127,8 +3891,7 @@ function SnowOverviewEmpty({ go, onSteps }) {
 }
 
 function WsConstruct({ go }) {
-  const ctIsTide = (() => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
-  const [mode, setMode] = useSS(ctIsTide ? "overview" : "steps");
+  const [mode, setMode] = useSS("steps");
   const [step, setStep] = useSS("paragraph");
   // 深链：从流程图 / 命令面板跳到某一步。优先读挂起目标（避免跨视图挂载竞态），再监听实时事件。
   useSE(() => {
@@ -4139,16 +3902,14 @@ function WsConstruct({ go }) {
     return () => window.removeEventListener("ws:snow-step", onStep);
   }, []);
   if (mode === "overview") {
-    if (!ctIsTide) return <SnowOverviewEmpty go={go} onSteps={() => setMode("steps")} />;
-    return <ControlTower go={go} onOpenStep={(k) => { setStep(k); setMode("steps"); }} />;
+    return <SnowOverviewEmpty go={go} onSteps={() => setMode("steps")} />;
   }
   return <WsSnowflake key={step} go={go} initialStep={step} onOverview={() => setMode("overview")} />;
 }
 
-Object.assign(window, { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2GenerateCands, S2_SCENE_SEED: S2_SCAFFOLD_SEED.scenes, S2_PREMISE, s2PacingRuns, s2LineStats, s2ReadWorkbench, s2StepSummary, s2ExportState,
+Object.assign(window, { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2GenerateCands, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState,
   s2Materialize: { preview: s2MaterializePreview, apply: s2MaterializeApply, sid: s2MaterializedSid, planState: s2PlanState } });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, S2_PREMISE, s2PacingRuns, s2LineStats, s2ReadWorkbench, s2StepSummary, s2ExportState, s2NormalizeState, s2AdoptOutline };
-export const S2_SCENE_SEED = S2_SCAFFOLD_SEED.scenes;
+export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState, s2NormalizeState, s2AdoptOutline };
 export const s2Materialize = { preview: s2MaterializePreview, apply: s2MaterializeApply, sid: s2MaterializedSid, planState: s2PlanState };

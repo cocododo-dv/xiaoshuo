@@ -373,19 +373,6 @@ function Remove-GeneratedArtifacts {
     }
 }
 
-function Write-SkipDemoSeedMarker {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Root
-    )
-
-    $runDir = Join-Path $Root ".codex-run"
-    $markerPath = Join-Path $runDir "skip-demo-seed"
-    New-Item -ItemType Directory -Path $runDir -Force | Out-Null
-    Set-Content -LiteralPath $markerPath -Value "Created by reset_runtime_keep_llm.ps1. Delete this file to allow start-dev to seed demo data again."
-    Write-Host ("created {0}" -f $markerPath)
-}
-
 $resolvedRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 if ([string]::IsNullOrWhiteSpace($DatabasePath)) {
     $DatabasePath = Join-Path $resolvedRoot "backend\novel_system.db"
@@ -399,7 +386,5 @@ Reset-DatabaseKeepingLlm -DbPath $resolvedDbPath -Vacuum (-not $NoVacuum)
 if (-not $NoArtifactCleanup) {
     Remove-GeneratedArtifacts -Root $resolvedRoot
 }
-
-Write-SkipDemoSeedMarker -Root $resolvedRoot
 
 Write-Host "Reset complete. LLM api/models config snapshots and llm_* secrets were preserved." -ForegroundColor Green

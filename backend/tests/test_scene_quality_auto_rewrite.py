@@ -15,10 +15,34 @@ from novel_system.db.models import (
     SceneDraft,
     SceneQualityContract,
     SceneRunState,
+    StoryProject,
 )
 from novel_system.services.llm_client import parse_model_routing_config
 
 
+import pytest as _pytest_ap
+from tests.real_llm_fakes import install_online_pipeline as _install_online_pipeline
+
+
+import pytest as _pytest_wr
+from tests.real_llm_fakes import install_online_writer_pipeline as _install_online_writer_pipeline
+
+
+@_pytest_wr.fixture(autouse=True)
+def _auto_online_writer(monkeypatch):
+    """假生成已退役：作家评审/深评/passage-patch 走在线记账替身（按 node_id 派发）。"""
+    _install_online_writer_pipeline(monkeypatch)
+
+
+
+@_pytest_ap.fixture(autouse=True)
+def _auto_online_pipeline(monkeypatch):
+    """假生成已退役：给场景管线未显式注入的子服务兜底在线记账替身。"""
+    _install_online_pipeline(monkeypatch)
+
+
+
+PROJECT_ID = "QAUTO_PROJECT"
 CHAPTER_ID = "QAUTO_CH01"
 SCENE_ID = "QAUTO_CH01_SC01"
 FINAL_ROW_ID = "final_scene_QAUTO_CH01_SC01_v1"
@@ -63,9 +87,11 @@ def _install_llm_candidate(monkeypatch, content: str, *, llm_call_id: str) -> No
 
 
 def _seed_scene(session, *, content: str, forbidden_text: str = "不能改名林岑，也不能删除盐钟残片。") -> None:
+    session.add(StoryProject(project_id=PROJECT_ID, title="QAuto 自动重写", outline_text=""))
     session.add(
         ChapterGoal(
             chapter_id=CHAPTER_ID,
+            project_id=PROJECT_ID,
             planned_scene_count=1,
             chapter_goal="林岑必须在公开真相和保护幸存者之间做选择。",
             main_plot_push="让盐钟残片指向失踪案真相。",
@@ -81,6 +107,7 @@ def _seed_scene(session, *, content: str, forbidden_text: str = "不能改名林
         SceneCard(
             scene_id=SCENE_ID,
             chapter_id=CHAPTER_ID,
+            project_id=PROJECT_ID,
             scene_seq=1,
             pov_character_id="林岑",
             onstage_chars_json=["林岑", "许望"],
@@ -196,9 +223,10 @@ def test_auto_rewrite_full_scene_can_promote_and_rollback_without_overwriting_au
     assert run["status"] == "candidate_ready"
     assert run["gate_results"]["promotable"] is True
     assert run["candidate_draft_row_id"]
-    assert run["llm_call_id"] is None
-    assert session.query(LlmCall).count() == 0
-    assert session.get(SceneDraft, run["candidate_draft_row_id"]).generation_llm_call_id is None
+    # 离线假生成已退役：自动重写走真实（此处在线记账替身）LLM 调用，故有 llm_call_id 与记账行。
+    assert run["llm_call_id"]
+    assert session.query(LlmCall).count() >= 1
+    assert session.get(SceneDraft, run["candidate_draft_row_id"]).generation_llm_call_id == run["llm_call_id"]
 
     promote = client.post(f"/api/v1/auto-rewrite-runs/{run['run_id']}/promote", headers=_headers("promote-full"))
 

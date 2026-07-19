@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,20 @@ from novel_system.db.models import (
     SceneRunState,
     VoiceProfile,
 )
+from novel_system.services.llm_task_runner import LLMNodeRunner
+from tests.real_llm_fakes import ScenePipelineOnlineFake
+
+
+@pytest.fixture(autouse=True)
+def _online_pipeline(monkeypatch) -> None:
+    """假生成已退役：API 驱动的整链场景运行统一注入在线记账测试替身。
+
+    注入 OnlineAccountedExecution 替身即绕过 llm_enabled 闸（见 llm_task_runner
+    ._assert_online_execution_available），无需再设环境变量。"""
+    monkeypatch.setattr(
+        "novel_system.services.orchestrator.LLMNodeRunner",
+        lambda session: LLMNodeRunner(session, llm_client=ScenePipelineOnlineFake()),
+    )
 
 
 def seed_story(client, session: Session | None = None) -> None:
@@ -152,21 +167,19 @@ def test_run_full_scene_archives_memory_and_updates_status(client, session) -> N
     assert workbench.status_code == 200
     workbench_data = workbench.json()["data"]
     assert workbench_data["scene_memory"]
-    assert workbench_data["generation_summary"] == {
-        "llm_call_id": workbench_data["generation_summary"]["llm_call_id"],
-        "step": "style_draft",
-        "raw_step": "style_draft",
-        "provider": "offline_deterministic",
-        "model": workbench_data["generation_summary"]["model"],
-        "prompt_hash": workbench_data["generation_summary"]["prompt_hash"],
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "latency_ms": workbench_data["generation_summary"]["latency_ms"],
-        "finish_reason": "offline_fallback",
-        "error_code": None,
-        "created_at": workbench_data["generation_summary"]["created_at"],
-    }
+    generation_summary = workbench_data["generation_summary"]
+    assert generation_summary["step"] == "style_draft"
+    assert generation_summary["raw_step"] == "style_draft"
+    assert generation_summary["provider"] == "test-online-provider"
+    assert generation_summary["finish_reason"] == "stop"
+    assert generation_summary["error_code"] is None
+    assert generation_summary["llm_call_id"]
+    assert generation_summary["prompt_tokens"] > 0
+    assert generation_summary["completion_tokens"] > 0
+    assert (
+        generation_summary["total_tokens"]
+        == generation_summary["prompt_tokens"] + generation_summary["completion_tokens"]
+    )
     assert workbench_data["near_final_summary"]["near_final_status"] == "near_final_ready"
     assert workbench_data["near_final_summary"]["safe_to_archive"] is True
     assert isinstance(
@@ -303,18 +316,15 @@ def test_workbench_generation_summary_can_resolve_from_current_final_scene_prove
 
     assert workbench.status_code == 200
     generation_summary = workbench.json()["data"]["generation_summary"]
-    assert generation_summary == {
-        "llm_call_id": final_scene.generation_llm_call_id,
-        "step": "style_draft",
-        "raw_step": "style_draft",
-        "provider": "offline_deterministic",
-        "model": generation_summary["model"],
-        "prompt_hash": generation_summary["prompt_hash"],
-        "prompt_tokens": 0,
-        "completion_tokens": 0,
-        "total_tokens": 0,
-        "latency_ms": generation_summary["latency_ms"],
-        "finish_reason": "offline_fallback",
-        "error_code": None,
-        "created_at": generation_summary["created_at"],
-    }
+    assert generation_summary["llm_call_id"] == final_scene.generation_llm_call_id
+    assert generation_summary["step"] == "style_draft"
+    assert generation_summary["raw_step"] == "style_draft"
+    assert generation_summary["provider"] == "test-online-provider"
+    assert generation_summary["finish_reason"] == "stop"
+    assert generation_summary["error_code"] is None
+    assert generation_summary["prompt_tokens"] > 0
+    assert generation_summary["completion_tokens"] > 0
+    assert (
+        generation_summary["total_tokens"]
+        == generation_summary["prompt_tokens"] + generation_summary["completion_tokens"]
+    )

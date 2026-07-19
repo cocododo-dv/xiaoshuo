@@ -1,9 +1,8 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { ARR_CHAPTERS } from "./ws-author-data.jsx";
 import { S2_STEPS, s2StepSummary } from "./ws-snow.jsx";
 import { WsWorks } from "./ws-works.jsx";
-import { WsCatalog, useCatalogChapters, WsDemoTag } from "./ws-catalog.jsx";
+import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 
 /* global React, I, window */
 const { useState: useStFM, useEffect: useEfFM, useRef: useRefFM, useMemo: useMemoFM } = React;
@@ -12,9 +11,7 @@ const { useState: useStFM, useEffect: useEfFM, useRef: useRefFM, useMemo: useMem
    创作流程 — Flow Map (v3 · 接真实数据)
    不再写死：整条流水线从全书的单一数据源派生——
      · 构思  ← S2_STEPS（雪花十步的状态）
-     · 场景  ← ARR_CHAPTERS[].scenes（逐场 done/writing/todo）
-     · 写作/成稿/进度脊 ← ARR_CHAPTERS[].state（approved/review/draft/writing/planned）
-     · 流程体检 ← LF2_RISKS / LF2_LOOPS / lf2Derive + LF3 空降·断链（控制塔现行引擎，裁决过的冲突自动消失）
+     · 场景 / 写作 / 成稿 / 进度脊 ← WsCatalog 目录真相（approved/review/draft/writing/planned）
    数据缺失时回落到静态兜底，永不崩。
    ========================================================== */
 
@@ -49,22 +46,15 @@ const fmt = (n) => (n || 0).toLocaleString("en-US");
    ========================================================== */
 function fmDerive() {
   try {
-    const isTide = (() => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
     const work = WsWorks ? WsWorks.active() : null;
     /* 章节目录：单一真相源（与主页 / 写作器 / 成稿中心同源），缺席才回落静态种子 */
-    const ARR = WsCatalog ? WsCatalog.get() : ARR_CHAPTERS;
+    const ARR = WsCatalog ? WsCatalog.get() : null;
     /* 雪花十步：元数据来自 S2_STEPS，状态读构思工作台的持久化真相（按作品） */
     const live = s2StepSummary ? s2StepSummary() : null;
     const STEPS = (S2_STEPS || []).map((s, i) => ({ ...s, state: live && live.steps && live.steps[i] ? live.steps[i].s : s.state }));
-    /* 控制塔引擎（LF2/LF3 现行引擎）目前只覆盖潮汐档案种子；
-       已裁决的设定冲突（lf7 桥）从体检里自动消失 */
-    const LF = isTide ? window.LF2_BOOK : null;
-    const lfRuled = (isTide && window.Lf7Bridge) ? window.Lf7Bridge.ruled() : {};
-    const LFR = isTide ? (window.LF2_RISKS || []).filter(r => !(r.canon && lfRuled[r.canon])) : [];
-    const LFL = isTide ? (window.LF2_LOOPS || []) : [];
     if (!ARR || !STEPS.length) return FM_FALLBACK;
 
-    const total = Math.max(ARR.length, (work && work.chaptersTotal) || 0, (LF && LF.total) || 0, 1);
+    const total = Math.max(ARR.length, (work && work.chaptersTotal) || 0, 1);
     const arrByN = {};
     ARR.forEach(c => { arrByN[pi(c.n)] = c; });
 
@@ -140,7 +130,7 @@ function fmDerive() {
             rows: [
               { t: "已确认步骤", s: "done", note: `${stepsDone.length} / ${STEPS.length} 步` },
               ...stepsActive.map(s => ({ t: s.name, s: "active", note: `进行中 · ${s.blurb}` })),
-              ...stepsWarn.map(s => ({ t: s.name, s: "warn", note: (isTide && s.key === "profile" && firstPlanned) ? `周岚一项待补 — 影响第 ${firstPlanned} 章动机` : "待补全" })),
+              ...stepsWarn.map(s => ({ t: s.name, s: "warn", note: "待补全" })),
               ...(STEPS.filter(s => (s.key === "scenes" || s.key === "planning") && s.state === "done").length === 2
                 ? [{ t: "场景列表 · 场景规划", s: "done", note: "已完成" }] : []),
             ],
@@ -197,7 +187,7 @@ function fmDerive() {
           lead: "通过质检与批准的章节汇入成稿中心，等待整书发布。",
           rows: [
             { t: "已批准终稿", s: "done", note: approved.length ? `第 1–${pi(approved[approved.length - 1].n)} 章` : "—" },
-            { t: "审阅中", s: review.length ? "warn" : "todo", note: review.length ? review.map(c => `第 ${pi(c.n)} 章`).join("、") + (isTide ? " · 设定冲突待解" : "") : "—" },
+            { t: "审阅中", s: review.length ? "warn" : "todo", note: review.length ? review.map(c => `第 ${pi(c.n)} 章`).join("、") : "—" },
             { t: "草稿待审", s: "todo", note: draftCh.length ? draftCh.map(c => `第 ${pi(c.n)} 章`).join("、") : "—" },
             { t: "距整书目标", s: "todo", note: `${total} 章 · 已定稿 ${Math.round((approved.length / total) * 100)}%` },
           ],
@@ -223,31 +213,8 @@ function fmDerive() {
       },
     ];
 
-    // ============ 流程体检（控制塔 LF2/LF3 引擎）============
-    const d = (isTide && window.lf2Derive) ? window.lf2Derive(LFL, window.LF2_CANON || []) : { overdue: [], stalledThreads: [] };
+    // ============ 流程体检（只来自目录 / 章节 / 场景的真实状态） ============
     const diag = [];
-    /* 空降回收 / 因果断链（LF3 新增的两类失控） */
-    (isTide ? (window.LF3_CAUSAL || []) : []).filter(k => k.status === "break").forEach(k => {
-      diag.push({ tone: "rose", tag: "断链", text: `「${k.effect}」缺前因，第 ${k.effectCh} 章承重事件悬空。`, to: "longform", _w: 2.7 });
-    });
-    (isTide ? (window.LF3_ORPHANS || []) : []).filter(o => o.sev === "high").forEach(o => {
-      diag.push({ tone: "crimson", tag: "空降", text: `第 ${o.revealCh} 章揭示「${o.reveal}」，全书无铺垫。`, to: "longform", _w: 2.6 });
-    });
-    LFR.filter(r => r.sev === "high" || r.drift).forEach(r => {
-      diag.push({
-        tone: r.sev === "high" ? "rose" : "gold",
-        tag: r.drift ? "设定漂移" : "风险",
-        text: `第 ${r.ch} 章 · ${r.text}`,
-        to: "longform",
-        _w: (r.sev === "high" ? 3 : 1.8) + (r.drift ? 0.3 : 0),
-      });
-    });
-    (d.overdue || []).forEach(l => {
-      diag.push({ tone: "gold", tag: "逾期", text: `「${l.title}」第 ${l.setup} 章埋设、原计划第 ${l.payoff} 章回收——已越过当前章仍未兑现。`, to: "longform", _w: 2.5 });
-    });
-    (d.stalledThreads || []).forEach(t => {
-      diag.push({ tone: "slate", tag: "停滞", text: `${t.name} 已多章未触及，副线推进停滞。`, to: "longform", _w: 1.4 });
-    });
     diag.push({ tone: "crimson", tag: "瓶颈", text: current
       ? `写作是当前节流点（${drafted.length} / ${total} 章）。聚焦第 ${pn} 章收尾，先清空进行中。`
       : `写作是当前节流点（${drafted.length} / ${total} 章）。先开一章，让流水线动起来。`, to: "writer", _w: 2 });
@@ -255,11 +222,9 @@ function fmDerive() {
     const diagTop = diag.slice(0, 4);
 
     // ============ 本周聚焦（派生唯一最优动作）============
-    const highRisk = LFR.find(r => r.sev === "high");
     const queue = [];
     if (current) queue.push({ label: curTodo ? `写完第 ${pn} 章余下 ${curTodo} 场` : `推进第 ${pn} 章`, meta: `前线 ·《${current.title}》`, to: "writer" });
-    if (isTide && highRisk) queue.push({ label: `解决第 ${highRisk.ch} 章设定冲突`, meta: "控制塔标记", to: "longform" });
-    else if (reviewCh) queue.push({ label: `审阅第 ${pi(reviewCh.n)} 章《${reviewCh.title}》`, meta: "成稿中心 · 待批准", to: "manuscripts" });
+    if (reviewCh) queue.push({ label: `审阅第 ${pi(reviewCh.n)} 章《${reviewCh.title}》`, meta: "成稿中心 · 待批准", to: "manuscripts" });
     const focus = warnStep ? {
       tag: "本周聚焦",
       title: `先补全「${warnStep.name}」`,
@@ -496,14 +461,8 @@ function WsFlowmap({ go }) {
           <div className="card flow-bottle">
             <div className="card-head">
               <div>
-                {/* Wave 7 §8 项 8 — 演示隔离：「潮汐档案」演示作品的流程体检叠加了内置
-                    示例数据集（LF2/LF3 演示的回流/断链/风险）；真实作品的体检只来自你的
-                    目录/章节/场景真实状态，不含演示剧情。仅演示作品显式标注，与其它演示面
-                    （控制塔/长篇塔/起草台）的 WsDemoTag 约定一致。 */}
                 <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   流程体检
-                  {(() => { try { return WsWorks && WsWorks.activeId && WsWorks.activeId() === "tide"; } catch (e) { return false; } })()
-                    && WsDemoTag && <WsDemoTag note="「潮汐档案」演示作品的流程体检叠加了内置示例的回流 / 断链 / 风险（LF2·LF3 演示数据集）；导入或新建真实作品后，体检只来自你的目录、章节与场景真实状态，不含演示剧情。" />}
                 </div>
                 <div className="card-sub">系统看到的回流、瓶颈与风险（按严重度）</div>
               </div>
@@ -577,8 +536,8 @@ const FM_FALLBACK = {
     detail: { lead: "数据加载中…", rows: [], cta: { label: "打开", to: cfg.go } },
   })),
   pipes: FM_PIPE_TONES.map(tone => ({ tone, chip: null })),
-  chapters: Array.from({ length: 24 }, (_, i) => ({ n: i + 1, stage: "idea", front: false })),
-  spineCounts: { idea: 24 },
+  chapters: [],
+  spineCounts: {},
   overall: { pct: 0, sub: "—" },
   focus: { tag: "本周聚焦", title: "数据加载中…", body: "", impact: "", cta: { label: "打开", to: "writer" }, queue: [] },
   diag: [],

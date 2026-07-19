@@ -16,7 +16,7 @@ vi.mock("./lib/client.js", () => ({
 
 const T = { timeout: 5000, interval: 25 };
 
-const SALT_PROJECT = { project_id: "salt", title: "盐镇旧志", genre: "悬疑", is_demo: true, stats: { words_total: 0 } };
+const SALT_PROJECT = { project_id: "prj-second", title: "盐镇旧志", genre: "悬疑", is_demo: true, stats: { words_total: 0 } };
 
 // ensure → draft d1/rev1；save PATCH(d1) → rev2 + words_rollup。
 function wireDrafts(client) {
@@ -34,7 +34,7 @@ function wireDrafts(client) {
   });
 }
 
-async function settleActive(id = "tide") {
+async function settleActive(id = "prj-main") {
   await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe(id), T);
 }
 
@@ -43,7 +43,7 @@ async function loadDocs(opts = {}) {
   installApiRouter(client, opts);   // /api/v2/projects + catalog(DEFAULT_CHAP: ch01s1→s1) + dashboard
   wireDrafts(client);
   await import("./ws-catalog.jsx"); // 装 window.WsCatalog（间接 import ws-works）
-  await settleActive("tide");
+  await settleActive("prj-main");
   await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
   const mod = await import("./wr-doc-store.jsx");
   return { mod, client };
@@ -127,38 +127,38 @@ describe("WrDocs 跨作品 sid 前缀防污染（历史 bug 回归）", () => {
     client.apiPost.mockImplementation((url) => {
       if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
         const w = window.WsWorks.activeId();
-        return Promise.resolve({ draft: { draft_id: w === "salt" ? "d-salt" : "d-tide", revision_no: 1, content: "" } });
+        return Promise.resolve({ draft: { draft_id: w === "prj-second" ? "d-second" : "d-main", revision_no: 1, content: "" } });
       }
       return Promise.resolve({});
     });
 
-    // —— 作品 tide：保存 ch01s1 ——
+    // —— 作品 prj-main：保存 ch01s1 ——
     await mod.WrDocs.save("ch01s1", "<p>潮汐的正文</p>");
     expect(mod.WrDocs.load("ch01s1")).toBe("<p>潮汐的正文</p>");
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith(
-      "/api/v1/author-drafts/d-tide",
+      "/api/v1/author-drafts/d-main",
       { content: "<p>潮汐的正文</p>", base_revision_no: 1 }), T);
 
-    // —— 切到作品 salt（真实 setActive，使 WS_ACTIVE_ID 切换，wsKey/metaKeyOf 同步）——
-    window.WsWorks.setActive("salt");
-    await settleActive("salt");
+    // —— 切到作品 prj-second（真实 setActive，使 WS_ACTIVE_ID 切换，wsKey/metaKeyOf 同步）——
+    window.WsWorks.setActive("prj-second");
+    await settleActive("prj-second");
     await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
 
-    // 缓存键隔离（wsKey）：salt 下读不到 tide 的正文
+    // 缓存键隔离（wsKey）：prj-second 下读不到 prj-main 的正文
     expect(mod.WrDocs.load("ch01s1")).toBeNull();
 
-    // —— 作品 salt：保存同名 ch01s1 ——
+    // —— 作品 prj-second：保存同名 ch01s1 ——
     await mod.WrDocs.save("ch01s1", "<p>盐镇的正文</p>");
     expect(mod.WrDocs.load("ch01s1")).toBe("<p>盐镇的正文</p>");
-    // docMeta 隔离（metaKeyOf）：salt 走自己的 d-salt，而非复用 tide 的 d-tide
-    // 可证伪：metaKeyOf 改裸 sid → 复用 d-tide，此断言转红
+    // docMeta 隔离（metaKeyOf）：prj-second 走自己的 d-second，而非复用 prj-main 的 d-main
+    // 可证伪：metaKeyOf 改裸 sid → 复用 d-main，此断言转红
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith(
-      "/api/v1/author-drafts/d-salt",
+      "/api/v1/author-drafts/d-second",
       { content: "<p>盐镇的正文</p>", base_revision_no: 1 }), T);
 
-    // —— 切回 tide：正文互不覆盖 ——
-    window.WsWorks.setActive("tide");
-    await settleActive("tide");
+    // —— 切回 prj-main：正文互不覆盖 ——
+    window.WsWorks.setActive("prj-main");
+    await settleActive("prj-main");
     expect(mod.WrDocs.load("ch01s1")).toBe("<p>潮汐的正文</p>");
   });
 });
@@ -211,7 +211,7 @@ describe("WrDocs 跨会话 pending 冲突（Wave 1）", () => {
         return Promise.resolve({});
       });
       await import("./ws-catalog.jsx");
-      await settleActive("tide");
+      await settleActive("prj-main");
       await vi.waitFor(() => expect(window.WsCatalog.get().length).toBeGreaterThan(0), T);
       const mod = await import("./wr-doc-store.jsx");
       return { mod, client };
@@ -224,7 +224,7 @@ describe("WrDocs 跨会话 pending 冲突（Wave 1）", () => {
       expect(items).toHaveLength(1);
       expect(items[0]).toMatchObject({
         sid: "ch01s1",
-        workId: "tide",
+        workId: "prj-main",
         type: "conflict",
         html: "<p>重启前较新的本地稿</p>",
         durable: true,
@@ -254,7 +254,7 @@ describe("WrDocs 跨会话 pending 冲突（Wave 1）", () => {
       return Promise.resolve({});
     });
     await import("./ws-catalog.jsx");
-    await settleActive("tide");
+    await settleActive("prj-main");
     const mod = (await import("./wr-doc-store.jsx"));
 
     mod.WrDocs.load("ch01s1");
@@ -335,8 +335,8 @@ describe("WrRecovery（配额保护 + 恢复重试）", () => {
     window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>潮汐作者稿</p>");
     const entry = mod.WrRecovery.createCandidate("ch01s1", "<p>潮汐 AI 候选</p>");
 
-    window.WsWorks.setActive("salt");
-    await settleActive("salt");
+    window.WsWorks.setActive("prj-second");
+    await settleActive("prj-second");
     window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>盐镇作者稿</p>");
 
     const diff = mod.WrRecovery.diff(entry.id);

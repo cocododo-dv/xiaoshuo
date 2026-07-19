@@ -37,7 +37,7 @@ from novel_system.db.models import (
     utcnow,
 )
 from novel_system.services.trash import TrashService
-from novel_system.tools.seed_fe_demo_works import cleanup_fe_demo_works
+from tests.fixture_works import cleanup_fixture_works
 
 
 PROJECT_ID = "proj_purge"
@@ -215,7 +215,7 @@ def test_purge_project_leaves_no_residual_rows(session):
 def test_demo_cleanup_deletes_revision_links_before_demo_projects(session):
     session.add(
         StoryProject(
-            project_id="tide",
+            project_id="work-a",
             title="Demo",
             outline_text="demo",
             planning_mode="snowflake",
@@ -225,7 +225,7 @@ def test_demo_cleanup_deletes_revision_links_before_demo_projects(session):
     session.add(
         SnowflakeRevisionLink(
             revision_link_id="demo-revision-link",
-            project_id="tide",
+            project_id="work-a",
             source_step_key="book_brief",
             source_step_run_id=None,
             affected_kind="future_kind",
@@ -236,7 +236,7 @@ def test_demo_cleanup_deletes_revision_links_before_demo_projects(session):
     )
     session.flush()
 
-    cleanup_fe_demo_works(session)
+    cleanup_fixture_works(session)
 
     assert session.get(SnowflakeRevisionLink, "demo-revision-link") is None
-    assert session.get(StoryProject, "tide") is None
+    assert session.get(StoryProject, "work-a") is None

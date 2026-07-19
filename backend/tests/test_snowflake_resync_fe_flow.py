@@ -14,6 +14,17 @@ from sqlalchemy import select
 from novel_system.db.models import SceneCard, SnowflakeScenePlan
 
 
+import pytest as _pytest_sk
+from tests.real_llm_fakes import install_skeleton_snowflake as _install_skeleton_snowflake
+
+
+@_pytest_sk.fixture(autouse=True)
+def _auto_skeleton_snowflake(monkeypatch):
+    """假生成已退役：雪花 generate_step 走规划器骨架直通（仅回归物化/失效/收口链路）。"""
+    _install_skeleton_snowflake(monkeypatch)
+
+
+
 def _create_project(client, *, key: str) -> dict:
     response = client.post(
         "/api/v2/projects",

@@ -1,6 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { ARR_ACTS, ARR_ARCHIVED, ARR_CHAPTERS, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE } from "./ws-author-data.jsx";
+import { ARR_ACTS, ARR_ARCHIVED, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE } from "./ws-author-data.jsx";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { ArrThreadLoom, ArrThreadMini, arrDeriveThreads } from "./ws-author-loom.jsx";
 import { ArrPacingLens } from "./ws-author-pacing.jsx";
@@ -9,12 +9,11 @@ import { wsKey, WsWorks } from "./ws-works.jsx";
 import { ArrChapterRunAction } from "./ws-chapter-run.jsx";
 import { ArrBlueprintCard, ArrPlanPanel, ArrAiHealthBlock } from "./ws-author-plan.jsx";
 
-/* global React, I, ARR_ACTS, ARR_CHAPTERS, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE, ARR_ARCHIVED, ArrThreadLoom, ArrPacingLens, ArrThreadMini, arrDeriveThreads, ArrDoctor */
+/* global React, I, ARR_ACTS, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE, ARR_ARCHIVED, ArrThreadLoom, ArrPacingLens, ArrThreadMini, arrDeriveThreads, ArrDoctor */
 const { useState: useStA, useRef: useRefA, useEffect: useEfA, useMemo: useMemoA } = React;
 
-/* 卷名/简介（盐与钟/回声讲堂…）是「潮汐档案」演示专属剧情；其它真实作品只显示
+/* 卷名/简介是可选装饰；真实作品只显示
    通用卷序（卷一/卷二/卷三），不泄漏演示卷名。章节本身走 WsCatalog（已按作品门控）。 */
-const arrIsTide = () => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return true; } };
 
 /* ==========================================================
    章节编排 — Chapter Arrangement
@@ -149,7 +148,7 @@ function ArrTensionCurve({ chapters, numOf, pickedId, onPick }) {
       {bands.map((b, i) => (
         <g key={b.a.id}>
           {i > 0 && <line x1={b.x0} y1={padT - 8} x2={b.x0} y2={padT + plotH + 6} className="arr-curve-actsep" />}
-          <text x={b.mid} y={18} className={`arr-curve-actlabel tone-${b.a.tone}`} textAnchor="middle">{b.a.n}{arrIsTide() ? ` · ${b.a.name}` : ""}</text>
+          <text x={b.mid} y={18} className={`arr-curve-actlabel tone-${b.a.tone}`} textAnchor="middle">{b.a.n}</text>
         </g>
       ))}
 
@@ -267,8 +266,8 @@ function ArrOverview({ chapters, numOf, pickedId, onOpen, chDnd, boardDnd, onNew
           <section className="arr-actsec" key={a.id}>
             <header className="arr-actsec-head">
               <span className={`arr-actsec-tag tone-${a.tone}`}>{a.n}</span>
-              <h3 className="arr-actsec-name text-serif">{arrIsTide() ? a.name : ""}</h3>
-              <span className="arr-actsec-blurb">{arrIsTide() ? a.blurb : ""}</span>
+              <h3 className="arr-actsec-name text-serif"></h3>
+              <span className="arr-actsec-blurb"></span>
               <span className="arr-actsec-meta tab-num">{items.length} 章 · {w.toLocaleString()} 字</span>
             </header>
             <div className="arr-board" {...boardDnd(a.id)}>
@@ -665,7 +664,7 @@ function ArrRail({ chapters, numOf, pickedId, onPick, chDnd, boardDnd, onBack, o
           const items = chapters.filter((c) => c.act === a.id);
           return (
             <div className="arr-rail-act" key={a.id} {...boardDnd(a.id)}>
-              <div className={`arr-rail-acthead tone-${a.tone}`}>{a.n}{arrIsTide() ? ` · ${a.name}` : ""}</div>
+              <div className={`arr-rail-acthead tone-${a.tone}`}>{a.n}</div>
               <ul>
                 {items.map((c) => {
                   const done = c.scenes.filter((s) => s.state === "done").length;
@@ -707,7 +706,7 @@ function WsAuthor({ go }) {
     // 本地 state 只负责拖拽中的即时视图；服务端目录始终是单一真相源。
     if (WsCatalog) return arrStampIds(catalogChapters || WsCatalog.get());
     const saved = arrLsGet("arr.chapters", null);
-    return arrStampIds(Array.isArray(saved) && saved.length ? saved : (arrIsTide() ? ARR_CHAPTERS : []));
+    return arrStampIds(Array.isArray(saved) && saved.length ? saved : []);
   });
   const [chDragId, setChDragId] = useStA(null);
   const [scDragIdx, setScDragIdx] = useStA(null);
@@ -916,7 +915,7 @@ function WsAuthor({ go }) {
     commitChapters((cs) => {
       const newCh = {
         id, act: actId, n: "", title: "未命名章节", state: "planned",
-        tension: 0.5, pov: "林岑", time: "待定", place: "待定",
+        tension: 0.5, pov: "", time: "待定", place: "待定",
         words: { cur: 0, target: 4000 },
         entry: "（待规划）", exit: "（待规划）", align: true, promise: "",
         drama: { promise: "", spine: "", arc: "", problem: "", aftertaste: "", ending: "",
@@ -1002,7 +1001,7 @@ function WsAuthor({ go }) {
             <header className="arr-ov-head">
               <div>
                 <div className="page-eyebrow" style={{ margin: 0 }}>章节编排</div>
-                <h1 className="arr-ov-title text-serif">全书编排 · {WsWorks ? WsWorks.active().title : "潮汐档案"}</h1>
+                <h1 className="arr-ov-title text-serif">全书编排 · {WsWorks ? WsWorks.active().title : "未命名作品"}</h1>
               </div>
               <div className="arr-ov-head-r">
                 <button className="btn btn-quiet btn-sm" onClick={refreshData} title="从服务端重新载入目录"><I.Refresh size={13} /> 刷新</button>

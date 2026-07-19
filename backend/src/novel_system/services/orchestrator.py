@@ -1558,9 +1558,6 @@ class Orchestrator:
             allow_local_rejected_output=allow_local_rejected_output,
         )
         call = self.session.get(LlmCall, llm_call_id)
-        valid_offline_settlement = (
-            call is not None and self._is_valid_offline_settled_call(call)
-        )
         if (
             call is None
             or call.scene_id != scene_id
@@ -1573,7 +1570,6 @@ class Orchestrator:
                     allow_local_rejected_output
                     and call.accounting_status == "rejected"
                 )
-                and not valid_offline_settlement
             )
         ):
             raise DomainError(
@@ -1587,37 +1583,6 @@ class Orchestrator:
                 },
             )
         return call
-
-    def _is_valid_offline_settled_call(self, call: LlmCall) -> bool:
-        zero_token_fields = (
-            call.prompt_tokens,
-            call.completion_tokens,
-            call.total_tokens,
-            call.estimated_tokens,
-            call.reserved_tokens,
-            call.budget_charged_tokens,
-            call.latency_ms,
-        )
-        if (
-            call.provider != "offline_deterministic"
-            or not isinstance(call.request_payload_summary, dict)
-            or call.request_payload_summary.get(ACCOUNTING_EXECUTION_MODE_KEY)
-            != "offline_deterministic"
-            or call.accounting_status != "settled"
-            or call.request_dispatched_at is not None
-            or not isinstance(call.settled_at, str)
-            or not call.settled_at
-            or call.error_code is not None
-            or call.usage_is_estimate is not False
-            or any(type(value) is not int or value != 0 for value in zero_token_fields)
-        ):
-            return False
-        physical_attempt_id = self.session.scalar(
-            select(LlmCallAttempt.attempt_id)
-            .where(LlmCallAttempt.llm_call_id == call.llm_call_id)
-            .limit(1)
-        )
-        return physical_attempt_id is None
 
     def _validate_artifact_execution_owner(self, owner_execution_id: Any) -> str:
         payload = self._active_checkpoint_state().run_checkpoint_json or {}
@@ -2105,10 +2070,7 @@ class Orchestrator:
         assert call is not None
         if (
             call.scene_id != scene_id
-            or (
-                call.request_dispatched_at is None
-                and not self._is_valid_offline_settled_call(call)
-            )
+            or call.request_dispatched_at is None
             or call.accounting_status != "settled"
             or (call.execution_id == self._execution_id and call.execution_step_key != expected_step_key)
         ):
@@ -3592,7 +3554,7 @@ class Orchestrator:
             if isinstance(parent.request_payload_summary, dict)
             else None
         )
-        if execution_mode not in {"online", "offline_deterministic"}:
+        if execution_mode != "online":
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
                 "chapter evaluation parent execution mode is missing or invalid",
@@ -5826,7 +5788,7 @@ class Orchestrator:
         )
         historical_execution_mode = refs.get(f"{prefix}_provider_execution_mode")
         if prefix == "soft_input" and (
-            historical_execution_mode not in {"online", "offline_deterministic"}
+            historical_execution_mode != "online"
             or self._text_hash(historical_execution_mode)
             != self._checkpoint_hash(f"{prefix}_provider_execution_mode")
         ):
@@ -5938,13 +5900,11 @@ class Orchestrator:
                 details={"llm_call_id": parent.llm_call_id},
             )
         if parent.provider == "offline_deterministic":
-            if not self._is_valid_offline_settled_call(parent):
-                raise LLMAccountingError(
-                    "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
-                    "offline provider-success parent violates zero-attempt settlement",
-                    details={"llm_call_id": parent.llm_call_id},
-                )
-            return
+            raise LLMAccountingError(
+                "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
+                "retired non-provider execution cannot back a product",
+                details={"llm_call_id": parent.llm_call_id},
+            )
         validate_product_call_ledger(
             self.session,
             parent,
@@ -6023,7 +5983,7 @@ class Orchestrator:
             if expected_provider_execution_mode is not None
             else actual_execution_mode
         )
-        if expected_execution_mode not in {"online", "offline_deterministic"}:
+        if expected_execution_mode != "online":
             raise LLMAccountingError(
                 "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
                 "generation product execution mode snapshot is invalid",
@@ -6060,7 +6020,7 @@ class Orchestrator:
             if isinstance(parent.request_payload_summary, dict)
             else None
         )
-        if mode not in {"online", "offline_deterministic"}:
+        if mode != "online":
             raise LLMAccountingError(
                 "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
                 "durable parent has no valid provider execution mode marker",
@@ -6345,8 +6305,7 @@ class Orchestrator:
                 product.get("execution_id"), product.get("run_job_id")
             )
             or product.get("execution_step_key") != "soft_patch:auto_critique:0"
-            or product.get("provider_execution_mode")
-            not in {"online", "offline_deterministic"}
+            or product.get("provider_execution_mode") != "online"
             or not isinstance(product.get("reason"), str)
             or not isinstance(product.get("error_code"), str)
         ):

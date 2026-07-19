@@ -23,6 +23,10 @@ from novel_system.db.models import (
     StyleReferenceProfile,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.story_slots import (
+    normalize_story_slot,
+    normalize_story_slot_mapping,
+)
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.narrative_position import NarrativePositionService
 from novel_system.services.project_backtracks import ProjectBacktrackService
@@ -142,7 +146,7 @@ class SceneExecutionContractService:
         blueprint: SceneBlueprint | None,
         reference_rules: dict[str, list[str]],
     ) -> tuple[dict[str, Any], list[str]]:
-        brief = dict(scene.writer_brief_json or {})
+        brief = normalize_story_slot_mapping(scene.writer_brief_json or {})
         blueprint_json = dict(blueprint.blueprint_json or {}) if blueprint is not None else {}
         scene_mode = _infer_scene_mode(scene, brief)
         explicit_scene_contract = _is_explicit_structured_scene(scene, brief)
@@ -324,18 +328,22 @@ class SceneExecutionContractService:
             "scene": {
                 "scene_id": scene.scene_id,
                 "scene_type": scene.scene_type,
-                "scene_goal": scene.scene_goal,
-                "location": scene.location,
-                "exit_change": scene.exit_change,
-                "hook": scene.hook,
-                "writer_brief_json": dict(scene.writer_brief_json or {}),
+                "scene_goal": normalize_story_slot(scene.scene_goal),
+                "location": normalize_story_slot(scene.location),
+                "exit_change": normalize_story_slot(scene.exit_change),
+                "hook": normalize_story_slot(scene.hook),
+                "writer_brief_json": normalize_story_slot_mapping(
+                    scene.writer_brief_json or {}
+                ),
             },
             "chapter": {
                 "chapter_id": chapter.chapter_id,
-                "chapter_goal": chapter.chapter_goal,
-                "main_plot_push": chapter.main_plot_push,
-                "emotional_target": chapter.emotional_target,
-                "writer_brief_json": dict(chapter.writer_brief_json or {}),
+                "chapter_goal": normalize_story_slot(chapter.chapter_goal),
+                "main_plot_push": normalize_story_slot(chapter.main_plot_push),
+                "emotional_target": normalize_story_slot(chapter.emotional_target),
+                "writer_brief_json": normalize_story_slot_mapping(
+                    chapter.writer_brief_json or {}
+                ),
             },
             "project": {
                 "project_id": project.project_id if project is not None else None,
@@ -792,8 +800,8 @@ def _recommended_fix(scope: str, contract: SceneExecutionContract, latest_qc: Qc
 
 def _first_text(*values: Any) -> str:
     for value in values:
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+        if isinstance(value, str) and normalize_story_slot(value):
+            return normalize_story_slot(value)
     return ""
 
 

@@ -25,7 +25,6 @@ from novel_system.db.models import (
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_accounting import LLMCallContext
-from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.llm_task_runner import (
     LLMNodeExecutionError,
     LLMNodeRunner,
@@ -146,52 +145,6 @@ def normalize_chapter_writer_brief(value: Any) -> dict[str, str]:
 
 def normalize_scene_writer_brief(value: Any) -> dict[str, str]:
     return _normalize_writer_brief(value, SCENE_WRITER_BRIEF_FIELDS, "scene")
-
-
-class OfflineWriterReviewClient:
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        node_id = request.node_id or "writer_review"
-        if node_id in {"writer_scene_diagnosis", "writer_chapter_diagnosis"} or node_id.endswith("_diagnosis"):
-            structured_output = _offline_diagnosis_payload(node_id)
-        elif node_id == "writer_scene_revision":
-            structured_output = {
-                "revised_text": (
-                    "【作家修订候选】\n"
-                    "这是一份离线确定性候选稿：保留原场景事实，把人物动作、转折和结尾问题写得更清楚。"
-                ),
-                "diff_summary": "离线确定性候选，仅用于本地开发；真实评分需要启用 LLM。",
-                "changed_dimensions": ["turn", "reader_hook"],
-                "rewrite_strategy": "offline_deterministic_full_scene_rewrite",
-            }
-        elif node_id == "writer_chapter_revision":
-            structured_output = {
-                "revision_plan": [
-                    "离线确定性修订计划：检查每场是否都有明确选择、阻碍和结尾钩子。",
-                    "真实章节修订计划需要启用 LLM 后重新运行作家诊断。",
-                ],
-                "selected_rewrite_passages": [],
-                "diff_summary": "离线确定性章节候选，仅用于本地开发；不会覆盖终稿。",
-                "changed_dimensions": ["scene_necessity", "ending_drive"],
-                "rewrite_strategy": "offline_deterministic_revision_plan",
-            }
-        else:
-            structured_output = {}
-        return LLMResponse(
-            request_id=f"offline_{node_id}",
-            provider="offline_deterministic",
-            model=request.model,
-            text=json.dumps(structured_output, ensure_ascii=False),
-            structured_output=structured_output,
-            response_format=request.response_format,
-            raw_response={
-                "id": f"offline_{node_id}",
-                "model": request.model,
-                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-                "finish_reason": "offline_fallback",
-            },
-            usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-            finish_reason="offline_fallback",
-        )
 
 
 class WriterReviewService:
@@ -799,7 +752,6 @@ class WriterReviewService:
                 step=node_id,
                 prompt=prompt,
                 user_prompt=user_prompt,
-                offline_client_factory=OfflineWriterReviewClient,
                 source_draft_row_id=source.get("source_text_ref"),
                 source_draft_content=source.get("content"),
                 execution_step_key=node_id,
@@ -845,7 +797,6 @@ class WriterReviewService:
             step="writer_scene_revision",
             prompt=prompt,
             user_prompt=user_prompt,
-            offline_client_factory=OfflineWriterReviewClient,
             source_draft_row_id=source.get("source_text_ref"),
             source_draft_content=source.get("content"),
         )
@@ -893,7 +844,6 @@ class WriterReviewService:
             step="writer_chapter_revision",
             prompt=prompt,
             user_prompt=user_prompt,
-            offline_client_factory=OfflineWriterReviewClient,
             source_draft_row_id=source.get("source_text_ref"),
             source_draft_content=source.get("content"),
             execution_step_key=execution_step_key,
@@ -1273,35 +1223,6 @@ def _default_candidate_patches(
             "manual_only": True,
         }
     ]
-
-
-def _offline_diagnosis_payload(node_id: str) -> dict[str, Any]:
-    scores = {dimension: 0.5 for dimension in ALL_WRITER_REVIEW_DIMENSIONS}
-    scores.update({"continuity": 0.62, "scene_necessity": 0.58, "reader_hook": 0.56})
-    target_label = "章节" if "_chapter_" in node_id or node_id == "writer_chapter_diagnosis" else "场景"
-    return {
-        "overall_score": 0.54,
-        "scores": scores,
-        "findings": [
-            {
-                "dimension": "writer_diagnosis_payload",
-                "severity": "info",
-                "issue": f"当前是离线确定性{target_label}诊断，不代表专业 LLM 评分。",
-                "recommendation": "启用 LLM 后重新运行作家诊断，获取基于正文证据的专业评审。",
-                "evidence_excerpt": "offline deterministic fallback",
-                "evidence_location": "offline deterministic fallback",
-                "why_it_matters": "离线路径只保证开发闭环，不应作为最终文学判断。",
-            }
-        ],
-        "revision_brief": [
-            {
-                "dimension": "reader_hook",
-                "action": "检查结尾是否留下新的选择、风险或追问。",
-                "priority": "medium",
-            }
-        ],
-        "requires_human_review": True,
-    }
 
 
 def _blocked_writer_diagnosis_payload(message: str) -> dict[str, Any]:

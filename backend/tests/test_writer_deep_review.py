@@ -24,6 +24,17 @@ from novel_system.services.writer_deep_review import _infer_scene_form
 from novel_system.services.writer_deep_review import _normalize_deep_review_output
 
 
+import pytest as _pytest_wr
+from tests.real_llm_fakes import install_online_writer_pipeline as _install_online_writer_pipeline
+
+
+@_pytest_wr.fixture(autouse=True)
+def _auto_online_writer(monkeypatch):
+    """假生成已退役：作家评审/深评/passage-patch 走在线记账替身（按 node_id 派发）。"""
+    _install_online_writer_pipeline(monkeypatch)
+
+
+
 CHAPTER_ID = "DEEP_CH01"
 SCENE_ID = "DEEP_CH01_SC01"
 FINAL_ROW_ID = "final_DEEP_CH01_SC01"

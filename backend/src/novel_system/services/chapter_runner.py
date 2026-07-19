@@ -172,12 +172,13 @@ class ChapterRunnerService:
                 "progress_pct": 0,
                 "started_at": None,
                 "finished_at": None,
+                "source": None,
             }
         self._reconcile_job(job, self._scene_ids(chapter_id))
         self.session.flush()
         return self._serialize_job(job)
 
-    def prepare_full_run(self, chapter_id: str, *, offline_demo: bool = False) -> tuple[dict[str, Any], bool]:
+    def prepare_full_run(self, chapter_id: str) -> tuple[dict[str, Any], bool]:
         AuthorLifecycleService(self.session).require_active_chapter(chapter_id)
         scene_ids = self._scene_ids(chapter_id)
         job = self._resumeable_job(chapter_id)
@@ -202,12 +203,6 @@ class ChapterRunnerService:
                     job.finished_at = None
                     self._update_summary(job, blocked_scene_id=None, latest_error=None)
                     should_start_worker = True
-        if offline_demo:
-            payload = self._payload(job)
-            payload["offline_demo"] = True
-            payload["source"] = "fallback"
-            job.payload_json = payload
-            self._update_summary(job, offline_demo=True, source="fallback")
         self.session.flush()
         return self._serialize_job(job), should_start_worker
 
@@ -494,6 +489,7 @@ class ChapterRunnerService:
             completed_scene_ids=completed_scene_ids,
             blocked_scene_id=None,
             latest_error=None,
+            source="llm",
         )
 
     def _mark_blocked(self, job: ChapterRunJob, *, blocked_scene_id: str | None, latest_error: dict[str, Any]) -> None:
@@ -758,7 +754,8 @@ class ChapterRunnerService:
 
     def _serialize_job(self, job: ChapterRunJob) -> dict[str, Any]:
         summary = dict(job.result_summary_json or {})
-        scene_ids = summary.get("scene_ids") or self._payload(job).get("scene_ids", [])
+        payload = self._payload(job)
+        scene_ids = summary.get("scene_ids") or payload.get("scene_ids", [])
         completed_scene_ids = summary.get("completed_scene_ids") or []
         scene_count = len(scene_ids)
         completed_count = len(completed_scene_ids)
@@ -780,6 +777,7 @@ class ChapterRunnerService:
             "progress_pct": progress_pct,
             "started_at": job.started_at,
             "finished_at": job.finished_at,
-            "offline_demo": bool(summary.get("offline_demo") or self._payload(job).get("offline_demo")),
-            "source": summary.get("source") or self._payload(job).get("source") or "llm",
+            # `source` 是已经实际产出结果的来源，不是请求意图。排队、预检阻塞、
+            # 首次模型调用即失败等路径都必须保持为空，不能伪装成 LLM 成功。
+            "source": summary.get("source") or payload.get("source"),
         }

@@ -24,7 +24,7 @@ const T = { timeout: 5000, interval: 25 };
 
 // 等 active 从 __loading__ 翻成真实作品 id（写穿路径都依赖它确定）。
 async function settleActive() {
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("tide"), T);
+  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
 }
 
 async function loadCatalog(opts) {
@@ -50,7 +50,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     const pendingCatalog = new Promise((resolve) => { resolveCatalog = resolve; });
     client.apiGet.mockImplementation((url) => {
       if (url === "/api/v2/projects") return Promise.resolve({ items: [DEFAULT_PROJECT] });
-      if (url === "/api/v2/projects/tide/catalog") return pendingCatalog;
+      if (url === "/api/v2/projects/prj-main/catalog") return pendingCatalog;
       if (url.includes("/writing-stats")) return Promise.resolve({ words_total: 0, words_today: 0, streak_days: 0 });
       return Promise.resolve({});
     });
@@ -81,7 +81,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     // diff 引擎异步派发：只发变化字段，命中后端 scene_id（PATCH 不参与 fetch 去重）
     await vi.waitFor(() =>
       expect(client.apiPatch).toHaveBeenCalledWith(
-        "/api/v2/projects/tide/catalog/scenes/s1",
+        "/api/v2/projects/prj-main/catalog/scenes/s1",
         { title: "新场景标题" }
       ), T);
   });
@@ -106,7 +106,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
     const route = client.apiGet.getMockImplementation();
     client.apiGet.mockImplementation((url) => (
-      url === "/api/v2/projects/tide/catalog"
+      url === "/api/v2/projects/prj-main/catalog"
         ? Promise.reject(new Error("catalog offline"))
         : route(url)
     ));
@@ -135,7 +135,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     // diff 只发 pov_character_name（后端按名 find-or-create），命中后端 scene_id
     await vi.waitFor(() =>
       expect(client.apiPatch).toHaveBeenCalledWith(
-        "/api/v2/projects/tide/catalog/scenes/s1",
+        "/api/v2/projects/prj-main/catalog/scenes/s1",
         { pov_character_name: "林深" }
       ), T);
   });
@@ -157,7 +157,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     mod.WsCatalog.set([next, first]);
 
     await vi.waitFor(() => expect(client.apiPost).toHaveBeenCalledWith(
-      "/api/v2/projects/tide/catalog/chapter-order",
+      "/api/v2/projects/prj-main/catalog/chapter-order",
       { chapter_ids: ["c2", "c1"] },
     ), T);
   });
@@ -213,7 +213,7 @@ describe("WsCatalog.adoptOutline（雪花大纲→目录：物化主路径，QA3
     const snow = await import("./ws-snow-sync.jsx");
     await settleActive();
     await vi.waitFor(() => expect(mod.WsCatalog.get().length).toBeGreaterThan(0), T);
-    await snow.SnowSync.refetch("tide"); // 同步 snowReadyFlags["tide"]
+    await snow.SnowSync.refetch("prj-main"); // 同步 snowReadyFlags["prj-main"]
     return { mod, client, snow };
   }
 
@@ -230,7 +230,7 @@ describe("WsCatalog.adoptOutline（雪花大纲→目录：物化主路径，QA3
 
   it("闸门满足 → 走 materialize 两步并回传后端真实 created_chapter_count", async () => {
     const { mod, client } = await loadWithSnow(true);
-    expect(window.SnowSync.readyToMaterialize("tide")).toBe(true);
+    expect(window.SnowSync.readyToMaterialize("prj-main")).toBe(true);
 
     const calls = [];
     client.apiPost.mockImplementation((url) => {
@@ -246,8 +246,8 @@ describe("WsCatalog.adoptOutline（雪花大纲→目录：物化主路径，QA3
     expect(n).toBe(7);
     // 两步都走且顺序固定：materialize → outline/approve
     expect(calls).toEqual([
-      "/api/v2/projects/tide/snowflake-workspace/materialize",
-      "/api/v2/projects/tide/snowflake-workspace/outline/approve",
+      "/api/v2/projects/prj-main/snowflake-workspace/materialize",
+      "/api/v2/projects/prj-main/snowflake-workspace/outline/approve",
     ]);
   });
 
@@ -264,12 +264,12 @@ describe("WsCatalog.adoptOutline（雪花大纲→目录：物化主路径，QA3
     await expect(mod.WsCatalog.adoptOutline([{ title: "x", act: 1 }]))
       .rejects.toThrow("materialize boom");
     // 第一步即崩，不应继续走 approve
-    expect(calls).toEqual(["/api/v2/projects/tide/snowflake-workspace/materialize"]);
+    expect(calls).toEqual(["/api/v2/projects/prj-main/snowflake-workspace/materialize"]);
   });
 
   it("闸门未满足 → 回退 __adoptByDiff 本地建章，绝不触发物化 POST", async () => {
     const { mod, client } = await loadWithSnow(false);
-    expect(window.SnowSync.readyToMaterialize("tide")).toBe(false);
+    expect(window.SnowSync.readyToMaterialize("prj-main")).toBe(false);
     client.apiPost.mockClear();
 
     const before = mod.WsCatalog.get().length;
@@ -280,7 +280,7 @@ describe("WsCatalog.adoptOutline（雪花大纲→目录：物化主路径，QA3
     expect(mod.WsCatalog.get().some((c) => c.title === "新采用的章")).toBe(true);
     // 闸门未过时绝不调物化端点
     expect(client.apiPost).not.toHaveBeenCalledWith(
-      "/api/v2/projects/tide/snowflake-workspace/materialize", expect.anything());
+      "/api/v2/projects/prj-main/snowflake-workspace/materialize", expect.anything());
   });
 
   it("闸门未满足且本地物化引擎可用 → 走 s2Materialize（章+场直建），不再落到只建空壳章", async () => {
@@ -307,7 +307,7 @@ describe("WsCatalog.adoptOutline（雪花大纲→目录：物化主路径，QA3
     expect(n).toBe(1);                                                    // 章数取自 apply 的 newCh
     // 降级路径绝不调后端物化端点
     expect(client.apiPost).not.toHaveBeenCalledWith(
-      "/api/v2/projects/tide/snowflake-workspace/materialize", expect.anything());
+      "/api/v2/projects/prj-main/snowflake-workspace/materialize", expect.anything());
   });
 
   it("闸门未满足且预览不可用（09 还没有场）→ 才落到 __adoptByDiff 只建章", async () => {

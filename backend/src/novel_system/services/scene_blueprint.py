@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import uuid
 from typing import Any
 
@@ -12,7 +11,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import ChapterGoal, SceneBlueprint, SceneCard, SceneRunState
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
-from novel_system.services.llm_client import LLMRequest, LLMResponse
+from novel_system.services.llm_fail_closed import raise_llm_domain_error
 from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief
@@ -29,23 +28,6 @@ SCENE_BLUEPRINT_FIELDS: tuple[str, ...] = (
     "next_scene_pull",
     "anti_summary_rule",
 )
-
-
-class OfflineSceneBlueprintClient:
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        user_prompt = "\n".join(message.get("content", "") for message in request.messages if message.get("role") == "user")
-        structured_output = _offline_blueprint_payload(user_prompt)
-        return LLMResponse(
-            request_id=f"offline_{request.node_id or 'scene_blueprint'}",
-            provider="offline_deterministic",
-            model=request.model,
-            text=json.dumps(structured_output, ensure_ascii=False),
-            structured_output=structured_output,
-            response_format=request.response_format,
-            raw_response={"id": f"offline_{request.node_id or 'scene_blueprint'}"},
-            usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-            finish_reason="offline_fallback",
-        )
 
 
 class SceneBlueprintService:
@@ -106,17 +88,19 @@ class SceneBlueprintService:
                     chapter=chapter,
                     source=source,
                 ),
-                offline_client_factory=OfflineSceneBlueprintClient,
                 execution_step_key=execution_step_key,
             )
             payload = _validate_blueprint_payload(node_result.response.structured_output)
             llm_call_id = node_result.llm_call_id
         except LLMNodeExecutionError as exc:
-            raise DomainError(
-                "SCENE_BLUEPRINT_FAILED",
-                f"scene blueprint generation failed: {exc.message}",
-                status_code=502,
-            ) from exc
+            raise_llm_domain_error(
+                exc,
+                capability_code="SCENE_BLUEPRINT_LLM_REQUIRED",
+                failure_code="SCENE_BLUEPRINT_FAILED",
+                operation="scene blueprint generation",
+                node_id="scene_blueprint",
+                next_action="configure_scene_blueprint_route_and_retry",
+            )
 
         for row in self.session.execute(
             select(SceneBlueprint).where(
@@ -233,49 +217,25 @@ def _blueprint_user_prompt(base_prompt: str, *, scene: SceneCard, chapter: Chapt
 def _validate_blueprint_payload(payload: Any) -> dict[str, str]:
     if not isinstance(payload, dict):
         raise DomainError("SCENE_BLUEPRINT_INVALID", "scene blueprint payload must be an object", status_code=502)
+    # 只要求规范字段齐全；多余字段忽略——response_format 是 json_object（非严格
+    # schema），真实模型可能多返解释性键，不应因此把整份蓝图判失败。
+    missing_fields = sorted(set(SCENE_BLUEPRINT_FIELDS) - set(payload))
+    if missing_fields:
+        raise DomainError(
+            "SCENE_BLUEPRINT_INVALID",
+            "scene blueprint payload is missing required canonical fields",
+            status_code=502,
+            details={"missing_fields": missing_fields},
+        )
     normalized: dict[str, str] = {}
     for field in SCENE_BLUEPRINT_FIELDS:
         value = payload.get(field)
-        if isinstance(value, (str, int, float, bool)) and str(value).strip():
-            normalized[field] = str(value).strip()
-        else:
-            normalized[field] = _fallback_blueprint_value(field)
+        if not isinstance(value, str) or not value.strip():
+            raise DomainError(
+                "SCENE_BLUEPRINT_INVALID",
+                f"scene blueprint field {field} must be a non-empty string",
+                status_code=502,
+                details={"field": field},
+            )
+        normalized[field] = value.strip()
     return normalized
-
-
-def _fallback_blueprint_value(field: str) -> str:
-    return {
-        "visible_desire": "make the immediate desire visible in action",
-        "forced_choice": "force a decision that cannot be postponed",
-        "price_paid": "make the character pay a concrete cost for the choice",
-        "information_release": "release one useful fact without explaining everything",
-        "relationship_turn": "let the relationship balance change on the page",
-        "image_anchor": "attach pressure to one concrete object or sensory detail",
-        "ending_action": "end on a visible action instead of a summary sentence",
-        "next_scene_pull": "leave a consequence that changes the next scene",
-        "anti_summary_rule": "do not explain the scene's meaning after the final action",
-    }[field]
-
-
-def _offline_blueprint_payload(text: str) -> dict[str, str]:
-    scene_goal = _extract_jsonish_string(text, "scene_goal") or "the scene must justify its pressure"
-    hook = _extract_jsonish_string(text, "hook") or _extract_jsonish_string(text, "reader_aftertaste")
-    image_anchor = _extract_jsonish_string(text, "image_anchor") or hook or "a concrete object"
-    return {
-        "visible_desire": _extract_jsonish_string(text, "character_desire") or "get something specific now",
-        "forced_choice": _extract_jsonish_string(text, "choice_under_pressure") or scene_goal,
-        "price_paid": _extract_jsonish_string(text, "irreversible_change") or _extract_jsonish_string(text, "exit_change") or "the choice costs safety, trust, or leverage",
-        "information_release": _extract_jsonish_string(text, "new_information") or hook or "one fact changes the reader's understanding",
-        "relationship_turn": _extract_jsonish_string(text, "power_shift") or _extract_jsonish_string(text, "emotional_turn") or "the leverage changes hands",
-        "image_anchor": image_anchor,
-        "ending_action": _extract_jsonish_string(text, "exit_change") or hook or "someone acts before the scene can explain itself",
-        "next_scene_pull": _extract_jsonish_string(text, "reader_question") or _extract_jsonish_string(text, "ending_question") or hook or "what is being hidden",
-        "anti_summary_rule": "end on the action or image; do not add a summarizing explanation after it",
-    }
-
-
-def _extract_jsonish_string(text: str, key: str) -> str:
-    match = re.search(rf'"{re.escape(key)}"\s*:\s*"([^"]+)"', text)
-    if match is None:
-        return ""
-    return match.group(1).strip()

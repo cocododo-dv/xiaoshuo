@@ -62,7 +62,7 @@ async function clickText(t, opts = {}) {
 }
 async function escAll() { for (let i = 0; i < 2; i++) { await page.keyboard.press("Escape").catch(() => {}); await page.waitForTimeout(200); } }
 
-const WORK = process.env.QA_WORK || "tide";
+const WORK = process.env.QA_WORK || "work-a";
 await page.goto(BASE); await waitApp();
 
 // ---------- 1) home ----------

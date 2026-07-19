@@ -13,7 +13,7 @@ vi.mock("./lib/client.js", () => ({
 const T = { timeout: 5000, interval: 25 };
 
 async function settleActive() {
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("tide"), T);
+  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
 }
 
 async function loadReview(opts) {
@@ -41,7 +41,7 @@ describe("WsReview（收件箱乐观处理 + 失败告警）", () => {
     await vi.waitFor(() =>
       expect(client.apiPost).toHaveBeenCalledWith(
         "/api/v1/review-items",
-        expect.objectContaining({ title: "新批注：第 5 章节奏", project_id: "tide" })
+        expect.objectContaining({ title: "新批注：第 5 章节奏", project_id: "prj-main" })
       ), T);
   });
 
@@ -60,7 +60,7 @@ describe("WsReview（收件箱乐观处理 + 失败告警）", () => {
     await vi.waitFor(() =>
       expect(client.apiPost).toHaveBeenCalledWith(
         "/api/v1/review-items/rv1/resolve",
-        expect.objectContaining({ project_id: "tide" })
+        expect.objectContaining({ project_id: "prj-main" })
       ), T);
   });
 

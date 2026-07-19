@@ -36,42 +36,6 @@ function wrDxClearSkips(sid) {
   try { localStorage.removeItem(dxKey("wr-deep-skip:" + sid)); } catch (e) {}
 }
 
-/* ---- 演示作品的精修条目（带改写候选；find 必须命中正文才显示）---- */
-const WR_DEEP_CURATED = {
-  ch08s3: [
-    {
-      id: "cu-echo", kind: "echo", sev: "high",
-      find: "机器声变得安静，安静到她能听见自己的手指敲在键盘上的回响。",
-      title: "「安静，安静到」回响节奏过重",
-      hint: "短句重复让节奏过于刻意。三个改法各保留一种声音质感。",
-      cands: [
-        { label: "改换连接", text: "连机器声都收回去了；她坐在原地，能听见自己的手指敲在键盘上的回响。" },
-        { label: "继电器版", text: "机器声变得几乎听不见，只剩继电器在盐钟箱里偶尔咔嗒一下，像旧打字机的最后一个键。" },
-        { label: "水滴版",   text: "机器声退到一边。盐钟箱的冷凝水滴落在底盘上，一滴一滴，像谁在背后小心地数她的呼吸。" },
-      ],
-    },
-    {
-      id: "cu-dump", kind: "dump", sev: "mid",
-      find: "今天上午从地下室搬上来的那一批，她已经处理完了四件，只剩这一件——一枚边缘磨损的盐钟铭牌，铭牌背后压着一张手写的备份单。",
-      title: "一段同时介绍三件物品",
-      hint: "信息堆叠，考虑让铭牌成为唯一入口。",
-      cands: [
-        { label: "收束版", text: "上午那一批她已经处理完了，只剩这一件——一枚边缘磨损的盐钟铭牌。铭牌背后压着一张手写的备份单。" },
-      ],
-    },
-    {
-      id: "cu-rdn", kind: "rdn", sev: "low",
-      find: "她也认得馆里所有人的字迹。这是她做这份工作的本事。",
-      title: "「做这份工作的本事」与第 1 章呼应",
-      hint: "可删，让上一句「她认得父亲的字迹」留有余地。",
-      cands: [{ label: "删去这两句", text: "" }],
-    },
-  ],
-};
-function wrDeepCurated(sid) {
-  try { if (WsWorks && WsWorks.activeId() !== "tide") return []; } catch (e) {}
-  return WR_DEEP_CURATED[sid] || [];
-}
 
 const WR_DX_KINDS = {
   echo: { tag: "ECH", label: "回响" },
@@ -88,7 +52,7 @@ function wrDeepScan(el, sid) {
   const issues = [];
   const skips = wrDxSkips(sid);
 
-  wrDeepCurated(sid).forEach(cu => {
+  [].forEach(cu => {
     const pid = texts.findIndex(t => t.includes(cu.find));
     if (pid >= 0) issues.push({ ...cu, pid, key: cu.id });
   });

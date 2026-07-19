@@ -38,12 +38,12 @@ async function loadStore() {
   installApiRouter(client);
   client.apiPut.mockResolvedValue({});
   const mod = await import("./ws-chapter-plan.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("tide"), T);
+  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
   return { mod, client };
 }
 
 const catalogGetCount = (client) =>
-  client.apiGet.mock.calls.filter(([url]) => url === "/api/v2/projects/tide/catalog").length;
+  client.apiGet.mock.calls.filter(([url]) => url === "/api/v2/projects/prj-main/catalog").length;
 
 describe("WsChapterPlan（章节编排 LLM 规划 store）", () => {
   beforeEach(() => {
@@ -57,7 +57,7 @@ describe("WsChapterPlan（章节编排 LLM 规划 store）", () => {
     const { mod, client } = await loadStore();
     client.apiGet.mockImplementationOnce(() => Promise.resolve({ architecture: ARCH_ROW }));
     const arch = await mod.WsChapterPlan.loadArchitecture("c1");
-    expect(client.apiGet).toHaveBeenCalledWith("/api/v2/projects/tide/catalog/chapters/c1/architecture");
+    expect(client.apiGet).toHaveBeenCalledWith("/api/v2/projects/prj-main/catalog/chapters/c1/architecture");
     expect(arch.promise).toBe("读者看到线索反噬提问者");
     expect(arch.escalation.length).toBe(2);
     expect(arch.fromLlm).toBe(true);
@@ -82,7 +82,7 @@ describe("WsChapterPlan（章节编排 LLM 规划 store）", () => {
     };
     const saved = await mod.WsChapterPlan.saveArchitecture("c1", view);
     expect(client.apiPut).toHaveBeenCalledWith(
-      "/api/v2/projects/tide/catalog/chapters/c1/architecture",
+      "/api/v2/projects/prj-main/catalog/chapters/c1/architecture",
       {
         chapter_promise: "改写后的承诺",
         escalation_path: ["一", "二"],   // 空串被过滤
@@ -123,7 +123,7 @@ describe("WsChapterPlan（章节编排 LLM 规划 store）", () => {
     });
     const fill = await mod.WsChapterPlan.requestFill("c1", {});
     expect(client.apiPost).toHaveBeenCalledWith(
-      "/api/v2/projects/tide/catalog/chapters/c1/plan/fill",
+      "/api/v2/projects/prj-main/catalog/chapters/c1/plan/fill",
       { mode: "fill" },
     );
     expect(fill.patch.scenes[0].set.conflict).toBe("祖父半夜起身");
@@ -148,7 +148,7 @@ describe("WsChapterPlan（章节编排 LLM 规划 store）", () => {
     const candidate = { label: "双场对撞", scene_plan: [] };
     await mod.WsChapterPlan.requestFill("c1", { candidate });
     expect(client.apiPost).toHaveBeenCalledWith(
-      "/api/v2/projects/tide/catalog/chapters/c1/plan/fill",
+      "/api/v2/projects/prj-main/catalog/chapters/c1/plan/fill",
       { mode: "adopt", candidate },
     );
   });
@@ -192,7 +192,7 @@ describe("WsChapterPlan（章节编排 LLM 规划 store）", () => {
     const patch = { drama: { spine: "推进" }, scenes: [{ scene_id: "s1", set: { conflict: "x" } }], append_scenes: [] };
     const applied = await mod.WsChapterPlan.applyPatch("c1", patch);
     expect(client.apiPost).toHaveBeenCalledWith(
-      "/api/v2/projects/tide/catalog/chapters/c1/plan/apply",
+      "/api/v2/projects/prj-main/catalog/chapters/c1/plan/apply",
       { patch },
     );
     expect(applied).toEqual({ drama: 1, scenes: 1, appended: 1, skipped: [{ scene_id: "s1", field: "goal", reason: "field_not_empty" }] });
@@ -220,7 +220,7 @@ describe("WsChapterPlan（章节编排 LLM 规划 store）", () => {
     client.apiPost.mockResolvedValueOnce({ source: "fallback", candidates: [], author_action: { target_view: "config" } });
     const result = await mod.WsChapterPlan.requestCandidates("c1", "更贴近家庭线");
     expect(client.apiPost).toHaveBeenCalledWith(
-      "/api/v2/projects/tide/catalog/chapters/c1/plan/candidates",
+      "/api/v2/projects/prj-main/catalog/chapters/c1/plan/candidates",
       { direction_hint: "更贴近家庭线" },
     );
     expect(result).toBeNull();

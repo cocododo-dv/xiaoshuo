@@ -156,7 +156,7 @@ describe("成稿中心权威章节流", () => {
   });
 
   it("服务端正文失败时显示错误与重试，潮汐演示章也不回退示例正文", async () => {
-    fixture.projectId = "tide";
+    fixture.projectId = "prj-main";
     flow.snapshot.mockReturnValue({
       status: "error",
       body: null,

@@ -37,9 +37,9 @@ Assert-True -Condition (Test-Path $devScript) -Message "Missing dev lifecycle sc
 Assert-True -Condition (Test-Path $resetWrapper) -Message "Missing one-click reset wrapper."
 
 $devSource = Get-Content -LiteralPath $devScript -Raw
-Assert-True -Condition ($devSource.Contains("skip-demo-seed")) -Message "dev.ps1 must honor the clean reset marker."
-Assert-True -Condition ($devSource.Contains("NOVEL_SYSTEM_SKIP_DEMO_SEED")) -Message "dev.ps1 must support the env var seed skip override."
-Assert-True -Condition ($devSource.Contains("Demo seed skipped; clean reset marker is active.")) -Message "dev.ps1 must print a clear skip message."
+# 演示数据已退役：生产启动器不再种任何演示作品，也不再需要 skip 标记/开关。
+Assert-True -Condition (-not $devSource.Contains("seed_demo")) -Message "dev.ps1 must not seed retired demo data."
+Assert-True -Condition (-not $devSource.Contains("skip-demo-seed")) -Message "dev.ps1 must not reference the retired seed-skip marker."
 
 $wrapperSource = Get-Content -LiteralPath $resetWrapper -Raw
 Assert-True -Condition ($wrapperSource.Contains("scripts\reset_runtime_keep_llm.ps1")) -Message "One-click wrapper must call the reset script."
@@ -179,7 +179,8 @@ print(json.dumps(payload, ensure_ascii=False))
     Assert-True -Condition (-not (@($state.secret_ids) -contains "smtp_password")) -Message "Non-LLM secret was not cleared."
     Assert-True -Condition ($state.alembic_count -eq 1) -Message "Alembic version row should be preserved."
 
-    Assert-True -Condition (Test-Path -LiteralPath (Join-Path $tempRoot ".codex-run\skip-demo-seed")) -Message "Clean reset marker was not created."
+    # 演示 seed 已退役：reset 不再写 skip 标记（生产启动器本就不种演示数据）。
+    Assert-True -Condition (-not (Test-Path -LiteralPath (Join-Path $tempRoot ".codex-run\skip-demo-seed"))) -Message "Retired seed-skip marker must no longer be created."
     foreach ($relativePath in @(".playwright-cli", ".codex-run\backend.pid", ".codex-run\backend.err.log", "backend\.pytest_cache", "backend\.vector_store", "frontend\dist", "frontend\test-results", "docs\reference-learning-qa-2026-04-20.md", "backend\src\novel_system\__pycache__")) {
         $absolutePath = Join-Path $tempRoot $relativePath
         Assert-True -Condition (-not (Test-Path -LiteralPath $absolutePath)) -Message ("Generated path was not removed: {0}" -f $relativePath)

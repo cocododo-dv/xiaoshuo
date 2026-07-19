@@ -13,7 +13,7 @@ import { S2_BE_STEPS, s2NormalizeState } from "./ws-snow.jsx";
      fe_state 变为 done 时顺手 POST approve（闸门不满足则静默跳过）。
    - 启动 / 进入 #construct / 切作品 → GET workspace 水合：
      fe_* 键优先（无损还原），无 fe_* 时从规范字段反推原型形状
-     （兼容 seed_demo / 真·雪花管线生成的项目）；本地 _t 不旧于
+     （真·雪花管线生成的项目）；本地 _t 不旧于
      服务端则本地为准（未上行的编辑不被覆盖）。
    - revs/confirmRevs 经 book_brief 的 fe_meta 随存；history（过程
      快照日志）留本地（体积大、跨会话价值低，账本记录）。

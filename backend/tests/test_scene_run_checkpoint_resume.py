@@ -70,6 +70,20 @@ from novel_system.services.scene_run_checkpoint import (
     idempotency_execution_id,
     scene_job_execution_id,
 )
+from tests.real_llm_fakes import ScenePipelineOnlineFake
+
+
+@pytest.fixture(autouse=True)
+def _accounted_online_default_orchestrator_runner(monkeypatch) -> None:
+    """Exercise default pipeline nodes through an accounted online test provider."""
+
+    monkeypatch.setattr(
+        "novel_system.services.orchestrator.LLMNodeRunner",
+        lambda session: LLMNodeRunner(
+            session,
+            llm_client=ScenePipelineOnlineFake(),
+        ),
+    )
 
 
 def _state(session, *, scene_id: str = "SC_CHECKPOINT") -> SceneRunState:
@@ -550,9 +564,24 @@ class _PlanningCheckpointClient(_AccountedTestClient):
                 "anti_summary_rule": "end on the lamp",
             }
         elif request.node_id == "chapter_story_architecture":
-            payload = {"ending_question": "does the checkpoint survive"}
+            payload = {
+                "chapter_promise": "the checkpoint must preserve the accepted plan",
+                "escalation_path": ["record the plan", "interrupt the run", "resume without replay"],
+                "reveal_plan": ["the durable artifact survives the interruption"],
+                "payoff_target": "resume from the next provider call",
+                "character_shift": "the operator trusts durable state",
+                "ending_question": "does the checkpoint survive",
+            }
         elif request.node_id == "character_pressure_blueprint":
-            payload = {"wrong_belief": "a retry must start over"}
+            payload = {
+                "surface_goal": "finish the interrupted scene",
+                "hidden_fear": "the accepted plan was lost",
+                "wrong_belief": "a retry must start over",
+                "shame_point": "replaying work would hide a broken checkpoint",
+                "avoidance_strategy": "restart instead of checking durable state",
+                "relationship_debt": "preserve the prior operator's accepted work",
+                "current_mask": "calm operational certainty",
+            }
         else:
             raise AssertionError(f"unexpected planning request {request.node_id}")
         return _response(payload, f"planning-{request.node_id}-{len(self.requests)}")
@@ -1196,6 +1225,8 @@ def _seed_resume_scene(session) -> None:
             character_id="CHAR_A",
             content="concise",
             active_flag=1,
+            runtime_eligible=1,
+            runtime_eligibility_basis="direct_read",
         )
     )
     session.add(
@@ -1207,6 +1238,8 @@ def _seed_resume_scene(session) -> None:
             version=1,
             content="uneasy allies",
             active_flag=1,
+            runtime_eligible=1,
+            runtime_eligibility_basis="direct_read",
         )
     )
     session.commit()
@@ -1262,14 +1295,18 @@ def test_unexpected_hard_qc_prompt_failure_is_fail_closed_without_report_or_chec
     generation_client = _CountingGenerationClient()
     hard_qc = HardQcEngine(session, llm_client=_HardPassClient())
     hard_qc.prompt_builder = _UnexpectedHardPromptBuilder()
+    planning_client = _PlanningCheckpointClient()
+    orchestrator = Orchestrator(
+        session,
+        scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
+        hard_qc_engine=hard_qc,
+        soft_qc_engine=_FailAfterStyle(),
+        planning_service=NearFinalPlanningService(session, llm_client=planning_client),
+    )
+    orchestrator.scene_blueprint_service = SceneBlueprintService(session, llm_client=planning_client)
 
     with pytest.raises(RuntimeError, match="unexpected hard QC prompt failure"):
-        Orchestrator(
-            session,
-            scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
-            hard_qc_engine=hard_qc,
-            soft_qc_engine=_FailAfterStyle(),
-        ).run_scene("CH_RESUME_SC01", execution_id="idempotency:hard-qc-unexpected")
+        orchestrator.run_scene("CH_RESUME_SC01", execution_id="idempotency:hard-qc-unexpected")
 
     state = session.get(SceneRunState, "CH_RESUME_SC01")
     assert state.run_checkpoint == "neutral_ready"
@@ -1293,15 +1330,19 @@ def test_unexpected_soft_qc_runner_failure_is_fail_closed_without_report_checkpo
     _seed_resume_scene(session)
     generation_client = _CountingGenerationClient()
     soft_qc = SoftQcEngine(session, llm_runner=_UnexpectedSoftQcRunner())
+    planning_client = _PlanningCheckpointClient()
+    orchestrator = Orchestrator(
+        session,
+        scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
+        hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
+        soft_qc_engine=soft_qc,
+        near_final_service=_FailNearFinal(),
+        planning_service=NearFinalPlanningService(session, llm_client=planning_client),
+    )
+    orchestrator.scene_blueprint_service = SceneBlueprintService(session, llm_client=planning_client)
 
     with pytest.raises(RuntimeError, match="unexpected soft QC runner failure"):
-        Orchestrator(
-            session,
-            scene_generation_service=SceneGenerationService(session, llm_client=generation_client),
-            hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
-            soft_qc_engine=soft_qc,
-            near_final_service=_FailNearFinal(),
-        ).run_scene("CH_RESUME_SC01", execution_id="idempotency:soft-qc-unexpected")
+        orchestrator.run_scene("CH_RESUME_SC01", execution_id="idempotency:soft-qc-unexpected")
 
     state = session.get(SceneRunState, "CH_RESUME_SC01")
     assert state.run_checkpoint == "soft_qc_ready"
@@ -2732,12 +2773,10 @@ def test_auto_critique_patch_parse_failure_parent_owner_tamper_blocks(
 
 
 @pytest.mark.parametrize("gate_open", [False, True])
-@pytest.mark.parametrize("historical_mode", ["online", "offline_deterministic"])
 def test_auto_critique_patch_rejected_tombstone_recovers_before_gate_without_replay(
     session,
     monkeypatch,
     gate_open: bool,
-    historical_mode: str,
 ) -> None:
     from dataclasses import replace
     from novel_system.services.auto_critique import auto_critique
@@ -2746,9 +2785,7 @@ def test_auto_critique_patch_rejected_tombstone_recovers_before_gate_without_rep
         pass
 
     _seed_resume_scene(session)
-    execution_id = (
-        f"idempotency:auto-patch-rejected-recover:{gate_open}:{historical_mode}"
-    )
+    execution_id = f"idempotency:auto-patch-rejected-recover:{gate_open}:online"
 
     def rule_no_call(content, *_args, **kwargs):
         context = kwargs["llm_context"]
@@ -2769,12 +2806,6 @@ def test_auto_critique_patch_rejected_tombstone_recovers_before_gate_without_rep
     first_service = SceneGenerationService(session, llm_client=generation_client)
 
     def reject_then_crash(scene_id, *_args, **_kwargs):
-        if historical_mode == "offline_deterministic":
-            monkeypatch.setattr(
-                first_service._llm_runner,
-                "_provider_execution_mode",
-                lambda: "offline_deterministic",
-            )
         scene = session.get(SceneCard, scene_id)
         chapter = session.get(ChapterGoal, scene.chapter_id)
         session.add(
@@ -2792,7 +2823,7 @@ def test_auto_critique_patch_rejected_tombstone_recovers_before_gate_without_rep
                 execution_id=execution_id,
                 execution_step_key="soft_patch:auto_critique:0",
                 request_payload_summary={
-                    "_accounting_provider_execution_mode": historical_mode
+                    "_accounting_provider_execution_mode": "online"
                 },
                 prompt_tokens=0,
                 completion_tokens=0,
@@ -2845,7 +2876,7 @@ def test_auto_critique_patch_rejected_tombstone_recovers_before_gate_without_rep
     assert refs["soft_auto_critique_outcome"] == "patch_failed"
     assert failure["outcome"] == "rejected_before_dispatch"
     assert failure["llm_call_id"] == "llmcall_auto_patch_rejected_before_sub0"
-    assert failure["provider_execution_mode"] == historical_mode
+    assert failure["provider_execution_mode"] == "online"
     assert len(generation_client.requests) == provider_calls
     assert session.scalar(select(func.count()).select_from(LlmCall)) == parent_count
     assert _total_llm_budget_charged(session) == charged_before
@@ -3673,12 +3704,12 @@ def test_auto_critique_patch_generation_mode_snapshot_blocks_tamper(
     assert corrupt.value.code == "RUN_CHECKPOINT_CORRUPT"
 
 
-def test_auto_critique_patch_success_resumes_after_online_to_offline_config_switch(
+def test_auto_critique_patch_success_resumes_with_a_fresh_online_runner(
     session,
     monkeypatch,
 ) -> None:
     _seed_resume_scene(session)
-    execution_id = "idempotency:auto-patch-mode-switch:online-to-offline"
+    execution_id = "idempotency:auto-patch-fresh-online-runner"
     _run_to_patched_auto_critique_sub0(
         session,
         monkeypatch,
@@ -3689,11 +3720,6 @@ def test_auto_critique_patch_success_resumes_after_online_to_offline_config_swit
     assert refs["soft_input_provider_execution_mode"] == "online"
 
     resumed = _activate_checkpoint_orchestrator(session, execution_id)
-    monkeypatch.setattr(
-        resumed.scene_generation_service._llm_runner,
-        "_provider_execution_mode",
-        lambda: "offline_deterministic",
-    )
     generation = resumed._load_soft_draft_checkpoint(
         "CH_RESUME_SC01",
         prefix="soft_input",
@@ -3703,7 +3729,7 @@ def test_auto_critique_patch_success_resumes_after_online_to_offline_config_swit
     assert generation.row_id == refs["soft_input_draft_row_id"]
 
 
-def test_auto_critique_unchanged_resumes_after_generation_config_switch(
+def test_auto_critique_unchanged_resumes_with_a_fresh_online_runner(
     session,
     monkeypatch,
 ) -> None:
@@ -3726,11 +3752,6 @@ def test_auto_critique_unchanged_resumes_after_generation_config_switch(
     assert refs["soft_input_provider_execution_mode"] == "online"
 
     resumed = _activate_checkpoint_orchestrator(session, execution_id)
-    monkeypatch.setattr(
-        resumed.scene_generation_service._llm_runner,
-        "_provider_execution_mode",
-        lambda: "offline_deterministic",
-    )
     generation = resumed._load_soft_draft_checkpoint(
         "CH_RESUME_SC01",
         prefix="soft_input",
@@ -3740,42 +3761,24 @@ def test_auto_critique_unchanged_resumes_after_generation_config_switch(
     assert generation.row_id == refs["soft_input_draft_row_id"]
 
 
-def test_auto_critique_patch_success_resumes_after_offline_to_online_config_switch(
+def test_auto_critique_patch_success_resumes_after_online_client_switch(
     session,
     monkeypatch,
 ) -> None:
-    from novel_system.services.llm_client import OfflineDeterministicExecution
-    from novel_system.services.scene_generation import (
-        OfflineNeutralClient,
-        OfflineStyleClient,
-    )
-
-    class OfflineGenerationClient(OfflineDeterministicExecution):
-        def __init__(self) -> None:
-            self.requests: list[LLMRequest] = []
-
-        def generate_offline_deterministic(self, request: LLMRequest) -> LLMResponse:
-            self.requests.append(request)
-            if request.node_id == "neutral_draft":
-                return OfflineNeutralClient().generate(request)
-            return OfflineStyleClient(
-                patch_mode=request.node_id == "style_patch"
-            ).generate(request)
-
     _seed_resume_scene(session)
-    execution_id = "idempotency:auto-patch-mode-switch:offline-to-online"
+    execution_id = "idempotency:auto-patch-online-client-switch"
     calls: list[str] = []
     monkeypatch.setattr(
         "novel_system.services.auto_critique.llm_auto_critique",
         _completed_auto_critique_stub(session, calls, should_rewrite=True),
     )
-    offline_client = OfflineGenerationClient()
+    first_online_client = _CountingGenerationClient()
     with pytest.raises(RuntimeError, match="fail after style checkpoint"):
         Orchestrator(
             session,
             scene_generation_service=SceneGenerationService(
                 session,
-                llm_client=offline_client,
+                llm_client=first_online_client,
             ),
             hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
             soft_qc_engine=_FailAfterStyle(),
@@ -3784,10 +3787,8 @@ def test_auto_critique_patch_success_resumes_after_offline_to_online_config_swit
     state = session.get(SceneRunState, "CH_RESUME_SC01")
     refs = state.run_checkpoint_json["artifact_refs"]
     assert refs["soft_auto_critique_outcome"] == "patched"
-    assert refs["soft_input_provider_execution_mode"] == "offline_deterministic"
-    assert session.get(LlmCall, refs["soft_input_llm_call_id"]).provider == (
-        "offline_deterministic"
-    )
+    assert refs["soft_input_provider_execution_mode"] == "online"
+    assert session.get(LlmCall, refs["soft_input_llm_call_id"]).provider == "fake-provider"
 
     generation = _activate_checkpoint_orchestrator(
         session,
@@ -6593,7 +6594,6 @@ def test_provider_owner_lease_tracks_each_request_timeout_and_restores_default(s
                     "template_version": "v1",
                 },
                 user_prompt="user",
-                offline_client_factory=lambda: _TimeoutClient(),
             )
     finally:
         end_llm_execution(token)
@@ -6664,7 +6664,7 @@ def test_dispatch_truth_allows_predispatch_retry_but_blocks_unknown_provider_out
         "template_version": "v1",
     }
 
-    class _MustNotDispatch:
+    class _MustNotDispatch(_AccountedTestClient):
         def generate(self, request):  # noqa: ANN001, ANN201
             raise AssertionError("provider must not be called")
 
@@ -6683,7 +6683,6 @@ def test_dispatch_truth_allows_predispatch_retry_but_blocks_unknown_provider_out
                 step="dispatch-test",
                 prompt=prompt,
                 user_prompt="user",
-                offline_client_factory=_MustNotDispatch,
             )
     finally:
         end_llm_execution(token)
@@ -6714,7 +6713,6 @@ def test_dispatch_truth_allows_predispatch_retry_but_blocks_unknown_provider_out
                 step="dispatch-test",
                 prompt=prompt,
                 user_prompt="user",
-                offline_client_factory=_UnknownProviderOutcome,
             )
     finally:
         end_llm_execution(token)

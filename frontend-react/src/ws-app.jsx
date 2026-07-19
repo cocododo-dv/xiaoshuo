@@ -13,7 +13,6 @@ import { WsLibrary, WsTrash } from "./ws-library.jsx";
 import { WsAuthor } from "./ws-author.jsx";
 import { SceneTweaks, WsScene } from "./ws-scene.jsx";
 import { WsManuscripts } from "./ws-manuscripts.jsx";
-import { WsLongform6 } from "./lf6-app.jsx";
 import { WsQuality } from "./ws-quality.jsx";
 import { WsEval } from "./ws-eval.jsx";
 import { WsCost } from "./ws-cost.jsx";
@@ -75,7 +74,6 @@ const WS_NAV_GROUPS = [
       { id: "author",      label: "章节编排", icon: "Layout" },
       { id: "scene",       label: "AI 起草台", icon: "Play" },
       { id: "manuscripts", label: "成稿中心", icon: "BookOpen" },
-      { id: "longform",    label: "长篇控制塔", icon: "Radar" },
       { id: "quality",     label: "文学质量", icon: "Microscope" },
       { id: "eval",        label: "盲评实验", icon: "Flask" },
     ],
@@ -204,7 +202,6 @@ function App() {
       case "author":      return <WsAuthor go={go} />;
       case "scene":       return <WsScene go={go} t={t} />;
       case "manuscripts": return <WsManuscripts go={go} />;
-      case "longform":    return <WsLongform6 go={go} />;
       case "quality":     return <WsQuality go={go} />;
       case "eval":        return <WsEval go={go} />;
       case "cost":        return <WsCost go={go} />;
@@ -384,7 +381,7 @@ function NewWorkModal({ onCreate, onClose }) {
         <div className="ws-nw-body">
           <label className="ws-nw-field">
             <span className="ws-nw-lbl">书名 <em>必填</em></span>
-            <input ref={ref} className="ws-nw-input" data-testid="work-new-title" value={title} placeholder="例如：盐镇来信"
+            <input ref={ref} className="ws-nw-input" data-testid="work-new-title" value={title} placeholder="例如：你的书名"
               onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
           </label>
           <label className="ws-nw-field">

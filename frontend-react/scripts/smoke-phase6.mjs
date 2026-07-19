@@ -29,7 +29,7 @@ await page.evaluate((apiBase) => {
   localStorage.clear();
   localStorage.setItem("novel-system-api-base", apiBase);
   localStorage.setItem("novel-system-api-base-default", "http://127.0.0.1:8000");
-  localStorage.setItem("ws_active_work_v1", "tide");
+  localStorage.setItem("ws_active_work_v1", "work-a");
 }, API);
 await page.reload();
 await page.waitForSelector(".ws-app");
@@ -44,28 +44,28 @@ await check("资料库来自后端（人物/世界/大事记齐全）", async ()
       people: all.filter(e => e.cat === "people").length,
       world: all.filter(e => e.cat === "world").length,
       events: all.filter(e => e.cat === "events").length,
-      linCen: all.find(e => e.name === "林岑"),
+      linCen: all.find(e => e.name === "角色甲"),
     };
   });
   if (counts.people < 5) throw new Error(`people: ${counts.people}`);
   if (counts.world < 5) throw new Error(`world: ${counts.world}`);
   if (counts.events < 2) throw new Error(`events: ${counts.events}`);
-  if (!counts.linCen || !counts.linCen.facts.length) throw new Error("林岑 facts missing");
-  if (!counts.linCen.links.length) throw new Error("林岑 links missing");
+  if (!counts.linCen || !counts.linCen.facts.length) throw new Error("角色甲 facts missing");
+  if (!counts.linCen.links.length) throw new Error("角色甲 links missing");
   const body = await page.textContent("body");
-  if (!body.includes("林岑")) throw new Error("library view missing 林岑");
+  if (!body.includes("角色甲")) throw new Error("library view missing 角色甲");
 });
 
 await check("人物改名落库（character_id 不变）", async () => {
   await page.evaluate(() => {
-    window.LIB_persist({ "lin-cen": { name: "林岑·改" } });
+    window.LIB_persist({ "lin-cen": { name: "角色甲·改" } });
   });
   await page.waitForTimeout(1500);
   const overview = await api("/api/v2/projects/tide/library");
   const c = overview.characters.find(x => x.character_id === "lin-cen");
-  if (!c || c.name !== "林岑·改") throw new Error(`name: ${c && c.name}`);
+  if (!c || c.name !== "角色甲·改") throw new Error(`name: ${c && c.name}`);
   // 还原
-  await page.evaluate(() => { window.LIB_persist({ "lin-cen": { name: "林岑" } }); });
+  await page.evaluate(() => { window.LIB_persist({ "lin-cen": { name: "角色甲" } }); });
   await page.waitForTimeout(1200);
 });
 
@@ -95,7 +95,7 @@ await check("idea 卡「确认入库」→ 实体进库进图（D5 半自动）"
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Idempotency-Key": "p6-idea-" + Date.now() },
       body: JSON.stringify({
-        project_id: "tide", kind: "idea", priority: 2,
+        project_id: "work-a", kind: "idea", priority: 2,
         title: "发现新地点：盐雾灯塔", source: "资料派生", where: "成稿归档 · 模拟",
         dedupe_key: "derive:p6smoke:盐雾灯塔",
         actions: [

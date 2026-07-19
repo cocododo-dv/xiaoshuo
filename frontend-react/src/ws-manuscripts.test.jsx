@@ -136,7 +136,7 @@ describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
   it("无归档正文的章 → 场景无稿（live=false、无段落），不再拿 wr-doc 假装成稿", async () => {
     const { mod } = await loadStore({ c1: EMPTY_DETAIL });
     // 就算 wr-doc 缓存里有内容，也不得作为成稿正文来源
-    window.localStorage.setItem("ws:tide:wr-doc:ch01s1", "<p>缓存里的假成稿</p>");
+    window.localStorage.setItem("ws:prj-main:wr-doc:ch01s1", "<p>缓存里的假成稿</p>");
     await mod.WsManuStore.refresh("c1");
     const body = mod.WsManuStore.body("c1");
     expect(body.completion).toBe("empty");

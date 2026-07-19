@@ -13,6 +13,16 @@ from novel_system.db.models import (
     WriterEvaluation,
 )
 
+import pytest as _pytest_au
+from tests.real_llm_fakes import install_online_author_pipeline as _install_online_author_pipeline
+
+
+@_pytest_au.fixture(autouse=True)
+def _auto_online_author(monkeypatch):
+    """假生成已退役：作者稿 AI 建议 / 结构反提取走在线记账替身（按 node_id 派发）。"""
+    _install_online_author_pipeline(monkeypatch)
+
+
 PROJECT_ID = "WR_PROJECT"
 
 

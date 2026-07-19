@@ -9,6 +9,7 @@ from novel_system.tools.llm_outlet_inventory import inventory_report, main as in
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "novel_system"
 
 EXPECTED_PRODUCTION_OUTLET_IDENTITIES = {
+    "services/chapter_plan_llm.py::ChapterPlanService._run_structured_task::accounted_call",
     "services/literary_eval.py::LLMLiteraryCaseGenerator.__call__::accounted_call",
     "services/llm_accounting.py::_AccountedCompletionProbeExecution.generate_accounted::accounted_probe_transport",
     "services/llm_accounting.py::execute_accounted_completion_probe::accounted_call",
@@ -31,8 +32,8 @@ def test_production_outlet_identity_set_is_locked_and_fully_unified() -> None:
     report = inventory_report(SRC_ROOT)
 
     assert report["summary"] == {
-        "application_outlets": 8,
-        "unified": 8,
+        "application_outlets": 9,
+        "unified": 9,
         "unaccounted": 0,
     }
     assert {item["identity"] for item in report["outlets"]} == (
@@ -163,9 +164,11 @@ def new_completion(session, client, request, context):
     report = inventory_report(source_root)
     identities = {item["identity"] for item in report["outlets"]}
 
+    # 生产已知 outlet 现为 9 个（含已登记的 chapter_plan_llm）；临时新增 1 个 → 共 10，
+    # 其中新增的那个未登记 → unaccounted=1，仍验证「新 outlet 打破锁定集」。
     assert report["summary"] == {
-        "application_outlets": 9,
-        "unified": 8,
+        "application_outlets": 10,
+        "unified": 9,
         "unaccounted": 1,
     }
     assert identities != EXPECTED_PRODUCTION_OUTLET_IDENTITIES

@@ -172,7 +172,7 @@ function WsLibrary({ go }) {
         <header className="page-header">
           <div>
             <div className="page-eyebrow">档案库</div>
-            <h1 className="page-title">{(WsWorks ? WsWorks.active().title : "潮汐档案")} · 故事圣经</h1>
+            <h1 className="page-title">{(WsWorks ? WsWorks.active().title : "未命名作品")} · 故事圣经</h1>
             <p className="page-subtitle">人物、世界、大事记、参考与知识，全部互相关联。改动这里会影响后续的候选生成。</p>
           </div>
           <div className="flex gap-2" style={{ alignItems: "center" }}>

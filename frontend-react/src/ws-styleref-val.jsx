@@ -10,55 +10,9 @@ const { useState: useStSRV } = React;
      quantitative (自适应阈值) / semantic (radar) / plagiarism (n-gram)
      + forbidden_pattern hits
    真后端：有真画像 → POST /validate（sync 内联 / async 轮询 /reports）；
-   无（演示书/未合成）→ 回退演示数据。
+   无画像 → 空态引导（不再回退演示数据）。
    ========================================================== */
 
-const SRV_SAMPLE_TEXT =
-  "他没有应声，弯下腰，把那枚铜板从砖缝里抠出来，又用袖子擦了擦。天色已经暗下去，巷口的风把一张旧报纸卷起来，贴在墙根，又慢慢滑落。他站直了，望了望那扇关着的门，终于没有敲，转身走进了愈来愈浓的暮色里。";
-
-/* ---- demo quantitative report (自适应 tolerance) ---- */
-const SRV_QUANT = [
-  { name: "平均句长",      target: 16.8, std: 11.2, actual: 18.2, unit: "字" },
-  { name: "句长标准差",    target: 11.2, std: 3.1,  actual: 10.4, unit: "" },
-  { name: "短句率",        target: 0.41, std: 0.09, actual: 0.38, unit: "", pct: true },
-  { name: "对话占比",      target: 0.23, std: 0.07, actual: 0.05, unit: "", pct: true },
-  { name: "比喻密度/千",   target: 3.2,  std: 1.8,  actual: 2.1, unit: "" },
-  { name: "文言词比率",    target: 0.14, std: 0.05, actual: 0.16, unit: "", pct: true },
-  { name: "视觉感官/千",   target: 8.1,  std: 2.6,  actual: 9.4, unit: "" },
-  { name: "破折号/千",     target: 2.4,  std: 1.1,  actual: 1.8, unit: "" },
-];
-
-const SRV_FLOORS = {
-  "平均句长": 3.0, "句长标准差": 2.0, "短句率": 0.05, "对话占比": 0.05,
-  "比喻密度/千": 1.0, "文言词比率": 0.03, "视觉感官/千": 1.5, "破折号/千": 0.8,
-};
-
-/* ---- demo semantic radar (6 axes) ---- */
-const SRV_RADAR = [
-  { axis: "语言贴合", v: 0.86 },
-  { axis: "叙事贴合", v: 0.78 },
-  { axis: "场景贴合", v: 0.71 },
-  { axis: "情感基调", v: 0.82 },
-  { axis: "连贯性",   v: 0.90 },
-  { axis: "原创度",   v: 0.94 },
-];
-
-const SRV_FORBIDDEN = [
-  { statement: "排比堆叠的华丽长句抒情", triggered: false },
-  { statement: "「眼睛像星星」式陈词滥调比喻", triggered: false },
-  { statement: "对话后追加大段情绪解释", triggered: false },
-  { statement: "成语连缀替代描写", triggered: true, excerpt: "愈来愈浓的暮色里", note: "轻度：「愈来愈浓」接近成语化抒情，建议改具象。" },
-];
-
-const SRV_PLAG = {
-  passed: true,
-  maxRun: 6,
-  threshold: 12,
-  ngram: 8,
-  flags: [
-    { run: 6, text: "把那枚铜板从砖缝里", source: "近似：呐喊 P-145「摸出四文大钱」", level: "ok" },
-  ],
-};
 
 /* ---- 真实 report 字段映射 ---- */
 const SRV_METRIC_META = {
@@ -157,7 +111,7 @@ window.SrValidation = function SrValidation({ book, go }) {
   const realMode = !!profileId;
 
   const [mode, setMode] = useStSRV("async_full");
-  const [text, setText] = useStSRV(SRV_SAMPLE_TEXT);
+  const [text, setText] = useStSRV("");
   const [running, setRunning] = useStSRV(false);
   const [report, setReport] = useStSRV(null);   // 归一化的真实报告
   const [done, setDone] = useStSRV(false);
@@ -165,12 +119,9 @@ window.SrValidation = function SrValidation({ book, go }) {
   const pollRef = React.useRef(null);
   React.useEffect(() => () => clearTimeout(pollRef.current), []);
 
-  // 演示模式仅限演示书;真实书没画像时走空态引导(不再把演示报告当成这本书的)
-  const demoMode = !isReal;
-  const showReport = demoMode || (done && !!report);
+  const showReport = done && !!report;
 
   const run = async () => {
-    if (demoMode) { setRunning(true); setDone(false); setTimeout(() => { setRunning(false); setDone(true); }, 1400); return; }
     if (running) return;
     setRunning(true); setDone(false); setErr(null); setReport(null);
     clearTimeout(pollRef.current);
@@ -202,7 +153,7 @@ window.SrValidation = function SrValidation({ book, go }) {
   };
 
   const verdict = report ? srvVerdictMeta(report.verdict)
-    : (demoMode ? computeVerdict() : { kind: "partial", label: "待回测", sub: "运行回测查看结论" });
+    : { kind: "partial", label: "待回测", sub: "运行回测查看结论" };
 
   // 四路汇总
   const sum = report ? {
@@ -294,7 +245,7 @@ window.SrValidation = function SrValidation({ book, go }) {
           <div className="srv-verdict-sub">{verdict.sub}</div>
         </div>
 
-        {(sum || demoMode) && (
+        {sum && (
           <div className="card-flat">
             <div className="ctx-head" style={{marginBottom:10}}><I.Target size={13} /><span>四路汇总</span></div>
             <ul className="srv-summary">
@@ -306,7 +257,7 @@ window.SrValidation = function SrValidation({ book, go }) {
           </div>
         )}
 
-        {(rewriteHints ? rewriteHints.length > 0 : demoMode) && (
+        {rewriteHints && rewriteHints.length > 0 && (
           <div className="card-flat srv-rewrite">
             <div className="ctx-head" style={{marginBottom:10}}><I.Wand size={13} /><span>改写建议</span></div>
             {(rewriteHints || [
@@ -334,13 +285,14 @@ window.SrValidation = function SrValidation({ book, go }) {
 
 /* ============ ValidationReportCard ============ */
 window.ValidationReportCard = function ValidationReportCard({ report, mode }) {
-  const quant = report ? report.quant : SRV_QUANT;
+  if (!report) return null;
+  const quant = report.quant;
   const quantPass = quant.filter(quantItemPass).length;
-  const plag = report ? report.plagiarism : SRV_PLAG;
-  const forbidden = report ? report.forbidden : SRV_FORBIDDEN;
+  const plag = report.plagiarism;
+  const forbidden = report.forbidden;
   const forbiddenHits = forbidden.filter(f => f.triggered).length;
-  const semantic = report ? report.semantic : SRV_RADAR;
-  const semanticPending = report ? report.semanticPending : (mode === "sync_only");
+  const semantic = report.semantic;
+  const semanticPending = report.semanticPending;
   const semanticMean = semantic.length ? (semantic.reduce((s, d) => s + (d.score != null ? d.score : d.v * 10), 0) / semantic.length) : null;
 
   return (
@@ -460,20 +412,11 @@ window.ValidationReportCard = function ValidationReportCard({ report, mode }) {
   );
 };
 
-/* ---- helpers（demo verdict / 量化通过判定）---- */
-function tol(m) { return m.tolerance != null ? m.tolerance : Math.max(m.std * 1.25, SRV_FLOORS[m.name] || 0.1); }
+/* ---- helpers（量化通过判定）---- */
+function tol(m) { return m.tolerance != null ? m.tolerance : Math.max(m.std * 1.25, 0.1); }
 function quantItemPass(m) { return m.passed != null ? m.passed : Math.abs(m.actual - m.target) <= tol(m); }
-function quantPassRate() { return SRV_QUANT.filter(quantItemPass).length / SRV_QUANT.length; }
-function computeVerdict() {
-  if (!SRV_PLAG.passed) return { kind: "plagiarism", label: "抄袭风险", sub: "最长重叠超阈值，直接进审核" };
-  const hardForbidden = SRV_FORBIDDEN.some(f => f.triggered && f.severity === "error");
-  if (hardForbidden) return { kind: "fail", label: "未通过", sub: "触发硬性禁忌模式" };
-  const qr = quantPassRate();
-  if (qr >= 0.8) return { kind: "partial", label: "基本通过", sub: "量化达标，1 项轻度禁忌待修" };
-  return { kind: "partial", label: "部分通过", sub: "建议带修改重写一轮" };
-}
 
-/* ---- QuantBar: target band + actual marker（真实项带 tolerance/passed，演示项现算）---- */
+/* ---- QuantBar: target band + actual marker ---- */
 function QuantBar({ m }) {
   const t = tol(m);
   const range = t * 2.6;

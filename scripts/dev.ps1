@@ -275,12 +275,7 @@ function Invoke-BackendBootstrap {
         $env:NOVEL_SYSTEM_VECTOR_BACKEND = "memory"
         $env:NOVEL_SYSTEM_CONFIG_SECRET = Resolve-DevConfigSecret
         Invoke-NativeStep -Label "Backend migration" -WorkingDirectory $script:BackendDir -FilePath "python" -ArgumentList @("-m", "alembic", "upgrade", "head")
-        if (Test-DemoSeedSkipped) {
-            Write-Step -Message "Demo seed skipped; clean reset marker is active."
-        }
-        else {
-            Invoke-NativeStep -Label "Demo seed" -WorkingDirectory $script:BackendDir -FilePath "python" -ArgumentList @("-m", "novel_system.tools.seed_demo")
-        }
+        # 演示数据已退役：生产启动器只跑迁移，绝不向运行库注入任何演示作品。
     }
     finally {
         if ($null -eq $previousPythonPath) {
@@ -304,13 +299,6 @@ function Invoke-BackendBootstrap {
             $env:NOVEL_SYSTEM_CONFIG_SECRET = $previousConfigSecret
         }
     }
-}
-
-function Test-DemoSeedSkipped {
-    if ($env:NOVEL_SYSTEM_SKIP_DEMO_SEED -eq "1") {
-        return $true
-    }
-    return Test-Path -LiteralPath $script:SkipDemoSeedMarker
 }
 
 function Show-StartupFailureDiagnostics {
@@ -465,7 +453,6 @@ $script:ReactPidFile = Join-Path $script:RunDir "frontend-react.pid"
 $script:BackendUrlFile = Join-Path $script:RunDir "backend.url"
 $script:FrontendUrlFile = Join-Path $script:RunDir "frontend.url"
 $script:ReactUrlFile = Join-Path $script:RunDir "frontend-react.url"
-$script:SkipDemoSeedMarker = Join-Path $script:RunDir "skip-demo-seed"
 $script:ConfigSecretFile = Join-Path $script:RunDir "config.secret"
 $script:BackendOutLog = Join-Path $script:RunDir "backend.out.log"
 $script:BackendErrLog = Join-Path $script:RunDir "backend.err.log"

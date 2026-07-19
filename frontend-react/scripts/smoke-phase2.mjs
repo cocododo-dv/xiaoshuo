@@ -37,14 +37,14 @@ await check("书架来自后端（两部 demo 种子）", async () => {
   await page.click(".ws-brand");
   await page.waitForSelector(".ws-wsw");
   const list = await page.textContent(".ws-wsw-list");
-  if (!list.includes("潮汐档案") || !list.includes("盐镇来信")) throw new Error(`switcher: ${list.slice(0, 120)}`);
+  if (!list.includes("样例长卷") || !list.includes("样例短卷")) throw new Error(`switcher: ${list.slice(0, 120)}`);
   await page.keyboard.press("Escape");
 });
 
 await check("切换器进度数字来自 writing-stats（3.8 万字）", async () => {
   await page.click(".ws-brand");
   await page.waitForSelector(".ws-wsw");
-  const row = await page.textContent('.ws-wsw-row:has-text("潮汐档案")');
+  const row = await page.textContent('.ws-wsw-row:has-text("样例长卷")');
   if (!row.includes("3.8 万字")) throw new Error(`row: ${row}`);
   await page.keyboard.press("Escape");
 });
@@ -76,23 +76,23 @@ await check("新建作品落库（换会话仍在）", async () => {
 await check("demo 作品主页正常渲染（本地目录种子 + 服务端统计）", async () => {
   await page.click(".ws-brand");
   await page.waitForSelector(".ws-wsw");
-  await page.click('.ws-wsw-row:has-text("潮汐档案")');
+  await page.click('.ws-wsw-row:has-text("样例长卷")');
   await page.waitForTimeout(1200);
   const body = await page.textContent(".hm-title");
-  if (!body.includes("潮汐档案")) throw new Error(`title: ${body}`);
+  if (!body.includes("样例长卷")) throw new Error(`title: ${body}`);
 });
 
 await check("档案更新走 PATCH profile（改简介后端可读回）", async () => {
   const result = await page.evaluate(async () => {
-    window.WsWorks.update("salt", { sub: "P2 冒烟改写的简介" });
+    window.WsWorks.update("work-b", { sub: "P2 冒烟改写的简介" });
     await new Promise(r => setTimeout(r, 1000));
     const res = await fetch(localStorage.getItem("novel-system-api-base") + "/api/v2/projects").then(r => r.json());
-    const salt = res.data.items.find(i => i.project_id === "salt");
+    const salt = res.data.items.find(i => i.project_id === "work-b");
     return salt && salt.synopsis_line;
   });
   if (result !== "P2 冒烟改写的简介") throw new Error(`synopsis_line: ${result}`);
   // 还原，避免污染 demo（seed 重跑也会复位）
-  await page.evaluate(() => window.WsWorks.update("salt", { sub: "八十年代末，盐场子弟苏怀梅离乡前写下最后一封没寄出的信，牵出三代人围绕一片废弃盐田的隐忍与亏欠——一部缓慢生长的家族长篇。" }));
+  await page.evaluate(() => window.WsWorks.update("work-b", { sub: "样例作品乙：用于测试与端到端验证的短篇结构样例，正文与设定均为占位文本。" }));
   await page.waitForTimeout(600);
 });
 

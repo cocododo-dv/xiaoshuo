@@ -22,7 +22,6 @@ from novel_system.services.llm_client import (
     LLMClient,
     LLMRequest,
     LLMResponse,
-    OfflineDeterministicExecution,
     OnlineAccountedExecution,
     load_model_routing_config,
 )
@@ -31,7 +30,6 @@ from novel_system.services.llm_audit import (
     sanitize_audit_summary,
     text_fingerprint,
 )
-from novel_system.services.llm_node_registry import llm_node_route_fallbacks
 from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
 
@@ -41,20 +39,6 @@ class _LLMExecutionRuntime:
     execution_id: str
     run_job_id: str | None
     lease_renewer: Callable[..., Any] | None
-
-
-class _VerifiedLegacyOfflineExecution(OfflineDeterministicExecution):
-    """Internal bridge for the configured offline factory only.
-
-    The common accounting boundary still validates provider identity and complete
-    zero usage, so an arbitrary online client cannot opt into offline semantics.
-    """
-
-    def __init__(self, legacy_client: Any) -> None:
-        self._legacy_client = legacy_client
-
-    def generate_offline_deterministic(self, request: LLMRequest) -> LLMResponse:
-        return self._legacy_client.generate(request)
 
 
 _CURRENT_EXECUTION: ContextVar[_LLMExecutionRuntime | None] = ContextVar("llm_execution", default=None)
@@ -143,7 +127,8 @@ def _renew_execution_owner(
 CONTINUITY_BUDGET_ERROR_CODE = "CONTINUITY_BUDGET_EXCEEDED"
 CONTINUITY_BUDGET_MESSAGE = "Prompt still exceeds the safe continuity budget after deterministic compaction."
 SCENE_SPLIT_RECOMMENDATION = "Split the scene and retry generation with a smaller continuity scope."
-NODE_ROUTE_FALLBACKS: dict[str, tuple[str, ...]] = llm_node_route_fallbacks()
+LLM_PROVIDER_DISABLED_ERROR_CODE = "LLM_PROVIDER_DISABLED"
+LLM_PROVIDER_DISABLED_MESSAGE = "Live LLM execution is disabled in this runtime."
 
 # Advisory ad-hoc passes (run_task) borrow an existing *registered* route instead of a
 # dedicated node, so they never pollute active node_routing nor trip the sync-activation
@@ -232,7 +217,6 @@ class LLMNodeRunner:
         step: str,
         prompt: dict[str, Any],
         user_prompt: str,
-        offline_client_factory: Callable[[], Any],
         source_draft_row_id: str | None = None,
         source_draft_content: str | None = None,
         temperature_override: float | None = None,
@@ -256,6 +240,39 @@ class LLMNodeRunner:
                 step=step,
                 execution_step_key=execution_step_key or step,
             )
+            try:
+                self._assert_online_execution_available()
+            except LLMAccountingRejected as rejection:
+                # 假生成已退役：LLM 未启用时不再落入离线罐头稿，而是显式拒绝并
+                # 落一条审计行，让"为什么没有生成"在审计里可查。
+                request_summary = {
+                    "node_id": node_id,
+                    "template_name": _template_name(prompt, node_id),
+                    "template_version": _template_version(prompt),
+                    "bundle_id": bundle_id,
+                    "bundle_hash": bundle_hash,
+                    "recommended_action": "Enable and configure an LLM provider in System Config, then retry.",
+                }
+                response_summary = _error_summary(rejection)
+                record_rejected_call(
+                    self.session,
+                    None,
+                    accounted_context,
+                    rejection,
+                    llm_call_id=llm_call_id,
+                    prompt_hash=prompt.get("prompt_hash"),
+                    request_payload_summary=request_summary,
+                    response_payload_summary=response_summary,
+                )
+                raise LLMNodeExecutionError(
+                    llm_call_id=llm_call_id,
+                    error_code=rejection.code,
+                    message=str(rejection),
+                    request_summary=request_summary,
+                    response_summary=response_summary,
+                    original_error=rejection,
+                    retryable=False,
+                ) from rejection
             try:
                 task_config = self.task_config(node_id)
             except KeyError as exc:
@@ -350,7 +367,7 @@ class LLMNodeRunner:
                     continuity_warning=continuity_warning,
                 )
 
-            client = self._client(offline_client_factory=offline_client_factory)
+            client = self._client()
             _renew_execution_owner(
                 request_timeout_seconds=request.timeout_seconds or self.settings.llm_timeout_seconds,
                 client=client,
@@ -430,14 +447,15 @@ class LLMNodeRunner:
 
         Unlike ``run``, this is NOT persisted as a scene draft and never blocks the
         pipeline: callers must opt-in (guard on settings) and wrap the call so that any
-        raised exception degrades to a no-op. The offline factory is intentionally
-        unavailable — a misconfigured/disabled call fails fast into the caller's
-        try/except rather than silently returning stub text.
+        raised exception degrades to a no-op. A disabled, unavailable, or
+        misconfigured provider fails fast into the caller's try/except rather
+        than silently returning substitute text.
         """
-        if self._provider_execution_mode() != "online" or context.provider_execution_mode != "online":
+        self._assert_online_execution_available()
+        if context.provider_execution_mode != "online":
             raise LLMAccountingRejected(
-                "LLM_RUN_TASK_OFFLINE_UNSUPPORTED",
-                "run_task currently requires explicit online provider execution",
+                "LLM_ACCOUNTING_CONTEXT_INVALID",
+                "run_task requires online provider execution",
             )
         route_node = _AD_HOC_ROUTE_ALIASES.get(task_name, task_name)
         self._validate_task_context(context, expected_node_id=route_node)
@@ -474,13 +492,7 @@ class LLMNodeRunner:
             temperature_override=temperature_override,
         )
 
-        def _offline_unavailable() -> Any:
-            raise LLMAccountingRejected(
-                "LLM_RUN_TASK_OFFLINE_UNSUPPORTED",
-                "run_task currently requires explicit online provider execution",
-            )
-
-        client = self._client(offline_client_factory=_offline_unavailable)
+        client = self._client()
         llm_call_id = f"llm_task_{uuid.uuid4().hex}"
         _renew_execution_owner(
             request_timeout_seconds=request.timeout_seconds or self.settings.llm_timeout_seconds,
@@ -522,15 +534,9 @@ class LLMNodeRunner:
         task_routing = getattr(routing, "task_routing", {})
         if node_id in task_routing:
             return task_routing[node_id]
-        if self.settings.llm_enabled:
-            raise KeyError(node_id)
-        if node_id in {"style_draft", "style_patch"} and "stylize" in task_routing:
-            return task_routing["stylize"]
-        for fallback_node_id in NODE_ROUTE_FALLBACKS.get(node_id, ()):
-            if isinstance(node_routing, dict) and fallback_node_id in node_routing:
-                return node_routing[fallback_node_id]
-            if fallback_node_id in task_routing:
-                return task_routing[fallback_node_id]
+        # 每个运行时节点必须在自己的 node id 下绑定路由。离线模式退役后不再
+        # 允许"借用"别的节点的 provider/model——那会掩盖代码与路由快照的漂移。
+        # run_task 的 ad-hoc 别名在进入该边界之前已由 _AD_HOC_ROUTE_ALIASES 解析。
         raise KeyError(node_id)
 
     def _routing(self) -> Any:
@@ -609,14 +615,10 @@ class LLMNodeRunner:
             summary["source_draft_content"] = source_draft_content
         return sanitize_audit_summary(summary)
 
-    def _client(self, *, offline_client_factory: Callable[[], Any]) -> Any:
+    def _client(self) -> Any:
+        self._assert_online_execution_available()
         if self._llm_client is not None:
             return self._llm_client
-        if not self.settings.llm_enabled:
-            offline_client = offline_client_factory()
-            if isinstance(offline_client, OfflineDeterministicExecution):
-                return offline_client
-            return _VerifiedLegacyOfflineExecution(offline_client)
         return LLMClient(
             provider=self.settings.llm_provider,
             base_url=self.settings.llm_base_url,
@@ -632,11 +634,23 @@ class LLMNodeRunner:
         return self._provider_execution_mode()
 
     def _provider_execution_mode(self) -> str:
-        if isinstance(self._llm_client, OfflineDeterministicExecution):
-            return "offline_deterministic"
+        return "online"
+
+    def _assert_online_execution_available(self) -> None:
         if self._llm_client is not None:
-            return "online"
-        return "online" if self.settings.llm_enabled else "offline_deterministic"
+            if isinstance(self._llm_client, OnlineAccountedExecution):
+                return
+            raise LLMAccountingRejected(
+                "LLM_ACCOUNTING_HOOK_UNSUPPORTED",
+                "injected LLM clients must implement accounted online execution",
+                retryable=False,
+            )
+        if not self.settings.llm_enabled:
+            raise LLMAccountingRejected(
+                LLM_PROVIDER_DISABLED_ERROR_CODE,
+                LLM_PROVIDER_DISABLED_MESSAGE,
+                retryable=False,
+            )
 
     def _validate_task_context(
         self,

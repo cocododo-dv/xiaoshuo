@@ -1,20 +1,17 @@
 import React from "react";
 import { WsWorks, wsKey } from "./ws-works.jsx";
-import { ARR_CHAPTERS } from "./ws-author-data.jsx";
 import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
 
-/* global window, React, ARR_CHAPTERS */
+/* global window, React */
 /* ==========================================================
    WsCatalog — 章节 / 场景单一真相源（per-work）
    ----------------------------------------------------------
    过去章节表在 home / writer / author / manuscripts / palette
    各存一份且互相矛盾。这一层把「全书结构」收敛成一个 store：
-     · 数据形状沿用 ws-author-data 的 ARR_CHAPTERS（最完整：
-       GMC 场景、戏剧卡、字数预算、张力值）
+     · 数据形状：GMC 场景、戏剧卡、字数预算、张力值
      · 持久化键沿用作者台已有的 wsKey("arr.chapters")，
        老用户在编排台做过的编辑直接成为全局真相
-     · 种子：tide → ARR_CHAPTERS；salt → 内置小种子；
-       新建作品 → 空（由写作器引导建第一章）
+     · 新建作品 → 空（由写作器引导建第一章），一切章节真相来自后端
      · 字数回写：写作器保存正文时按增量更新 场景字数 →
        章节字数 → 作品总字数 / 今日字数（WsWorks）
    场景 id（sid）在首次载入时按 chId + "s" + 序号 确定性补齐，
@@ -26,82 +23,8 @@ const CAT_DAY_LS = "ws_words_today_v1";     // 每日写作字数 { d, n }
 const CAT_STREAK_LS = "ws_streak_v1";       // 连续写作天数 { last, streak }，按作品
 
 const catKey = (base) => (wsKey ? wsKey(base) : base);
-const catActiveId = () => { try { return WsWorks ? WsWorks.activeId() : "tide"; } catch (e) { return "tide"; } };
+const catActiveId = () => { try { return WsWorks ? WsWorks.activeId() : null; } catch (e) { return null; } };
 
-/* ---- 种子作品 ②「盐镇来信」的章节种子（ARR 形状的精简版）---- */
-const CAT_SALT_CHAPTERS = [
-  {
-    id: "ch01", act: "act1", n: "01", title: "盐场的早班", state: "approved",
-    tension: 0.3, pov: "苏怀梅", time: "D1 · 晨", place: "盐场",
-    words: { cur: 5400, target: 5400 },
-    entry: "霜降后的第一个早班，怀梅替父亲去盐场点名。",
-    exit: "她在工牌箱底摸到一枚早已注销的旧工牌。",
-    align: true,
-    promise: "盐场的秩序下，藏着这个家从不提起的一段空白。",
-    drama: {
-      promise: "盐场的秩序下，藏着这个家从不提起的一段空白。",
-      spine: "一次替班，让怀梅第一次碰到家史的边缘。",
-      arc: "由「替父亲跑腿的女儿」转向「起了疑心的人」。",
-      problem: "一枚注销的工牌，为什么还留在箱底？",
-      aftertaste: "她把工牌放回去，又拿了出来。",
-      ending: "早班结束，海风停了。",
-      forbidden: "—", notes: "开篇章：立盐场与家庭秩序。",
-    },
-    threads: [{ name: "旧工牌", role: "新引" }],
-    scenes: [
-      { title: "交班 · 盐场点名", kind: "主动", state: "done", goal: "替父亲完成点名", obstacle: "老工人们对她欲言又止", turn: "有人喊错了她的姓" },
-      { title: "工牌箱底", kind: "主动", state: "done", goal: "归还钥匙与名册", obstacle: "箱底卡着一枚旧工牌", turn: "工牌的名字被磨掉了" },
-      { title: "回家的堤路", kind: "反应", state: "done", goal: "想清楚要不要问父亲", obstacle: "家里从不谈盐场旧事", turn: "她决定先不问" },
-    ],
-  },
-  {
-    id: "ch02", act: "act1", n: "02", title: "藤椅与旧匣", state: "review",
-    tension: 0.46, pov: "苏怀梅", time: "D3 · 夜", place: "祖屋 · 堂屋",
-    words: { cur: 5670, target: 7400 },
-    entry: "祖父的藤椅整夜在堂屋里吱呀作响。",
-    exit: "她看见祖父把一只旧木匣锁进了床底。",
-    align: true,
-    promise: "旧木匣是三代人之间没人肯先开口的那句话。",
-    drama: {
-      promise: "旧木匣是三代人之间没人肯先开口的那句话。",
-      spine: "一夜失眠，怀梅看见了这个家藏东西的方式。",
-      arc: "由「起疑」转向「确定家里有事瞒她」。",
-      problem: "木匣里装的是谁的东西？",
-      aftertaste: "藤椅停了，堂屋静得反常。",
-      ending: "天亮前她躺回床上，装作什么都没看见。",
-      forbidden: "—", notes: "审阅中：注意藤椅声的节奏复现。",
-    },
-    threads: [{ name: "旧木匣", role: "新引" }, { name: "旧工牌", role: "延续" }],
-    scenes: [
-      { title: "吱呀声", kind: "反应", state: "done", goal: "弄清祖父为何整夜不睡", obstacle: "堂屋没有开灯", turn: "她听见锁扣的声音" },
-      { title: "床底的木匣", kind: "主动", state: "done", goal: "看清祖父藏了什么", obstacle: "地板会响，离堂屋太近", turn: "看见木匣，没看清里面" },
-      { title: "装睡", kind: "反应", state: "done", goal: "不让祖父察觉", obstacle: "心跳压不下去", turn: "决定找机会开匣" },
-    ],
-  },
-  {
-    id: "ch03", act: "act1", n: "03", title: "没寄出的信", state: "writing",
-    tension: 0.62, pov: "苏怀梅", time: "D6 · 凌晨", place: "盐田尽头", current: true,
-    words: { cur: 1530, target: 4500 },
-    entry: "离乡前夜，怀梅写下那封不打算寄出的信。",
-    exit: "（在写）",
-    align: true,
-    promise: "她以为是告别，其实是把自己写进了家史。",
-    drama: {
-      promise: "她以为是告别，其实是把自己写进了家史。",
-      spine: "把信放进木匣的一夜，三代人的沉默第一次交锋。",
-      arc: "由「准备离开的人」转向「被留下的事拽住的人」。",
-      problem: "木匣里那封字迹相同的信，是谁写的？",
-      aftertaste: "（待写）", ending: "（待写）",
-      forbidden: "—", notes: "在写：结尾与第 4 章入口待定。",
-    },
-    threads: [{ name: "旧木匣", role: "延续" }, { name: "没寄出的信", role: "新引" }],
-    scenes: [
-      { title: "盐田尽头 · 没寄出的信", kind: "主动", state: "writing", words: 760, goal: "把信塞进祖父的旧木匣，赶在天亮前离开盐镇", obstacle: "祖父半夜起身，坐在堂屋没有开灯", turn: "木匣里早已躺着另一封字迹相同的信" },
-      { title: "堂屋的灯", kind: "反应", state: "todo", goal: "面对没开灯的祖父", obstacle: "他先开了口", turn: "（待规划）" },
-      { title: "天亮前", kind: "主动", state: "todo", goal: "决定走还是留", obstacle: "车票在口袋里", turn: "（待规划）" },
-    ],
-  },
-];
 
 /* ---- 确定性补齐场景 sid：chId + "s" + 序号（兼容写作器历史 id）---- */
 function catStamp(list) {
@@ -122,9 +45,7 @@ function catStamp(list) {
 }
 
 function catSeedFor(workId) {
-  if (workId === "tide") return (typeof ARR_CHAPTERS !== "undefined" ? ARR_CHAPTERS : ARR_CHAPTERS) || [];
-  if (workId === "salt") return CAT_SALT_CHAPTERS;
-  return []; // 新建作品：空白结构，由写作器 / 编排台引导建章
+  return []; // 目录真相来自后端；本地不再内置任何种子章节
 }
 
 /* 汇总同步进 WsWorks（切换器 / 主页进度同源）。
@@ -538,7 +459,7 @@ const WsCatalog = {
     catDispatchDiff(id, prev, catCache[id]);
     return true;
   },
-  /* 重置 = 丢弃本地缓存、以服务端为准重拉（demo 作品的种子由后端 seed 维护） */
+  /* 重置 = 丢弃本地缓存、以服务端为准重拉 */
   reset() {
     const id = catActiveId();
     delete catCache[id];
@@ -824,21 +745,7 @@ window.addEventListener("ws:work-changed", () => { try { trashFetch(); } catch (
 /* 软删端点完成后的精确刷新信号（WsWorks.remove / 目录删除成功时 dispatch） */
 window.addEventListener("ws:trash-changed", () => { try { trashFetch(); } catch (e) {} });
 
-/* ==========================================================
-   WsDemoTag — 演示工作台的诚实标识
-   场景工作台 / 深改台 / 控制塔目前只接入示例作品的模拟数据，
-   头部统一挂这个小标签，避免用户误以为操作会写入自己的目录。
-   ========================================================== */
-function WsDemoTag({ note }) {
-  return (
-    <span className="pill pill-gold text-xs" style={{ cursor: "help", flexShrink: 0 }}
-      title={note || "演示工作台：展示的是示例数据，这里的操作不会写入你的章节目录。"}>
-      <span className="pill-dot" />演示数据
-    </span>
-  );
-}
-
-Object.assign(window, { WsCatalog, useCatalogChapters, WsTrashStore, WsDemoTag });
+Object.assign(window, { WsCatalog, useCatalogChapters, WsTrashStore });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsCatalog, useCatalogChapters, WsTrashStore, WsDemoTag };
+export { WsCatalog, useCatalogChapters, WsTrashStore };

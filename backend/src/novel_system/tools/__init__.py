@@ -1,5 +1,3 @@
 from __future__ import annotations
 
-__all__ = [
-    "seed_demo",
-]
+__all__: list[str] = []

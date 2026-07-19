@@ -49,65 +49,12 @@ function wrLoadRail() {
   return { l: 224, r: 264 };
 }
 
-/* ---- content (fallback skeleton — 真相源是 WsCatalog，这份只在目录层缺席时兑底) ---- */
-const WR_CHAPTERS = [
-  { id: "ch01", n: "01", title: "盐钟残片", state: "approved", scenes: [
-    { id: "ch01s1", title: "夜班修复台", state: "done" },
-    { id: "ch01s2", title: "残片上的潮汐线", state: "done" },
-    { id: "ch01s3", title: "对照档案柜", state: "done" },
-  ]},
-  { id: "ch07", n: "07", title: "三号档案箱", state: "draft", scenes: [
-    { id: "ch07s1", title: "周岚的钥匙", state: "done" },
-    { id: "ch07s2", title: "失踪的卷宗", state: "done" },
-    { id: "ch07s3", title: "档案室深处", state: "done" },
-  ]},
-  { id: "ch08", n: "08", title: "返回的潮声", state: "writing", expanded: true, scenes: [
-    { id: "ch08s1", title: "黄昏 · 通勤", state: "done" },
-    { id: "ch08s2", title: "馆门 · 例行", state: "done" },
-    { id: "ch08s3", title: "夜班修复台 · 二次发现", state: "active" },
-    { id: "ch08s4", title: "馆长出现", state: "todo" },
-    { id: "ch08s5", title: "走廊上的回声", state: "todo" },
-  ]},
-];
-
-const WR_PARAS = [
-  "林岑把今天的最后一片残片放进恒温箱时，馆里的钟已经过了十一点。",
-  "她从来不喜欢这一段时间。十一点之后，老馆的中央空调会进入夜间模式，机器声变得安静，安静到她能听见自己的手指敲在键盘上的回响。盐钟箱内壁的湿度计是 47%，她记下来——和昨天同一时刻完全一样。",
-  "她想，这种不变本来应该让她安心。",
-  "修复台上摆着第二份。今天上午从地下室搬上来的那一批，她已经处理完了四件，只剩这一件——一枚边缘磨损的盐钟铭牌，铭牌背后压着一张手写的备份单。备份单的字迹是父亲的。",
-  "她认得父亲的字迹。她也认得馆里所有人的字迹。这是她做这份工作的本事。",
-  "林岑把备份单从铭牌上轻轻揭下来，反过来。背面有一行小字，她以前没注意过——",
-  "她皱起眉。第三潮汐，她记得，是二十年前那场死了三十一个人的事故。但 No.31，她从来没在任何记录里见过。",
-  "她侧过头，看向修复台另一头那台老旧的核对机器。屏幕黑着。她按了一下回车键，机器嗡了一声，开始读取。",
-];
-const WR_QUOTE = "2003 年 11 月 14 日 · 第三潮汐 · 备份 No.31";
-
-/* per-scene header meta — looked up from WR_CHAPTERS by scene id */
-const WR_SCENE_META = {};
-WR_CHAPTERS.forEach(c => c.scenes.forEach((s, i) => {
-  WR_SCENE_META[s.id] = {
-    stamp: `CH ${c.n} · SC ${String(i + 1).padStart(2, "0")}`,
-    title: s.title,
-    type: s.state === "active" ? "主动场景" : (i % 2 === 0 ? "主动场景" : "反应场景"),
-    goal: s.id === "ch08s3" ? "在馆长发现之前，独自核对 No.31 的真伪"
-        : s.id === "ch08s4" ? "馆长出现，林岑必须解释自己为何还在馆里"
-        : s.state === "todo" ? "（本场目标待规划）"
-        : "（已完成 · 可回看修订）",
-  };
-}));
-
-function wrBuildHTML() {
-  let html = "";
-  WR_PARAS.forEach((p, i) => { html += `<p>${p}</p>`; if (i === 5) html += `<blockquote>${WR_QUOTE}</blockquote>`; });
-  return html;
-}
 
 /* ---- 正文持久化：每个场景一份文档，按作品隔离 ---- */
 const wrDocKey = (sid) => (wsKey ? wsKey("wr-doc:" + sid) : "wr-doc:" + sid);
 const WR_DOC_PLACEHOLDER = "<p>在这里开始写这一场……</p>";
 function wrSeedHTML(sid) {
-  const isTide = !WsWorks || WsWorks.activeId() === "tide";
-  return isTide && sid === "ch08s3" ? wrBuildHTML() : WR_DOC_PLACEHOLDER;
+  return WR_DOC_PLACEHOLDER;
 }
 function wrCountOf(el) { return el ? el.innerText.replace(/\s/g, "").length : 0; }
 /* 落盘前去掉深改姿态的诊断标注，保证 wr-doc 始终是干净正文 */
@@ -122,7 +69,7 @@ function wrCleanHTML(el) {
 /* 目录 → 大纲形状（写作器本地渲染用） */
 function wrFromCatalog() {
   const cat = WsCatalog ? WsCatalog.get() : null;
-  if (!cat) return WR_CHAPTERS;
+  if (!cat) return [];
   return cat.map(c => ({
     id: c.id, n: c.n, title: c.title, state: c.state,
     expanded: !!(c.current || c.state === "writing"),
@@ -131,14 +78,13 @@ function wrFromCatalog() {
 }
 function wrInitialScene() {
   if (WsCatalog) { const w = WsCatalog.writingScene(); return w ? w.scene.sid : null; }
-  return "ch08s3";
+  return null;
 }
 
 /* ==========================================================
    档案实体高亮 — 把正文中已登记的人物/地点/术语标出，点击直达档案。
    匹配档案名 + 少量别名（正文里的口语指代）。运行时读取 window.LIB_*。
    ========================================================== */
-const WR_ENTITY_ALIASES = { "父亲": "cen-fu", "第三潮汐": "third-tide", "老馆": "old-archive", "馆长": "zhou-lan" };
 function wrEntityMatchers() {
   /* 与资料库同源：种子按作品门控 + 用户新建 + 编辑覆盖 */
   const live = window.LIB_live ? window.LIB_live() : { entries: window.LIB_ENTRIES || [], byId: window.LIB_BY_ID || {} };
@@ -146,7 +92,6 @@ function wrEntityMatchers() {
   const byId = live.byId;
   const idOf = {};
   ents.forEach(e => { if (e.name && e.name.length >= 2 && !(e.name in idOf)) idOf[e.name] = e.id; });
-  Object.keys(WR_ENTITY_ALIASES).forEach(k => { if (byId[WR_ENTITY_ALIASES[k]] && !(k in idOf)) idOf[k] = WR_ENTITY_ALIASES[k]; });
   return idOf;
 }
 function wrHighlightEntities(root) {
@@ -249,57 +194,7 @@ function WrCandText({ html, picked, onToggle }) {
    画像 update as the writer moves between scenes in the outline.
    Scenes without rich data fall back to a sensible skeleton.
    ========================================================== */
-const WR_SCENE_CTX = {
-  ch08s1: {
-    pov: "林岑（限知）", time: "当日 黄昏 18:20", place: "城郊 · 通勤巴士", type: "反应场景",
-    gmc: {
-      goal: "下班路上，盘算今晚是否回馆把上午那批残片处理完",
-      conflict: "疲惫 · 母亲来电催促 · 对父亲备份单的隐约不安",
-      setback: "说服自己「只是例行」，却为后面的发现埋下伏笔",
-    },
-    cast: [["林岑", "POV"], ["母亲", "电话"]],
-    risks: [],
-    portrait: [["短句率", 66, 70, true], ["动词驱动", 58, 65, true], ["具象意象", 81, 80, false]],
-  },
-  ch08s2: {
-    pov: "林岑（限知）", time: "当日夜 22:40", place: "档案馆 · 馆门 / 门厅", type: "反应场景",
-    gmc: {
-      goal: "刷卡进馆、走例行流程，不引起夜班保安注意",
-      conflict: "门禁记录留痕 · 保安多看一眼 · 空调将转入夜间模式",
-      setback: "顺利进馆，但今晚的「在场」已被系统记录",
-    },
-    cast: [["林岑", "POV"], ["夜班保安", "在场"]],
-    risks: [["gold", "参考", "门厅描写偏长，注意与第 2 章入馆段落避免重复"]],
-    portrait: [["短句率", 70, 70, false], ["动词驱动", 63, 65, true], ["具象意象", 86, 80, false]],
-  },
-  ch08s3: {
-    pov: "林岑（限知）", time: "当日夜 23:10", place: "档案馆 · 修复台", type: "主动场景",
-    gmc: {
-      goal: "在馆长发现之前，独自核对 No.31 的真伪",
-      conflict: "系统主动屏蔽 · 馆长晚归在场 · 自身的迟疑",
-      setback: "找到第二份证据，但失去单独行动机会",
-    },
-    cast: [["林岑", "POV"], ["周岚", "在场"], ["阿恪", "电话"]],
-    risks: [
-      ["rose", "设定", "林岑年龄在 04 角色摘要中为 28，本场未明确提及"],
-      ["gold", "参考", "句式与参考书第 142 页节奏相近，建议改写"],
-    ],
-    portrait: [["短句率", 72, 70, false], ["动词驱动", 61, 65, true], ["具象意象", 84, 80, false]],
-  },
-  ch08s4: {
-    pov: "林岑（限知）", time: "当日夜 23:40", place: "档案馆 · 走廊", type: "反应场景",
-    gmc: {
-      goal: "馆长出现，林岑必须解释自己为何深夜还在馆里",
-      conflict: "馆长的盘问 · 备份单还攥在手里 · 慌乱与谎言",
-      setback: "被要求次日上交今晚处理的全部残片",
-    },
-    cast: [["林岑", "POV"], ["周岚", "在场"]],
-    risks: [["gold", "节奏", "反应场景宜放慢：先落情绪与盘算，再落决定"]],
-    portrait: [["短句率", 0, 70, false], ["动词驱动", 0, 65, false], ["具象意象", 0, 80, false]],
-  },
-};
 function wrCtx(sceneId) {
-  if (WR_SCENE_CTX[sceneId] && (!WsWorks || WsWorks.activeId() === "tide")) return WR_SCENE_CTX[sceneId];
   const hit = WsCatalog ? WsCatalog.sceneById(sceneId) : null;
   if (hit) {
     const c = hit.chapter, s = hit.scene;
@@ -311,11 +206,10 @@ function wrCtx(sceneId) {
       portrait: [["短句率", 0, 70, false], ["动词驱动", 0, 65, false], ["具象意象", 0, 80, false]],
     };
   }
-  const m = WR_SCENE_META[sceneId] || {};
   return {
-    pov: "林岑（限知）", time: "—", place: "—", type: m.type || "主动场景",
-    gmc: { goal: m.goal || "（本场目标待规划）", conflict: "（阻碍待规划）", setback: "（挫折待规划）" },
-    cast: [["林岑", "POV"]],
+    pov: "—", time: "—", place: "—", type: "主动场景",
+    gmc: { goal: "（本场目标待规划）", conflict: "（阻碍待规划）", setback: "（挫折待规划）" },
+    cast: [],
     risks: [],
     portrait: [["短句率", 0, 70, false], ["动词驱动", 0, 65, false], ["具象意象", 0, 80, false]],
   };
@@ -1035,12 +929,12 @@ function WriterRoom({ t, setTweak, onExit, go }) {
           stamp: `CH ${c.n} · SC ${String(i + 1).padStart(2, "0")}`,
           title: s.title,
           type: hit && hit.scene.kind ? hit.scene.kind + "场景" : (s.state === "active" ? "主动场景" : (i % 2 === 0 ? "主动场景" : "反应场景")),
-          goal: (hit && hit.scene.goal) || (WR_SCENE_META[id] || {}).goal || "（本场目标待规划）",
+          goal: (hit && hit.scene.goal) || "（本场目标待规划）",
           card: hit ? { kind: hit.scene.kind || "主动", goal: hit.scene.goal || "", obstacle: hit.scene.obstacle || "", turn: hit.scene.turn || "" } : null,
         };
       }
     }
-    return WR_SCENE_META[id] || {};
+    return {};
   };
   const am = sceneMeta(activeScene);
   const flatScenes = chapters.flatMap(c => c.scenes);
@@ -1350,7 +1244,7 @@ function WrNextCue({ show, onGo, onDismiss }) {
 
 /* ---- outline drawer ---- */
 function WrOutline({ open, activeScene, chapters, onReorder, onRename, onDelete, onAdd, onPick, onClose }) {
-  const list = chapters || WR_CHAPTERS;
+  const list = chapters || [];
   const allScenes = list.flatMap(c => c.scenes);
   const doneCount = allScenes.filter(s => s.state === "done").length;
   const pct = allScenes.length ? Math.round((doneCount / allScenes.length) * 100) : 0;
@@ -1501,51 +1395,6 @@ function WrTabBtn({ id, cur, on, icon, label, badge }) {
   return (<button role="tab" aria-selected={cur === id} tabIndex={cur === id ? 0 : -1} onKeyDown={onRovingTabKeyDown}
     className={`wr-tab ${cur === id ? "is-active" : ""}`} onClick={() => on(id)}><Ic size={14} /> {label}{badge && <span className="wr-tab-badge">{badge}</span>}</button>);
 }
-/* 随身契约 · 控制塔（人写也会漂——全书锚点与到期承诺随场在侧） */
-function WrCtxContract({ scene }) {
-  const [open, setOpen] = useWS(false);
-  const data = (() => {
-    try {
-      if (WsWorks && WsWorks.activeId() !== "tide") return null;
-      if (!window.lf3Brief || !window.LF2_LOOPS || !window.LF2_CANON) return null;
-      const b = window.lf3Brief(window.LF2_LOOPS, window.LF2_CANON, {});
-      if (!b || !b.enforce || !b.enforce.length) return null;
-      let assigned = null;
-      if (scene && WsCatalog) {
-        const hit = WsCatalog.sceneById(scene);
-        if (hit && Array.isArray(hit.scene.contract) && hit.scene.contract.length) {
-          assigned = b.all.filter(it => hit.scene.contract.includes(it.id));
-          if (!assigned.length) assigned = null;
-        }
-      }
-      return { items: assigned || b.enforce, assigned: !!assigned };
-    } catch (e) { return null; }
-  })();
-  if (!data) return null;
-  const shown = open ? data.items : data.items.slice(0, 3);
-  const toneOf = (t) => ((t === "rose" || t === "crimson") ? "rose" : t === "gold" ? "gold" : "slate");
-  return (
-    <section className="wr-block">
-      <div className="wr-block-h" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <I.Radar size={12} /> 随身契约 · 控制塔{data.assigned && <span className="pill pill-gold text-xs" style={{ marginLeft: "auto" }}><span className="pill-dot" />本场指派</span>}
-      </div>
-      <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 7 }}>
-        {shown.map(it => (
-          <li key={it.id} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
-            <span className={`pill pill-${toneOf(it.tone)} text-xs`} style={{ flexShrink: 0 }}><span className="pill-dot" />{it.label}</span>
-            <span style={{ fontSize: 12.5, lineHeight: 1.55, color: "var(--ink-2)" }}>{it.text}</span>
-          </li>
-        ))}
-      </ul>
-      {data.items.length > 3 && (
-        <button className="btn btn-quiet btn-sm" style={{ marginTop: 8 }} onClick={() => setOpen(o => !o)}>
-          {open ? "收起" : `展开全部 ${data.items.length} 条`}
-        </button>
-      )}
-      <p style={{ margin: "8px 0 0", color: "var(--ink-4)", fontSize: 11.5, lineHeight: 1.6 }}>人写也会漂——这些是全书层面的锚点与到期承诺，送审时控制塔会逐条复核。</p>
-    </section>
-  );
-}
 function WrCtxScene({ scene }) {
   const c = wrCtx(scene);
   /* 写作台 → AI 起草台的直达动线：这一场在目录里存在时，单场入列并跳转
@@ -1558,7 +1407,6 @@ function WrCtxScene({ scene }) {
   };
   return (
     <>
-      <WrCtxContract scene={scene} />
       <section className="wr-block">
         <div className="wr-block-h">场景定位</div>
         <ul className="wr-meta">
@@ -1680,12 +1528,8 @@ function WrCtxQC({ scene }) {
 function WrBar({ pct, target, warn }) {
   return (<div className="wr-bar"><div className={`wr-bar-fill ${warn ? "warn" : ""}`} style={{ width: pct + "%" }} /><div className="wr-bar-target" style={{ left: target + "%" }} /></div>);
 }
-const WR_NOTES_SEED = {
-  ch08s3: "· 周岚到场需在 SC 04 完成，本场只暗示其将至（电梯声）。\n· 阿恪电话的时间最好移到 SC 04 开头，避免和周岚出场撞。\n· 「No.31」这个数字以后一定要回收 —— 三十一个死者，No.31 残片。",
-  ch08s4: "· 馆长的语气先客气、后施压，留一句让林岑后背发凉的话。\n· 备份单别让馆长看见 —— 给一个「攥紧 / 塞进袖口」的小动作。",
-};
 function wrNotesKey(scene) { return wsKey ? wsKey("wr-notes:" + scene) : "wr-notes:" + scene; }
-const wrNotesSeed = (sid) => ((!WsWorks || WsWorks.activeId() === "tide") ? (WR_NOTES_SEED[sid] || "") : "");
+const wrNotesSeed = () => "";
 function WrCtxNotes({ scene }) {
   const [val, setVal] = useWS("");
   const [saved, setSaved] = useWS(true);
@@ -2144,7 +1988,7 @@ function WrInlineRewrite({ editorRef, onCommit }) {
     <div className="wr-irw-pop" ref={popRef}
       style={{ top: popTop != null ? popTop : (rect.bottom + 10), left: Math.min(Math.max(rect.left, 192), window.innerWidth - 192), transform: "translateX(-50%)" }}
       onMouseDown={(e) => e.stopPropagation()}>
-      <div className="wr-irw-head"><I.Sparkles size={14} /> AI 内联改写{phase === "result" && results.length > 1 ? ` · ${results.length} 版` : ""} <span className="sp">{selRef.current.length} 字 · 林岑限知</span></div>
+      <div className="wr-irw-head"><I.Sparkles size={14} /> AI 内联改写{phase === "result" && results.length > 1 ? ` · ${results.length} 版` : ""} <span className="sp">{selRef.current.length} 字</span></div>
       {phase === "custom" && (
         <div className="wr-irw-custom">
           <input className="wr-irw-input" autoFocus value={custom} placeholder="如：更冷一点、删掉比喻、加一个动作…"

@@ -4,7 +4,7 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from novel_system.db.models import SceneCard, SceneRunState
-from novel_system.tools.seed_fe_demo_works import seed_fe_demo_works
+from tests.fixture_works import seed_fixture_works
 
 _seq = 0
 
@@ -107,7 +107,7 @@ def test_resolve_executes_effect_in_transaction(client):
         actions=[
             {"label": "采纳 · 插入反应场", "intent": "primary", "op": "resolve",
              "effect": {"type": "insert_scene", "chapter_id": cid, "at": 1,
-                        "scene": {"title": "回廊喘息 · 反应拍", "kind": "reactive",
+                        "scene": {"title": "样例反应场", "kind": "reactive",
                                   "brief": {"reaction": "消化发现", "dilemma": "时间所剩无几", "decision": "（待规划）"}}}},
             {"label": "忽略", "intent": "quiet", "op": "resolve"},
         ],
@@ -116,7 +116,7 @@ def test_resolve_executes_effect_in_transaction(client):
     assert resolved.status_code == 200, resolved.text
     tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
     scenes = tree["chapters"][0]["scenes"]
-    assert scenes[1]["title"] == "回廊喘息 · 反应拍"
+    assert scenes[1]["title"] == "样例反应场"
     assert scenes[1]["kind"] == "reactive"
 
     unknown = _card(client, pid, title="未知效果",
@@ -128,30 +128,30 @@ def test_resolve_executes_effect_in_transaction(client):
 
 def test_seeded_review_effects_target_the_editable_current_chapter(client, session):
     """演示卡不能指向 import_catalog 已规范化为 approved 的历史前缀章。"""
-    seed_fe_demo_works(session)
+    seed_fixture_works(session)
     session.commit()
 
-    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    items = client.get("/api/v1/review-items?state=open&project_id=work-a").json()["data"]["items"]
     insert = next(item for item in items if item["title"].startswith("第 8 章节奏过快"))
     rename = next(item for item in items if item["title"] == "第 8 章标题在两个候选间未定")
 
     inserted = _post(
         client,
         f"/api/v1/review-items/{insert['id']}/resolve",
-        {"project_id": "tide", "action_index": 1},
+        {"project_id": "work-a", "action_index": 1},
     )
     assert inserted.status_code == 200, inserted.text
 
     renamed = _post(
         client,
         f"/api/v1/review-items/{rename['id']}/resolve",
-        {"project_id": "tide", "action_index": 1},
+        {"project_id": "work-a", "action_index": 1},
     )
     assert renamed.status_code == 200, renamed.text
 
-    chapter = client.get("/api/v2/projects/tide/catalog").json()["data"]["chapters"][7]
-    assert chapter["title"] == "潮声归来"
-    assert any(scene["title"] == "回廊喘息 · 反应拍" for scene in chapter["scenes"])
+    chapter = client.get("/api/v2/projects/work-a/catalog").json()["data"]["chapters"][7]
+    assert chapter["title"] == "候选标题二"
+    assert any(scene["title"] == "样例反应场" for scene in chapter["scenes"])
 
 
 def test_resolve_bind_style_profile_forwards_injection_config(client, session):
@@ -207,11 +207,11 @@ def test_resolve_bind_style_profile_forwards_injection_config(client, session):
 
 
 def test_derived_semantics_appear_block_resolve_vanish_and_refloat(client, session):
-    seed_fe_demo_works(session)
+    seed_fixture_works(session)
     session.commit()
-    # 制造一个目录异常：tide ch08 的一场标 done 但 0 字
+    # 制造一个目录异常：work-a ch08 的一场标 done 但 0 字
     scene = session.execute(
-        SceneCard.__table__.select().where(SceneCard.project_id == "tide", SceneCard.state == "todo")
+        SceneCard.__table__.select().where(SceneCard.project_id == "work-a", SceneCard.state == "todo")
     ).first()
     target_id = scene.scene_id
     row = session.get(SceneCard, target_id)
@@ -219,32 +219,32 @@ def test_derived_semantics_appear_block_resolve_vanish_and_refloat(client, sessi
     row.words_current = 0
     session.commit()
 
-    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    items = client.get("/api/v1/review-items?state=open&project_id=work-a").json()["data"]["items"]
     hollow = next((i for i in items if str(i["id"]).startswith("derived:catalog:hollow:")), None)
     assert hollow is not None
     assert hollow["live"] is True
 
     # ① 不可无动作 resolve
-    blocked = _post(client, f"/api/v1/review-items/{hollow['id']}/resolve", {"project_id": "tide"})
+    blocked = _post(client, f"/api/v1/review-items/{hollow['id']}/resolve", {"project_id": "work-a"})
     assert blocked.status_code == 409
 
     # snooze 按指纹存
-    snoozed = _post(client, f"/api/v1/review-items/{hollow['id']}/snooze", {"project_id": "tide"})
+    snoozed = _post(client, f"/api/v1/review-items/{hollow['id']}/snooze", {"project_id": "work-a"})
     assert snoozed.status_code == 200
-    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    items = client.get("/api/v1/review-items?state=open&project_id=work-a").json()["data"]["items"]
     assert all(i["id"] != hollow["id"] for i in items)
-    snoozed_list = client.get("/api/v1/review-items?state=snoozed&project_id=tide").json()["data"]["items"]
+    snoozed_list = client.get("/api/v1/review-items?state=snoozed&project_id=work-a").json()["data"]["items"]
     assert any(i["id"] == hollow["id"] for i in snoozed_list)
 
     # ③ 指纹复浮：源头状况变化（又一场 done 0 字）→ 新指纹，即使曾 snooze 也重新浮现
     another = session.execute(
-        SceneCard.__table__.select().where(SceneCard.project_id == "tide", SceneCard.state == "todo")
+        SceneCard.__table__.select().where(SceneCard.project_id == "work-a", SceneCard.state == "todo")
     ).first()
     row2 = session.get(SceneCard, another.scene_id)
     row2.state = "done"
     row2.words_current = 0
     session.commit()
-    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    items = client.get("/api/v1/review-items?state=open&project_id=work-a").json()["data"]["items"]
     refloated = next((i for i in items if str(i["id"]).startswith("derived:catalog:hollow:")), None)
     assert refloated is not None
     assert refloated["id"] != hollow["id"]
@@ -253,17 +253,17 @@ def test_derived_semantics_appear_block_resolve_vanish_and_refloat(client, sessi
     row.state = "todo"
     row2.state = "todo"
     session.commit()
-    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    items = client.get("/api/v1/review-items?state=open&project_id=work-a").json()["data"]["items"]
     assert all(not str(i["id"]).startswith("derived:catalog:hollow:") for i in items)
 
 
 def test_derived_pipeline_blocked_card_lifecycle(client, session):
     """贯通轮遗留 ③：管线把稿停在人工闸门 → 收件箱出 decision 卡（深链起草台）；
     作者采纳归档（目录场 done）或管线通过（archived）后自动消失。"""
-    seed_fe_demo_works(session)
+    seed_fixture_works(session)
     session.commit()
     scene = session.execute(
-        select(SceneCard).where(SceneCard.project_id == "tide", SceneCard.state != "done")
+        select(SceneCard).where(SceneCard.project_id == "work-a", SceneCard.state != "done")
     ).scalars().first()
     assert scene is not None
     state = session.get(SceneRunState, scene.scene_id)
@@ -273,7 +273,7 @@ def test_derived_pipeline_blocked_card_lifecycle(client, session):
     state.scene_status = "human_review_required"
     session.commit()
 
-    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    items = client.get("/api/v1/review-items?state=open&project_id=work-a").json()["data"]["items"]
     prefix = f"derived:pipeline:{scene.scene_id}:"
     card = next((i for i in items if str(i["id"]).startswith(prefix)), None)
     assert card is not None, [i["id"] for i in items]
@@ -287,7 +287,7 @@ def test_derived_pipeline_blocked_card_lifecycle(client, session):
     # 状态变化 → 新指纹（旧指纹的 snooze 不再遮它）
     state.scene_status = "soft_qc_patch_required"
     session.commit()
-    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    items = client.get("/api/v1/review-items?state=open&project_id=work-a").json()["data"]["items"]
     refloated = next((i for i in items if str(i["id"]).startswith(prefix)), None)
     assert refloated is not None
     assert refloated["id"] != card["id"]
@@ -297,14 +297,14 @@ def test_derived_pipeline_blocked_card_lifecycle(client, session):
     row.state = "done"
     row.words_current = 800
     session.commit()
-    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    items = client.get("/api/v1/review-items?state=open&project_id=work-a").json()["data"]["items"]
     assert all(not str(i["id"]).startswith(prefix) for i in items)
 
     # 管线通过（archived）也不投递
     row.state = "todo"
     state.scene_status = "archived"
     session.commit()
-    items = client.get("/api/v1/review-items?state=open&project_id=tide").json()["data"]["items"]
+    items = client.get("/api/v1/review-items?state=open&project_id=work-a").json()["data"]["items"]
     assert all(not str(i["id"]).startswith(prefix) for i in items)
 
 

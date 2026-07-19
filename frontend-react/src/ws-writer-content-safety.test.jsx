@@ -27,7 +27,7 @@ async function loadWriter(opts) {
   const client = await import("./lib/client.js");
   installApiRouter(client, opts);
   await import("./ws-catalog.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("tide"), T);
+  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
   await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBeGreaterThan(0), T);
   const store = await import("./wr-doc-store.jsx");
   const writer = await import("./ws-writer.jsx");

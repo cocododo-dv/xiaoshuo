@@ -1,8 +1,7 @@
 import React from "react";
 import { apiGet, apiPost } from "./lib/client.js";
-import { WsDemoTag } from "./ws-catalog.jsx";
 
-/* global React, I, WsDemoTag */
+/* global React, I */
 /* ==========================================================
    WsQuality — 文学质量巡检 · 案头
    React 主线入口，对接后端 21 维「质量地板」引擎：
@@ -193,7 +192,7 @@ function WsQuality({ go }) {
       <header className="rv-head">
         <div className="rv-eyebrow" style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {I && I.Microscope && <I.Microscope size={13} />} 案头 · 质量地板
-          <WsDemoTag note="基准评测的 live 模式需启用 LLM（系统设置→模型与接入）；巡检 / 临时扫描为纯规则引擎，随时可用。" />
+          <span className="pill pill-gold text-xs" style={{ cursor: "help", flexShrink: 0 }} title="基准评测的 live 模式需启用 LLM（系统设置→模型与接入）；巡检 / 临时扫描为纯规则引擎，随时可用。"><span className="pill-dot" />live 需启用 LLM</span>
         </div>
         <h1 className="rv-title">文学质量</h1>
         <p className="rv-sub">用 21 维「质量地板」引擎巡检全库稿件，或即时扫描一段临时文本，找出模型腔、意象同质、无抉择场景等反 AI 味风险。</p>

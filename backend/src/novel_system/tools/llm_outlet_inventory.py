@@ -14,6 +14,7 @@ DEFAULT_SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
 _KNOWN_UNIFIED_OUTLET_IDENTITIES = frozenset(
     {
+        "services/chapter_plan_llm.py::ChapterPlanService._run_structured_task::accounted_call",
         "services/literary_eval.py::LLMLiteraryCaseGenerator.__call__::accounted_call",
         "services/llm_accounting.py::_AccountedCompletionProbeExecution.generate_accounted::accounted_probe_transport",
         "services/llm_accounting.py::execute_accounted_completion_probe::accounted_call",
@@ -43,11 +44,6 @@ _SAFE_NON_COMPLETION_GENERATE_REFERENCES = frozenset(
             "services/llm_client.py",
             "LLMClient.generate_accounted",
             "self",
-        ),
-        (
-            "services/llm_task_runner.py",
-            "_VerifiedLegacyOfflineExecution.generate_offline_deterministic",
-            "self._legacy_client",
         ),
         (
             "services/scene_blueprint.py",

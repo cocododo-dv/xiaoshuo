@@ -10,6 +10,17 @@ from novel_system.db.models import (
 from novel_system.services.bundle_builder import BundleBuilder
 
 
+import pytest as _pytest_ap
+from tests.real_llm_fakes import install_online_pipeline as _install_online_pipeline
+
+
+@_pytest_ap.fixture(autouse=True)
+def _auto_online_pipeline(monkeypatch):
+    """假生成已退役：给场景管线未显式注入的子服务兜底在线记账替身。"""
+    _install_online_pipeline(monkeypatch)
+
+
+
 CHAPTER_ID = "BP100"
 SCENE_ID = "BP100_SC01"
 PROJECT_ID = "P_BP100"
@@ -111,8 +122,13 @@ def test_workbench_and_bundle_show_the_blueprint_used_for_generation(client, ses
     ).json()["data"]
 
     workbench = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench").json()["data"]
+    # 离线确定性蓝图（由场景 image_anchor 映射「the still teacup」）已退役；本用例的意图
+    # 是「workbench 展示的是用于生成的那份蓝图」——改为断言 workbench 与生成产物同源。
     assert workbench["literary_blueprint"]["row_id"] == blueprint["row_id"]
-    assert workbench["literary_blueprint"]["blueprint_json"]["image_anchor"] == "the still teacup"
+    assert (
+        workbench["literary_blueprint"]["blueprint_json"]["image_anchor"]
+        == blueprint["blueprint_json"]["image_anchor"]
+    )
 
     bundle = BundleBuilder(session).build(SCENE_ID)
     snapshot = bundle["snapshot"]

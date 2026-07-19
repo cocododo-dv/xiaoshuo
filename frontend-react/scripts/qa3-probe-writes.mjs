@@ -19,7 +19,7 @@ page.on("response", (r) => {
 await page.addInitScript((api) => {
   localStorage.setItem("novel-system-api-base", api);
   localStorage.setItem("ws_tweaks_v1", JSON.stringify({ mode: "advanced" }));
-  localStorage.setItem("ws_active_work_v1", "tide");
+  localStorage.setItem("ws_active_work_v1", "work-a");
 }, API);
 async function waitApp() { await page.waitForSelector(".ws-app", { state: "attached" }); await page.waitForTimeout(600); }
 

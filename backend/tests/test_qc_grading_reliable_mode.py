@@ -31,6 +31,13 @@ from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
 from novel_system.services.scene_generation import SceneGenerationService
 from tests.accounted_llm_fakes import AccountedGenerateMixin
+from tests.real_llm_fakes import install_online_pipeline
+
+
+@pytest.fixture(autouse=True)
+def _online_pipeline(monkeypatch) -> None:
+    """假生成已退役：给未显式注入的蓝图/规划/近终审子服务兜底在线记账替身。"""
+    install_online_pipeline(monkeypatch)
 
 PROJECT_ID = "PROJECT200"
 SCENE_ID = "CH200_SC01"

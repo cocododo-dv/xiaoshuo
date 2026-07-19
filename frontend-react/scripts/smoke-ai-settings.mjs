@@ -31,7 +31,7 @@ await page.evaluate((apiBase) => {
   localStorage.clear();
   localStorage.setItem("novel-system-api-base", apiBase);
   localStorage.setItem("novel-system-api-base-default", "http://127.0.0.1:8000");
-  localStorage.setItem("ws_active_work_v1", "tide");
+  localStorage.setItem("ws_active_work_v1", "work-a");
 }, API);
 await page.reload();
 await page.waitForSelector(".ws-app");

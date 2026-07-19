@@ -437,8 +437,6 @@ function WsReview({ go }) {
     }
     else if (a.op === "snooze") snooze(item.id);
     else if (a.op === "bridge") {
-      /* 控制塔联动：裁决写入桥，塔与收件箱两侧同步 */
-      try { if (window.Lf7Bridge && a.canonId) window.Lf7Bridge.ruleCanon(a.canonId); } catch (e) {}
       resolve(item.id);
     }
     else {

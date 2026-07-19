@@ -61,13 +61,13 @@ await check("新建作品并激活", async () => {
   if (!title.includes("冒烟测试书")) throw new Error(`active title: ${title}`);
 });
 
-await check("切回潮汐档案", async () => {
+await check("切回样例长卷", async () => {
   await page.click(".ws-brand");
   await page.waitForSelector(".ws-wsw");
-  await page.click('.ws-wsw-row:has-text("潮汐档案")');
+  await page.click('.ws-wsw-row:has-text("样例长卷")');
   await page.waitForTimeout(500);
   const title = await page.textContent(".ws-brand-title");
-  if (!title.includes("潮汐档案")) throw new Error(`active title: ${title}`);
+  if (!title.includes("样例长卷")) throw new Error(`active title: ${title}`);
 });
 
 await check("删除作品进回收站并恢复", async () => {

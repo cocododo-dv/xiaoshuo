@@ -40,7 +40,7 @@ await page.evaluate((apiBase) => {
   localStorage.clear();
   localStorage.setItem("novel-system-api-base", apiBase);
   localStorage.setItem("novel-system-api-base-default", "http://127.0.0.1:8000");
-  localStorage.setItem("ws_active_work_v1", "tide");
+  localStorage.setItem("ws_active_work_v1", "work-a");
 }, API);
 await page.reload();
 await page.waitForSelector(".ws-app");
@@ -63,7 +63,7 @@ await check("QC 卡「采纳·插入反应场」→ 目录真的多一个反应�
   await card.locator('button:has-text("采纳 · 插入反应场")').click();
   const ch08 = (await waitForCatalog(catalog => catalog.chapters[7].scenes.length === before + 1)).chapters[7];
   if (ch08.scenes.length !== before + 1) throw new Error(`scenes ${before} -> ${ch08.scenes.length}`);
-  const inserted = ch08.scenes.find(s => s.title === "回廊喘息 · 反应拍");
+  const inserted = ch08.scenes.find(s => s.title === "样例反应场");
   if (!inserted) throw new Error("inserted scene missing");
   if (inserted.kind !== "reactive") throw new Error("kind wrong");
   if (inserted.seq !== 4) throw new Error(`at position: seq=${inserted.seq}`);
@@ -73,9 +73,9 @@ await check("决策卡选项 → rename effect 落库", async () => {
   const card = page.locator('.rv-item:has-text("第 8 章标题在两个候选间未定")');
   await card.click();
   await page.waitForTimeout(400);
-  await card.locator('button:has-text("用「潮声归来」")').click();
-  const tree = await waitForCatalog(catalog => catalog.chapters[7].title === "潮声归来");
-  if (tree.chapters[7].title !== "潮声归来") throw new Error(`title: ${tree.chapters[7].title}`);
+  await card.locator('button:has-text("用「候选标题二」")').click();
+  const tree = await waitForCatalog(catalog => catalog.chapters[7].title === "候选标题二");
+  if (tree.chapters[7].title !== "候选标题二") throw new Error(`title: ${tree.chapters[7].title}`);
 });
 
 await check("badge = priority 1 的 open 数（处理后减少）", async () => {
@@ -102,7 +102,7 @@ await check("派生卡：不可划掉 / snooze 按指纹 / 修好自动消失", 
     const res = await fetch(`${args.api}/api/v1/review-items/${encodeURIComponent(args.id)}/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Idempotency-Key": "p5-noresolve-" + Date.now() },
-      body: JSON.stringify({ project_id: "tide" }),
+      body: JSON.stringify({ project_id: "work-a" }),
     });
     return res.status;
   }, { api: API, id: empty.id });
@@ -122,7 +122,7 @@ await check("同一 dedupe_key 投两次只有一张卡", async () => {
     const res = await fetch(apiBase + "/api/v1/review-items", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Idempotency-Key": "p5-dedupe-" + Math.random() },
-      body: JSON.stringify({ project_id: "tide", kind: "note", title: "P5 dedupe 冒烟", dedupe_key: "p5:smoke:once" }),
+      body: JSON.stringify({ project_id: "work-a", kind: "note", title: "P5 dedupe 冒烟", dedupe_key: "p5:smoke:once" }),
     }).then(r => r.json());
     return res.data;
   }, API);

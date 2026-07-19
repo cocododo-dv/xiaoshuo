@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
-import re
 import time
 import uuid
 from copy import deepcopy
@@ -18,7 +16,7 @@ from novel_system.services.author_instructions import render_author_note_instruc
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.literary_quality import DIMENSION_WEIGHTS, QUALITY_DIMENSIONS, analyze_literary_quality
 from novel_system.services.llm_audit import sanitize_audit_summary
-from novel_system.services.llm_client import LLMRequest, LLMResponse
+from novel_system.services.llm_client import LLMResponse
 from novel_system.services.llm_accounting import LLMAccountingRejected
 from novel_system.services.llm_node_registry import get_llm_node_spec
 from novel_system.services.llm_task_runner import (
@@ -202,75 +200,6 @@ def _author_note_instruction_for_bundle(
     return "" if note == frozen else author_note_instruction(author_note)
 
 
-class OfflineNeutralClient:
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        scene_id = _extract_scene_id(request)
-        structured_output = {
-            "scene_text": (
-                f"Offline neutral draft for {scene_id}. The scene advances clearly, preserves continuity, "
-                "and satisfies the compiled bundle constraints."
-            ),
-            "continuity_notes": ["offline deterministic fallback"],
-        }
-        return LLMResponse(
-            request_id=f"offline_{scene_id}",
-            provider="offline_deterministic",
-            model=request.model,
-            text=json.dumps(structured_output, ensure_ascii=False),
-            structured_output=structured_output,
-            response_format=request.response_format,
-            raw_response={
-                "id": f"offline_{scene_id}",
-                "model": request.model,
-                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-                "finish_reason": "offline_fallback",
-            },
-            usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-            finish_reason="offline_fallback",
-        )
-
-
-class OfflineStyleClient:
-    def __init__(self, *, patch_mode: bool = False) -> None:
-        self.patch_mode = patch_mode
-
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        scene_id = _extract_scene_id(request)
-        if self.patch_mode:
-            scene_text = (
-                f"Offline patched draft for {scene_id}. The prose keeps the approved facts and applies "
-                "the requested micro-edits with a sharper cadence."
-            )
-            notes_key = "patch_notes"
-        else:
-            scene_text = (
-                f"Offline style draft for {scene_id}. The protagonist must choose between immediate disclosure "
-                "and protecting someone at risk, pays a concrete cost by handing over leverage, and turns toward "
-                "the next visible danger."
-            )
-            notes_key = "rewrite_notes" if request.node_id == "scene_literary_rewrite" else "style_notes"
-        structured_output = {
-            "scene_text": scene_text,
-            notes_key: ["offline deterministic fallback"],
-        }
-        return LLMResponse(
-            request_id=f"offline_style_{scene_id}_{'patch' if self.patch_mode else 'draft'}",
-            provider="offline_deterministic",
-            model=request.model,
-            text=json.dumps(structured_output, ensure_ascii=False),
-            structured_output=structured_output,
-            response_format=request.response_format,
-            raw_response={
-                "id": f"offline_style_{scene_id}_{'patch' if self.patch_mode else 'draft'}",
-                "model": request.model,
-                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-                "finish_reason": "offline_fallback",
-            },
-            usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-            finish_reason="offline_fallback",
-        )
-
-
 class SceneGenerationService:
     def __init__(
         self,
@@ -327,7 +256,6 @@ class SceneGenerationService:
                 prompt=prompt,
                 user_prompt=prompt["user_prompt"]
                 + _author_note_instruction_for_bundle(bundle, author_note),
-                offline_client_factory=OfflineNeutralClient,
             )
             response = node_result.response
             neutral_content = _extract_scene_text(response)
@@ -859,7 +787,6 @@ class SceneGenerationService:
                     step="long_form_continuation",
                     prompt=active_prompt,
                     user_prompt=user_prompt,
-                    offline_client_factory=OfflineStyleClient,
                     source_draft_row_id=source_draft_row_id,
                     source_draft_content=(
                         f"{source_content}\n\n{existing_continuation}".strip()
@@ -1368,7 +1295,6 @@ class SceneGenerationService:
                     step=llm_step,
                     prompt=prompt,
                     user_prompt=user_prompt,
-                    offline_client_factory=lambda: OfflineStyleClient(patch_mode=client_kind == "patch"),
                     source_draft_row_id=source_draft_row_id,
                     source_draft_content=source_draft_content,
                     temperature_override=temperature_override,
@@ -1548,7 +1474,6 @@ class SceneGenerationService:
                 step="de_template",
                 prompt=prompt,
                 user_prompt=user_prompt,
-                offline_client_factory=lambda: OfflineStyleClient(patch_mode=True),
                 source_draft_row_id=source_row_id,
                 source_draft_content=source_content,
                 execution_step_key=execution_step_key,
@@ -1707,8 +1632,8 @@ class SceneGenerationService:
     ) -> dict[str, Any] | None:
         """PR-8 §5.1 — 把 active StyleProfile 注入到 prompt["system_prompt"] 头部。
 
-        无 binding / project_id / profile 时 no-op;注入失败时 warn log 降级,
-        不阻断 LLM 生成。
+        无 binding / project_id / profile 时 no-op；有候选 binding 但召回/渲染失败时
+        吞掉异常、回退基础 prompt（风格注入是可选增强，不阻断 LLM 生成流程）。
 
         立项 C §12 — ``context_text``(续写最新正文)透传给 Strategy C(RAG),
         作为三粒度检索 query;长文续写循环按 refresh 周期刷新此值 → 召回随上下文变化
@@ -1726,26 +1651,28 @@ class SceneGenerationService:
         scene_id = getattr(scene, "scene_id", None)
         if not project_id and not character_ids and not scene_id:
             return prompt
+        svc = InjectionService(self.session)
+        # §9 Defect B: read drift_ptype_priority from bundle (set by bundle_builder
+        # when drift guidance includes structured dimension data) so the few-shot
+        # selection prioritizes exemplars relevant to drifted dimensions ("show > tell")
+        if bundle and isinstance(bundle, dict):
+            drift_priority = (bundle.get("inline_digests") or {}).get("_drift_ptype_priority")
+            if drift_priority and isinstance(drift_priority, list):
+                svc.drift_ptype_priority = drift_priority
+        # 立项 C — RAG 检索 query 来源(续写防漂移按最新正文重召回)
+        if context_text:
+            svc.context_text = context_text
         try:
-            svc = InjectionService(self.session)
-            # §9 Defect B: read drift_ptype_priority from bundle (set by bundle_builder
-            # when drift guidance includes structured dimension data) so the few-shot
-            # selection prioritizes exemplars relevant to drifted dimensions ("show > tell")
-            if bundle and isinstance(bundle, dict):
-                drift_priority = (bundle.get("inline_digests") or {}).get("_drift_ptype_priority")
-                if drift_priority and isinstance(drift_priority, list):
-                    svc.drift_ptype_priority = drift_priority
-            # 立项 C — RAG 检索 query 来源(续写防漂移按最新正文重召回)
-            if context_text:
-                svc.context_text = context_text
             fragments = svc.fragments_for(
                 project_id, task_type, character_ids=character_ids, scene_id=scene_id,
             )
             prefix = fragments.to_system_prompt_prefix()
         except Exception as exc:  # noqa: BLE001
+            # 风格注入是可选增强：召回/渲染失败时吞掉并回退到基础 prompt，不阻断 LLM 生成
+            # 流程（顾问型降级，与离线退役无关）。
             _LOGGER.warning(
                 "style_reference injection skipped for scene %s task %s: %s",
-                scene.scene_id, task_type, exc,
+                getattr(scene, "scene_id", None), task_type, exc,
             )
             return prompt
         if not prefix:
@@ -1969,16 +1896,6 @@ def _de_template_rewrite_brief(quality_gate: dict[str, Any]) -> list[str]:
         if recommendation:
             brief.append(f"Fix: {recommendation}")
     return brief
-
-
-def _extract_scene_id(request: LLMRequest) -> str:
-    for message in request.messages:
-        content = message.get("content", "")
-        match = re.search(r"Scene ID:\s*([A-Za-z0-9_:-]+)", content)
-        if match:
-            return match.group(1)
-    digest = hashlib.sha256(canonical_json({"messages": request.messages}).encode("utf-8")).hexdigest()
-    return f"scene_{digest[:8]}"
 
 
 def _error_summary(exc: Exception) -> dict[str, Any]:

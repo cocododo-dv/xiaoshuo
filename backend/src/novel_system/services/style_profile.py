@@ -213,7 +213,6 @@ class StyleProfileExtractionService:
                 step="style_profile_extract",
                 prompt=prompt,
                 user_prompt=prompt["user_prompt"],
-                offline_client_factory=lambda: None,
                 execution_step_key=execution_step_key,
                 context=context,
             )

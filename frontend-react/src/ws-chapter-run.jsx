@@ -18,7 +18,6 @@ const EMPTY_RUN = Object.freeze({
   currentSceneId: null,
   errorCode: null,
   message: "",
-  offlineDemo: false,
   refreshWarning: "",
 });
 
@@ -61,7 +60,6 @@ function normalizeRun(payload) {
     currentSceneId: payload.current_scene_id || null,
     errorCode: (latestError && latestError.code) || null,
     message: (authorAction && authorAction.message) || (latestError && latestError.message) || "",
-    offlineDemo: payload.offline_demo === true,
     refreshWarning: "",
   };
 }
@@ -373,7 +371,6 @@ function ArrChapterRunAction({
             <span className="arr-run-state-icon"><StateIcon className={active ? "arr-run-spin" : undefined} size={14} /></span>
             <div>
               <strong>{copy.label}</strong>
-              {shownRun.offlineDemo ? <span className="arr-run-demo">离线演示</span> : null}
             </div>
             {terminal && shownRun.status !== "completed" ? (
               <button className="arr-run-close" type="button" aria-label="收起运行状态" onClick={() => setRun(EMPTY_RUN)}>

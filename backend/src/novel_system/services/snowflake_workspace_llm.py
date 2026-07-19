@@ -21,6 +21,7 @@ from novel_system.services.llm_accounting import (
     execute_accounted_call,
     mark_postprocess_failure,
 )
+from novel_system.services.author_actions import llm_setup_action
 from novel_system.services.llm_audit import sanitize_audit_summary, text_fingerprint
 from novel_system.services.prompt_builder import PromptConfigurationError, load_prompt_templates
 from novel_system.services.snowflake_steps import (
@@ -64,7 +65,6 @@ class SnowflakeWorkspaceLLMService:
         project: StoryProject,
         step_key: str,
         latest_by_step: Mapping[str, Any],
-        fallback_factory: Callable[[], dict[str, Any]],
         adopted_direction: str | None = None,
         focus_scene_refs: list[str] | None = None,
         focus_character_refs: list[str] | None = None,
@@ -199,7 +199,6 @@ class SnowflakeWorkspaceLLMService:
                     "（人物关系、立场、时间线必须与他们吻合），不要改写他们，也不要在输出里复述他们。"
                 ),
             }
-        fallback_payload = fallback_factory()
         # 集合步（角色×3 / 场景规划）的合并底稿一律用「当前最新草稿」（剥 fe_* 写穿键）：
         # 默认底稿是空骨架 / 从 scene_list 重新播种的骨架，模型没回传的成员会被整体
         # 丢掉——作者手工加的角色、焦点外场景的既有深化都要在这里幸存。
@@ -222,7 +221,6 @@ class SnowflakeWorkspaceLLMService:
             template_name=f"snowflake_generate_{step_key}",
             project_id=project.project_id,
             step_ref=step_key,
-            fallback_payload=fallback_payload,
             normalize_output=lambda output: _normalize_full_step_output(
                 step_key,
                 output,
@@ -317,8 +315,8 @@ class SnowflakeWorkspaceLLMService:
             project_id=project.project_id,
             step_ref=step_key,
             prompt_payload=prompt_payload,
-            fallback_payload={"candidates": []},
             normalize_output=_normalize_candidates_output,
+            fallback_payload={"candidates": []},
         )
 
     def assistant_reply(
@@ -352,20 +350,19 @@ class SnowflakeWorkspaceLLMService:
             "current_pressure_diagnosis": diagnose_step_pressure(step_key, step.get("draft") if isinstance(step.get("draft"), dict) else {}),
             "scene_rules": _scene_rules(step_key),
         }
-        fallback_payload = fallback_factory()
         return self._run_structured_task(
             task_key="snowflake_workspace_assistant",
             template_name="snowflake_workspace_assistant",
             project_id=str(project.get("project_id") or ""),
             step_ref=step_key,
             prompt_payload=prompt_payload,
-            fallback_payload=fallback_payload,
             normalize_output=lambda output: _normalize_assistant_output(
                 step_key,
                 output,
                 latest_by_step=dict(latest_by_step),
                 base_draft=step.get("draft") if isinstance(step.get("draft"), dict) else {},
             ),
+            fallback_payload=fallback_factory(),
         )
 
     def scene_triage_suggestions(
@@ -395,15 +392,14 @@ class SnowflakeWorkspaceLLMService:
             },
             "scene_rules": _scene_rules(step_key),
         }
-        fallback_payload = {"items": _fallback_triage_items(draft)}
         return self._run_structured_task(
             task_key="snowflake_scene_triage",
             template_name="snowflake_scene_triage_suggest",
             project_id=str(project.get("project_id") or ""),
             step_ref=step_key,
             prompt_payload=prompt_payload,
-            fallback_payload=fallback_payload,
             normalize_output=lambda output: _normalize_triage_output(output, draft),
+            fallback_payload={"items": _fallback_triage_items(draft)},
         )
 
     def _run_structured_task(
@@ -414,11 +410,30 @@ class SnowflakeWorkspaceLLMService:
         project_id: str,
         step_ref: str,
         prompt_payload: dict[str, Any],
-        fallback_payload: dict[str, Any],
         normalize_output: Callable[[dict[str, Any]], dict[str, Any]],
+        fallback_payload: dict[str, Any] | None = None,
     ) -> WorkspaceLLMResult:
         if not self._llm_enabled():
-            return WorkspaceLLMResult(source="fallback", llm_call_id=None, payload=normalize(fallback_payload))
+            # 主生成路径（generate_step）fail-closed：不再静默返回罐头稿，引导作者去配置。
+            # 顾问型端点（候选建议/驻场教练/场景急救）传入 fallback_payload → 诚实规则回退
+            # （source="fallback"，绝非伪造生成）。
+            if fallback_payload is not None:
+                return WorkspaceLLMResult(
+                    source="fallback", llm_call_id=None, payload=normalize(fallback_payload)
+                )
+            raise DomainError(
+                "SNOWFLAKE_LLM_NOT_CONFIGURED",
+                "雪花工作台的 AI 生成需要先启用真实模型。请到系统配置里配置 provider 与密钥并测试通过后重试。",
+                status_code=409,
+                details={
+                    "node_id": task_key,
+                    "template_name": template_name,
+                    "author_action": llm_setup_action(
+                        llm_enabled=False,
+                        generation_mode="offline_disabled",
+                    ),
+                },
+            )
 
         try:
             task_config = self._task_config(task_key)

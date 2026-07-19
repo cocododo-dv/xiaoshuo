@@ -21,6 +21,17 @@ from novel_system.services.vector_store import InMemoryVectorStore
 from .test_orchestrator_flow import seed_story
 
 
+import pytest as _pytest_ap
+from tests.real_llm_fakes import install_online_pipeline as _install_online_pipeline
+
+
+@_pytest_ap.fixture(autouse=True)
+def _auto_online_pipeline(monkeypatch):
+    """假生成已退役：给场景管线未显式注入的子服务兜底在线记账替身。"""
+    _install_online_pipeline(monkeypatch)
+
+
+
 def test_index_jobs_expose_runtime_diagnostics(client, session) -> None:
     session.add(
         ReindexJob(

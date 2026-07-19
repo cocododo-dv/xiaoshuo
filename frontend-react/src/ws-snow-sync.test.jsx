@@ -47,7 +47,7 @@ vi.mock("./ws-snow.jsx", () => ({
 }));
 
 const T = { timeout: 5000, interval: 25 };
-const CACHE_KEY = "ws_snow_state_v2::tide";
+const CACHE_KEY = "ws_snow_state_v2::prj-main";
 
 const BOOK_BRIEF_DRAFT = {
   category: "文学悬疑",
@@ -77,7 +77,7 @@ async function loadSync(opts) {
   const client = await import("./lib/client.js");
   installApiRouter(client, opts);
   const mod = await import("./ws-snow-sync.jsx");
-  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("tide"), T);
+  await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe("prj-main"), T);
   return { mod, client };
 }
 
@@ -123,7 +123,7 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     });
     client.apiGet.mockResolvedValue({ ready_to_materialize: true, steps: [] });
 
-    const result = await mod.SnowSync.importCanonicalPlan("tide", { steps: stepDrafts });
+    const result = await mod.SnowSync.importCanonicalPlan("prj-main", { steps: stepDrafts });
 
     expect(calls).toEqual(order.flatMap((key) => [`patch:${key}`, `approve:${key}`]));
     expect(client.apiPatch).toHaveBeenCalledTimes(10);
@@ -145,8 +145,8 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
 
   it("hydrate 后上行：脚手架字段作者说了算，脚手架表达不了的富字段（safety_rules）不被剪掉", async () => {
     const { mod, client } = await loadSync({ snowflakeWorkspace: WS_WITH_BOOK_BRIEF });
-    window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: "tide" }));
-    await vi.waitFor(() => expect((mod.SnowSync.health("tide").audience || {}).score).toBe(82), T);
+    window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: "prj-main" }));
+    await vi.waitFor(() => expect((mod.SnowSync.health("prj-main").audience || {}).score).toBe(82), T);
 
     client.apiPatch.mockClear();
     saveCache({
@@ -183,10 +183,10 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
       completeness: { filled_count: 1, total_count: 1, missing_fields: [] },
     };
 
-    const fe = mod.SnowSync.applyServerStep("tide", "profile", beStep);
+    const fe = mod.SnowSync.applyServerStep("prj-main", "profile", beStep);
     expect(fe.scaffold.chars.c1.physical).toBe("手指总带薄茧");
     expect(fe.scaffold.chars.c1.views).toBe("记录即救赎");
-    const h = mod.SnowSync.health("tide").profile;
+    const h = mod.SnowSync.health("prj-main").profile;
     expect(h.score).toBe(74);
     expect(h.beStatus).toBe("pending_review");
 
@@ -253,7 +253,7 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
   it("pushCanon（draft_override 载荷）：与上行 PATCH 同源——竞态窗口内的新成员进载荷、按 id 对位、富字段幸存", async () => {
     const { mod } = await loadSync({});
     // 服务端 canon 镜像：c1 带脚手架没有输入框的富字段（one_paragraph_summary）
-    mod.SnowSync.applyServerStep("tide", "characters", {
+    mod.SnowSync.applyServerStep("prj-main", "characters", {
       step_key: "character_sheets", status: "pending_review", gate_satisfied: false,
       draft: { characters: [{
         character_id: "c1", display_name: "林岑", role: "主角", goal: "拿到母本",
@@ -267,7 +267,7 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
       c1: { name: "林岑", role: "主角", goal: "改后的目标", ambition: "被看见", values: "真相", conflict: "恩师挡路", epiphany: "给活人" },
       c9: { name: "王五", role: "帮手", goal: "递出钥匙", ambition: "", values: "", conflict: "", epiphany: "" },
     } } } };
-    const canon = mod.SnowSync.pushCanon("characters", cache, "tide");
+    const canon = mod.SnowSync.pushCanon("characters", cache, "prj-main");
     const byId = Object.fromEntries(canon.characters.map((c) => [c.character_id, c]));
     expect(Object.keys(byId).sort()).toEqual(["c1", "c9"]);
     expect(byId.c1.goal).toBe("改后的目标");                          // 作者最新编辑赢
@@ -311,9 +311,9 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
       },
     };
     const { mod, client } = await loadSync({ snowflakeWorkspace: wsPending });
-    window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: "tide" }));
-    await vi.waitFor(() => expect(mod.SnowSync.resyncStatus("tide").pendingCount).toBe(2), T);
-    expect(mod.SnowSync.resyncStatus("tide").pendingScenes[0]).toEqual(
+    window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: "prj-main" }));
+    await vi.waitFor(() => expect(mod.SnowSync.resyncStatus("prj-main").pendingCount).toBe(2), T);
+    expect(mod.SnowSync.resyncStatus("prj-main").pendingScenes[0]).toEqual(
       { scenePlanId: "sp1", sceneId: "s1", title: "改过的场", changedFields: ["goal"] });
 
     // resync 回包自带清零后的 workspace → 状态就地刷新（无需再拉全量）
@@ -329,23 +329,23 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
       return Promise.resolve({});
     });
     client.apiGet.mockClear();
-    const r = await mod.SnowSync.resync("tide");
+    const r = await mod.SnowSync.resync("prj-main");
 
-    expect(client.apiPost).toHaveBeenCalledWith("/api/v2/projects/tide/snowflake-workspace/resync", {});
+    expect(client.apiPost).toHaveBeenCalledWith("/api/v2/projects/prj-main/snowflake-workspace/resync", {});
     expect(r.synced).toBe(1);
     expect(r.skipped).toBe(1);
-    expect(mod.SnowSync.resyncStatus("tide").pendingCount).toBe(0);
+    expect(mod.SnowSync.resyncStatus("prj-main").pendingCount).toBe(0);
     // 同步成功后目录重拉（写作台/起草台的场景卡三拍才会换新）
     await vi.waitFor(() =>
-      expect(client.apiGet.mock.calls.some(c => /\/projects\/tide\/catalog/.test(String(c[0])))).toBe(true), T);
+      expect(client.apiGet.mock.calls.some(c => /\/projects\/prj-main\/catalog/.test(String(c[0])))).toBe(true), T);
   });
 
   it("9/10 步保存上行后强制重拉工作台：resync 待同步数跟上（目录已有章时）", async () => {
     const { mod, client } = await loadSync({ snowflakeWorkspace: { ready_to_materialize: false, current_step_key: "scene_list", steps: [] } });
-    window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: "tide" }));
+    window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: "prj-main" }));
     // 目录装载（installApiRouter 默认一章一场）——强制重拉的前置条件
     await vi.waitFor(() => expect(window.WsCatalog && window.WsCatalog.get().length).toBeGreaterThan(0), T);
-    expect(mod.SnowSync.resyncStatus("tide").pendingCount).toBe(0);
+    expect(mod.SnowSync.resyncStatus("prj-main").pendingCount).toBe(0);
 
     // 此后的 workspace GET 返回「1 场待同步」——模拟 9 步改动已在服务端形成 diff
     const routed = client.apiGet.getMockImplementation();
@@ -366,7 +366,7 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     });
 
     // 9 步 PATCH 后触发强制 hydrate → 捕获到最新 resync_status（若不强拉则永远是 0，可证伪）
-    await vi.waitFor(() => expect(mod.SnowSync.resyncStatus("tide").pendingCount).toBe(1), T);
+    await vi.waitFor(() => expect(mod.SnowSync.resyncStatus("prj-main").pendingCount).toBe(1), T);
   });
 
   it("断网导致 PATCH 失败：状态明确停在“仅本机”，重试成功后才标服务器已同步", async () => {
@@ -381,16 +381,16 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
       checks: {}, states: { audience: "active" },
     });
 
-    await vi.waitFor(() => expect(mod.SnowSync.syncState("tide").phase).toBe("error"), T);
-    expect(mod.SnowSync.syncState("tide")).toMatchObject({
+    await vi.waitFor(() => expect(mod.SnowSync.syncState("prj-main").phase).toBe("error"), T);
+    expect(mod.SnowSync.syncState("prj-main")).toMatchObject({
       pendingSteps: expect.arrayContaining(["audience"]),
       error: expect.objectContaining({ message: "网络不可达", offline: true, scope: "remote" }),
     });
 
     Object.defineProperty(window.navigator, "onLine", { configurable: true, value: true });
     client.apiPatch.mockImplementation(async (url, body) => ({ step: { status: "pending_review", draft: body.draft, health: {}, completeness: {} } }));
-    await mod.SnowSync.retry("tide");
-    expect(mod.SnowSync.syncState("tide")).toMatchObject({ phase: "synced", pendingSteps: [], error: null });
+    await mod.SnowSync.retry("prj-main");
+    expect(mod.SnowSync.syncState("prj-main")).toMatchObject({ phase: "synced", pendingSteps: [], error: null });
   });
 
   it("approve 409 不再吞掉：记录待批准步骤，重试只要批准成功即可收敛", async () => {
@@ -402,20 +402,20 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
       checks: {}, states: { audience: "active" },
     };
     saveCache(cache);
-    await vi.waitFor(() => expect(mod.SnowSync.syncState("tide").phase).toBe("synced"), T);
+    await vi.waitFor(() => expect(mod.SnowSync.syncState("prj-main").phase).toBe("synced"), T);
 
     const gate = Object.assign(new Error("前序闸门未满足"), { status: 409, code: "SNOWFLAKE_GATE_BLOCKED" });
     client.apiPost.mockRejectedValue(gate);
     saveCache({ ...cache, states: { audience: "done" } });
-    await vi.waitFor(() => expect(mod.SnowSync.syncState("tide").phase).toBe("error"), T);
-    expect(mod.SnowSync.syncState("tide")).toMatchObject({
+    await vi.waitFor(() => expect(mod.SnowSync.syncState("prj-main").phase).toBe("error"), T);
+    expect(mod.SnowSync.syncState("prj-main")).toMatchObject({
       pendingSteps: expect.arrayContaining(["audience"]),
       failures: expect.arrayContaining([expect.objectContaining({ feKey: "audience", stage: "approve", code: "SNOWFLAKE_GATE_BLOCKED" })]),
     });
 
     client.apiPost.mockResolvedValue({ step: { status: "approved", draft: {}, health: {}, completeness: {} } });
-    await mod.SnowSync.retry("tide");
-    expect(mod.SnowSync.syncState("tide").phase).toBe("synced");
+    await mod.SnowSync.retry("prj-main");
+    expect(mod.SnowSync.syncState("prj-main").phase).toBe("synced");
     expect(client.apiPost.mock.calls.some(([url]) => String(url).endsWith("/steps/book_brief/approve"))).toBe(true);
   });
 });

@@ -14,121 +14,6 @@ const { useState: useSt9, useRef: useRef9, useEffect: useEf9 } = React;
    沉浸式成稿阅读器，顶部「整书进度」书脊条 + 统一导出。
    ========================================================== */
 
-const M_BOOK = {
-  title: "潮汐档案",
-  kind: "悬疑 · 长篇",
-  goalWords: 120000,
-  planChapters: 24,
-};
-
-const M_CH = [
-  { id: "ch01", n: "01", title: "盐钟残片",   state: "approved", words: 5840, scenes: 5, ver: "v12", at: "5 月 8 日",  by: "周岚" },
-  { id: "ch02", n: "02", title: "潮汐记录室", state: "approved", words: 6210, scenes: 4, ver: "v9",  at: "5 月 10 日", by: "周岚" },
-  { id: "ch03", n: "03", title: "被改写的人", state: "approved", words: 5970, scenes: 5, ver: "v11", at: "5 月 11 日", by: "周岚" },
-  { id: "ch04", n: "04", title: "回声讲堂",   state: "approved", words: 5500, scenes: 4, ver: "v7",  at: "今天 09:12", by: "你" },
-  { id: "ch05", n: "05", title: "夜班指南",   state: "review",   words: 4820, scenes: 4, ver: "v18" },
-  { id: "ch06", n: "06", title: "周岚的钥匙", state: "draft",    words: 5180, scenes: 5, ver: "v3" },
-  { id: "ch07", n: "07", title: "三号档案箱", state: "draft",    words: 4900, scenes: 4, ver: "v2" },
-  { id: "ch08", n: "08", title: "返回的潮声", state: "writing",  words: 1240, scenes: 5, ver: "v1", sceneDone: 1 },
-];
-
-/* 每章真实正文（成稿阅读器读取） */
-const M_BODY = {
-  ch04: {
-    drama: {
-      promise: "林岑会被迫直面父亲是潮汐事件「被改写」的核心证人。",
-      thrust: "从「未确认」推进到「至少有第二份证据」。",
-      turn:   "由「守护父亲名声」转向「先承认父亲也错了」。",
-      after:  "把第二份备份独自留下，标签写一行字，没签名。",
-    },
-    scenes: [
-      { idx: "01", title: "傍晚 · 通勤", paras: [
-        "雨在地铁出口停下来。林岑站在风口处把伞收起来，水珠从骨架上滑下来，沿着她的袖口流到指缝里。她抬头看了一眼老馆的顶楼，那里有一扇灯还亮着——周岚的办公室。",
-        "她没有立刻进去。她在台阶下站了一会儿，像是在确认自己真的要把那片残片带上楼。",
-      ]},
-      { idx: "02", title: "馆门 · 例行", paras: [
-        "她从员工通道刷卡进去，门卡的电子音在长廊里听起来格外刺耳。值班员看了她一眼，没有问。她走过中央天井，玻璃顶外面是橙色的城市光，淹没了头顶的星。",
-      ]},
-      { idx: "03", title: "夜班修复台 · 二次发现", paras: [
-        "林岑把今天的最后一片残片放进恒温箱时，馆里的钟已经过了十一点。",
-        "她从来不喜欢这一段时间。十一点之后，老馆的中央空调会进入夜间模式，机器声变得安静，安静到她能听见自己的手指敲在键盘上的回响。",
-        "盐钟箱内壁的湿度计是 47%，她记下来——和昨天同一时刻完全一样。可档案编号却差了一位。她盯着那行数字看了很久，才意识到这不是录入错误。这是有人改过。",
-      ]},
-    ],
-  },
-  ch01: {
-    drama: {
-      promise: "一片不该存在的残片，把林岑拉回十二年前的潮汐夜。",
-      thrust: "从「整理遗物」推进到「发现遗物在说谎」。",
-      turn:   "由「相信记录」转向「怀疑记录的人」。",
-      after:  "她第一次把父亲的名字，从受害者那一栏划掉。",
-    },
-    scenes: [
-      { idx: "01", title: "清晨 · 旧物", paras: [
-        "纸箱在阁楼上放了十二年，封口的胶带一碰就碎成粉。林岑没有戴手套，她想用指尖记住父亲最后碰过的东西。",
-        "最上面是一只盐钟——玻璃壳裂了一道缝，盐粒早就板结成块，再也不会流动。可箱底压着的那片残片，编号却比盐钟晚了整整三年。",
-      ]},
-      { idx: "02", title: "正午 · 比对", paras: [
-        "她把残片拿到窗边。阳光穿过裂缝，在桌面投下一道细盐似的白线。她忽然发现，残片背面有一行极小的刻字，不是父亲的笔迹。",
-      ]},
-    ],
-  },
-  ch02: {
-    drama: {
-      promise: "记录室里每一份档案都完好，唯独属于父亲那一格是空的。",
-      thrust: "从「查找」推进到「确认有人先一步清空」。",
-      turn:   "由「独自调查」转向「不得不去找周岚」。",
-      after:  "空格里只剩一张借阅卡，签名被涂黑。",
-    },
-    scenes: [
-      { idx: "01", title: "潮汐记录室", paras: [
-        "记录室在地下二层，常年恒温十八度。林岑推开门，灯一排排次第亮起，像有人替她数着步子。",
-        "第七排，父亲的那一格，是空的。不是被取走的空——取走会留登记。是被抹掉的空，连灰尘都被人擦得太干净。",
-      ]},
-    ],
-  },
-  ch03: {
-    drama: {
-      promise: "被改写的不只是档案，还有当年所有在场者的证词。",
-      thrust: "从「单点异常」推进到「系统性篡改」。",
-      turn:   "由「找真相」转向「先怀疑自己的记忆」。",
-      after:  "她发现自己的证词，也被人替她改过一个字。",
-    },
-    scenes: [
-      { idx: "01", title: "证词卷宗", paras: [
-        "六份证词，六种笔迹，却用着同一个词去描述那天的海——「安静」。林岑念出声来的时候，自己都觉得不对。那天的海怎么会安静。",
-      ]},
-      { idx: "02", title: "深夜 · 回放", paras: [
-        "她调出十二年前的值班录像。画面里的小女孩站在防波堤上，背对镜头。她认得那件红雨衣。那是她自己。",
-        "可她从来不记得，那天自己去过堤上。",
-      ]},
-    ],
-  },
-  ch05: {
-    scenes: [
-      { idx: "01", title: "交班 · 夜班指南", paras: [
-        "夜班的第一条规矩写在白板上，已经被擦得发灰：十一点后不要单独下地下二层。林岑用袖子把它擦掉了，又自己写了一遍——这一次，她想知道为什么。",
-      ]},
-      { idx: "02", title: "走廊 · 脚步", paras: [
-        "走廊尽头的声控灯亮了一下，又灭了。没有风。林岑数着自己的心跳，一直数到那盏灯第二次亮起来。",
-      ]},
-    ],
-  },
-  ch06: {
-    scenes: [
-      { idx: "01", title: "草稿 · 周岚的钥匙", paras: [
-        "（本章为草稿，尚未送审。）周岚的钥匙串上有一把锈得发黑的旧钥匙，从不解释打开的是哪扇门。林岑第一次注意到它，是在她说「你父亲也有一把一样的」之后。",
-      ]},
-    ],
-  },
-  ch07: {
-    scenes: [
-      { idx: "01", title: "草稿 · 三号档案箱", paras: [
-        "（本章为草稿，尚未送审。）三号档案箱的锁是新的，箱子却是旧的。林岑蹲在它面前，忽然不确定自己是想打开它，还是害怕打开它。",
-      ]},
-    ],
-  },
-};
 
 /* ---------- 真实正文（Wave 1 · 治理 §5.2 换源）：唯一来源是后端章节聚合
    （WsManuStore ← GET /chapter-manuscripts/{id}，服务端以 FinalScene 归档行
@@ -174,8 +59,8 @@ function manuDramaOf(c) {
   if (!pick(d.promise) && !pick(d.spine) && !pick(d.arc) && !pick(d.aftertaste)) return null;
   return { promise: pick(d.promise), thrust: pick(d.spine), turn: pick(d.arc), after: pick(d.aftertaste) };
 }
-/* 有 backendId 时只认服务端权威稿；演示种子只能服务于“尚未同步”的纯演示章。 */
-function manuBuildBody(catCh, isTide, suppliedSnapshot) {
+/* 只认服务端权威稿：目录章节没有 ready 快照就没有正文。 */
+function manuBuildBody(catCh, suppliedSnapshot) {
   if (!catCh) return null;
   if (catCh.backendId) {
     const snapshot = suppliedSnapshot || manuSnapshotOf(catCh);
@@ -210,8 +95,6 @@ function manuBuildBody(catCh, isTide, suppliedSnapshot) {
       complete: manuCanonicalComplete(snapshot),
     };
   }
-  const seed = isTide ? M_BODY[catCh.id] : null;
-  if (seed) return { ...seed, drama: seed.drama || manuDramaOf(catCh), complete: true, demo: true };
   return null;
 }
 /* ---------- 导出：编译真实内容并下载 ---------- */
@@ -248,10 +131,10 @@ function manuScopeProblem(catChs, scopeIds) {
   return "";
 }
 
-function manuCompile(book, catChs, scopeIds, fmt, opts, isTide) {
+function manuCompile(book, catChs, scopeIds, fmt, opts) {
   const sel = (catChs || []).filter(c => scopeIds.includes(c.id));
   const chunks = [];
-  const bodies = sel.map(c => ({ c, body: manuBuildBody(c, isTide) }));
+  const bodies = sel.map(c => ({ c, body: manuBuildBody(c) }));
   if (fmt === "md") {
     chunks.push(`# ${book.title}\n`);
     if (book.kind) chunks.push(`> ${book.kind}\n`);
@@ -312,32 +195,28 @@ const M_TONE = {
 };
 
 function WsManuscripts({ go }) {
-  /* 章节列表派生自 WsCatalog（与主页 / 写作器 / 编排台同源）；
-     ver / at / by 等演示装饰仅对「潮汐档案」种子章节生效。 */
-  const isTide = !WsWorks || WsWorks.activeId() === "tide";
-  const M_DECOR = isTide ? Object.fromEntries(M_CH.map(c => [c.id, c])) : {};
+  /* 章节列表派生自 WsCatalog（与主页 / 写作器 / 编排台同源） */
   /* 订阅目录：批准 / 退回等动作写穿 WsCatalog 后这里自动刷新 */
   const catChs = useCatalogChapters ? useCatalogChapters() : (WsCatalog ? WsCatalog.get() : null);
   const chs = catChs
     ? catChs.filter(manuscriptChapterEligible).map(c => {
-        const deco = M_DECOR[c.id] || {};
         const scenes = (c.scenes || []).length;
         const liveAt = c.approvedAt ? new Date(c.approvedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : null;
         return {
           id: c.id, n: c.n, title: c.title, state: manuscriptDisplayState(c.state),
           words: (c.words && c.words.cur) || 0, scenes,
-          ver: deco.ver || "v1", at: liveAt || deco.at, by: liveAt ? "你" : deco.by,
+          ver: "v1", at: liveAt, by: liveAt ? "你" : null,
           sceneDone: (c.scenes || []).filter(s => s.state === "done").length,
         };
       })
-    : M_CH;
+    : [];
 
   const work = WsWorks ? WsWorks.active() : null;
   const book = {
-    title: work ? work.title : M_BOOK.title,
-    kind: work ? work.genre : M_BOOK.kind,
-    goalWords: work ? work.wordsTarget : M_BOOK.goalWords,
-    planChapters: Math.max(work ? (work.chaptersTotal || 0) : M_BOOK.planChapters, (catChs || M_CH).length),
+    title: work ? work.title : "—",
+    kind: work ? work.genre : "",
+    goalWords: work ? work.wordsTarget : 0,
+    planChapters: Math.max(work ? (work.chaptersTotal || 0) : 0, (catChs || []).length),
   };
 
   const approvedWords = chs.filter(c => c.state === "approved").reduce((s, c) => s + c.words, 0);
@@ -377,7 +256,7 @@ function WsManuscripts({ go }) {
   const canonicalComplete = manuCanonicalComplete(canonical);
   const canonicalBlockReason = manuCanonicalBlockReason(canonical);
   /* 有服务端章节时，正文只能来自权威聚合；error 不得退回演示稿。 */
-  const body = catPicked ? manuBuildBody(catPicked, isTide, canonical) : (isTide ? M_BODY[pickedId] : null);
+  const body = catPicked ? manuBuildBody(catPicked, canonical) : null;
   const projectId = WsWorks ? WsWorks.activeId() : null;
   const refreshWorkflowSources = async (chapterId) => {
     if (WsCatalog && WsCatalog.__refresh) await WsCatalog.__refresh(projectId);
@@ -386,7 +265,7 @@ function WsManuscripts({ go }) {
     manuBump(n => n + 1);
   };
   /* 送审闸门：由控制塔下发的章，章级审计（跨场连续性）未过时不默认放行 */
-  const auditPending = (c) => { try { return !!(c && isTide && parseInt(c.n, 10) === 9 && window.Lf7Bridge && !window.Lf7Bridge.isArchived(9) && window.Lf7Bridge.state().handoff9); } catch (e) { return false; } };
+  const auditPending = () => false;
   const [gateArm, setGateArm] = useSt9(false);
   useEf9(() => { setGateArm(false); }, [pickedId]);
   useEf9(() => { setAggregateState({ busy: false, error: "", note: "" }); }, [pickedId]);
@@ -520,7 +399,7 @@ function WsManuscripts({ go }) {
       const refreshedChapter = (catChs || []).find(chapter => chapter.id === c.id);
       const refreshed = manuSnapshotOf(refreshedChapter);
       if (!manuCanonicalComplete(refreshed)) throw new Error(manuCanonicalBlockReason(refreshed));
-      const out = manuCompile({ title: `${book.title} · 第 ${c.n} 章 ${c.title}`, kind: book.kind }, catChs || [], [c.id], "md", { toc: false, appendix: false }, isTide);
+      const out = manuCompile({ title: `${book.title} · 第 ${c.n} 章 ${c.title}`, kind: book.kind }, catChs || [], [c.id], "md", { toc: false, appendix: false });
       if (!manuDownload(out.name, out.content, out.mime)) throw new Error("浏览器未能生成下载文件。");
       if (chapterExportTokenRef.current === token) setChapterExportState({ busy: false, error: "", note: "本章已导出。" });
     } catch (e) {
@@ -565,7 +444,7 @@ function WsManuscripts({ go }) {
         book={book} chapters={chs}
         stats={{ approvedWords, approvedCount, reviewCount, flowCount, pct }}
         pickedId={pickedId} onPick={setPicked}
-        exportCtx={{ catChs: catChs || [], isTide, book, chs, pickedId }}
+        exportCtx={{ catChs: catChs || [], book, chs, pickedId }}
       />
 
       <div className="ms-cols">
@@ -768,7 +647,7 @@ function ManuExport({ ctx }) {
     return () => document.removeEventListener("mousedown", h);
   }, [open]);
 
-  const { catChs = [], isTide, book = {}, chs = [], pickedId } = ctx || {};
+  const { catChs = [], book = {}, chs = [], pickedId } = ctx || {};
   const approvedIds = chs.filter(c => c.state === "approved").map(c => c.id);
   const scopeIds =
     scope === "approved" ? approvedIds :
@@ -802,7 +681,7 @@ function ManuExport({ ctx }) {
       await manuRefreshChapters(catChs, scopeIds);
       const problem = manuScopeProblem(catChs, scopeIds);
       if (problem) throw new Error(problem);
-      const out = manuCompile(book, catChs, scopeIds, fmt, { toc, appendix }, isTide);
+      const out = manuCompile(book, catChs, scopeIds, fmt, { toc, appendix });
       if (!manuDownload(out.name, out.content, out.mime)) throw new Error("浏览器未能生成下载文件。");
       setExportState({ busy: false, error: "", note: `已生成「${out.name}」` });
       setTimeout(() => { setExportState({ busy: false, error: "", note: "" }); setOpen(false); }, 1400);

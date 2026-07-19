@@ -38,8 +38,11 @@ from novel_system.services.llm_task_runner import (
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
 from novel_system.services.scene_generation import SceneGenerationService
+from novel_system.services.scene_blueprint import SceneBlueprintService
+from novel_system.services.near_final import NearFinalAcceptanceService, NearFinalPlanningService
 from novel_system.services.qc_validator import QCValidationError, validate_qc_report
 from tests.accounted_llm_fakes import AccountedGenerateMixin
+from tests.real_llm_fakes import ScenePipelineOnlineFake
 
 
 QC_REPORT_ID_RE = re.compile(r"^qc_report_CH100_SC01_\d{8}T\d{12}Z_[0-9a-f]{12}$")
@@ -259,7 +262,10 @@ def _make_orchestrator(
     soft_qc_payloads: list[dict] | None = None,
     scene_client: FakeSceneClient | None = None,
 ) -> Orchestrator:
-    return Orchestrator(
+    # 假生成退役后，蓝图 / 章节架构 / 角色压力 / 准定稿验收等支撑节点不再有离线
+    # 兜底，必须显式注入在线记账替身；场景正文与 QC 仍由各自的 Fake 客户端提供。
+    support = ScenePipelineOnlineFake()
+    orchestrator = Orchestrator(
         session,
         scene_generation_service=SceneGenerationService(session, llm_client=scene_client or FakeSceneClient()),
         hard_qc_engine=HardQcEngine(session, llm_client=FakeQcClient(hard_qc_payload)),
@@ -267,7 +273,11 @@ def _make_orchestrator(
             session,
             llm_client=FakeSoftQcClient(soft_qc_payloads or []),
         ),
+        planning_service=NearFinalPlanningService(session, llm_client=support),
+        near_final_service=NearFinalAcceptanceService(session, llm_client=support),
     )
+    orchestrator.scene_blueprint_service = SceneBlueprintService(session, llm_client=support)
+    return orchestrator
 
 
 def _base_qc_payload(*, resolution_code: str, next_action: str, issues: list[dict] | None = None) -> dict:

@@ -22,8 +22,8 @@ from novel_system.db.models import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
-from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.llm_accounting import LLMCallContext
+from novel_system.services.llm_fail_closed import raise_llm_domain_error
 from novel_system.services.llm_task_runner import (
     LLMNodeExecutionError,
     LLMNodeRunner,
@@ -31,7 +31,6 @@ from novel_system.services.llm_task_runner import (
     current_llm_run_job_id,
 )
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.settings import get_settings
 from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 
@@ -58,42 +57,48 @@ AUTOMATED_REWRITE_FAILURE_CLASSES = {
 }
 
 
-class OfflineNearFinalPlanningClient:
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        node_id = request.node_id or "near_final_planning"
-        payload = (
-            _fallback_chapter_architecture_payload()
-            if node_id == CHAPTER_ARCHITECTURE_ARTIFACT
-            else _fallback_character_pressure_payload()
-        )
-        return LLMResponse(
-            request_id=f"offline_{node_id}",
-            provider="offline_deterministic",
-            model=request.model,
-            text=json.dumps(payload, ensure_ascii=False),
-            structured_output=payload,
-            response_format=request.response_format,
-            raw_response={"id": f"offline_{node_id}", "finish_reason": "offline_fallback"},
-            usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-            finish_reason="offline_fallback",
-        )
-
-
-class OfflineNearFinalAcceptanceClient:
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        node_id = request.node_id or "near_final_acceptance_review"
-        payload = _offline_chapter_review_payload() if node_id == "chapter_near_final_review" else _offline_scene_review_payload()
-        return LLMResponse(
-            request_id=f"offline_{node_id}",
-            provider="offline_deterministic",
-            model=request.model,
-            text=json.dumps(payload, ensure_ascii=False),
-            structured_output=payload,
-            response_format=request.response_format,
-            raw_response={"id": f"offline_{node_id}", "finish_reason": "offline_fallback"},
-            usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-            finish_reason="offline_fallback",
-        )
+CHARACTER_PRESSURE_FIELDS = (
+    "surface_goal",
+    "hidden_fear",
+    "wrong_belief",
+    "shame_point",
+    "avoidance_strategy",
+    "relationship_debt",
+    "current_mask",
+)
+CHAPTER_ARCHITECTURE_FIELDS = (
+    "chapter_promise",
+    "escalation_path",
+    "reveal_plan",
+    "payoff_target",
+    "character_shift",
+    "ending_question",
+)
+SCENE_ACCEPTANCE_SCORE_KEYS = frozenset(
+    {
+        "story_necessity",
+        "character_pressure",
+        "forced_choice_pressure",
+        "dialogue_edge",
+        "information_release",
+        "prose_freshness",
+        "ending_drive",
+        "continuity",
+        "author_voice_match",
+        "model_voice_risk",
+        "reference_safety",
+    }
+)
+CHAPTER_ACCEPTANCE_SCORE_KEYS = frozenset(
+    {
+        "chapter_promise",
+        "escalation",
+        "payoff_integrity",
+        "character_shift",
+        "ending_drive",
+        "continuity",
+    }
+)
 
 
 class NearFinalPlanningService:
@@ -101,8 +106,6 @@ class NearFinalPlanningService:
         self.session = session
         self.prompt_builder = PromptBuilder()
         self._llm_runner = llm_runner or LLMNodeRunner(session, llm_client=llm_client)
-        runner_client = llm_client if llm_client is not None else getattr(llm_runner, "_llm_client", None)
-        self._skip_runner_when_offline = runner_client is None and not get_settings().llm_enabled
 
     def ensure_scene_planning(
         self,
@@ -197,43 +200,38 @@ class NearFinalPlanningService:
         execution_step_key: str | None = None,
     ) -> GenerationPlanningArtifact:
         source = self._source_snapshot(scene=scene, chapter=chapter, include_chapter_architecture=False)
-        if self._skip_runner_when_offline:
-            payload = _fallback_chapter_architecture_payload()
-            llm_call_id = None
-        else:
-            prompt = self.prompt_builder.build(source["snapshot"], CHAPTER_ARCHITECTURE_ARTIFACT)
-            try:
-                node_result = self._llm_runner.run(
-                    scene_id=scene.scene_id,
-                    chapter_id=chapter.chapter_id,
-                    bundle_id=source["source_bundle_id"],
-                    bundle_hash=source["source_bundle_hash"],
-                    node_id=CHAPTER_ARCHITECTURE_ARTIFACT,
-                    step=CHAPTER_ARCHITECTURE_ARTIFACT,
-                    prompt=prompt,
-                    user_prompt=_planning_user_prompt(prompt["user_prompt"], scene=scene, chapter=chapter),
-                    offline_client_factory=OfflineNearFinalPlanningClient,
-                    execution_step_key=execution_step_key,
-                )
-                payload = _normalize_chapter_architecture_payload(node_result.response.structured_output)
-                llm_call_id = node_result.llm_call_id
-            except LLMNodeExecutionError as exc:
-                if _is_missing_task_route(exc) and not get_settings().llm_enabled:
-                    payload = _fallback_chapter_architecture_payload()
-                    llm_call_id = None
-                else:
-                    raise DomainError(
-                        "CHAPTER_STORY_ARCHITECTURE_FAILED",
-                        f"chapter architecture generation failed: {exc.message}",
-                        status_code=502,
-                        details={
-                            "llm_call_id": exc.llm_call_id,
-                            "node_id": CHAPTER_ARCHITECTURE_ARTIFACT,
-                            "error_code": exc.error_code,
-                            "next_action": "configure_chapter_story_architecture_route_and_retry",
-                            "response_summary": exc.response_summary,
-                        },
-                    ) from exc
+        prompt = self.prompt_builder.build(source["snapshot"], CHAPTER_ARCHITECTURE_ARTIFACT)
+        try:
+            node_result = self._llm_runner.run(
+                scene_id=scene.scene_id,
+                chapter_id=chapter.chapter_id,
+                bundle_id=source["source_bundle_id"],
+                bundle_hash=source["source_bundle_hash"],
+                node_id=CHAPTER_ARCHITECTURE_ARTIFACT,
+                step=CHAPTER_ARCHITECTURE_ARTIFACT,
+                prompt=prompt,
+                user_prompt=_planning_user_prompt(prompt["user_prompt"], scene=scene, chapter=chapter),
+                execution_step_key=execution_step_key,
+            )
+        except LLMNodeExecutionError as exc:
+            raise_llm_domain_error(
+                exc,
+                capability_code="CHAPTER_STORY_ARCHITECTURE_LLM_REQUIRED",
+                failure_code="CHAPTER_STORY_ARCHITECTURE_FAILED",
+                operation="chapter architecture generation",
+                node_id=CHAPTER_ARCHITECTURE_ARTIFACT,
+                next_action="configure_chapter_story_architecture_route_and_retry",
+            )
+        try:
+            payload = _normalize_chapter_architecture_payload(node_result.response.structured_output)
+        except ValueError as exc:
+            raise DomainError(
+                "CHAPTER_STORY_ARCHITECTURE_OUTPUT_INVALID",
+                f"chapter architecture generation returned an invalid payload: {exc}",
+                status_code=502,
+                details={"llm_call_id": node_result.llm_call_id, "node_id": CHAPTER_ARCHITECTURE_ARTIFACT},
+            ) from exc
+        llm_call_id = node_result.llm_call_id
         return self._persist_artifact(
             artifact_type=CHAPTER_ARCHITECTURE_ARTIFACT,
             object_type="chapter",
@@ -256,43 +254,38 @@ class NearFinalPlanningService:
         execution_step_key: str | None = None,
     ) -> GenerationPlanningArtifact:
         source = self._source_snapshot(scene=scene, chapter=chapter, include_chapter_architecture=True)
-        if self._skip_runner_when_offline:
-            payload = _fallback_character_pressure_payload()
-            llm_call_id = None
-        else:
-            prompt = self.prompt_builder.build(source["snapshot"], CHARACTER_PRESSURE_ARTIFACT)
-            try:
-                node_result = self._llm_runner.run(
-                    scene_id=scene.scene_id,
-                    chapter_id=chapter.chapter_id,
-                    bundle_id=source["source_bundle_id"],
-                    bundle_hash=source["source_bundle_hash"],
-                    node_id=CHARACTER_PRESSURE_ARTIFACT,
-                    step=CHARACTER_PRESSURE_ARTIFACT,
-                    prompt=prompt,
-                    user_prompt=_planning_user_prompt(prompt["user_prompt"], scene=scene, chapter=chapter),
-                    offline_client_factory=OfflineNearFinalPlanningClient,
-                    execution_step_key=execution_step_key,
-                )
-                payload = _normalize_character_pressure_payload(node_result.response.structured_output)
-                llm_call_id = node_result.llm_call_id
-            except LLMNodeExecutionError as exc:
-                if _is_missing_task_route(exc) and not get_settings().llm_enabled:
-                    payload = _fallback_character_pressure_payload()
-                    llm_call_id = None
-                else:
-                    raise DomainError(
-                        "CHARACTER_PRESSURE_BLUEPRINT_FAILED",
-                        f"character pressure generation failed: {exc.message}",
-                        status_code=502,
-                        details={
-                            "llm_call_id": exc.llm_call_id,
-                            "node_id": CHARACTER_PRESSURE_ARTIFACT,
-                            "error_code": exc.error_code,
-                            "next_action": "configure_character_pressure_blueprint_route_and_retry",
-                            "response_summary": exc.response_summary,
-                        },
-                    ) from exc
+        prompt = self.prompt_builder.build(source["snapshot"], CHARACTER_PRESSURE_ARTIFACT)
+        try:
+            node_result = self._llm_runner.run(
+                scene_id=scene.scene_id,
+                chapter_id=chapter.chapter_id,
+                bundle_id=source["source_bundle_id"],
+                bundle_hash=source["source_bundle_hash"],
+                node_id=CHARACTER_PRESSURE_ARTIFACT,
+                step=CHARACTER_PRESSURE_ARTIFACT,
+                prompt=prompt,
+                user_prompt=_planning_user_prompt(prompt["user_prompt"], scene=scene, chapter=chapter),
+                execution_step_key=execution_step_key,
+            )
+        except LLMNodeExecutionError as exc:
+            raise_llm_domain_error(
+                exc,
+                capability_code="CHARACTER_PRESSURE_BLUEPRINT_LLM_REQUIRED",
+                failure_code="CHARACTER_PRESSURE_BLUEPRINT_FAILED",
+                operation="character pressure generation",
+                node_id=CHARACTER_PRESSURE_ARTIFACT,
+                next_action="configure_character_pressure_blueprint_route_and_retry",
+            )
+        try:
+            payload = _normalize_character_pressure_payload(node_result.response.structured_output)
+        except ValueError as exc:
+            raise DomainError(
+                "CHARACTER_PRESSURE_BLUEPRINT_OUTPUT_INVALID",
+                f"character pressure generation returned an invalid payload: {exc}",
+                status_code=502,
+                details={"llm_call_id": node_result.llm_call_id, "node_id": CHARACTER_PRESSURE_ARTIFACT},
+            ) from exc
+        llm_call_id = node_result.llm_call_id
         return self._persist_artifact(
             artifact_type=CHARACTER_PRESSURE_ARTIFACT,
             object_type="scene",
@@ -515,7 +508,6 @@ class NearFinalAcceptanceService:
                 step="near_final_acceptance_review",
                 prompt=prompt,
                 user_prompt=_acceptance_user_prompt(prompt["user_prompt"], source_content=source_content),
-                offline_client_factory=OfflineNearFinalAcceptanceClient,
                 source_draft_row_id=source_draft_row_id,
                 source_draft_content=source_content,
                 execution_step_key=execution_step_key,
@@ -607,7 +599,6 @@ class NearFinalAcceptanceService:
                 step="chapter_near_final_review",
                 prompt=prompt,
                 user_prompt=_acceptance_user_prompt(prompt["user_prompt"], source_content=source["content"]),
-                offline_client_factory=OfflineNearFinalAcceptanceClient,
                 source_draft_row_id=source["source_text_ref"],
                 source_draft_content=source["content"],
                 execution_step_key=execution_step_key,
@@ -872,23 +863,54 @@ def _acceptance_user_prompt(base_prompt: str, *, source_content: str) -> str:
 
 
 def _normalize_character_pressure_payload(payload: Any) -> dict[str, str]:
-    fallback = _fallback_character_pressure_payload()
     if not isinstance(payload, dict):
-        return fallback
-    return {field: _scalar_text(payload.get(field)) or fallback[field] for field in fallback}
+        raise ValueError("payload must be an object")
+    # 只要求规范字段齐全且非空；多余字段忽略——response_format 是 json_object
+    # （非严格 schema），真实模型可能多返解释性键，不应因此判整份产物失败。
+    missing = [field for field in CHARACTER_PRESSURE_FIELDS if field not in payload]
+    if missing:
+        raise ValueError(
+            "character pressure payload is missing required fields: " + ", ".join(missing)
+        )
+    normalized: dict[str, str] = {}
+    for field in CHARACTER_PRESSURE_FIELDS:
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field} must be a non-empty string")
+        normalized[field] = value.strip()
+    return normalized
 
 
 def _normalize_chapter_architecture_payload(payload: Any) -> dict[str, Any]:
-    fallback = _fallback_chapter_architecture_payload()
     if not isinstance(payload, dict):
-        return fallback
+        raise ValueError("payload must be an object")
+    # 同上：只查规范字段齐全，多余字段忽略（json_object 非严格 schema）。
+    missing = [field for field in CHAPTER_ARCHITECTURE_FIELDS if field not in payload]
+    if missing:
+        raise ValueError(
+            "chapter architecture payload is missing required fields: " + ", ".join(missing)
+        )
+    scalar_fields = ("chapter_promise", "payoff_target", "character_shift", "ending_question")
+    normalized: dict[str, Any] = {}
+    for field in scalar_fields:
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field} must be a non-empty string")
+        normalized[field] = value.strip()
+    for field in ("escalation_path", "reveal_plan"):
+        value = payload.get(field)
+        if not isinstance(value, list) or not value:
+            raise ValueError(f"{field} must be a non-empty string array")
+        if any(not isinstance(item, str) or not item.strip() for item in value):
+            raise ValueError(f"{field} must contain only non-empty strings")
+        normalized[field] = [item.strip() for item in value]
     return {
-        "chapter_promise": _scalar_text(payload.get("chapter_promise")) or fallback["chapter_promise"],
-        "escalation_path": _string_list(payload.get("escalation_path")) or fallback["escalation_path"],
-        "reveal_plan": _string_list(payload.get("reveal_plan")) or fallback["reveal_plan"],
-        "payoff_target": _scalar_text(payload.get("payoff_target")) or fallback["payoff_target"],
-        "character_shift": _scalar_text(payload.get("character_shift")) or fallback["character_shift"],
-        "ending_question": _scalar_text(payload.get("ending_question")) or fallback["ending_question"],
+        "chapter_promise": normalized["chapter_promise"],
+        "escalation_path": normalized["escalation_path"],
+        "reveal_plan": normalized["reveal_plan"],
+        "payoff_target": normalized["payoff_target"],
+        "character_shift": normalized["character_shift"],
+        "ending_question": normalized["ending_question"],
     }
 
 
@@ -1135,71 +1157,6 @@ def _execution_failure_payload(message: str) -> dict[str, Any]:
     }
 
 
-def _offline_scene_review_payload() -> dict[str, Any]:
-    return {
-        "near_final_status": "near_final_ready",
-        "pass_flag": True,
-        "overall_score": 0.82,
-        "scores": {
-            "story_necessity": 0.5,
-            "character_pressure": 0.5,
-            "dialogue_edge": 0.45,
-            "information_release": 0.55,
-            "prose_freshness": 0.45,
-            "ending_drive": 0.45,
-            "continuity": 0.8,
-            "reference_safety": 1.0,
-        },
-        "findings": [],
-        "revision_brief": [],
-        "failure_class": "",
-        "requires_human_review": False,
-    }
-
-
-def _offline_chapter_review_payload() -> dict[str, Any]:
-    return {
-        "near_final_status": "revision_required",
-        "pass_flag": False,
-        "overall_score": 0.58,
-        "scores": {
-            "chapter_promise": 0.55,
-            "escalation": 0.55,
-            "payoff_integrity": 0.5,
-            "character_shift": 0.58,
-            "ending_drive": 0.55,
-            "continuity": 0.8,
-        },
-        "findings": [],
-        "revision_brief": [{"dimension": "payoff_integrity", "action": "补足章节承诺的回收或明确延宕理由。", "priority": "high"}],
-        "failure_class": "chapter_payoff_gap",
-        "requires_human_review": False,
-    }
-
-
-def _fallback_character_pressure_payload() -> dict[str, str]:
-    return {
-        "surface_goal": "完成本场明确的外部目标。",
-        "hidden_fear": "担心自己的选择会伤害仍然活着的人。",
-        "wrong_belief": "只要把真相说出来，局面自然会变好。",
-        "shame_point": "过去曾用冷静和技术理由回避人的求救。",
-        "avoidance_strategy": "用判断、修复或分析替代承认恐惧。",
-        "relationship_debt": "必须把信任、证据或风险交到另一个人手里。",
-        "current_mask": "专业、冷静、可控。",
-    }
-
-
-def _fallback_chapter_architecture_payload() -> dict[str, Any]:
-    return {
-        "chapter_promise": "本章必须让目标、风险和人物代价同时升级。",
-        "escalation_path": ["发现压力", "确认代价", "做出不可撤回的选择"],
-        "reveal_plan": ["释放一个改变判断的新事实"],
-        "payoff_target": "让本章开头承诺在结尾产生可见后果。",
-        "character_shift": "人物从回避责任转向承担责任。",
-        "ending_question": "这个选择会把谁推入新的危险？",
-    }
-
-
 def _default_structure_revision_brief() -> list[dict[str, str]]:
     return [
         {
@@ -1252,10 +1209,6 @@ def _first_term_window(text: str, term: str) -> str:
     if index < 0:
         return text[:120]
     return text[max(0, index - 36) : index + len(term) + 64]
-
-
-def _is_missing_task_route(exc: LLMNodeExecutionError) -> bool:
-    return exc.error_code == "KeyError" or isinstance(exc.original_error, KeyError)
 
 
 def _compact_text(text: str, limit: int = 1600) -> str:

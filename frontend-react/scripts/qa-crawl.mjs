@@ -23,7 +23,7 @@ const VIEWS = [
 ];
 
 // 待巡检项目：两部 demo（数据丰富） + 一部真实 chapter_blocked 项目（边界态）
-const WORKS = process.env.QA_WORKS ? process.env.QA_WORKS.split(",") : ["tide", "salt", "PRJ_1C88DEFF3D"];
+const WORKS = process.env.QA_WORKS ? process.env.QA_WORKS.split(",") : ["work-a", "work-b", "PRJ_1C88DEFF3D"];
 
 const ERR_KEYWORDS = ["出错", "失败", "加载失败", "无法加载", "错误", "异常", "undefined", "NaN", "[object Object]", "Cannot read", "TypeError", "is not a function"];
 

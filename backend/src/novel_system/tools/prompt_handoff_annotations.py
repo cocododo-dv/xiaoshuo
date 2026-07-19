@@ -101,7 +101,7 @@ NO_PROMPT_NODES: dict[str, str] = {
 EXTRA_ROUTING_KEYS: dict[str, str] = {
     "stylize": (
         "别名/兜底路由：style_draft 与 style_patch 节点的注册模板名即 \"stylize\"（yaml 无此键，"
-        "实际提示词用 style_draft 模板）；离线模式下 task_config 会以 stylize 路由兜底两节点。"
+        "实际提示词用 style_draft 模板）；style_draft/style_patch 需在各自 node 下显式绑定路由（跨节点借用已移除）。"
     ),
 }
 
@@ -607,7 +607,7 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "payload 键：project、步骤定义/指引/editor、draft（当前草稿，已剥 fe_*）、message（作者输入）、approved_context（已确认上游）、focus_scene_id/focus_scene（场景聚焦，row_uid/scene_id 皆可）、pressure_rubric + 诊断、scene_rules。",
         "output_contract": "回复 + 可选 patch；经 _normalize_assistant_output 归一（含与 base_draft 的合并语义）。",
         "parser_refs": [(f"{SVC}/snowflake_workspace_llm.py", "def _normalize_assistant_output", 1)],
-        "failure": "LLM 未启用 → SnowflakeWorkspaceAssistantService 的确定性 fallback 回复（source=\"fallback\"）。",
+        "failure": "LLM 未启用 → SNOWFLAKE_LLM_NOT_CONFIGURED 409（author_action 引导去系统配置）。",
         "opt_notes": "区分「建议模式」与「改稿模式」的判据要明确（何时回话、何时给 patch）；patch 必须尊重 approved 上游事实。",
     },
     {
@@ -665,7 +665,7 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "PromptBuilder：chapter_goal / scene_card / 角色连续性 / 张力约束等分节 + task_prompt + schema 指令。",
         "output_contract": "蓝图 payload，经 _validate_blueprint_payload 校验（字段缺失即拒）。产物作为 Scene Literary Blueprint 分节注入后续 neutral/style 生成。",
         "parser_refs": [(f"{SVC}/scene_blueprint.py", "_validate_blueprint_payload", 1)],
-        "failure": "离线走 OfflineSceneBlueprintClient 确定性桩；LLMNodeExecutionError 上抛。",
+        "failure": "LLM 未配置/失败 → SCENE_BLUEPRINT_LLM_REQUIRED 409 或 SCENE_BLUEPRINT_FAILED 502（fail-closed）。",
         "opt_notes": "蓝图质量直接放大到正文——把「反AI味」决策前置到这里（感知过滤器选择、冲突不许太干净、意象复用禁令），比在正文模板里堆规则更有效。",
     },
     {
@@ -691,7 +691,7 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "PromptBuilder：章/场景快照（不含既有架构）+ _planning_user_prompt 附加段。",
         "output_contract": "架构 payload，经 _normalize_chapter_architecture_payload 归一。",
         "parser_refs": [(f"{SVC}/near_final.py", "node_id=CHAPTER_ARCHITECTURE_ARTIFACT", 1)],
-        "failure": "离线 → _fallback_chapter_architecture_payload（skip_runner_when_offline）。",
+        "failure": "LLM 未配置/失败 → CHAPTER_STORY_ARCHITECTURE_LLM_REQUIRED 409 或 …_FAILED 502（fail-closed）。",
         "opt_notes": "关注章内张力曲线的显式化（每场景的势能增减必须有数值/方向），供 tension_curve 规则层可核。",
     },
     {
@@ -710,7 +710,7 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "PromptBuilder：含章架构在内的快照 + _planning_user_prompt。",
         "output_contract": "压力蓝图 payload，_normalize_character_pressure_payload 归一。",
         "parser_refs": [(f"{SVC}/near_final.py", "_normalize_character_pressure_payload(node_result.response.structured_output)", 1)],
-        "failure": "离线 → _fallback_character_pressure_payload。",
+        "failure": "LLM 未配置/失败 → CHARACTER_PRESSURE_BLUEPRINT_LLM_REQUIRED 409 或 …_FAILED 502（fail-closed）。",
         "opt_notes": "「冲突太干净」的第一道防线：要求每个角色的压力必须有不可白拿的代价与未消化的残留情绪。",
     },
     {
@@ -729,7 +729,7 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "PromptBuilder 全量上下文分节（chapter_goal/scene_card/scene_blueprint/character_pressure/POV voice/世界规则/前情记忆/伏笔/避免近期表达…）+ 语言锁 + 角色连续性指令 + schema 指令。",
         "output_contract": "scene_text（+元信息），_extract_scene_text 解析 → NeutralGenerationResult；正文进 SceneDraft 行。",
         "parser_refs": [(f"{SVC}/scene_generation.py", 'node_id="neutral_draft"', 1)],
-        "failure": "离线 OfflineNeutralClient；连续性预算超限 → LLMNodeContinuityError（建议拆场景）。",
+        "failure": "LLM 未配置 → fail-closed（LLM_PROVIDER_DISABLED）；连续性预算超限 → LLMNodeContinuityError（建议拆场景）。",
         "opt_notes": (
             "去AI味在此层管「叙事骨架不塌」：动作-反应节拍完整、信息经由压力而非旁白倾倒。风格留给 style 层，本模板应抑制修辞欲。"
             "2026-07-06.v3 复核轮：删除模板内与运行时语言锁逐字重复的两句（_append_runtime_template_instruction 会自动追加，双份指令白耗预算）。"
@@ -758,7 +758,7 @@ UNITS: list[dict[str, Any]] = [
         ),
         "output_contract": "scene_text；_extract_scene_text → StyleGenerationResult；候选进 Best-of-N 排序（adversarial_rank_score 规则盲评）。",
         "parser_refs": [(f"{SVC}/scene_generation.py", "def _build_style_user_prompt", 1)],
-        "failure": "离线 OfflineStyleClient（patch_mode 区分）；失败记 AttemptTracker 后上抛原错误。",
+        "failure": "LLM 未配置 → fail-closed；失败记 AttemptTracker 后上抛原错误。",
         "opt_notes": (
             "去AI味核心战场。对照 literary_quality 21 维中的高频失分项写硬约束：感知过滤器（每段落至少一处经由 POV 身体/情绪过滤的感知）、"
             "禁总结式收尾、禁「as you know」式对白倾倒、意象不许跨段复用、句式长短交替。注意语言锁与反抄袭红线是自动追加的，模板里不要重复。"
@@ -783,7 +783,7 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "PromptBuilder(long_form_continuation)：前文尾部 + 上下文分节 + 语言锁；风格注入定期刷新。",
         "output_contract": "scene_text 续段；_extract_scene_text。",
         "parser_refs": [(f"{SVC}/scene_generation.py", 'node_id="long_form_continuation"', 1)],
-        "failure": "同 style 路径（离线桩 / AttemptTracker）。",
+        "failure": "同 style 路径（fail-closed / AttemptTracker）。",
         "opt_notes": "续写的病是「重启感」：开头重复设景、情绪归零。约束续段必须从前文最后一个未消化动作/情绪接力，禁重新介绍人物。",
     },
     {
@@ -821,7 +821,7 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "user_prompt = canonical_json 快照（contract/source_text/diagnosis/gate_results/constraints——含 preserve_required_terms/forbidden_text）。",
         "output_contract": "scene_text 必填（缺失 → SCENE_AUTO_REWRITE_EMPTY 502）；rewrite_notes 可选。",
         "parser_refs": [(f"{SVC}/scene_quality.py", 'structured.get("scene_text")', 1)],
-        "failure": "路由缺失/调用失败 → SCENE_AUTO_REWRITE_LLM_FAILED 409（引导配路由）；离线走确定性候选并落审计行。",
+        "failure": "路由缺失 → SCENE_AUTO_REWRITE_LLM_REQUIRED 409（引导配路由）；调用失败 → SCENE_AUTO_REWRITE_LLM_FAILED 502。",
         "opt_notes": "system_prompt 只有一句话，信息量过低——是全系统最值得重写的内联提示词。改写目标、保护项、分支语义（full_scene vs 局部）都应进 system_prompt；改动要回写 scene_quality.py（无 yaml）。",
     },
     {
@@ -840,7 +840,7 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "PromptBuilder(writer_passage_patch)：目标段落 + 前后文 + 修补指令。",
         "output_contract": "修补后的段落文本 + 说明；服务内归一。",
         "parser_refs": [(f"{SVC}/writer_deep_review.py", 'node_id="writer_passage_patch"', 1)],
-        "failure": "OfflineWriterDeepReviewClient 桩；错误上抛为 blocked。",
+        "failure": "LLM 未配置/失败 → fail-closed；错误上抛为 blocked。",
         "opt_notes": "最大风险是补丁与前后文脱榫：约束首尾句必须与邻段在时序/视点/语气上连续，禁引入新事实。",
     },
     # ================= 批次 C =================
@@ -864,7 +864,7 @@ UNITS: list[dict[str, Any]] = [
             "rewrite_brief 为必填 string[]。"
         ),
         "parser_refs": [(f"{SVC}/qc_validator.py", "HardQCOutput.model_validate", 1)],
-        "failure": "离线 OfflineHardQcClient；重试预算 hard_partial_max 2 / hard_full_max 1（models.yaml retry_budget）；确定性 gates 叠加在 LLM 结果之上。",
+        "failure": "LLM 未配置 → fail-closed；重试预算 hard_partial_max 2 / hard_full_max 1（models.yaml retry_budget）；确定性 gates 叠加在 LLM 结果之上。",
         "opt_notes": "保守性最重要：只报可证的违反、evidence 必须可定位；rewrite_brief 要「可执行」（指向段落+改法），它直接喂给重写分支。",
     },
     {
@@ -883,7 +883,7 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "PromptBuilder(soft_qc)：风格草稿 + style_rule/banned_rule/校准行等分节（soft_qc allowlist 治理）+ QC 语言锁。",
         "output_contract": "SoftQCOutput Pydantic 校验；枚举冻结同上；patch 建议进 style_patch 分支的 patch_brief。",
         "parser_refs": [(f"{SVC}/qc_validator.py", "HardQCOutput.model_validate", 1)],
-        "failure": "离线 OfflineSoftQcClient；soft_patch_max 2；LLM 事件旗标仅 advisory。",
+        "failure": "LLM 未配置 → fail-closed；soft_patch_max 2；LLM 事件旗标仅 advisory。",
         "opt_notes": "patch 建议的粒度决定 style_patch 成败：每条 patch 指令应含「位置锚 + 病名 + 改法示例」。注意本路由还被 auto_critique_llm 借用——温度/模型改动会影响两个消费方。",
     },
     {
@@ -902,7 +902,7 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "PromptBuilder：终稿 + 契约/架构分节。",
         "output_contract": "验收 payload（发现项+判定）；服务内归一。",
         "parser_refs": [(f"{SVC}/near_final.py", 'node_id="near_final_acceptance_review"', 1)],
-        "failure": "离线桩 / 上抛。",
+        "failure": "fail-closed / 上抛。",
         "opt_notes": "与 hard_qc 分工：这里查「承诺兑现」而非硬事实。防止它退化成第二个 hard_qc——判据应围绕契约条款逐条对账。",
     },
     {
@@ -921,7 +921,7 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "PromptBuilder：章内各场景终稿 + 章目标/记忆分节（chapter_review 预算策略）。",
         "output_contract": "章级评审 payload；服务内归一。",
         "parser_refs": [(f"{SVC}/near_final.py", 'node_id="chapter_near_final_review"', 1)],
-        "failure": "离线桩 / 上抛。",
+        "failure": "fail-closed / 上抛。",
         "opt_notes": "章长导致输入截断风险最高的评审节点——指令应要求「先列场景清单再逐场衔接判定」，弱模型才不会只评开头。",
     },
     {
@@ -1187,7 +1187,7 @@ UNITS: list[dict[str, Any]] = [
         "adhoc_task": None,
         "status": "保留（status=reserved；rag.py 用确定性重排，inject 热路径 <50ms 无 LLM——本节点从未被调用）",
         "priority": "P2",
-        "purpose": "预留的离线/预览增强 rerank 钩子；当前 Strategy C 的三粒度召回 + 重排全为确定性。",
+        "purpose": "预留的预览增强 rerank 钩子；当前 Strategy C 的三粒度召回 + 重排全为确定性。",
         "trigger": "无（未接线）。",
         "call_chain": [(f"{SVC}/style_reference/rag.py", 'RAG_RERANK_NODE_ID = "style_ref_rag_rerank"', 1, "仅常量定义，无调用")],
         "inputs": "（未接线）模板设定为候选片段重排。",
@@ -1222,7 +1222,7 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "PromptBuilder(writer_scene_diagnosis) + _writer_review_user_prompt（object_type/object_id/正文 source/writer_context——镜头差异由此注入）。",
         "output_contract": "_validate_writer_diagnosis_payload 手工校验的诊断 payload（维度/发现/建议）。",
         "parser_refs": [(f"{SVC}/writer_review.py", "_validate_writer_diagnosis_payload(node_result.response.structured_output)", 1)],
-        "failure": "OfflineWriterReviewClient 桩；LLMNodeExecutionError → blocked payload（前端可见「诊断被阻断」）。",
+        "failure": "LLM 未配置/失败 → fail-closed；LLMNodeExecutionError → blocked payload（前端可见「诊断被阻断」）。",
         "opt_notes": "一份模板服务四镜头：模板必须按 writer_context 中的镜头标识切换判据，且四镜头产出不重叠（story 管结构、prose 管句子……）——在模板里给四镜头各自的检查清单与禁越界说明。",
     },
     {
@@ -1307,7 +1307,7 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "PromptBuilder(writer_deep_review)：正文 + 上下文分节。",
         "output_contract": "_normalize_deep_review_output 归一的深评报告。",
         "parser_refs": [(f"{SVC}/writer_deep_review.py", "_normalize_deep_review_output", 1)],
-        "failure": "OfflineWriterDeepReviewClient 桩。",
+        "failure": "LLM 未配置/失败 → fail-closed。",
         "opt_notes": (
             "深评发现须能锚定段落（供 writer_passage_patch 消费）——要求每条发现带原文引句或段落序号。"
             "2026-07-07 用户拍板落地《schema 变更提案》（推翻 2026-07-06 的关闭决议）：schema 顶层新增**可选**属性 "
@@ -1352,7 +1352,7 @@ UNITS: list[dict[str, Any]] = [
         "inputs": "PromptBuilder(author_proposal_generate)：作者草稿 + 项目上下文。",
         "output_contract": "structured_output 手工解析（提案文本+理由）。",
         "parser_refs": [(f"{SVC}/author_drafts.py", 'node_id="author_proposal_generate"', 1)],
-        "failure": "OfflineAuthorProposalClient 桩。",
+        "failure": "LLM 未配置 → AUTHOR_PROPOSAL_LLM_NOT_CONFIGURED 409；失败 → AUTHOR_PROPOSAL_GENERATE_FAILED 502。",
         "opt_notes": "提案集要方向互斥（保守修 / 结构改 / 风格改各一），并标注每案代价——否则弱模型给三条近似提案。",
     },
     # ================= 批次 F =================
@@ -1661,7 +1661,7 @@ NEGATIVE_EVIDENCE: list[str] = [
     "`self_repetition.py` 为 n-gram/模式守卫（无嵌入无 LLM）；`snowflake_workspace_assistant.py`（服务文件）是确定性 fallback 回复器，"
     "LLM 助手在 `snowflake_workspace_llm.py`。",
     "config/writer_rubrics.yaml（评分标尺文本）不注入任何提示词——代码只引用 rubric_id 字符串。",
-    "测试代码（backend/tests/）与种子工具不发起真实 LLM 调用（Fake/Offline 客户端）。",
+    "测试代码（backend/tests/）用显式注入的在线记账 Fake 客户端，不发起真实 LLM 调用。",
 ]
 
 # 生成脚本运行时须核对的调用点总数

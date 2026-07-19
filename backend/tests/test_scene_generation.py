@@ -9,6 +9,7 @@ from novel_system.db.models import (
     ChapterGoal,
     ChapterState,
     FinalScene,
+    GenerationPlanningArtifact,
     LlmCall,
     RelationProfile,
     SceneBlueprint,
@@ -23,10 +24,19 @@ from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.errors import DomainError
 from novel_system.services.context_budget import estimate_tokens
 from novel_system.services.llm_client import LLMRequest, LLMResponse
+from novel_system.services.near_final import (
+    CHAPTER_ARCHITECTURE_ARTIFACT,
+    CHARACTER_PRESSURE_ARTIFACT,
+    NearFinalAcceptanceService,
+    NearFinalPlanningService,
+)
 from novel_system.services.prompt_builder import PromptConfigurationError
 from novel_system.services.orchestrator import Orchestrator
+from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
+from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_generation import SceneGenerationService, StyleGenerationResult
 from tests.accounted_llm_fakes import AccountedGenerateMixin
+from tests.real_llm_fakes import ScenePipelineOnlineFake
 
 
 class FakeSceneClient(AccountedGenerateMixin):
@@ -198,16 +208,68 @@ def _seed_scene_blueprint(session) -> None:
     session.commit()
 
 
+def _seed_scene_planning(session) -> None:
+    """预置章级架构 + 角色压力规划产物（status=active），让编排复用而非联网生成。
+
+    这样 scene_blueprint（另由 _seed_scene_blueprint 预置）与规划两步都被跳过、
+    不产生 LLM 调用，测试才能干净地落到 neutral_draft 的目标失败点。"""
+    session.add(
+        GenerationPlanningArtifact(
+            row_id="planning_chapter_arch_CH100_seed",
+            artifact_type=CHAPTER_ARCHITECTURE_ARTIFACT,
+            object_type="chapter",
+            object_id="CH100",
+            chapter_id="CH100",
+            payload_json={
+                "chapter_promise": "the scene must change the available choices",
+                "escalation_path": ["pressure appears", "a choice narrows", "a cost lands"],
+                "reveal_plan": ["the governing constraint is exposed"],
+                "payoff_target": "the chosen action creates the next problem",
+                "character_shift": "certainty gives way to costly resolve",
+                "ending_question": "what will the choice cost next",
+            },
+            status="active",
+        )
+    )
+    session.add(
+        GenerationPlanningArtifact(
+            row_id="planning_char_pressure_CH100_SC01_seed",
+            artifact_type=CHARACTER_PRESSURE_ARTIFACT,
+            object_type="scene",
+            object_id="CH100_SC01",
+            chapter_id="CH100",
+            scene_id="CH100_SC01",
+            payload_json={
+                "surface_goal": "finish the immediate task",
+                "hidden_fear": "the choice will expose a weakness",
+                "wrong_belief": "control can prevent every loss",
+                "shame_point": "asking for help feels like surrender",
+                "avoidance_strategy": "delay the irreversible choice",
+                "relationship_debt": "an old promise remains unpaid",
+                "current_mask": "measured confidence",
+            },
+            status="active",
+        )
+    )
+    session.commit()
+
+
 def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -> None:
     # This test isolates persistence/lineage. Continuity blocking for a missing
     # must-include fact is exercised explicitly by the offline test below.
     _seed_scene(session, must_include_text=None)
     fake_client = FakeSceneClient()
+    support = ScenePipelineOnlineFake()
 
     orchestrator = Orchestrator(
         session,
         scene_generation_service=SceneGenerationService(session, llm_client=fake_client),
+        hard_qc_engine=HardQcEngine(session, llm_client=support),
+        soft_qc_engine=SoftQcEngine(session, llm_client=support),
+        planning_service=NearFinalPlanningService(session, llm_client=support),
+        near_final_service=NearFinalAcceptanceService(session, llm_client=support),
     )
+    orchestrator.scene_blueprint_service = SceneBlueprintService(session, llm_client=support)
 
     result = orchestrator.run_scene("CH100_SC01")
     session.commit()
@@ -639,6 +701,7 @@ def test_generate_neutral_draft_records_failed_attempt_and_bumps_counter(session
 def test_run_scene_records_neutral_prompt_builder_failure_and_clears_stale_state(session, monkeypatch) -> None:
     _seed_scene(session)
     _seed_scene_blueprint(session)
+    _seed_scene_planning(session)
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_API_KEY", raising=False)
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_BASE_URL", raising=False)
@@ -674,6 +737,7 @@ def test_run_scene_records_neutral_prompt_builder_failure_and_clears_stale_state
 def test_run_scene_records_style_routing_failure(session, monkeypatch) -> None:
     _seed_scene(session)
     _seed_scene_blueprint(session)
+    _seed_scene_planning(session)
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_API_KEY", raising=False)
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_BASE_URL", raising=False)
@@ -710,7 +774,12 @@ def test_run_scene_records_style_routing_failure(session, monkeypatch) -> None:
         lambda: FakeRoutingConfig(),
     )
 
-    orchestrator = Orchestrator(session)
+    support = ScenePipelineOnlineFake()
+    orchestrator = Orchestrator(
+        session,
+        scene_generation_service=SceneGenerationService(session, llm_client=support),
+        hard_qc_engine=HardQcEngine(session, llm_client=support),
+    )
     with pytest.raises(KeyError):
         orchestrator.run_scene("CH100_SC01")
     session.commit()
@@ -730,13 +799,21 @@ def test_run_scene_records_style_routing_failure(session, monkeypatch) -> None:
     assert state.current_style_draft_row_id is None
 
 
-def test_offline_fallback_keeps_drafts_but_cannot_archive_missing_required_fact(session, monkeypatch) -> None:
+def test_online_draft_keeps_drafts_but_cannot_archive_missing_required_fact(session) -> None:
+    # 离线确定性生成已退役：接入在线记账替身后草稿照常生成，但缺失必含事实时
+    # 最终文本闸门仍拦住归档（FINAL_TEXT_CONTINUITY_BLOCKED），草稿与准定稿保留。
     _seed_scene(session)
-    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
-    monkeypatch.delenv("NOVEL_SYSTEM_LLM_API_KEY", raising=False)
-    monkeypatch.delenv("NOVEL_SYSTEM_LLM_BASE_URL", raising=False)
+    support = ScenePipelineOnlineFake()
 
-    orchestrator = Orchestrator(session)
+    orchestrator = Orchestrator(
+        session,
+        scene_generation_service=SceneGenerationService(session, llm_client=support),
+        hard_qc_engine=HardQcEngine(session, llm_client=support),
+        soft_qc_engine=SoftQcEngine(session, llm_client=support),
+        planning_service=NearFinalPlanningService(session, llm_client=support),
+        near_final_service=NearFinalAcceptanceService(session, llm_client=support),
+    )
+    orchestrator.scene_blueprint_service = SceneBlueprintService(session, llm_client=support)
     with pytest.raises(DomainError) as blocked:
         orchestrator.run_scene("CH100_SC01")
     assert blocked.value.code == "FINAL_TEXT_CONTINUITY_BLOCKED"
@@ -759,12 +836,9 @@ def test_offline_fallback_keeps_drafts_but_cannot_archive_missing_required_fact(
     assert final_scene.status == "near_final_ready"
 
     assert {"neutral_draft", "hard_qc", "style_draft", "soft_qc"}.issubset(llm_calls_by_step)
-    assert all(llm_call.provider == "offline_deterministic" for llm_call in llm_calls)
-    assert all(llm_call.finish_reason == "offline_fallback" for llm_call in llm_calls)
-    assert neutral_draft.content.startswith(
-        "Offline neutral draft for CH100_SC01. The scene advances clearly, preserves continuity, "
-        "and satisfies the compiled bundle constraints."
-    )
+    assert all(llm_call.provider == "test-online-provider" for llm_call in llm_calls)
+    assert all(llm_call.finish_reason == "stop" for llm_call in llm_calls)
+    assert neutral_draft.content.startswith("Accounted online test draft")
     assert "A red envelope changes hands." not in neutral_draft.content
     assert "Clocktower Roof" not in neutral_draft.content
     assert neutral_draft.generation_llm_call_id == neutral_llm_call.llm_call_id

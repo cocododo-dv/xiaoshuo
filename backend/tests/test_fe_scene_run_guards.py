@@ -320,8 +320,57 @@ def test_preflight_create_cards_is_idempotent(client, session) -> None:
     assert len(rows) == 1
 
 
-def test_passage_patch_candidate_for_fe_scene_offline(client, session) -> None:
-    """FE-ALIGN G4：内联改写端点对 FE 目录场景可用；LLM 关闭走离线确定性客户端。"""
+def test_passage_patch_candidate_for_fe_scene_uses_online_llm(client, session, monkeypatch) -> None:
+    """FE-ALIGN G4：内联改写端点对 FE 目录场景可用；离线桩已退役，改写接入真实 LLM
+    （此处注入在线记账替身），产出可选改写候选后走 accept 流程。"""
+    import json as _json
+
+    from novel_system.services.llm_client import LLMResponse
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
+
+    def fake_generate(self, request, *, accounting_hook=None):  # noqa: ANN001
+        patch_fields = {
+            "target_text_ref": "ref-scene",
+            "source_excerpt": "她把证据袋放回原处，转身解释了三句。",
+            "patch_type": "replace_excerpt",
+        }
+        payload = {
+            "patches": [
+                {
+                    **patch_fields,
+                    "replacement_text": "她把证据袋按进掌心，没有解释。",
+                    "changed_dimensions": ["information_rhythm"],
+                    "why_it_helps": "压掉解释余量，让动作自己承担压力。",
+                },
+                {
+                    **patch_fields,
+                    "replacement_text": "她收回手，话到嘴边又咽了回去。",
+                    "changed_dimensions": ["dialogue_subtext"],
+                    "why_it_helps": "把明说转为回避，留出读者判断空间。",
+                },
+            ],
+            "rationale": "压缩解释余量，让动作自己说话。",
+            "manual_only": True,
+        }
+        response = LLMResponse(
+            request_id="resp_passage_patch",
+            provider="test-online-provider",
+            model=request.model,
+            text=_json.dumps(payload, ensure_ascii=False),
+            structured_output=payload,
+            response_format="json_object",
+            raw_response={"id": "resp_passage_patch", "usage": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30}},
+            usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+            finish_reason="stop",
+        )
+        if accounting_hook is not None:
+            handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            accounting_hook.after_response(handle, request=request, response=response, latency_ms=1)
+        return response
+
+    monkeypatch.setattr("novel_system.services.llm_client.LLMClient.generate", fake_generate)
+
     scene_id = _seed_fe_scene(session)
     response = client.post(
         "/api/v1/passages/patch-candidates",
@@ -340,8 +389,6 @@ def test_passage_patch_candidate_for_fe_scene_offline(client, session) -> None:
     options = cand["replacement_options"]
     assert len(options) >= 2
     assert all(o.get("replacement_text") for o in options)
-    # 离线兜底有明确标记——前端据此按「模型不可用」处理，不冒充真实改写
-    assert "offline deterministic" in (cand.get("rationale") or "")
 
     accept = client.post(
         f"/api/v1/passage-patch-candidates/{cand['patch_id']}/accept",

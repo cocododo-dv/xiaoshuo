@@ -55,8 +55,8 @@ await check("① 建书建章 + 锚点（命中/未命中/到期承诺）", asyn
   await page.evaluate(async ({ apiBase, pid }) => {
     const H = (k) => ({ "Content-Type": "application/json", "X-Idempotency-Key": k + Date.now() });
     const base = `${apiBase}/api/v2/projects/${pid}/longform/anchors`;
-    await fetch(base, { method: "POST", headers: H("h2-a1"), body: JSON.stringify({ kind: "setting", text: "盐钟 · 材质 = 铜", note: JSON.stringify({ fe: { id: "c2", subject: "盐钟 · 材质", value: "铜" } }) }) });
-    await fetch(base, { method: "POST", headers: H("h2-a2"), body: JSON.stringify({ kind: "trait", text: "林岑 · 年龄 = 28 岁", note: JSON.stringify({ fe: { id: "c1", subject: "林岑 · 年龄", value: "28 岁" } }) }) });
+    await fetch(base, { method: "POST", headers: H("h2-a1"), body: JSON.stringify({ kind: "setting", text: "道具甲 · 材质 = 铜", note: JSON.stringify({ fe: { id: "c2", subject: "道具甲 · 材质", value: "铜" } }) }) });
+    await fetch(base, { method: "POST", headers: H("h2-a2"), body: JSON.stringify({ kind: "trait", text: "角色甲 · 年龄 = 28 岁", note: JSON.stringify({ fe: { id: "c1", subject: "角色甲 · 年龄", value: "28 岁" } }) }) });
     await fetch(base, { method: "POST", headers: H("h2-a3"), body: JSON.stringify({ kind: "promise", text: "第二组脚印", note: JSON.stringify({ fe: { id: "l6", title: "第二组脚印", setup: 1, payoff: 1, state: "open" } }) }) });
   }, { apiBase: API, pid });
 });

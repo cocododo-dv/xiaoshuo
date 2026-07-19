@@ -91,8 +91,8 @@ class SnowflakeWorkspaceService:
         self.session = session
         self._projects = ProjectService(session)
         self._planner = SnowflakePlannerService(session)
-        self._assistant = SnowflakeWorkspaceAssistantService()
         self._llm = SnowflakeWorkspaceLLMService(session)
+        self._assistant = SnowflakeWorkspaceAssistantService()
 
     def list_projects(self) -> dict[str, Any]:
         rows = self._projects.list()
@@ -210,7 +210,6 @@ class SnowflakeWorkspaceService:
                 project=project,
                 step_key=step_key,
                 latest_by_step=latest_by_step,
-                fallback_factory=lambda: self._planner._build_artifact_json(project, step_key, latest_by_step),
                 adopted_direction=direction_text or None,
                 focus_scene_refs=focus_scene_refs if step_key == "scene_details" else None,
                 focus_character_refs=(

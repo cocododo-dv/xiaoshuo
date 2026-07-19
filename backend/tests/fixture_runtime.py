@@ -256,8 +256,8 @@ DEMO_SCENE_SUMMARIES = [
         "chapter_id": "CH001",
         "content": "scene summary for the first reunion beat",
         "carry_notes_json": [],
-        "source_bundle_id": "seed_demo",
-        "final_scene_row_id": "seed_demo",
+        "source_bundle_id": "test_fixture",
+        "final_scene_row_id": "test_fixture",
         "source_review_id": None,
         "active_flag": 1,
         "runtime_eligible": 1,
@@ -972,11 +972,14 @@ def _seed_preflight_e2e(session: Session) -> dict[str, list[str]]:
     }
 
 
-def _seed_demo(session: Session, *, fixture: str | None = None) -> dict[str, list[str] | str]:
+def _seed_runtime_fixture(session: Session, *, fixture: str | None = None) -> dict[str, list[str] | str]:
     # FE-ALIGN P2: 两部种子作品（潮汐档案/盐镇来信）后端化（独立模块，自带幂等清理）。
-    from novel_system.tools.seed_fe_demo_works import seed_fe_demo_works
+    try:
+        from tests.fixture_works import seed_fixture_works
+    except ImportError:  # 直接以脚本运行（python tests/fixture_runtime.py）
+        from fixture_works import seed_fixture_works
 
-    seed_fe_demo_works(session)
+    seed_fixture_works(session)
     _cleanup_demo_runtime(session)
     _upsert(session, StoryProject, "project_id", DEMO_PROJECT)
     session.flush()
@@ -1041,12 +1044,12 @@ def _seed_demo(session: Session, *, fixture: str | None = None) -> dict[str, lis
     return summary
 
 
-def seed_demo(session: Session | None = None, *, fixture: str | None = None) -> dict[str, list[str] | str]:
+def seed_runtime_fixture(session: Session | None = None, *, fixture: str | None = None) -> dict[str, list[str] | str]:
     if session is not None:
-        return _seed_demo(session, fixture=fixture)
+        return _seed_runtime_fixture(session, fixture=fixture)
 
     with SessionLocal() as managed_session:
-        summary = _seed_demo(managed_session, fixture=fixture)
+        summary = _seed_runtime_fixture(managed_session, fixture=fixture)
         managed_session.commit()
         return summary
 
@@ -1055,7 +1058,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixture", choices=[DEMO_RUNTIME_OPS_E2E_FIXTURE, DEMO_CHAPTER_OPS_E2E_FIXTURE, DEMO_ALL_E2E_FIXTURE])
     args = parser.parse_args(argv)
-    print(json.dumps(seed_demo(fixture=args.fixture), ensure_ascii=False, indent=2))
+    print(json.dumps(seed_runtime_fixture(fixture=args.fixture), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

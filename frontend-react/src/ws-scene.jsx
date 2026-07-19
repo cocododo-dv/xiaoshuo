@@ -2,7 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
 import { TweakRadio, TweakSection, TweakSlider, TweakToggle } from "./tweaks-panel.jsx";
-import { WsCatalog, WsDemoTag } from "./ws-catalog.jsx";
+import { WsCatalog } from "./ws-catalog.jsx";
 import { SceneRunJobControl, scnQueueLoad, scnRunLoad, scnQueueSave, scnReQC, scnRun, scnCreateCards, scnTopupBudget, scnRunSave, scnAdoptToDoc, scnPrepareAdoption, scnPickList, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
 import { ContentSafetyReviewDialog, contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
 import { WsWorks } from "./ws-works.jsx";
@@ -44,206 +44,6 @@ const BEAT_META = {
 
 /* ===================== Scene content ===================== */
 
-const SC_DATA = {
-  q1: {
-    n: "CH 08 · SC 03", title: "夜班修复台 · 二次发现", kind: "主动场景",
-    state: "running", stageIdx: 3, progress: 0.62, attempt: 4,
-    eta: "0:40", elapsed: "1:24", model: "Sonnet → Haiku",
-    targetWords: "1800–2000",
-    brief: [
-      { beat: "goal",     text: "林岑完成最后一片残片的归档，确认夜间值守的秩序。" },
-      { beat: "conflict", text: "湿度读数与昨日完全相同——一个本不该出现的巧合。" },
-      { beat: "setback",  text: "备份单上的字迹属于已故的父亲。" },
-      { beat: "exit",     text: "她合上恒温箱，决定明早调取父亲的旧档。" },
-    ],
-    draft: [
-      { id: "p1", beat: "goal", parts: [{ text: "林岑把今天的最后一片残片放进恒温箱时，馆里的钟已经过了十一点。" }] },
-      { id: "p2", parts: [
-        { text: "她从来不喜欢这一段时间。十一点之后，老馆的中央空调会进入夜间模式，" },
-        { risk: "repeat", sev: "mid", text: "机器声变得安静，安静到", tip: "句式重复率偏高（22%）——「安静，安静到」回响过重" },
-        { text: "她能听见自己的手指敲在键盘上的回响。" },
-      ]},
-      { id: "p3", beat: "conflict", parts: [
-        { text: "盐钟箱内壁的湿度计是 47%。她记下来——" },
-        { risk: "pace", sev: "mid", text: "和昨天同一时刻完全一样。", tip: "情绪转折偏快：发现异常到警觉之间缺少呼吸" },
-      ]},
-      { id: "p4", parts: [{ text: "她想，这种不变本来应该让她安心。" }] },
-      { id: "p5", beat: "setback", parts: [
-        { text: "可备份单背后那行小字，是父亲的笔迹。" },
-      ]},
-    ],
-    metrics: [
-      { label: "短句率",   pct: 72, target: 70, val: "72%", tone: "ok" },
-      { label: "参考相似", pct: 42, target: 65, val: "0.42", tone: "ok" },
-      { label: "句式重复", pct: 22, target: 15, val: "22%", tone: "warn" },
-    ],
-    alignment: [
-      { beat: "goal",     para: "p1", status: "ok",   note: "目标已在首段落点" },
-      { beat: "conflict", para: "p3", status: "ok",   note: "冲突在第 3 段引入" },
-      { beat: "setback",  para: "p5", status: "warn", note: "挫折出现得偏早" },
-      { beat: "exit",     para: null, status: "pend", note: "出口尚未写出" },
-    ],
-    cost: [
-      { k: "起草",  v: "Sonnet · 32s" },
-      { k: "质检",  v: "Sonnet · 12s" },
-      { k: "二改",  v: "Haiku · 进行中" },
-      { k: "Token", v: "28,400", mono: true },
-    ],
-    attempts: [
-      { n: 4, time: "本次 · 进行中", result: "running", tone: "crimson", note: "二次改写中" },
-      { n: 3, time: "05-17 22:14", result: "质检阻断", tone: "rose", note: "句式重复 31%",
-        cmp: {
-          verdict: "句式重复率 31% 超阈值（目标 ≤15%），质检自动阻断并退回改写。",
-          metrics: [
-            { label: "句式重复", was: "31%", now: "22%", better: true },
-            { label: "短句率",   was: "78%", now: "72%", better: true },
-            { label: "参考相似", was: "0.40", now: "0.42", better: false },
-          ],
-          before: { text: "夜里很安静，安静到能听见钟摆，安静到连她的呼吸都被放大。", risk: "「安静，安静到」三连回响" },
-          after:  { text: "十一点之后，老馆的中央空调进入夜间模式，机器声变得安静，安静到她能听见自己敲键盘的回响。" },
-        } },
-      { n: 2, time: "05-17 17:30", result: "作者中断", tone: "gold", note: "节奏不对",
-        cmp: { verdict: "作者在起草阶段手动中断：开场推进过快，想保留更多铺垫。" } },
-      { n: 1, time: "05-17 09:05", result: "弃稿", tone: "slate", note: "开场偏离戏剧卡",
-        cmp: { verdict: "首段未落点 Goal，质检判定偏离戏剧卡，整稿弃用。" } },
-    ],
-    log: [
-      { t: "13:42:08", who: "system", text: "预检通过：戏剧卡 6/6 · 角色 3 · 参考画像 1" },
-      { t: "13:42:12", who: "sonnet", text: "起草开始 · 目标 1800–2000 字" },
-      { t: "13:42:44", who: "sonnet", text: "起草完成 1850 字 · 用时 32s" },
-      { t: "13:42:46", who: "qc",     text: "质检开始 · 6 项检查器" },
-      { t: "13:42:52", who: "qc",     text: "通过：戏剧卡对齐 · 参考相似 0.42 · 设定一致" },
-      { t: "13:42:52", who: "qc",     text: "风险（中）：情绪转折偏快 · 句式重复 22%" },
-      { t: "13:42:53", who: "haiku",  text: "二次改写开始 · 针对 2 项中风险" },
-      { t: "13:43:10", who: "haiku",  text: "改写 1/2：拆解「安静，安静到」回响…" },
-    ],
-  },
-
-  q4: {
-    n: "CH 07 · SC 04", title: "亮起来的感应灯", kind: "反应场景",
-    state: "ready", stageIdx: 4, progress: 1, attempt: 2,
-    eta: null, elapsed: "2:08", model: "Sonnet · 一次通过",
-    targetWords: "1600–1800",
-    verdict: { qc: "通过", risks: "1 项低风险", align: "戏剧卡 4/4 对齐", words: 1724 },
-    brief: [
-      { beat: "goal",     text: "林岑想在闭馆前确认走廊尽头那扇门是否被人动过。" },
-      { beat: "conflict", text: "门是锁着的，但门缝下透出的光在她离开后熄灭了。" },
-      { beat: "setback",  text: "监控录像里，那段时间是一片空白。" },
-      { beat: "exit",     text: "她把这件事记进只有自己能看的那本册子。" },
-    ],
-    draft: [
-      { id: "p1", beat: "goal", parts: [
-        { text: "闭馆铃响过两遍，林岑没有立刻走。她沿着西侧走廊往里去，鞋底在水磨石上敲出一串不紧不慢的回声，像有人跟在她身后，却始终慢半拍。" },
-      ]},
-      { id: "p2", parts: [
-        { text: "走廊尽头是档案三库的门。白天它总是开着的，此刻却关得严严实实。她伸手按了按，门是锁着的——这本身没什么奇怪。" },
-      ]},
-      { id: "p3", beat: "conflict", parts: [
-        { text: "奇怪的是门缝。门缝下有一道极细的光，暖黄色，是库房里那盏老式白炽灯的颜色。她记得很清楚，下午四点她亲手关掉了那盏灯。" },
-      ]},
-      { id: "p4", parts: [
-        { text: "她站在原地数了十下。数到第七下的时候，那道光灭了。没有脚步声，没有开关的咔哒声，光就那样从门缝里退了出去，像潮水退过沙滩。" },
-      ]},
-      { id: "p5", beat: "setback", parts: [
-        { text: "第二天她调了监控。走廊尽头那一段，从二十一点零四分到二十一点零九分，画面是一片均匀的灰。" },
-        { risk: "soft", sev: "low", text: "不是黑，是灰，像有人在镜头前轻轻呵了一口气。", tip: "比喻偏软：可考虑更克制的收尾" },
-      ]},
-      { id: "p6", beat: "exit", parts: [
-        { text: "她没有声张。她把日期、时间、还有那道暖黄色的光，记进了那本只有自己能翻开的小册子里，合上，放回抽屉最底层。" },
-      ]},
-    ],
-    metrics: [
-      { label: "短句率",   pct: 64, target: 70, val: "64%", tone: "ok" },
-      { label: "参考相似", pct: 38, target: 65, val: "0.38", tone: "ok" },
-      { label: "句式重复", pct: 11, target: 15, val: "11%", tone: "ok" },
-    ],
-    alignment: [
-      { beat: "goal",     para: "p1", status: "ok", note: "目标在首段确立" },
-      { beat: "conflict", para: "p3", status: "ok", note: "冲突自然引入" },
-      { beat: "setback",  para: "p5", status: "ok", note: "挫折落在监控空白" },
-      { beat: "exit",     para: "p6", status: "ok", note: "出口与下一场入口对齐" },
-    ],
-    cost: [
-      { k: "起草",  v: "Sonnet · 41s" },
-      { k: "质检",  v: "Sonnet · 14s" },
-      { k: "校核",  v: "Sonnet · 9s" },
-      { k: "Token", v: "31,900", mono: true },
-    ],
-    attempts: [
-      { n: 2, time: "本次 · 待复核", result: "待裁决", tone: "gold", note: "质检通过 · 1 项低风险" },
-      { n: 1, time: "05-16 14:20", result: "作者中断", tone: "slate", note: "想换叙事视角",
-        cmp: {
-          verdict: "作者中断第 1 版：原用全知视角，决定改回林岑限知视角以保留悬念。",
-          metrics: [
-            { label: "参考相似", was: "0.55", now: "0.38", better: true },
-            { label: "句式重复", was: "14%", now: "11%", better: true },
-          ],
-          before: { text: "档案三库的门后，馆长正借着白炽灯翻看一卷旧磁带——这一点林岑并不知道。", risk: "全知视角泄底" },
-          after:  { text: "门缝下有一道极细的光，暖黄色。她记得很清楚，下午四点她亲手关掉了那盏灯。" },
-        } },
-    ],
-    log: [
-      { t: "09:01:02", who: "system", text: "预检通过：戏剧卡 6/6 · 角色 2 · 参考画像 1" },
-      { t: "09:01:08", who: "sonnet", text: "起草完成 1724 字 · 用时 41s" },
-      { t: "09:01:23", who: "qc",     text: "质检通过 · 仅 1 项低风险（比喻偏软）" },
-      { t: "09:01:31", who: "sonnet", text: "校核通过 · 出口与 SC 05 入口对齐" },
-    ],
-  },
-
-  q5: {
-    n: "CH 07 · SC 03", title: "三号档案箱 · 终稿", kind: "主动场景",
-    state: "archived", stageIdx: 5, progress: 1, attempt: 3,
-    eta: null, elapsed: "—", model: "演示归档样例 · 只读",
-    archivedAt: "2026-05-17 09:05",
-    draft: [
-      { id: "p1", beat: "goal", parts: [{ text: "三号档案箱在地下室待了十一年，今天终于被搬上了修复台。林岑戴上手套，像迎接一位久别的客人。" }] },
-      { id: "p2", parts: [{ text: "箱子里没有她预想中的纸张。只有一卷磁带，和一张写着六个数字的便签。" }] },
-      { id: "p3", beat: "exit", parts: [{ text: "她把六个数字念了三遍，记住了，然后把便签按原样放了回去。" }] },
-    ],
-    metrics: [
-      { label: "短句率",   pct: 68, target: 70, val: "68%", tone: "ok" },
-      { label: "参考相似", pct: 44, target: 65, val: "0.44", tone: "ok" },
-      { label: "句式重复", pct: 13, target: 15, val: "13%", tone: "ok" },
-    ],
-    alignment: [
-      { beat: "goal", para: "p1", status: "ok", note: "目标确立" },
-      { beat: "exit", para: "p3", status: "ok", note: "出口已对齐" },
-    ],
-    cost: [
-      { k: "字数",  v: "1,690" },
-      { k: "尝试",  v: "3 次" },
-      { k: "状态",  v: "演示快照 · 未写入" },
-    ],
-    attempts: [
-      { n: 3, time: "05-17 09:05", result: "演示归档", tone: "sage", note: "只读快照，未写入真实作品" },
-      { n: 2, time: "05-16 21:40", result: "退回重写", tone: "gold", note: "结尾六个数字要留白",
-        cmp: { verdict: "作者退回第 2 版：结尾把六个数字直接念了出来，要求改成只留悬念。" } },
-      { n: 1, time: "05-16 11:02", result: "质检阻断", tone: "rose", note: "信息密度过高",
-        cmp: {
-          verdict: "质检阻断第 1 版：单段同时引入磁带、便签、数字三件物，信息密度超标。",
-          before: { text: "箱子里有一卷磁带、一张写着六个数字的便签、还有半张烧焦的照片和一枚铜钥匙。", risk: "一段四件物" },
-          after:  { text: "箱子里没有她预想中的纸张。只有一卷磁带，和一张写着六个数字的便签。" },
-        } },
-    ],
-    log: [],
-  },
-};
-
-/* queue order + light rows for the not-detailed scenes */
-const SC_QUEUE = [
-  { id: "q1", state: "running",  progress: 0.62 },
-  { id: "q2", state: "queued",   progress: 0, n: "CH 08 · SC 04", title: "馆长出现" },
-  { id: "q3", state: "queued",   progress: 0, n: "CH 08 · SC 05", title: "走廊上的回声" },
-  { id: "q4", state: "ready",    progress: 1 },
-  { id: "q5", state: "archived", progress: 1 },
-];
-
-function sceneOf(id) {
-  const q = SC_QUEUE.find(x => x.id === id);
-  const d = SC_DATA[id];
-  if (d) return { id, ...d };
-  return { id, ...q, kind: "主动场景", brief: [], draft: [], metrics: [], alignment: [], cost: [], log: [] };
-}
 
 const STATE_LABEL = { running: "运行中", queued: "排队", ready: "待复核", archived: "已归档" };
 const STATE_TONE  = { running: "crimson", queued: "slate", ready: "gold", archived: "sage" };
@@ -276,7 +76,7 @@ function scnFromCatalog(sid) {
 
 /* ============================ Main ============================ */
 
-function WsSceneDemo({ go, t, demo = true }) {
+function WsSceneBoard({ go, t }) {
   const tw = t || {};
   /* 初始化：持久化队列（按作品）+ 编排送来的入列请求 + 每场已持久化的运行结果 */
   const initRef = useRef8(null);
@@ -299,7 +99,7 @@ function WsSceneDemo({ go, t, demo = true }) {
   const runSeq = useRef8({});
   const runAbortControllers = useRef8({});
   const runProgressTimers = useRef8({});
-  const [pickedId, setPicked] = useSt8(() => (initRef.current.items[0] ? initRef.current.items[0].id : (demo ? "q1" : null)));
+  const [pickedId, setPicked] = useSt8(() => (initRef.current.items[0] ? initRef.current.items[0].id : null));
   const [activeBeat, setActiveBeat] = useSt8(null);     // highlighted beat in draft
   const [logOpen, setLogOpen] = useSt8(false);
   const [compare, setCompare] = useSt8(null);           // attempt object being compared
@@ -426,15 +226,15 @@ function WsSceneDemo({ go, t, demo = true }) {
     return () => { window.removeEventListener("ws:scene-deepdesk-done", onDx); window.removeEventListener("ws:scene-enqueue", onEnq); };
   }, []);
 
-  /* 队列：目录来的场叠加运行态；演示项只在《潮汐档案》呈现 */
+  /* 队列：目录来的场叠加运行态 */
   const baseQueue = useMemo8(() => {
     const ext = extras.map(x => {
       const r = runs[x.id];
       return r ? { ...x, state: r.state || "queued", progress: r.state === "running" ? (r.progress || 0) : (r.state === "queued" ? 0 : 1) } : x;
     });
-    return demo ? [...ext, ...SC_QUEUE] : ext;
-  }, [extras, runs, demo]);
-  const sceneOfX = (id) => { const ex = extras.find(x => x.id === id); return ex || sceneOf(id); };
+    return ext;
+  }, [extras, runs]);
+  const sceneOfX = (id) => extras.find(x => x.id === id) || null;
   const selectedCardScene = extras.find(x => x.id === pickedId) || null;
   const [activeBackendScene, setActiveBackendScene] = useSt8(null);
   const [observedRunJob, setObservedRunJob] = useSt8(null);
@@ -819,7 +619,7 @@ function WsSceneDemo({ go, t, demo = true }) {
       data-beats={tw.scnBeats === false ? "off" : "on"}
       style={{ "--scn-font": (tw.scnFont || 16) + "px" }}>
       <SceneQueue
-        queue={queue} sceneOfX={sceneOfX} demo={demo}
+        queue={queue} sceneOfX={sceneOfX}
         pickedId={pickedId} setPicked={setPicked} counts={counts} dxDone={dxDone}
         onAdd={() => setPicker(true)}
       />
@@ -997,12 +797,11 @@ function AdoptionProtectDialog({ decision, busy, message, onClose, onCandidate, 
 
 /* ============================ Queue ============================ */
 
-function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, dxDone, demo, onAdd }) {
-  const demoStateLabel = { running: "运行样例", queued: "排队样例", ready: "待审样例", archived: "归档样例" };
+function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, dxDone, onAdd }) {
   return (
     <aside className="scn2-queue">
       <header className="scn2-queue-head">
-        <div className="page-eyebrow" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8 }}>AI 起草台 {demo && WsDemoTag && <WsDemoTag note="队列里的 CH07/CH08 演示场是模拟数据；从目录加入的场景走后端 scenes run 真管线（预检 → 起草 → 双层质检，LLM 未就绪会给明确引导），归档写回你的正文。" />}</div>
+        <div className="page-eyebrow" style={{ margin: 0, display: "flex", alignItems: "center", gap: 8 }}>AI 起草台</div>
         <h2 className="text-serif scn2-queue-title">运行队列</h2>
         <p className="scn2-queue-sub">从章节编排的场景卡入列 · 一场一裁</p>
       </header>
@@ -1026,7 +825,7 @@ function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, dxDone, demo
                 <div className="scn2-qrow-main">
                   <div className="scn2-qrow-top">
                     <span className="scn2-qrow-num">{s.n}</span>
-                    <span className={`scn2-chip s-${st}`}>{st === "running" && <span className="scn2-chip-pulse" />}{!s.fromCard ? demoStateLabel[st] : STATE_LABEL[st]}</span>
+                    <span className={`scn2-chip s-${st}`}>{st === "running" && <span className="scn2-chip-pulse" />}{STATE_LABEL[st]}</span>
                   </div>
                   <div className="scn2-qrow-title text-serif">{s.title}</div>
                   {dxDone && dxDone[s.n] != null && <span className="scn2-qrow-dx"><I.Microscope size={11} /> 已深改 · {dxDone[s.n]} 处</span>}
@@ -1041,7 +840,6 @@ function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, dxDone, demo
       </ul>
 
       <div className="scn2-queue-foot">
-        {demo && <button className="btn btn-ghost btn-sm" style={{ flex: 1 }} disabled title="演示队列是只读样例，不会启动后台任务">演示队列 · 只读</button>}
         <button className="btn btn-accent btn-sm" data-testid="scene-add" style={{ flex: 1 }} onClick={onAdd}><I.Plus size={13} /> 加入场景</button>
       </div>
     </aside>
@@ -1165,23 +963,7 @@ function Preflight({ scene }) {
   const briefBeats = (scene.brief || []).map(b => b.beat);
   /* 长程约束：预检时读控制塔的交接契约（强约束层）。
      若本场场景卡带 contract 指派（由塔下发时逐场分解），优先展示指派项 */
-  const longRange = useMemo8(() => {
-    try {
-      if (WsWorks && WsWorks.activeId() !== "tide") return null;
-      if (!window.lf3Brief || !window.LF2_LOOPS || !window.LF2_CANON) return null;
-      const b = window.lf3Brief(window.LF2_LOOPS, window.LF2_CANON, {});
-      if (!b || !b.enforce || !b.enforce.length) return null;
-      let assigned = null;
-      if (scene.sid && WsCatalog) {
-        const hit = WsCatalog.sceneById(scene.sid);
-        if (hit && Array.isArray(hit.scene.contract) && hit.scene.contract.length) {
-          assigned = b.all.filter(it => hit.scene.contract.includes(it.id));
-          if (!assigned.length) assigned = null;
-        }
-      }
-      return { ...b, assigned };
-    } catch (e) { return null; }
-  }, [scene.sid]);
+  const longRange = null;
   const checks = scene.fromCard
     ? [
         { ok: briefBeats.includes("goal"),     text: "场景卡 · 目标已填" },
@@ -1495,17 +1277,6 @@ function DecisionBar({ scene, state, runJobStatus, go, onArchive, onRun, onCreat
     );
   }
 
-  if (!scene.fromCard && state === "archived") {
-    return (
-      <div className="scn2-decide is-done" data-testid="scene-demo-readonly">
-        <div className="scn2-decide-sum"><I.ShieldCheck size={14} /> 演示归档样例 · 完全只读 · 未写入真实作品</div>
-        <div className="scn2-decide-acts">
-          <button className="btn btn-ghost btn-sm" disabled title="从自己的章节目录加入场景后，才可运行和归档">演示状态 · 无持久化操作</button>
-        </div>
-      </div>
-    );
-  }
-
   if (state === "archived") {
     return (
       <div className="scn2-decide is-done">
@@ -1516,17 +1287,6 @@ function DecisionBar({ scene, state, runJobStatus, go, onArchive, onRun, onCreat
           )}
           <button className="btn btn-quiet btn-sm" onClick={() => go("manuscripts")}>在成稿中心查看</button>
           <button className="btn btn-ghost btn-sm" onClick={toWriterDeep}><I.Microscope size={13} /> 送写作台深改</button>
-        </div>
-      </div>
-    );
-  }
-
-  if (!scene.fromCard) {
-    return (
-      <div className="scn2-decide is-wait" data-testid="scene-demo-readonly">
-        <div className="scn2-decide-sum"><I.ShieldCheck size={14} /> 演示待复核稿 · 完全只读 · 不可伪归档、重写或送深改</div>
-        <div className="scn2-decide-acts">
-          <button className="btn btn-ghost btn-sm" disabled title="请从自己的章节目录加入真实场景">演示稿 · 无持久化操作</button>
         </div>
       </div>
     );
@@ -1938,13 +1698,10 @@ function SceneTweaks({ t, setTweak }) {
   );
 }
 
-/* 运行队列：演示流水线只在《潮汐档案》呈现；任何作品都可从自己的章节目录
-   加场入列——那是真实起草：Claude 读雪花构思 + 场景卡，质检后写回正文。 */
+/* 运行队列：从章节目录加场入列——真实起草：读雪花构思 + 场景卡，质检后写回正文。 */
 function WsScene(props) {
-  const isTide = (() => { try { return !WsWorks || WsWorks.activeId() === "tide"; } catch (e) { return true; } })();
-  if (isTide) return <WsSceneDemo {...props} demo={true} />;
   const hasCatalog = (() => { try { return WsCatalog && WsCatalog.get().length > 0; } catch (e) { return false; } })();
-  if (hasCatalog) return <WsSceneDemo {...props} demo={false} />;
+  if (hasCatalog) return <WsSceneBoard {...props} />;
   const work = WsWorks ? WsWorks.active() : { title: "这部作品" };
   return (
     <div className="page" data-screen-label="scene · empty">

@@ -40,7 +40,7 @@ const TWO_SCENE_CHAP = {
   ],
 };
 
-async function settleActive(projectId = "tide") {
+async function settleActive(projectId = "prj-main") {
   await vi.waitFor(() => expect(window.WsWorks && window.WsWorks.activeId()).toBe(projectId), T);
 }
 
@@ -57,7 +57,7 @@ async function loadSceneRun(opts) {
   const client = await import("./lib/client.js");
   installApiRouter(client, opts);
   const mod = await import("./ws-scene-run.jsx");
-  await settleActive((opts && opts.projects && opts.projects[0] && opts.projects[0].project_id) || "tide");
+  await settleActive((opts && opts.projects && opts.projects[0] && opts.projects[0].project_id) || "prj-main");
   return { mod, client };
 }
 
@@ -1390,26 +1390,6 @@ describe("SceneRunJobControl", () => {
     expect(client.apiPost.mock.calls.filter(([url]) => /adopt-current/.test(url))).toEqual([]);
   });
 
-  it("演示 ready/archived 全程只读，不暴露伪归档、重写或深改动作", async () => {
-    const { client } = await loadSceneRun({ projects: [DEFAULT_PROJECT] });
-    const go = vi.fn();
-    const page = await import("./ws-scene.jsx");
-    const view = await renderRunJobControl(page.WsScene, { go, t: {} });
-    const rowByTitle = (title) => Array.from(view.host.querySelectorAll(".scn2-qrow"))
-      .find(row => row.textContent.includes(title));
-
-    await click(rowByTitle("亮起来的感应灯"));
-    expect(view.host.querySelector('[data-testid="scene-demo-readonly"]')?.textContent).toContain("不可伪归档、重写或送深改");
-    expect(view.host.querySelector('[data-testid="scene-archive"]')).toBeNull();
-    expect(Array.from(view.host.querySelectorAll("button")).some(button => /退回重写|送写作台深改/.test(button.textContent))).toBe(false);
-
-    await click(rowByTitle("三号档案箱"));
-    expect(view.host.querySelector('[data-testid="scene-demo-readonly"]')?.textContent).toContain("未写入真实作品");
-    expect(view.host.textContent).toContain("演示归档快照 · 完全只读");
-    expect(Array.from(view.host.querySelectorAll("button")).some(button => /在成稿中心查看|送写作台深改/.test(button.textContent))).toBe(false);
-    expect(client.apiPost.mock.calls.filter(([url]) => /adopt-current|run\/jobs/.test(url))).toEqual([]);
-    expect(go).not.toHaveBeenCalled();
-  });
 
   it("尝试历史只把复盘意见加入当前稿重写，不宣称恢复历史正文 base", async () => {
     const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
@@ -1545,7 +1525,7 @@ describe("scnBackendQueueSids（队列成员的后端派生）", () => {
     const sids = await mod.scnBackendQueueSids();
 
     expect(sids).toEqual(["ch01s1"]);
-    expect(client.apiGet).toHaveBeenCalledWith("/api/v1/scene-run-states?project_id=tide");
+    expect(client.apiGet).toHaveBeenCalledWith("/api/v1/scene-run-states?project_id=prj-main");
   });
 
   it("目录为空时先 __refresh 再对位（换浏览器冷启动路径）", async () => {

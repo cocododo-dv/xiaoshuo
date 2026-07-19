@@ -8,7 +8,6 @@ const catalog = vi.hoisted(() => ({
 }));
 
 vi.mock("./ws-catalog.jsx", () => ({ WsCatalog: catalog }));
-vi.mock("./ct-app.jsx", () => ({ ControlTower: () => <div data-testid="demo-control-tower" /> }));
 vi.mock("./ws-works.jsx", () => ({
   wsKey: (base) => `${base}::new-book`,
   WsWorks: {

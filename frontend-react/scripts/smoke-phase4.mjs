@@ -30,36 +30,36 @@ await page.evaluate((apiBase) => {
   localStorage.clear();
   localStorage.setItem("novel-system-api-base", apiBase);
   localStorage.setItem("novel-system-api-base-default", "http://127.0.0.1:8000");
-  localStorage.setItem("ws_active_work_v1", "tide");
+  localStorage.setItem("ws_active_work_v1", "work-a");
 }, API);
 await page.reload();
 await page.waitForSelector(".ws-app");
 await page.waitForTimeout(2000);
 
-await check("删整部书（盐镇来信）→ 切换器消失", async () => {
+await check("删整部书（样例短卷）→ 切换器消失", async () => {
   await page.click(".ws-brand");
   await page.waitForSelector(".ws-wsw");
-  await page.click('.ws-wsw-item:has-text("盐镇来信") .ws-wsw-del');
+  await page.click('.ws-wsw-item:has-text("样例短卷") .ws-wsw-del');
   await page.waitForTimeout(1500);
   await page.keyboard.press("Escape");
   await page.click(".ws-brand");
   await page.waitForSelector(".ws-wsw");
   const list = await page.textContent(".ws-wsw-list");
   await page.keyboard.press("Escape");
-  if (list.includes("盐镇来信")) throw new Error("still in switcher");
+  if (list.includes("样例短卷")) throw new Error("still in switcher");
   const projects = await api("/api/v2/projects");
-  if (projects.items.some(i => i.project_id === "salt")) throw new Error("still in backend list");
+  if (projects.items.some(i => i.project_id === "work-b")) throw new Error("still in backend list");
 });
 
 await check("回收站可见整部条目 → 恢复 → 数据无损", async () => {
   await page.evaluate(() => { location.hash = "#trash"; });
   await page.waitForTimeout(1500);
   const body = await page.textContent("body");
-  if (!body.includes("盐镇来信")) throw new Error("trash view missing the work");
-  await page.click('tr:has-text("盐镇来信") button:has-text("恢复")');
+  if (!body.includes("样例短卷")) throw new Error("trash view missing the work");
+  await page.click('tr:has-text("样例短卷") button:has-text("恢复")');
   await page.waitForTimeout(1800);
   const projects = await api("/api/v2/projects");
-  if (!projects.items.some(i => i.project_id === "salt")) throw new Error("not restored in backend");
+  if (!projects.items.some(i => i.project_id === "work-b")) throw new Error("not restored in backend");
   const tree = await api("/api/v2/projects/salt/catalog");
   if (tree.chapters.length !== 3) throw new Error(`salt chapters: ${tree.chapters.length}`);
   const stats = await api("/api/v2/projects/salt/writing-stats");

@@ -1,0 +1,55 @@
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from typing import Any
+
+
+# Historical UI scaffolds that were once persisted as if they were authored
+# story facts. Matching is exact after trim: prose that merely contains one
+# of these words is never altered.
+EMPTY_STORY_SLOT_VALUES = frozenset(
+    {
+        "",
+        "—",
+        "待定",
+        "（待规划）",
+        "(待规划)",
+        "（本场目标待规划）",
+        "(本场目标待规划)",
+        "待补",
+    }
+)
+
+
+def normalize_story_slot(value: Any) -> str:
+    """Return an authored scalar, or empty text for an exact old scaffold."""
+
+    text = "" if value is None else str(value).strip()
+    return "" if text in EMPTY_STORY_SLOT_VALUES else text
+
+
+def story_slot_is_empty(value: Any) -> bool:
+    return normalize_story_slot(value) == ""
+
+
+def normalize_story_slot_mapping(
+    value: Mapping[str, Any] | None,
+    *,
+    fields: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Normalize only named top-level business slots in a mapping.
+
+    This deliberately does not recurse into arbitrary author prose or nested
+    knowledge objects. Callers name the business fields exposed to planning or
+    generation prompts.
+    """
+
+    result = dict(value or {})
+    selected = tuple(fields) if fields is not None else tuple(result)
+    for field in selected:
+        if field not in result:
+            continue
+        raw = result[field]
+        if raw is None or isinstance(raw, (str, int, float, bool)):
+            result[field] = normalize_story_slot(raw)
+    return result

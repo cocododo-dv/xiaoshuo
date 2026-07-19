@@ -12,14 +12,7 @@ import { WsCatalog } from "./ws-catalog.jsx";
 const { useState: usePS, useEffect: usePE, useRef: usePR, useMemo: usePM } = React;
 
 /* ---- jumpable data (mirrors the rest of the app) ---- */
-const PAL_SCENES = [
-  { ch: "08", chTitle: "返回的潮声", id: "ch08s3", title: "夜班修复台 · 二次发现", state: "active" },
-  { ch: "08", chTitle: "返回的潮声", id: "ch08s4", title: "馆长出现", state: "todo" },
-  { ch: "08", chTitle: "返回的潮声", id: "ch08s5", title: "走廊上的回声", state: "todo" },
-  { ch: "07", chTitle: "三号档案箱", id: "ch07s3", title: "档案室深处", state: "done" },
-  { ch: "07", chTitle: "三号档案箱", id: "ch07s1", title: "周岚的钥匙", state: "done" },
-  { ch: "01", chTitle: "盐钟残片", id: "ch01s1", title: "夜班修复台", state: "done" },
-];
+const PAL_SCENES = [];  // 场景跳转真相来自 WsCatalog；无目录时列表为空
 const PAL_STEPS = [
   { key: "audience", num: "01", name: "读者定位" }, { key: "logline", num: "02", name: "一句话概括" },
   { key: "paragraph", num: "03", name: "一段话概括" }, { key: "characters", num: "04", name: "角色摘要表" },

@@ -510,7 +510,6 @@ class OutlinePlannerService:
                 step="project_outline_plan",
                 prompt=prompt,
                 user_prompt=prompt["user_prompt"],
-                offline_client_factory=lambda: None,
                 execution_step_key=execution_step_key,
                 context=context,
             )
@@ -748,6 +747,8 @@ class ProjectChapterFlowService:
         *,
         offline_demo: bool = False,
     ) -> dict[str, Any]:
+        # 离线演示已退役：offline_demo 保留为受校验的遗留契约字段（非布尔仍拒），
+        # 但 True 不再绕过 fail-closed —— LLM 未启用照样拦截。
         if type(offline_demo) is not bool:
             raise DomainError(
                 "INVALID_CHAPTER_RUN_MODE",
@@ -760,10 +761,10 @@ class ProjectChapterFlowService:
             raise DomainError("PROJECT_CHAPTER_NOT_CURRENT", "only the current chapter can be run from project dashboard")
 
         llm_enabled = get_settings().llm_enabled
-        if not llm_enabled and not offline_demo:
+        if not llm_enabled:
             raise DomainError(
                 "LLM_DISABLED_FOR_CHAPTER_RUN",
-                "LLM is disabled; enable a live model before starting chapter generation, or explicitly run an offline demo.",
+                "LLM is disabled; enable a live model before starting chapter generation.",
                 status_code=409,
                 details={
                     "retryable": False,
@@ -775,10 +776,7 @@ class ProjectChapterFlowService:
                 },
             )
 
-        run_payload, should_start_worker = ChapterRunnerService(self.session).prepare_full_run(
-            chapter_id,
-            offline_demo=offline_demo and not llm_enabled,
-        )
+        run_payload, should_start_worker = ChapterRunnerService(self.session).prepare_full_run(chapter_id)
         if run_payload.get("status") in {"pending", "running"}:
             project.status = PROJECT_STATUS_CHAPTER_RUNNING
             next_action = "view_chapter_progress"

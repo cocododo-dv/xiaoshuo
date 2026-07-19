@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import hashlib
 import logging
 import re
@@ -23,7 +22,6 @@ from novel_system.db.models import (
     SceneRunState,
 )
 from novel_system.services.human_review_manager import HumanReviewManager
-from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.llm_task_runner import LLMNodeContinuityError, LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.character_continuity import (
@@ -243,63 +241,6 @@ class SoftQcDecision:
     stop_reason: str | None = None
     llm_call_id: str | None = None
     execution_step_key: str | None = None
-
-
-class OfflineHardQcClient:
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        structured_output = {
-            "resolution_code": "hard_pass",
-            "pass_flag": True,
-            "next_action": "pass",
-            "issues": [],
-            "rewrite_brief": [],
-        }
-        return LLMResponse(
-            request_id=f"offline_hard_qc_{uuid.uuid4().hex[:8]}",
-            provider="offline_deterministic",
-            model=request.model,
-            text=json.dumps(structured_output),
-            structured_output=structured_output,
-            response_format=request.response_format,
-            raw_response={
-                "id": f"offline_hard_qc_{uuid.uuid4().hex[:8]}",
-                "model": request.model,
-                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-                "finish_reason": "offline_fallback",
-            },
-            usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-            finish_reason="offline_fallback",
-        )
-
-
-class OfflineSoftQcClient:
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        structured_output = {
-            "resolution_code": "soft_pass",
-            "pass_flag": True,
-            "next_action": "pass",
-            "issues": [],
-            "rewrite_brief": [],
-            "carry_forward_note": False,
-            "note_scope": None,
-            "carry_note_text": None,
-        }
-        return LLMResponse(
-            request_id=f"offline_soft_qc_{uuid.uuid4().hex[:8]}",
-            provider="offline_deterministic",
-            model=request.model,
-            text=json.dumps(structured_output),
-            structured_output=structured_output,
-            response_format=request.response_format,
-            raw_response={
-                "id": f"offline_soft_qc_{uuid.uuid4().hex[:8]}",
-                "model": request.model,
-                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-                "finish_reason": "offline_fallback",
-            },
-            usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-            finish_reason="offline_fallback",
-        )
 
 
 def _continuity_warning_message(continuity_warning: Any) -> str:
@@ -858,7 +799,6 @@ class HardQcEngine:
                 step="hard_qc",
                 prompt=prompt,
                 user_prompt=final_user_prompt,
-                offline_client_factory=OfflineHardQcClient,
                 source_draft_row_id=neutral_draft_row_id,
                 source_draft_content=neutral_content,
                 execution_step_key=execution_step_key,
@@ -1543,7 +1483,6 @@ class SoftQcEngine:
                 step="soft_qc",
                 prompt=prompt,
                 user_prompt=final_user_prompt,
-                offline_client_factory=OfflineSoftQcClient,
                 source_draft_row_id=source_draft_row_id,
                 source_draft_content=source_draft_content,
                 execution_step_key=execution_step_key,

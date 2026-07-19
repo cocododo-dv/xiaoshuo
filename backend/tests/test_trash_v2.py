@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from novel_system.db.models import ChapterGoal, SceneCard, StoryProject
-from novel_system.tools.seed_fe_demo_works import seed_fe_demo_works
+from tests.fixture_works import seed_fixture_works
 
 _seq = 0
 
@@ -52,7 +52,7 @@ def test_project_soft_delete_restore_roundtrip(client):
 
 
 def test_unified_trash_lists_three_levels(client, session):
-    seed_fe_demo_works(session)
+    seed_fixture_works(session)
     session.commit()
     project = _create_project(client)
     pid = project["project_id"]
@@ -70,7 +70,7 @@ def test_unified_trash_lists_three_levels(client, session):
         chapter_del = client.delete(f"/api/v2/projects/{pid}/catalog/chapters/{chapter['chapter_id']}")
     assert chapter_del.status_code == 200, chapter_del.text
     # 作品级软删（demo 可删）
-    work_del = client.delete("/api/v2/projects/salt")
+    work_del = client.delete("/api/v2/projects/work-b")
     assert work_del.status_code == 200, work_del.text
 
     merged = client.get(f"/api/v2/trash?project_id={pid}").json()["data"]["items"]
@@ -78,7 +78,7 @@ def test_unified_trash_lists_three_levels(client, session):
     assert "work" in kinds and "chapter" in kinds
     # 章被删后其场景随章隐藏（场景行被章级 trash 级联），统一列表以章为单位呈现
     assert any(item["id"] == f"chapter:{chapter['chapter_id']}" for item in merged)
-    assert any(item["id"] == "work:salt" for item in merged)
+    assert any(item["id"] == "work:work-b" for item in merged)
 
     # 目录读不到已删的章
     tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
@@ -86,11 +86,11 @@ def test_unified_trash_lists_three_levels(client, session):
 
     # 恢复链路
     _post(client, f"/api/v2/trash/chapter:{chapter['chapter_id']}/restore")
-    _post(client, "/api/v2/trash/work:salt/restore")
+    _post(client, "/api/v2/trash/work:work-b/restore")
     tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
     assert any(c["chapter_id"] == chapter["chapter_id"] for c in tree["chapters"])
     listed = client.get("/api/v2/projects").json()["data"]["items"]
-    assert any(item["project_id"] == "salt" for item in listed)
+    assert any(item["project_id"] == "work-b" for item in listed)
 
 
 def test_scene_trash_keeps_draft_and_restore_brings_it_back(client, session):

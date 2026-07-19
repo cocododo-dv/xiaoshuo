@@ -27,7 +27,6 @@ from novel_system.services.author_preferences import merge_preference_summaries,
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_accounting import LLMCallContext
-from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.llm_task_runner import (
     LLMNodeExecutionError,
     LLMNodeRunner,
@@ -68,34 +67,8 @@ PATCH_CATEGORIES: tuple[str, ...] = (
 )
 
 
-class OfflineWriterDeepReviewClient:
-    def __init__(self, *, source_text: str) -> None:
-        self.source_text = source_text
-
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        payload = {
-            "overall_score": 0.0 if not self.source_text.strip() else 0.65,
-            "scores": {dimension: 0.65 for dimension in LITERARY_REVISION_DIMENSIONS},
-            "findings": [],
-            "revision_brief": [],
-            "requires_human_review": not bool(self.source_text.strip()),
-            "lens_evaluations": [],
-        }
-        zero_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-        return LLMResponse(
-            request_id=f"offline_{request.node_id}",
-            provider="offline_deterministic",
-            model=request.model,
-            text=json.dumps(payload, ensure_ascii=False),
-            structured_output=payload,
-            response_format=request.response_format,
-            raw_response={"id": f"offline_{request.node_id}", "usage": zero_usage},
-            usage=zero_usage,
-            raw_usage=zero_usage,
-            usage_present=True,
-            usage_complete=True,
-            finish_reason="offline_fallback",
-        )
+class WriterDeepReviewOutputError(ValueError):
+    """The provider completed a call but violated a writer output contract."""
 
 
 class WriterDeepReviewService:
@@ -477,7 +450,6 @@ class WriterDeepReviewService:
                 step="writer_deep_review",
                 prompt=prompt,
                 user_prompt=prompt["user_prompt"],
-                offline_client_factory=lambda: OfflineWriterDeepReviewClient(source_text=source.get("content") or ""),
                 execution_step_key=execution_step_key,
                 context=context,
             )
@@ -629,21 +601,36 @@ class WriterDeepReviewService:
                 source_draft=source_draft,
                 preference=preference,
             ),
-            offline_client_factory=lambda: OfflinePassagePatchClient(
-                source_excerpt=source_excerpt,
-                issue_dimension=issue_dimension,
-                target_text_ref=target_text_ref,
-            ),
             execution_step_key=execution_step_key,
             context=context,
         )
-        normalized = _normalize_patch_output(
-            node_result.response.structured_output,
-            source_excerpt=source_excerpt,
-            issue_dimension=issue_dimension,
-            target_text_ref=target_text_ref,
-        )
-        normalized["generation_llm_call_id"] = node_result.llm_call_id
+        try:
+            normalized = _normalize_patch_output(
+                node_result.response.structured_output,
+                source_excerpt=source_excerpt,
+                issue_dimension=issue_dimension,
+                target_text_ref=target_text_ref,
+            )
+        except WriterDeepReviewOutputError as exc:
+            raise DomainError(
+                "WRITER_PASSAGE_PATCH_OUTPUT_INVALID",
+                f"writer passage patch returned an invalid payload: {exc}",
+                status_code=502,
+                details={
+                    "llm_call_id": node_result.llm_call_id,
+                    "node_id": "writer_passage_patch",
+                    "validation_error": str(exc),
+                },
+            ) from exc
+        generation_llm_call_id = str(node_result.llm_call_id or "").strip()
+        if not generation_llm_call_id:
+            raise DomainError(
+                "WRITER_PASSAGE_PATCH_OUTPUT_INVALID",
+                "writer passage patch completed without an auditable LLM call id",
+                status_code=502,
+                details={"node_id": "writer_passage_patch", "validation_error": "generation_llm_call_id is required"},
+            )
+        normalized["generation_llm_call_id"] = generation_llm_call_id
         return normalized
 
     def _source_draft(self, source_draft_id: str | None) -> AuthorDraft | None:
@@ -847,44 +834,6 @@ class WriterDeepReviewService:
         return review
 
 
-class OfflinePassagePatchClient:
-    def __init__(self, *, source_excerpt: str, issue_dimension: str, target_text_ref: str) -> None:
-        self.source_excerpt = source_excerpt
-        self.issue_dimension = issue_dimension
-        self.target_text_ref = target_text_ref
-
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        options = _replacement_options(self.source_excerpt, self.issue_dimension)
-        structured_output = {
-            "patches": [
-                {
-                    "target_text_ref": self.target_text_ref,
-                    "source_excerpt": self.source_excerpt,
-                    "replacement_text": option["replacement_text"],
-                    "patch_type": "replace_excerpt",
-                    "changed_dimensions": option["changed_dimensions"],
-                    "why_it_helps": option["why_it_helps"],
-                    "tone": option["tone"],
-                    "label": option["label"],
-                }
-                for option in options
-            ],
-            "rationale": "offline deterministic passage patch",
-            "manual_only": True,
-        }
-        return LLMResponse(
-            request_id=f"offline_writer_passage_patch_{uuid.uuid4().hex[:8]}",
-            provider="offline_deterministic",
-            model=request.model,
-            text=json.dumps(structured_output, ensure_ascii=False),
-            structured_output=structured_output,
-            response_format=request.response_format,
-            raw_response={"id": "offline_writer_passage_patch"},
-            usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-            finish_reason="offline_fallback",
-        )
-
-
 def _passage_patch_snapshot(
     *,
     payload: dict[str, Any],
@@ -1051,6 +1000,36 @@ def _normalize_patch_output(
         "replacement_options": options,
         "rationale": rationale,
     }
+
+
+def _replacement_options(source_excerpt: str, issue_dimension: str) -> list[dict[str, Any]]:
+    compressed = source_excerpt.strip().rstrip("。！？")
+    return [
+        {
+            "option_id": "option_shorter",
+            "tone": "shorter",
+            "label": "更短",
+            "replacement_text": f"{compressed}。",
+            "changed_dimensions": [issue_dimension, "information_rhythm"],
+            "why_it_helps": "压掉解释余量，让动作和停顿自己承担压力。",
+        },
+        {
+            "option_id": "option_sharper",
+            "tone": "sharper",
+            "label": "更狠",
+            "replacement_text": f"{compressed}。她没有补充理由，只把证据袋按进掌心。",
+            "changed_dimensions": [issue_dimension, "relationship_tension"],
+            "why_it_helps": "让角色拒绝解释，把锋利感放进动作后果。",
+        },
+        {
+            "option_id": "option_subtler",
+            "tone": "subtler",
+            "label": "更含蓄",
+            "replacement_text": f"{compressed}。话音落下后，她先看了一眼门缝。",
+            "changed_dimensions": [issue_dimension, "dialogue_subtext"],
+            "why_it_helps": "把明说转为观察和回避，保留读者自行判断的空间。",
+        },
+    ]
 
 
 def _compact_text(value: str, limit: int) -> str:
@@ -1506,36 +1485,6 @@ def _evidence_spans(content: str, findings: list[dict[str, Any]]) -> list[dict[s
         if len(spans) >= 8:
             break
     return spans
-
-
-def _replacement_options(source_excerpt: str, issue_dimension: str) -> list[dict[str, Any]]:
-    compressed = source_excerpt.strip().rstrip("。！？")
-    return [
-        {
-            "option_id": "option_shorter",
-            "tone": "shorter",
-            "label": "更短",
-            "replacement_text": f"{compressed}。",
-            "changed_dimensions": [issue_dimension, "information_rhythm"],
-            "why_it_helps": "压掉解释余量，让动作和停顿自己承担压力。",
-        },
-        {
-            "option_id": "option_sharper",
-            "tone": "sharper",
-            "label": "更狠",
-            "replacement_text": f"{compressed}。她没有补充理由，只把证据袋按进掌心。",
-            "changed_dimensions": [issue_dimension, "relationship_tension"],
-            "why_it_helps": "让角色拒绝解释，把锋利感放进动作后果。",
-        },
-        {
-            "option_id": "option_subtler",
-            "tone": "subtler",
-            "label": "更含蓄",
-            "replacement_text": f"{compressed}。话音落下后，她先看了一眼门缝。",
-            "changed_dimensions": [issue_dimension, "dialogue_subtext"],
-            "why_it_helps": "把明说转为观察和回避，保留读者自行判断的空间。",
-        },
-    ]
 
 
 def _preference_summary(rows: list[PassagePatchCandidate]) -> dict[str, list[str]]:

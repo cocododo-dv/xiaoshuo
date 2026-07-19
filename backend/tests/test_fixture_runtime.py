@@ -32,24 +32,33 @@ from novel_system.db.models import (
     VersionRegistry,
     WorldRule,
 )
-from novel_system.tools.seed_demo import main, seed_demo
+import pytest
+
+from novel_system.services.llm_task_runner import LLMNodeRunner
+from tests.fixture_runtime import main, seed_runtime_fixture
+from tests.real_llm_fakes import ScenePipelineOnlineFake
+
+
+@pytest.fixture(autouse=True)
+def _accounted_online_default_orchestrator_runner(monkeypatch) -> None:
+    """假生成已退役：跑真实管线的用例统一注入在线记账测试替身。"""
+
+    monkeypatch.setattr(
+        "novel_system.services.orchestrator.LLMNodeRunner",
+        lambda session: LLMNodeRunner(session, llm_client=ScenePipelineOnlineFake()),
+    )
 
 
 def _count_rows(session, model) -> int:
     return session.scalar(select(func.count()).select_from(model))
 
 
-def test_seed_demo_chapter_ending_scene_runs_to_final_scene_offline(session) -> None:
-    """回归守卫:种子章末场景 CH001_SC03(is_chapter_last=1)在离线确定性流水线下
-    必须跑到可审阅终稿(final_scene),而非停在蓝图 §10 章末 hook 硬门的 partial_rewrite。
-
-    interop-center E2E 的 replay 脚手架依赖这条产出真实 final_scene row。此前无任何
-    后端用例覆盖种子场景的真实流水线——质量地板 v2 收紧章末 hook QC 后,种子缺 hook
-    使该 E2E 静默翻红,却仍在后端全量测试里全绿。本测试封死该盲区。
-    """
+def test_fixture_runtime_chapter_ending_scene_runs_to_final_scene(session) -> None:
+    """回归守卫:夹具章末场景 CH001_SC03(is_chapter_last=1)在注入的在线记账替身下
+    必须跑到可审阅终稿(final_scene),而非停在蓝图 §10 章末 hook 硬门的 partial_rewrite。"""
     from novel_system.services.orchestrator import Orchestrator
 
-    seed_demo(session)
+    seed_runtime_fixture(session)
     session.commit()
 
     result = Orchestrator(session).run_scene("CH001_SC03", author_note=None)
@@ -62,68 +71,67 @@ def test_seed_demo_chapter_ending_scene_runs_to_final_scene_offline(session) -> 
     assert result["hard_qc"]["branch"] != "rewrite_partial", result
 
 
-def test_seed_demo_creates_first_chapter_and_review_item(session) -> None:
-    summary = seed_demo(session)
+def test_fixture_runtime_creates_first_chapter_and_review_item(session) -> None:
+    summary = seed_runtime_fixture(session)
     session.commit()
 
     assert summary["chapter_id"] == "CH001"
     assert summary["scene_ids"] == ["CH001_SC01", "CH001_SC02", "CH001_SC03"]
     assert summary["review_ids"] == ["review_demo_style_observation"]
-    # FE-ALIGN P2/P3 起 seed_demo 还会内联两部种子作品（tide/salt 完整目录）；
-    # runtime demo 自身仍是 1 章 3 场。
-    demo_projects = ("tide", "salt")
+    # 夹具还会内联两部夹具作品（work-a/work-b 完整目录）；runtime 夹具自身仍是 1 章 3 场。
+    fixture_projects = ("work-a", "work-b")
     runtime_chapters = session.scalar(
         select(func.count()).select_from(ChapterGoal).where(
-            ChapterGoal.project_id.is_(None) | ChapterGoal.project_id.notin_(demo_projects)
+            ChapterGoal.project_id.is_(None) | ChapterGoal.project_id.notin_(fixture_projects)
         )
     )
     runtime_scenes = session.scalar(
         select(func.count()).select_from(SceneCard).where(
-            SceneCard.project_id.is_(None) | SceneCard.project_id.notin_(demo_projects)
+            SceneCard.project_id.is_(None) | SceneCard.project_id.notin_(fixture_projects)
         )
     )
     assert runtime_chapters == 1
     assert runtime_scenes == 3
     fe_chapters = session.scalar(
-        select(func.count()).select_from(ChapterGoal).where(ChapterGoal.project_id.in_(demo_projects))
+        select(func.count()).select_from(ChapterGoal).where(ChapterGoal.project_id.in_(fixture_projects))
     )
     assert fe_chapters > 0
     assert _count_rows(session, SceneRunState) == 3
-    # 1 条 legacy demo review + tide 的 5 张待办卡 + 3 张 canon 裁决卡（item_type=fe_card）
+    # 1 条 runtime review + work-a 的 5 张待办卡 + 3 张 canon 裁决卡（item_type=fe_card）
     legacy_reviews = session.scalar(
         select(func.count()).select_from(ReviewItem).where(ReviewItem.item_type != "fe_card")
     )
     assert legacy_reviews == 1
     assert _count_rows(session, ReviewItem) == 1 + 5 + 3
-    # FE-ALIGN F4：tide 控制塔锚点库 = 6 设定 + 6 悬念债 + 4 故事线 + 3 弧线
+    # work-a 锚点库 = 6 设定 + 6 悬念债 + 4 故事线 + 3 弧线
     from novel_system.db.models import ChapterAuditFinding, LongformAnchor
 
-    tide_anchors = session.scalar(
-        select(func.count()).select_from(LongformAnchor).where(LongformAnchor.project_id == "tide")
+    fixture_anchors = session.scalar(
+        select(func.count()).select_from(LongformAnchor).where(LongformAnchor.project_id == "work-a")
     )
     # H1：+5 条可检索池（status=faded 的记忆预算条目）
-    assert tide_anchors == 6 + 6 + 4 + 3 + 5
+    assert fixture_anchors == 6 + 6 + 4 + 3 + 5
     faded = session.scalar(
         select(func.count()).select_from(LongformAnchor).where(
-            LongformAnchor.project_id == "tide", LongformAnchor.status == "faded"
+            LongformAnchor.project_id == "work-a", LongformAnchor.status == "faded"
         )
     )
     assert faded == 5
-    # FE-ALIGN G1：LF3 扩展审计层 = 3 canon 冲突 + 2 空降 + 3 因果 + 4 认知态
-    tide_findings = session.scalar(
-        select(func.count()).select_from(ChapterAuditFinding).where(ChapterAuditFinding.project_id == "tide")
+    # 扩展审计层 = 3 canon 冲突 + 2 空降 + 3 因果 + 4 认知态
+    fixture_findings = session.scalar(
+        select(func.count()).select_from(ChapterAuditFinding).where(ChapterAuditFinding.project_id == "work-a")
     )
-    assert tide_findings == 3 + 2 + 3 + 4
+    assert fixture_findings == 3 + 2 + 3 + 4
     lf3_kinds = session.scalars(
-        select(ChapterAuditFinding.kind).where(ChapterAuditFinding.project_id == "tide")
+        select(ChapterAuditFinding.kind).where(ChapterAuditFinding.project_id == "work-a")
     ).all()
     assert lf3_kinds.count("unplanted_reveal") == 2
     assert lf3_kinds.count("causal_break") == 3
     assert lf3_kinds.count("unfair_clue") == 4
 
 
-def test_seed_demo_runtime_ops_e2e_fixture_creates_promotable_and_recoverable_state(session) -> None:
-    summary = seed_demo(session, fixture="runtime_ops_e2e")
+def test_fixture_runtime_runtime_ops_e2e_fixture_creates_promotable_and_recoverable_state(session) -> None:
+    summary = seed_runtime_fixture(session, fixture="runtime_ops_e2e")
     session.commit()
 
     assert summary["review_ids"] == [
@@ -183,8 +191,8 @@ def test_seed_demo_runtime_ops_e2e_fixture_creates_promotable_and_recoverable_st
     assert failed_verify.error_text == "candidate alias verify failed"
 
 
-def test_seed_demo_chapter_ops_e2e_fixture_creates_independent_chapter_runtime_seed(session) -> None:
-    summary = seed_demo(session, fixture="chapter_ops_e2e")
+def test_fixture_runtime_chapter_ops_e2e_fixture_creates_independent_chapter_runtime_seed(session) -> None:
+    summary = seed_runtime_fixture(session, fixture="chapter_ops_e2e")
     session.commit()
 
     assert summary["extra_chapter_ids"] == ["CH200"]
@@ -210,7 +218,7 @@ def test_seed_demo_chapter_ops_e2e_fixture_creates_independent_chapter_runtime_s
     assert review_item.status == "pending"
 
 
-def test_seed_demo_cli_accepts_runtime_ops_e2e_fixture(capsys) -> None:
+def test_fixture_runtime_cli_accepts_runtime_ops_e2e_fixture(capsys) -> None:
     main(["--fixture", "runtime_ops_e2e"])
 
     summary = json.loads(capsys.readouterr().out)
@@ -221,24 +229,24 @@ def test_seed_demo_cli_accepts_runtime_ops_e2e_fixture(capsys) -> None:
     ]
 
 
-def test_seed_demo_is_idempotent(session) -> None:
-    first = seed_demo(session)
+def test_fixture_runtime_is_idempotent(session) -> None:
+    first = seed_runtime_fixture(session)
     session.commit()
-    second = seed_demo(session)
+    second = seed_runtime_fixture(session)
     session.commit()
 
     assert first == second
     # 重复 seed 不增行（runtime demo 与 FE 种子作品都按固定 id 清理后重建）
     scene_count_after_two_seeds = _count_rows(session, SceneCard)
-    seed_demo(session)
+    seed_runtime_fixture(session)
     session.commit()
     assert _count_rows(session, SceneCard) == scene_count_after_two_seeds
-    # 1 条 legacy demo review + tide 的 5+3 张待办卡，重复 seed 不增行
+    # 1 条 runtime review + work-a 的 5+3 张待办卡，重复 seed 不增行
     assert _count_rows(session, ReviewItem) == 1 + 5 + 3
 
 
-def test_seed_demo_creates_traceable_voice_and_relation_profiles(session) -> None:
-    seed_demo(session)
+def test_fixture_runtime_creates_traceable_voice_and_relation_profiles(session) -> None:
+    seed_runtime_fixture(session)
     session.commit()
 
     voice = session.execute(
@@ -264,8 +272,8 @@ def test_seed_demo_creates_traceable_voice_and_relation_profiles(session) -> Non
     assert relation["content"] == "reunion tension; B knows slightly more than A"
 
 
-def test_seed_demo_creates_samples_for_extended_knowledge_families(session) -> None:
-    seed_demo(session)
+def test_fixture_runtime_creates_samples_for_extended_knowledge_families(session) -> None:
+    seed_runtime_fixture(session)
     session.commit()
 
     style_rule = session.get(StyleRule, "style_rule_STYLE_DEMO_MAIN_v1")
@@ -296,8 +304,8 @@ def test_seed_demo_creates_samples_for_extended_knowledge_families(session) -> N
     assert chapter_summary.content == "chapter summary for the first reunion chapter"
 
 
-def test_seed_demo_resets_demo_runtime_state(session) -> None:
-    seed_demo(session)
+def test_fixture_runtime_resets_demo_runtime_state(session) -> None:
+    seed_runtime_fixture(session)
     session.commit()
 
     chapter_state = session.get(ChapterState, "CH001")
@@ -317,7 +325,7 @@ def test_seed_demo_resets_demo_runtime_state(session) -> None:
     review_item.approved_item_id = "STY_DEMO_001"
     session.commit()
 
-    seed_demo(session)
+    seed_runtime_fixture(session)
     session.commit()
     session.expire_all()
 
@@ -338,8 +346,8 @@ def test_seed_demo_resets_demo_runtime_state(session) -> None:
     assert reset_review_item.approved_item_id is None
 
 
-def test_seed_demo_clears_demo_derived_records(session) -> None:
-    seed_demo(session)
+def test_fixture_runtime_clears_demo_derived_records(session) -> None:
+    seed_runtime_fixture(session)
     session.commit()
 
     session.add(
@@ -488,7 +496,7 @@ def test_seed_demo_clears_demo_derived_records(session) -> None:
     )
     session.commit()
 
-    seed_demo(session)
+    seed_runtime_fixture(session)
     session.commit()
 
     assert _count_rows(session, AttemptTracker) == 0
@@ -507,8 +515,8 @@ def test_seed_demo_clears_demo_derived_records(session) -> None:
     assert session.get(VectorAliasRegistry, "calibration_line:global:global") is not None
 
 
-def test_seed_demo_review_can_verify_and_release_with_memory_backend(client, session) -> None:
-    seed_demo(session)
+def test_fixture_runtime_review_can_verify_and_release_with_memory_backend(client, session) -> None:
+    seed_runtime_fixture(session)
     session.commit()
 
     run_scene = client.post(

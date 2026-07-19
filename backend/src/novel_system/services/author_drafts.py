@@ -32,7 +32,7 @@ from novel_system.services.chapter_approval import require_author_target_mutatio
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_accounting import LLMCallContext
-from novel_system.services.llm_client import LLMRequest, LLMResponse
+from novel_system.services.llm_fail_closed import raise_llm_domain_error
 from novel_system.services.llm_task_runner import (
     LLMNodeExecutionError,
     LLMNodeRunner,
@@ -791,24 +791,20 @@ class AuthorDraftService:
                 step="author_proposal_generate",
                 prompt=prompt,
                 user_prompt=_proposal_generate_user_prompt(prompt["user_prompt"], draft=draft, target=target_for_prompt),
-                offline_client_factory=lambda: OfflineAuthorProposalClient(
-                    draft=draft,
-                    target=target_for_prompt,
-                    proposal_type=proposal_type,
-                    instruction=instruction,
-                ),
                 source_draft_row_id=draft.draft_id,
                 source_draft_content=draft.content,
                 execution_step_key=execution_step_key,
                 context=context,
             )
         except LLMNodeExecutionError as exc:
-            raise DomainError(
-                "AUTHOR_PROPOSAL_GENERATE_FAILED",
-                f"author proposal generation failed: {exc.message}",
-                status_code=502,
-                details={"llm_call_id": exc.llm_call_id, "error_code": exc.error_code},
-            ) from exc
+            raise_llm_domain_error(
+                exc,
+                capability_code="AUTHOR_PROPOSAL_LLM_NOT_CONFIGURED",
+                failure_code="AUTHOR_PROPOSAL_GENERATE_FAILED",
+                operation="author proposal generation",
+                node_id="author_proposal_generate",
+                next_action="configure_author_proposal_route_and_retry",
+            )
         normalized = _normalize_proposal_payload(
             node_result.response.structured_output,
             draft=draft,
@@ -1084,19 +1080,20 @@ class AuthorDraftService:
                 step="author_structure_extract",
                 prompt=prompt,
                 user_prompt=_structure_extract_user_prompt(prompt["user_prompt"], draft=draft, target=target),
-                offline_client_factory=lambda: OfflineAuthorStructureExtractClient(draft=draft, target=target),
                 source_draft_row_id=draft.draft_id,
                 source_draft_content=draft.content,
                 execution_step_key=execution_step_key,
                 context=context,
             )
         except LLMNodeExecutionError as exc:
-            raise DomainError(
-                "AUTHOR_STRUCTURE_EXTRACT_FAILED",
-                f"author structure extraction failed: {exc.message}",
-                status_code=502,
-                details={"llm_call_id": exc.llm_call_id, "error_code": exc.error_code},
-            ) from exc
+            raise_llm_domain_error(
+                exc,
+                capability_code="AUTHOR_STRUCTURE_EXTRACT_LLM_NOT_CONFIGURED",
+                failure_code="AUTHOR_STRUCTURE_EXTRACT_FAILED",
+                operation="author structure extraction",
+                node_id="author_structure_extract",
+                next_action="configure_author_structure_extract_route_and_retry",
+            )
 
         normalized = _normalize_structure_payload(node_result.response.structured_output, draft=draft, target=target)
         for row in self.session.execute(
@@ -1975,156 +1972,25 @@ def _normalize_proposal_payload(
     instruction: str | None,
 ) -> dict[str, str | None]:
     if not isinstance(payload, dict):
-        payload = {}
+        raise DomainError(
+            "AUTHOR_PROPOSAL_OUTPUT_INVALID",
+            "author proposal response must be a JSON object",
+            status_code=502,
+            details={"node_id": "author_proposal_generate", "proposal_type": proposal_type},
+        )
     content = str(payload.get("content") or payload.get("proposal") or "").strip()
     if not content:
-        content = _proposal_content(draft, target=target, proposal_type=proposal_type, instruction=instruction)
+        # 假生成已退役：模型没给出正文时不再用模板拼占位稿冒充提案。
+        raise DomainError(
+            "AUTHOR_PROPOSAL_OUTPUT_INVALID",
+            "author proposal response is missing non-empty content",
+            status_code=502,
+            details={"node_id": "author_proposal_generate", "proposal_type": proposal_type},
+        )
     rationale = str(payload.get("rationale") or "").strip()
     if not rationale:
         rationale = _proposal_rationale(target=target, proposal_type=proposal_type, instruction=instruction)
     return {"content": content, "rationale": rationale, "source_llm_call_id": None}
-
-
-def _proposal_content(
-    draft: AuthorDraft,
-    *,
-    target: dict[str, Any],
-    proposal_type: str,
-    instruction: str | None,
-) -> str:
-    current = str(draft.content or "").strip()
-    scene_card = target.get("scene_card") if isinstance(target.get("scene_card"), dict) else {}
-    beats = scene_card.get("beats") if isinstance(scene_card.get("beats"), list) else []
-    beat_line = " / ".join(str(item).strip() for item in beats if str(item).strip())
-    target_lines = [
-        f"Object: {draft.object_type}:{draft.object_id}",
-        f"Proposal type: {proposal_type}",
-    ]
-    if target.get("chapter_goal"):
-        target_lines.append(f"Chapter goal: {target['chapter_goal']}")
-    if scene_card.get("scene_goal"):
-        target_lines.append(f"Scene goal: {scene_card['scene_goal']}")
-    if beat_line:
-        target_lines.append(f"Beats: {beat_line}")
-    if instruction:
-        target_lines.append(f"Author instruction: {instruction}")
-
-    seed = current or str(scene_card.get("scene_goal") or target.get("chapter_goal") or "The scene needs a costly choice.").strip()
-    if not seed:
-        seed = "The scene needs a costly choice."
-    if proposal_type == "structure_candidate":
-        return "\n".join(
-            [
-                "[结构候选]",
-                *target_lines,
-                "",
-                "建议：",
-                "1. 先明确本段最小戏剧动作：人物想要什么、被什么挡住、愿意付出什么。",
-                "2. 把解释性信息改成一个可见选择，让读者通过动作理解代价。",
-                "3. 结尾保留一个具体未完成动作，而不是总结主题。",
-                "",
-                f"当前材料：{seed}",
-            ]
-        ).strip()
-    if proposal_type == "passage_candidate":
-        return "\n".join(
-            [
-                "[局部段落候选]",
-                *target_lines,
-                "",
-                "候选段落：",
-                f"{seed}",
-                "她没有急着解释，只把手里的东西往桌沿推近半寸；这个动作让对方不得不先回答，而不是继续追问。",
-            ]
-        ).strip()
-    if proposal_type == "language_candidate":
-        return "\n".join(
-            [
-                "[语言候选]",
-                *target_lines,
-                "",
-                "压缩方向：",
-                "删掉直接说明情绪的句子，保留物件、停顿、短对白和一个能改变关系的位置动作。",
-                "",
-                f"待处理材料：{seed}",
-            ]
-        ).strip()
-    if proposal_type == "dialogue_pass":
-        return "\n".join(
-            [
-                "[对白深改]",
-                *target_lines,
-                "",
-                "改法：",
-                "把解释句改成反问、截断、沉默和位置动作，让关系压力先于信息说明出现。",
-                "",
-                "候选片段：",
-                f"{seed}",
-                "对方没有接话，只用一个反问把关系压力推回到当下选择。",
-            ]
-        ).strip()
-    if proposal_type == "language_pass":
-        return "\n".join(
-            [
-                "[语言压缩]",
-                *target_lines,
-                "",
-                "改法：",
-                "删除重复解释，压短抽象判断，保留能承载代价的物件、动作和停顿。",
-                "",
-                f"压缩对象：{seed}",
-            ]
-        ).strip()
-    if proposal_type == "continuation":
-        return "\n".join(
-            [
-                "[续写候选]",
-                *target_lines,
-                "",
-                "下一拍：",
-                f"{seed}",
-                "门外的脚步声停住，她终于意识到，自己刚刚保护的名字已经被第三个人听见。",
-            ]
-        ).strip()
-    if proposal_type == "near_final_rewrite":
-        return "\n".join(
-            [
-                "[近终稿重写]",
-                *target_lines,
-                "",
-                "重写目标：",
-                "保留作者声线和关键意象，只移除解释性对白、松散承接和没有行动后果的句子。",
-                "",
-                "候选稿：",
-                f"{seed}",
-                "人物没有解释前史，只把关键物件握紧；这个动作让沉默本身变成选择。",
-            ]
-        ).strip()
-    if proposal_type in {"whole_draft", "scene_draft", "chapter_draft"}:
-        return "\n".join(
-            [
-                "[整段候选]",
-                *target_lines,
-                "",
-                "候选稿：",
-                f"{seed}",
-                "",
-                "收束方向：",
-                "让本段从一个可见目标开始，以一个改变关系或局势的动作结束。",
-            ]
-        ).strip()
-    return "\n".join(
-        [
-            "[AI draft proposal]",
-            *target_lines,
-            "",
-            "Draft:",
-            f"{seed}",
-            "",
-            "Revision direction:",
-            "Make the visible action carry pressure, cost, and a hook for the next beat.",
-        ]
-    ).strip()
 
 
 def _proposal_rationale(*, target: dict[str, Any], proposal_type: str, instruction: str | None) -> str:
@@ -2473,71 +2339,6 @@ def _serialize_patch_candidate(row: PassagePatchCandidate) -> dict[str, Any]:
     }
 
 
-class OfflineAuthorProposalClient:
-    def __init__(
-        self,
-        *,
-        draft: AuthorDraft,
-        target: dict[str, Any],
-        proposal_type: str,
-        instruction: str | None,
-    ) -> None:
-        self.draft = draft
-        self.target = target
-        self.proposal_type = proposal_type
-        self.instruction = instruction
-
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        # 与 writer_deep_review.OfflinePassagePatchClient 同一约定:rationale 必须
-        # 落入前端 /offline deterministic/i 探测正则,消费方才能把占位稿如实标成
-        # "LLM 不可用",不冒充真实续写(_proposal_rationale 本身复用于正常 LLM 响应
-        # 缺 rationale 字段时的兜底,不能带这个标记,故在此单独拼接)。
-        payload = {
-            "content": _proposal_content(
-                self.draft,
-                target=self.target,
-                proposal_type=self.proposal_type,
-                instruction=self.instruction,
-            ),
-            "rationale": "offline deterministic author proposal — " + _proposal_rationale(
-                target=self.target,
-                proposal_type=self.proposal_type,
-                instruction=self.instruction,
-            ),
-        }
-        return LLMResponse(
-            request_id=f"offline_author_proposal_{uuid.uuid4().hex[:8]}",
-            provider="offline_deterministic",
-            model=request.model,
-            text=json.dumps(payload, ensure_ascii=False),
-            structured_output=payload,
-            response_format=request.response_format,
-            raw_response={"id": "offline_author_proposal_generate"},
-            usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-            finish_reason="offline_fallback",
-        )
-
-
-class OfflineAuthorStructureExtractClient:
-    def __init__(self, *, draft: AuthorDraft, target: dict[str, Any]) -> None:
-        self.draft = draft
-        self.target = target
-
-    def generate(self, request: LLMRequest) -> LLMResponse:
-        structured_output = _offline_structure_payload(self.draft, self.target)
-        return LLMResponse(
-            request_id=f"offline_author_structure_{uuid.uuid4().hex[:8]}",
-            provider="offline_deterministic",
-            model=request.model,
-            text=json.dumps(structured_output, ensure_ascii=False),
-            structured_output=structured_output,
-            response_format=request.response_format,
-            raw_response={"id": "offline_author_structure_extract"},
-            usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
-            finish_reason="offline_fallback",
-        )
-
-
 def _scene_blank_scaffold(scene: SceneCard, *, chapter_goal: str) -> str:
     parts: list[str] = []
     if chapter_goal:
@@ -2624,13 +2425,23 @@ def _structure_extract_user_prompt(base_prompt: str, *, draft: AuthorDraft, targ
 
 def _normalize_structure_payload(payload: Any, *, draft: AuthorDraft, target: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
-        payload = _offline_structure_payload(draft, target)
+        raise DomainError(
+            "AUTHOR_STRUCTURE_OUTPUT_INVALID",
+            "author structure extraction response must be a JSON object",
+            status_code=502,
+            details={"node_id": "author_structure_extract", "object_type": draft.object_type},
+        )
     if draft.object_type == "project":
         raw_steps = payload.get("snowflake_steps")
         if not isinstance(raw_steps, dict):
             raw_steps = payload.get("candidate_brief", {}).get("snowflake_steps") if isinstance(payload.get("candidate_brief"), dict) else None
         if not isinstance(raw_steps, dict):
-            raw_steps = _offline_structure_payload(draft, target)["candidate_brief"]["snowflake_steps"]
+            raise DomainError(
+                "AUTHOR_STRUCTURE_OUTPUT_INVALID",
+                "author structure extraction response is missing snowflake_steps",
+                status_code=502,
+                details={"node_id": "author_structure_extract", "object_type": draft.object_type},
+            )
         allowed = {"book_brief", "one_sentence_summary", "one_paragraph_summary", "scene_list", "scene_details"}
         snowflake_steps = {key: value for key, value in raw_steps.items() if key in allowed and isinstance(value, dict)}
         notes = payload.get("uncertainty_notes")
@@ -2645,7 +2456,12 @@ def _normalize_structure_payload(payload: Any, *, draft: AuthorDraft, target: di
     if not isinstance(raw_brief, dict):
         raw_brief = payload.get("scene_writer_brief") if draft.object_type == "scene" else payload.get("chapter_writer_brief")
     if not isinstance(raw_brief, dict):
-        raw_brief = _offline_structure_payload(draft, target)["candidate_brief"]
+        raise DomainError(
+            "AUTHOR_STRUCTURE_OUTPUT_INVALID",
+            "author structure extraction response is missing candidate_brief",
+            status_code=502,
+            details={"node_id": "author_structure_extract", "object_type": draft.object_type},
+        )
     if draft.object_type == "scene":
         normalized = normalize_scene_writer_brief({**empty_scene_writer_brief(), **raw_brief})
     else:
@@ -2657,122 +2473,6 @@ def _normalize_structure_payload(payload: Any, *, draft: AuthorDraft, target: di
         "candidate_brief": _nonempty_brief(normalized),
         "uncertainty_notes": uncertainty_notes,
         "rationale": str(rationale).strip() if isinstance(rationale, str) and rationale.strip() else "从作者稿反向提取戏剧意图。",
-    }
-
-
-def _offline_structure_payload(draft: AuthorDraft, target: dict[str, Any]) -> dict[str, Any]:
-    text = (draft.content or "").strip()
-    if draft.object_type == "project":
-        first_line = _first_sentence(text) or "Project discovery draft needs an editable structure."
-        return _offline_project_structure_payload(draft, target, text=text, first_line=first_line)
-    first_line = _first_sentence(text) or str(target.get("chapter_goal") or "作者稿已有一个需要澄清的戏剧方向")
-    if draft.object_type == "scene":
-        scene_card = target.get("scene_card") if isinstance(target.get("scene_card"), dict) else {}
-        scene_goal = str(scene_card.get("scene_goal") or first_line)
-        return {
-            "candidate_brief": {
-                "character_desire": _infer_desire(text, fallback=scene_goal),
-                "obstacle": _infer_obstacle(text),
-                "stakes": _infer_stakes(text),
-                "secret_or_misunderstanding": "真相尚未被所有在场者同时理解。",
-                "subtext": "人物没有把真正担心的代价说出口。",
-                "irreversible_change": str(scene_card.get("exit_change") or "人物已经做出会改变后续关系的动作。"),
-                "reader_question": str(scene_card.get("hook") or "这个选择会把谁推向危险？"),
-                "choice_under_pressure": "公开真相，还是先保护仍会受伤的人。",
-                "power_shift": "掌握证据的人获得主动权，也承担新的风险。",
-                "new_information": first_line,
-                "emotional_turn": "人物从观察进入承担后果。",
-                "image_anchor": _image_anchor(text),
-                "reader_aftertaste": "读者知道这次沉默不是退让，而是代价。",
-            },
-            "uncertainty_notes": ["离线提取只依据作者稿表层信息，需作者确认。"],
-            "rationale": "从作者稿里的动作、选择词和结尾钩子反推场景戏剧卡。",
-        }
-    return {
-        "candidate_brief": {
-            "core_promise": first_line,
-            "plot_movement": "让作者稿中的核心线索推动下一步行动。",
-            "character_shift": "人物从被动感知转向主动承担。",
-            "chapter_question": "这章提出的问题会迫使人物付出什么代价？",
-            "ending_aftertaste": "结尾应留下一个尚未安全兑现的承诺。",
-            "chapter_promise": first_line,
-            "escalation_path": "线索出现后，压力通过选择和关系变化升级。",
-            "relationship_delta": "关键关系因信息不对称发生偏移。",
-            "reveal_or_reversal": "作者稿里的发现改变读者对局势的理解。",
-            "payoff_target": "后续场景需要兑现或反转本章提出的问题。",
-            "ending_question": "人物接下来会公开、隐藏，还是交换这份信息？",
-        },
-        "uncertainty_notes": ["离线提取无法判断作者长期主题，请人工确认。"],
-        "rationale": "从作者稿反推章节承诺、推进和结尾问题。",
-    }
-
-
-def _offline_project_structure_payload(
-    draft: AuthorDraft,
-    target: dict[str, Any],
-    *,
-    text: str,
-    first_line: str,
-) -> dict[str, Any]:
-    project = target.get("project") if isinstance(target.get("project"), dict) else {}
-    lines = [line.strip(" -\t") for line in text.splitlines() if line.strip()]
-    one_sentence = _line_after_prefix(lines, "one sentence") or first_line
-    audience = _line_after_prefix(lines, "audience") or str(project.get("genre") or "Readers who want a story with clear pressure and emotional cost.")
-    scene_lines = _numbered_lines(lines) or [one_sentence]
-    project_id = str(target.get("project_id") or draft.object_id)
-    scene_list = [
-        {
-            "scene_id": f"{project_id}_DISCOVERY_SC{index:02d}",
-            "chapter_id": f"{project_id}_DISCOVERY_CH01",
-            "scene_seq": index,
-            "summary": summary,
-            "chapter_role": "Discovery draft scene candidate",
-            "pov_character_id": "",
-            "onstage_chars": [],
-            "location": "",
-            "hook": summary,
-        }
-        for index, summary in enumerate(scene_lines[:8], start=1)
-    ]
-    scene_details = [
-        {
-            **scene,
-            "primary_form": "proactive" if index % 2 else "reactive",
-            "goal": scene["summary"],
-            "conflict": "The scene needs a visible obstacle and cost.",
-            "setback": "The outcome should leave a new consequence.",
-            "reaction": "The character absorbs the cost of the previous beat.",
-            "dilemma": "Each option should cost something.",
-            "decision": "The decision should launch the next scene.",
-        }
-        for index, scene in enumerate(scene_list, start=1)
-    ]
-    steps = {
-        "book_brief": {
-            "category": str(project.get("genre") or ""),
-            "target_reader": audience,
-            "story_kind": "A story discovered from the author's free draft.",
-            "delight_reason": "The draft already points toward pressure, cost, and curiosity.",
-            "genre_promise": one_sentence,
-            "expected_reader_emotion": "Curiosity and pressure.",
-            "safety_rules": [
-                "Only use material supplied by the author draft.",
-                "Treat extracted structure as editable candidate notes.",
-            ],
-        },
-        "one_sentence_summary": {"summary": one_sentence},
-        "one_paragraph_summary": {
-            # 三幕灾难不入库——读时由 derive_three_act(sentences) 派生（P1-2）。
-            "sentences": _five_sentences(one_sentence, scene_lines),
-            "moral_premise": "",
-        },
-        "scene_list": {"scenes": scene_list},
-        "scene_details": {"scenes": scene_details},
-    }
-    return {
-        "candidate_brief": {"snowflake_steps": steps},
-        "uncertainty_notes": ["Offline extraction is a draft interpretation; review each snowflake step before approval."],
-        "rationale": "Converted the project discovery draft into editable snowflake step candidates without approving them.",
     }
 
 
@@ -2810,36 +2510,6 @@ def _merge_briefs(current: dict[str, str], candidate: dict[str, Any]) -> dict[st
 
 def _nonempty_brief(brief: dict[str, str]) -> dict[str, str]:
     return {key: value for key, value in brief.items() if key != "schema_version" and isinstance(value, str) and value.strip()}
-
-
-def _first_sentence(text: str) -> str:
-    cleaned = " ".join(str(text or "").split())
-    if not cleaned:
-        return ""
-    for separator in ("。", "！", "？", "\n"):
-        if separator in cleaned:
-            return cleaned.split(separator, 1)[0].strip() + ("。" if separator == "。" else "")
-    return cleaned[:80]
-
-
-def _infer_desire(text: str, *, fallback: str) -> str:
-    if any(token in text for token in ("公开", "真相", "证据")):
-        return "确认证据是否应该公开，并掌握公开的时机。"
-    if any(token in text for token in ("保护", "隐藏", "藏")):
-        return "保护关键人物或秘密不被立刻暴露。"
-    return fallback or "完成眼前必须处理的行动。"
-
-
-def _infer_obstacle(text: str) -> str:
-    if any(token in text for token in ("问", "阻止", "追踪", "危险")):
-        return "他人的追问、追踪或危险让选择无法拖延。"
-    return "信息不完整，人物不能同时保住真相与安全。"
-
-
-def _infer_stakes(text: str) -> str:
-    if any(token in text for token in ("保护", "危险", "追踪", "公开")):
-        return "选择错误会让仍需保护的人暴露在危险里。"
-    return "选择会改变人物关系和后续行动空间。"
 
 
 def _candidate_image_tokens(text: str) -> list[str]:

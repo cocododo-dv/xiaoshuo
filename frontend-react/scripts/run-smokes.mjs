@@ -15,9 +15,9 @@ const API = process.argv[3] || "http://127.0.0.1:8009";
 const SMOKES = ["smoke-phase2.mjs", "smoke-phase3.mjs", "smoke-phase4.mjs", "smoke-phase5.mjs", "smoke-phase6.mjs", "smoke-phase7.mjs", "smoke-ai-settings.mjs", "qa2-ui.mjs"];
 const BACKEND_DIR = path.resolve(HERE, "../../backend");
 
-// 各套用例都会改动 demo 数据（裁决/插场/改题），套间 reseed 保独立性
+// 各套用例都会改动夹具数据（裁决/插场/改题），套间 reseed 保独立性
 function reseed() {
-  const r = spawnSync("python", ["-m", "novel_system.tools.seed_demo"], {
+  const r = spawnSync("python", ["tests/fixture_runtime.py"], {
     cwd: BACKEND_DIR,
     env: { ...process.env, PYTHONPATH: "src" },
     stdio: "pipe",

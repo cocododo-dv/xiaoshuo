@@ -70,7 +70,10 @@ def create_project(payload: dict[str, Any], request: Request, session: Session =
 
 @router.get("/api/v1/projects")
 def list_projects(request: Request, session: Session = Depends(get_session)):
-    return ok(ProjectService(session).list(), req_id=getattr(request.state, "request_id", None))
+    return ok(
+        ProjectService(session).list(),
+        req_id=getattr(request.state, "request_id", None),
+    )
 
 
 @router.get("/api/v1/projects/{project_id}/dashboard")
@@ -187,9 +190,7 @@ def run_project_chapter_job(
 ):
     offline_demo = payload.offline_demo if payload is not None else False
     result = ProjectChapterFlowService(session).prepare_chapter_run_job(
-        project_id,
-        chapter_id,
-        offline_demo=offline_demo,
+        project_id, chapter_id, offline_demo=offline_demo
     )
     should_start_worker = bool(result.pop("_start_worker", False))
     session.commit()

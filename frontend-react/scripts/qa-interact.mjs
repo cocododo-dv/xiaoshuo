@@ -50,7 +50,7 @@ await page.goto(BASE);
 await waitApp();
 
 // ---- A) Author 三镜头 Tab，单章 vs 多章 ----
-for (const work of ["tide", "PRJ_1C88DEFF3D"]) {
+for (const work of ["work-a", "PRJ_1C88DEFF3D"]) {
   ctx = `author/${work}`;
   await gotoView(work, "author");
   await shot(`author-${work}-1`);
@@ -67,7 +67,7 @@ for (const work of ["tide", "PRJ_1C88DEFF3D"]) {
 }
 
 // ---- B) Snowflake 10 步导航（只观察，不点生成）----
-for (const work of ["tide"]) {
+for (const work of ["work-a"]) {
   ctx = `snowflake/${work}`;
   await gotoView(work, "snowflake");
   await shot(`snow-${work}-load`);
@@ -90,7 +90,7 @@ for (const work of ["tide"]) {
 
 // ---- C) Style reference：打开导入弹窗 → 取消 ----
 ctx = "styleref/tide";
-await gotoView("tide", "styleref");
+await gotoView("work-a", "styleref");
 await shot("styleref-load");
 for (const t of ["导入参考书", "导入", "上传", "新建", "添加参考"]) {
   if (await clickText(t)) { await page.waitForTimeout(700); await shot(`styleref-modal-${t}`); await page.keyboard.press("Escape").catch(() => {}); break; }
@@ -98,7 +98,7 @@ for (const t of ["导入参考书", "导入", "上传", "新建", "添加参考"
 
 // ---- D) Settings 子页轮巡 ----
 ctx = "settings/tide";
-await gotoView("tide", "settings");
+await gotoView("work-a", "settings");
 await page.waitForTimeout(600);
 const navBtns = await page.locator(".settings-nav-btn").allTextContents().catch(() => []);
 note("settings-tabs", `nav=[${navBtns.join(" | ")}]`);
@@ -113,7 +113,7 @@ for (const label of navBtns) {
 // ---- E) Quality / Longform 渲染 + 主按钮存在性 ----
 for (const view of ["quality", "longform"]) {
   ctx = `${view}/tide`;
-  await gotoView("tide", view);
+  await gotoView("work-a", view);
   await page.waitForTimeout(900);
   await shot(`${view}-tide`);
   const txtLen = await page.evaluate(() => (document.querySelector(".ws-content")?.innerText || "").length);
