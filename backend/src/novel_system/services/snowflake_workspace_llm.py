@@ -1234,6 +1234,7 @@ def _sanitize_scene_detail_items(
         "reaction",
         "dilemma",
         "decision",
+        "cost_requirement",
         "target_length_band",
         "must_include_text",
         "exit_change",
@@ -1398,7 +1399,7 @@ def _fallback_triage_items(draft: dict[str, Any]) -> list[dict[str, Any]]:
                 "notes": notes,
                 "missing_fields": missing_fields,
                 "fix_steps": diagnosis.get("fix_steps") or _fallback_fix_steps(scene_type, missing_fields, status),
-                "repair_patch": _fallback_repair_patch(scene_type, missing_fields),
+                "repair_patch": _fallback_repair_patch(scene_type, missing_fields, diagnosis.get("pressure_flags")),
             }
         )
     return items
@@ -1413,7 +1414,11 @@ def _fallback_fix_steps(scene_type: str, missing_fields: list[str], status: str)
     return [f"补齐缺失的{label}字段：{'、'.join(_field_label(field) for field in missing_fields)}。"]
 
 
-def _fallback_repair_patch(scene_type: str, missing_fields: list[str]) -> dict[str, str]:
+def _fallback_repair_patch(
+    scene_type: str,
+    missing_fields: list[str],
+    pressure_flags: list[str] | None = None,
+) -> dict[str, str]:
     examples = {
         "crucible": "一个具体压力把视角角色困在这里；离开会让损失永久化。",
         "goal": "在场景倒计时结束前，拿到某个具体证据、许可或让步。",
@@ -1422,9 +1427,12 @@ def _fallback_repair_patch(scene_type: str, missing_fields: list[str]) -> dict[s
         "reaction": "角色先出现身体和情绪反应，然后才开始分析损害。",
         "dilemma": "一个选择保护关系却埋掉真相，另一个选择暴露真相却烧掉保护。",
         "decision": "角色选择代价更高的路径，并制造下一场的具体目标。",
+        "cost_requirement": "拿到线索的同时，永久失去了这个线人的信任。",
     }
     required = ["reaction", "dilemma", "decision"] if scene_type == "reactive" else ["goal", "conflict", "setback"]
     keys = ["crucible" if field == "crucible" else field for field in missing_fields if field in {"crucible", *required}]
+    if pressure_flags and "missing_cost_requirement" in pressure_flags:
+        keys.append("cost_requirement")
     return {key: examples[key] for key in keys if key in examples}
 
 
@@ -1445,6 +1453,7 @@ def _sanitize_scene_repair_patch(value: Any) -> dict[str, str]:
         "reaction",
         "dilemma",
         "decision",
+        "cost_requirement",
         "exit_change",
         "hook",
         "target_length_band",

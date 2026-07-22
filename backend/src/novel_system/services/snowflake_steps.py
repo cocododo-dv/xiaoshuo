@@ -292,6 +292,7 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                         "reaction": "",
                         "dilemma": "",
                         "decision": "",
+                        "cost_requirement": "",
                         "target_length_band": "medium",
                         "must_include_text": "",
                         "exit_change": "",
@@ -336,6 +337,14 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                                     "placeholder": "例：警探宣布以「妨碍司法」拘留48小时——正好是真凶行动的关键窗口期",
                                     "rows": 2,
                                 },
+                                {
+                                    "key": "cost_requirement",
+                                    "kind": "textarea",
+                                    "label": "代价要求",
+                                    "hint": "角色为这个结果具体付出了什么？免费的选择 = 注水",
+                                    "placeholder": "例：虽然拿到了漏洞，但唯一的线人从此断联，这条消息来源永久失去了",
+                                    "rows": 2,
+                                },
                             ],
                         },
                         {
@@ -372,6 +381,14 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
                                     "label": "决定",
                                     "hint": "角色最终如何选择？这个决定必须直接引发下一个场景的目标",
                                     "placeholder": "例：决定认罪——但在签字前悄悄发出了一条给记者的暗语短信",
+                                    "rows": 2,
+                                },
+                                {
+                                    "key": "cost_requirement",
+                                    "kind": "textarea",
+                                    "label": "代价要求",
+                                    "hint": "角色为这个决定具体付出了什么？免费的选择 = 注水",
+                                    "placeholder": "例：认罪换来的不是安全，而是失去律师执照、也失去了亲手抓到真凶的机会",
                                     "rows": 2,
                                 },
                             ],
@@ -570,6 +587,7 @@ _FIELD_HELP: dict[str, dict[str, str]] = {
     "reaction": {"hint": "先身体和情绪，后理性分析。", "placeholder": "手发抖、反复回想上一场坏消息，随后才意识到真正损失。"},
     "dilemma": {"hint": "两个选择都要付出真实代价。", "placeholder": "公开会伤害家人；沉默会让真相再次被掩埋。"},
     "decision": {"hint": "必须触发下一场的新目标。", "placeholder": "决定去见掌握时间线的人。"},
+    "cost_requirement": {"hint": "角色为这个选择或结果具体付出了什么代价——免费的选择等于注水。", "placeholder": "拿到线索的同时，永久失去了这个线人的信任。"},
     "moral_premise": {"hint": "人物误信什么，又会学会什么。", "placeholder": "沉默不能保护人，承担代价才可能结束伤害。"},
 }
 
@@ -906,6 +924,7 @@ def _scene_detail_seed(scene: dict[str, Any], index: int) -> dict[str, Any]:
         "reaction": "",
         "dilemma": "",
         "decision": "",
+        "cost_requirement": "",
         "triage_status": "",
         "triage_notes": "",
         "triage_missing_fields": [],

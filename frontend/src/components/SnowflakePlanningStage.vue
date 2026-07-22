@@ -823,6 +823,11 @@ function updateSceneCrucible(fieldKey, index, value) {
                         <textarea class="control-input" :value="scene.decision || ''" :placeholder="sceneDetailFieldPlaceholder(scenePrimaryForm(scene), 'decision')" :rows="sceneDetailFieldRows(scenePrimaryForm(scene), 'decision')" @input="updateCollectionField(field.key, index, 'decision', $event.target.value)" />
                       </label>
                     </template>
+                    <label>
+                      <span>{{ sceneDetailFieldLabel(scenePrimaryForm(scene), "cost_requirement", "代价要求") }}</span>
+                      <small v-if="sceneDetailFieldHint(scenePrimaryForm(scene), 'cost_requirement')" class="field-hint">{{ sceneDetailFieldHint(scenePrimaryForm(scene), "cost_requirement") }}</small>
+                      <textarea class="control-input" :value="scene.cost_requirement || ''" :placeholder="sceneDetailFieldPlaceholder(scenePrimaryForm(scene), 'cost_requirement')" :rows="sceneDetailFieldRows(scenePrimaryForm(scene), 'cost_requirement')" @input="updateCollectionField(field.key, index, 'cost_requirement', $event.target.value)" />
+                    </label>
                     <label><span>离场变化</span><textarea class="control-input" :value="scene.exit_change || ''" placeholder="这一场结束后，人物处境、信息或关系发生了什么不可逆变化。" @input="updateCollectionField(field.key, index, 'exit_change', $event.target.value)" /></label>
                     <label><span>钩子</span><textarea class="control-input" :value="scene.hook || ''" placeholder="留给下一场或下一章的悬念、承诺或刺点。" @input="updateCollectionField(field.key, index, 'hook', $event.target.value)" /></label>
                     <label><span>目标篇幅</span><input class="control-input" :value="scene.target_length_band || ''" placeholder="短 / 中 / 长，或 1200-1800 字" @input="updateCollectionField(field.key, index, 'target_length_band', $event.target.value)" /></label>

@@ -78,6 +78,7 @@ SCENE_PATCH_FIELDS = {
     "reaction",
     "dilemma",
     "decision",
+    "cost_requirement",
     "beats_json",
     "must_include_text",
     "exit_change",
@@ -342,10 +343,10 @@ class SnowflakeWorkspaceService:
         self._require_step(step_key)
         source_run_id = str(body.get("step_run_id") or "").strip()
         if not source_run_id:
-            raise DomainError("SNOWFLAKE_STEP_RUN_REQUIRED", "step_run_id is required", status_code=400)
+            raise DomainError("SNOWFLAKE_STEP_RUN_REQUIRED", "缺少 step_run_id 参数。", status_code=400)
         source_run = self.session.get(SnowflakeStepRun, source_run_id)
         if source_run is None or source_run.project_id != project.project_id or source_run.step_key != step_key:
-            raise DomainError("SNOWFLAKE_STEP_RUN_NOT_FOUND", "snowflake step run does not belong to this project step", status_code=404)
+            raise DomainError("SNOWFLAKE_STEP_RUN_NOT_FOUND", "该历史版本不属于当前项目的这一步骤。", status_code=404)
         latest_by_step = self._latest_by_step(project.project_id)
         if self._draft_gate_mode(project) == "strict":
             self._require_previous_gates(step_key, latest_by_step)
@@ -443,12 +444,12 @@ class SnowflakeWorkspaceService:
         latest_by_step = self._latest_by_step(project.project_id)
         run = latest_by_step.get(step_key)
         if run is None:
-            raise DomainError("SNOWFLAKE_STEP_RUN_NOT_FOUND", "no draft exists for this snowflake step", status_code=404)
+            raise DomainError("SNOWFLAKE_STEP_RUN_NOT_FOUND", "这一步骤还没有草稿。", status_code=404)
         if run.status in {"approved", "skipped"}:
             workspace = self.workspace(project.project_id)
             return {"step": self._step_from_workspace(workspace, step_key), "workspace": workspace}
         if run.status != "pending_review":
-            raise DomainError("SNOWFLAKE_STEP_RUN_NOT_APPROVABLE", "step run cannot be approved in its current status", status_code=409)
+            raise DomainError("SNOWFLAKE_STEP_RUN_NOT_APPROVABLE", "这一步骤当前状态不能被确认。", status_code=409)
 
         self._require_previous_gates(step_key, latest_by_step, allow_self=run.step_run_id)
         previous_run = self._latest_approved_step_run(project.project_id, step_key, exclude_step_run_id=run.step_run_id)
@@ -493,9 +494,9 @@ class SnowflakeWorkspaceService:
         self._require_step(step_key)
         run = self._latest_by_step(project.project_id).get(step_key)
         if run is None:
-            raise DomainError("SNOWFLAKE_STEP_RUN_NOT_FOUND", "no draft exists for this snowflake step", status_code=404)
+            raise DomainError("SNOWFLAKE_STEP_RUN_NOT_FOUND", "这一步骤还没有草稿。", status_code=404)
         if run.status != "stale":
-            raise DomainError("SNOWFLAKE_STEP_NOT_STALE", "only stale snowflake steps can be accepted as still valid", status_code=409)
+            raise DomainError("SNOWFLAKE_STEP_NOT_STALE", "只有被标记为过期的步骤才能确认仍然有效。", status_code=409)
         body = payload or {}
         note = str(body.get("note") or "").strip() or None
         accepted_at = utcnow()
@@ -573,7 +574,7 @@ class SnowflakeWorkspaceService:
         workspace = self.workspace(project.project_id)
         step = self._step_from_workspace(workspace, "scene_details")
         if not step.get("draft", {}).get("scenes"):
-            raise DomainError("SNOWFLAKE_SCENE_DETAILS_REQUIRED", "scene details must be prepared first", status_code=409)
+            raise DomainError("SNOWFLAKE_SCENE_DETAILS_REQUIRED", "需要先完成场景规划（场景细化）。", status_code=409)
         step = self._step_with_override(step, body.get("draft_override"), latest_by_step=self._latest_by_step(project.project_id))
         llm_result = self._llm.scene_triage_suggestions(
             project=workspace["project"],
@@ -629,13 +630,13 @@ class SnowflakeWorkspaceService:
         project = self._require_snowflake_project(project_id)
         row = self.session.get(SnowflakeSceneTriageItem, triage_id)
         if row is None or row.project_id != project.project_id:
-            raise DomainError("SNOWFLAKE_TRIAGE_NOT_FOUND", "scene triage item not found", status_code=404)
+            raise DomainError("SNOWFLAKE_TRIAGE_NOT_FOUND", "未找到该场景急救记录。", status_code=404)
         scene = self.session.get(SnowflakeScenePlan, row.scene_plan_id)
         if scene is None or scene.project_id != project.project_id:
-            raise DomainError("SNOWFLAKE_SCENE_PLAN_NOT_FOUND", "scene plan not found", status_code=404)
+            raise DomainError("SNOWFLAKE_SCENE_PLAN_NOT_FOUND", "未找到该场景计划。", status_code=404)
         patch = _sanitize_scene_patch(row.repair_patch_json or {})
         if not patch:
-            raise DomainError("SNOWFLAKE_TRIAGE_REPAIR_EMPTY", "triage item has no repair patch to apply", status_code=409)
+            raise DomainError("SNOWFLAKE_TRIAGE_REPAIR_EMPTY", "该急救记录没有可应用的修复补丁。", status_code=409)
         self._apply_scene_patch(scene, patch)
         scene.diagnosis_json = diagnose_scene_detail(_scene_plan_payload(scene))
         row.recommended_status = scene.diagnosis_json["recommended_status"]
@@ -658,7 +659,7 @@ class SnowflakeWorkspaceService:
             requested = set(requested_ids)
             scenes = [scene for scene in scenes if scene.scene_plan_id in requested]
         if not scenes:
-            raise DomainError("SNOWFLAKE_STALE_SCENES_NOT_FOUND", "no matching scene plans found", status_code=404)
+            raise DomainError("SNOWFLAKE_STALE_SCENES_NOT_FOUND", "未找到匹配的场景计划。", status_code=404)
         note = str(body.get("note") or "").strip() or None
         accepted_at = utcnow()
         accepted: list[dict[str, Any]] = []
@@ -686,7 +687,7 @@ class SnowflakeWorkspaceService:
                 )
             )
         if not accepted:
-            raise DomainError("SNOWFLAKE_SCENES_NOT_STALE", "no matching stale scene plans found", status_code=409)
+            raise DomainError("SNOWFLAKE_SCENES_NOT_STALE", "未找到匹配的、处于过期状态的场景计划。", status_code=409)
         self.session.flush()
         return {"accepted_scenes": accepted, "workspace": self.workspace(project.project_id)}
 
@@ -694,7 +695,7 @@ class SnowflakeWorkspaceService:
         project = self._require_snowflake_project(project_id)
         scene = self.session.get(SnowflakeScenePlan, scene_plan_id)
         if scene is None or scene.project_id != project.project_id:
-            raise DomainError("SNOWFLAKE_SCENE_PLAN_NOT_FOUND", "scene plan not found", status_code=404)
+            raise DomainError("SNOWFLAKE_SCENE_PLAN_NOT_FOUND", "未找到该场景计划。", status_code=404)
         self._apply_scene_patch(scene, _sanitize_scene_patch(payload or {}))
         scene.status = "draft" if scene.status in {"approved", "stale"} else scene.status
         scene.stale_accepted_at = None
@@ -715,19 +716,19 @@ class SnowflakeWorkspaceService:
             ):
                 raise DomainError(
                     "SNOWFLAKE_TRIAGE_BLOCKED",
-                    "rewrite-marked scenes must be repaired before materializing the outline",
+                    "存在被标记为「重写」的场景，需要先修复才能整理为章节结构。",
                     status_code=409,
                     details={"materialization_gate": gate},
                 )
             raise DomainError(
                 "SNOWFLAKE_NOT_READY",
-                "snowflake workspace must pass materialization gate before materializing",
+                "雪花工作台还没有通过整理前的检查，暂时无法整理为章节结构；请查看具体阻断项后重试。",
                 status_code=409,
                 details={"materialization_gate": gate},
             )
         scene_plans = self._scene_plans(project.project_id)
         if not scene_plans:
-            raise DomainError("SNOWFLAKE_SCENES_REQUIRED", "scene plans are required", status_code=409)
+            raise DomainError("SNOWFLAKE_SCENES_REQUIRED", "还没有可用的场景计划，无法整理为章节结构。", status_code=409)
         plan = OutlinePlan(
             plan_id=f"outline_plan_{project.project_id}_{self._next_plan_version(project.project_id):02d}_{uuid.uuid4().hex[:8]}",
             project_id=project.project_id,
@@ -748,7 +749,7 @@ class SnowflakeWorkspaceService:
         project = self._require_snowflake_project(project_id)
         latest_plan = self._latest_plan(project.project_id)
         if latest_plan is None:
-            raise DomainError("OUTLINE_PLAN_NOT_FOUND", "outline plan not found", status_code=404)
+            raise DomainError("OUTLINE_PLAN_NOT_FOUND", "未找到大纲计划。", status_code=404)
         result = self._projects.approve_outline_plan(project.project_id, latest_plan.plan_id)
         workspace = self.workspace(project.project_id)
         return {
@@ -784,7 +785,7 @@ class SnowflakeWorkspaceService:
         if requested_scene_ids:
             plans = [plan for plan in plans if plan.scene_id in requested_scene_ids]
         if not plans:
-            raise DomainError("SNOWFLAKE_RESYNC_SCENES_NOT_FOUND", "no matching scene plans found", status_code=404)
+            raise DomainError("SNOWFLAKE_RESYNC_SCENES_NOT_FOUND", "未找到匹配的场景计划。", status_code=404)
 
         results: list[dict[str, Any]] = []
         affected_scene_ids: list[str] = []
@@ -858,7 +859,7 @@ class SnowflakeWorkspaceService:
         if str(getattr(project, "planning_mode", "") or "") != "snowflake":
             raise DomainError(
                 "PROJECT_NOT_SNOWFLAKE",
-                "this workspace only supports snowflake projects",
+                "该工作台只支持雪花法项目。",
                 status_code=409,
             )
         return project
@@ -933,7 +934,7 @@ class SnowflakeWorkspaceService:
 
     def _require_step(self, step_key: str) -> None:
         if step_key not in STEP_ORDER:
-            raise DomainError("SNOWFLAKE_STEP_NOT_FOUND", "unknown snowflake step", status_code=404)
+            raise DomainError("SNOWFLAKE_STEP_NOT_FOUND", "未知的雪花步骤。", status_code=404)
 
     def _require_previous_gates(
         self,
@@ -954,7 +955,7 @@ class SnowflakeWorkspaceService:
             first = blockers[0]
             raise DomainError(
                 "SNOWFLAKE_PREVIOUS_STEP_REQUIRED",
-                "previous snowflake steps must be approved first",
+                "需要先确认前面的雪花步骤。",
                 status_code=409,
                 details={
                     "missing_previous_steps": blockers,
@@ -1107,15 +1108,19 @@ class SnowflakeWorkspaceService:
             "reaction": plan.reaction,
             "dilemma": plan.dilemma,
             "decision": plan.decision,
+            "cost_requirement": plan.cost_requirement,
             "primary_form": plan.scene_type,
         }
         beats = list(plan.beats_json or [])
         if not beats:
-            beats = [
-                item
-                for item in [plan.goal, plan.conflict, plan.setback or plan.decision, plan.hook]
-                if str(item or "").strip()
-            ]
+            # 按场景类型分支取字段——反应场景的核心是 reaction/dilemma/decision，不是
+            # 主动场景的 goal/conflict/setback（对齐 snowflake_planner._beats_from_detail）。
+            fallback_fields = (
+                [plan.reaction, plan.dilemma, plan.decision]
+                if plan.scene_type == "reactive"
+                else [plan.goal, plan.conflict, plan.setback]
+            )
+            beats = [item for item in [*fallback_fields, plan.hook] if str(item or "").strip()]
         return {
             "scene_goal": plan.summary or plan.goal or scene.scene_goal,
             "beats_json": beats or list(scene.beats_json or []),
@@ -1136,7 +1141,7 @@ class SnowflakeWorkspaceService:
     # chapter_goal 汇总）——物化与 resync 两个写入方对这些键的写法天生不同，
     # 拿去整体 != 会让刚物化完的每一场都被报成待同步（纯假阳性）。
     # 场卡其余内容（scene_goal/beats/hook/location/POV/scene_type…）由顶层列对比兜底。
-    _BRIEF_CONTENT_KEYS = ("scene_crucible", "goal", "conflict", "setback", "reaction", "dilemma", "decision")
+    _BRIEF_CONTENT_KEYS = ("scene_crucible", "goal", "conflict", "setback", "reaction", "dilemma", "decision", "cost_requirement")
 
     @staticmethod
     def _writer_brief_comparable(value: Any) -> Any:
@@ -1398,7 +1403,7 @@ class SnowflakeWorkspaceService:
                 add_step_item(
                     severity="warning",
                     kind="accepted_stale_required_step",
-                    message=f"{step_label} was marked stale, but the current draft was reviewed and accepted.",
+                    message=f"{step_label} 曾被标记为过期，但当前草稿已经复核并确认仍然有效。",
                     step_key=step_key,
                 )
             if run.status not in STRUCTURED_GATE_STATUSES and not (run.status == "stale" and run.stale_accepted_at):
@@ -1443,7 +1448,7 @@ class SnowflakeWorkspaceService:
                 add_step_item(
                     severity="warning",
                     kind="accepted_stale_optional_step",
-                    message=f"{step_label} was marked stale, but the current draft was reviewed and accepted.",
+                    message=f"{step_label} 曾被标记为过期，但当前草稿已经复核并确认仍然有效。",
                     step_key=step_key,
                 )
                 continue
@@ -1481,14 +1486,14 @@ class SnowflakeWorkspaceService:
                 add_scene_item(
                     severity="warning",
                     kind="accepted_stale_scene_plan",
-                    message=f"{scene_label} was marked stale, but the current scene plan was reviewed and accepted.",
+                    message=f"{scene_label} 曾被标记为过期，但当前场景计划已经复核并确认仍然有效。",
                     item=item,
                 )
                 continue
             add_scene_item(
                 severity="blocker",
                 kind="stale_scene_plan",
-                message=f"{scene_label} needs review before the chapter structure is materialized.",
+                message=f"{scene_label} 需要先复核，才能整理为章节结构。",
                 item=item,
             )
 
@@ -1720,7 +1725,7 @@ class SnowflakeWorkspaceService:
             scene_id = str(item.get("scene_id") or "").strip()
             scene = self._scene_plan_by_scene_id(project_id, scene_id) if scene_id else None
         if scene is None or scene.project_id != project_id:
-            raise DomainError("SNOWFLAKE_SCENE_PLAN_NOT_FOUND", "scene plan not found", status_code=404)
+            raise DomainError("SNOWFLAKE_SCENE_PLAN_NOT_FOUND", "未找到该场景计划。", status_code=404)
         return scene
 
     def _attach_triage_identity(self, project_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1833,7 +1838,7 @@ class SnowflakeWorkspaceService:
             f"{run.step_key} 改动影响 {len(affected_step_run_ids)} 个下游步骤、"
             f"{len(affected_scene_plan_ids)} 个场景计划。"
             if affected_step_run_ids or affected_scene_plan_ids
-            else "No downstream snowflake artifacts are affected."
+            else "本次修改没有影响任何下游雪花产出。"
         )
         return {
             "step_key": run.step_key,
@@ -1893,10 +1898,10 @@ class SnowflakeWorkspaceService:
     def _skip_draft(self, step_key: str, payload: dict[str, Any]) -> dict[str, Any]:
         step = get_step_definition(step_key)
         if not step.get("skippable"):
-            raise DomainError("SNOWFLAKE_STEP_NOT_SKIPPABLE", "this snowflake step cannot be skipped", status_code=400)
+            raise DomainError("SNOWFLAKE_STEP_NOT_SKIPPABLE", "这一步骤不能跳过。", status_code=400)
         reason = str(payload.get("skip_reason") or "").strip()
         if not reason:
-            raise DomainError("SNOWFLAKE_SKIP_REASON_REQUIRED", "skip_reason is required", status_code=400)
+            raise DomainError("SNOWFLAKE_SKIP_REASON_REQUIRED", "跳过时必须填写理由。", status_code=400)
         return {"skipped": True, "skip_reason": reason}
 
     def _step_health(self, step_key: str, draft: dict[str, Any], status: str, *, generation_source: str | None = None) -> dict[str, Any]:
@@ -2007,7 +2012,7 @@ class SnowflakeWorkspaceService:
         for step in workspace.get("steps") or []:
             if step.get("step_key") == step_key:
                 return step
-        raise DomainError("SNOWFLAKE_STEP_NOT_FOUND", "unknown snowflake step", status_code=404)
+        raise DomainError("SNOWFLAKE_STEP_NOT_FOUND", "未知的雪花步骤。", status_code=404)
 
     @staticmethod
     def _approved_context(workspace: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2129,6 +2134,7 @@ def _scene_plan_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
         "reaction": scene.reaction or "",
         "dilemma": scene.dilemma or "",
         "decision": scene.decision or "",
+        "cost_requirement": scene.cost_requirement or "",
         "beats_json": list(scene.beats_json or []),
         "must_include_text": scene.must_include_text or "",
         "exit_change": scene.exit_change or "",

@@ -93,6 +93,7 @@ function canonFromFE(feKey, saved) {
         pov_character_id: txt(plan.pov) || txt(s.pov),
         goal: txt(plan.goal), conflict: txt(plan.conflict), setback: txt(plan.setback),
         reaction: txt(plan.reaction), dilemma: txt(plan.dilemma), decision: txt(plan.decision),
+        cost_requirement: txt(plan.cost_requirement),
       };
     }) };
   }
@@ -170,6 +171,7 @@ function feFromCanon(feKey, draft) {
         mode: s.primary_form === "reactive" ? "reactive" : "proactive", pov: s.pov_character_id || "",
         goal: s.goal || "", conflict: s.conflict || "", setback: s.setback || "",
         reaction: s.reaction || "", dilemma: s.dilemma || "", decision: s.decision || "",
+        cost_requirement: s.cost_requirement || "",
       };
     });
     return { scaffold: { sel: Object.keys(plans)[0] || "", plans } };

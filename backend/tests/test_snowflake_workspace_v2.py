@@ -978,6 +978,83 @@ def test_workspace_v2_persists_scene_triage_and_approves_materialized_outline(cl
     assert scene.writer_brief_json["scene_crucible"]
 
 
+def test_workspace_v2_cost_requirement_clears_missing_flag_and_persists_through_materialization(client, session) -> None:
+    """回归守护：cost_requirement 曾经在编辑器模板/PATCH 白名单/场景序列化/LLM 清洗里
+    全链路缺失——填了也存不住、诊断永远报 missing_cost_requirement。这里验证：填入后
+    诊断标记消失、分数提升，且值能一路存活到 SnowflakeScenePlan 和物化后的 SceneCard。"""
+    project = _create_project(client, key="cost-requirement")
+    for step_key in [
+        "book_brief",
+        "one_sentence_summary",
+        "one_paragraph_summary",
+        "character_sheets",
+        "short_synopsis",
+        "character_synopses",
+        "long_synopsis",
+        "character_bibles",
+        "scene_list",
+        "scene_details",
+    ]:
+        _approve_generated_step(client, project["project_id"], step_key)
+
+    workspace = client.get(f"/api/v2/projects/{project['project_id']}/snowflake-workspace").json()["data"]
+    scene_step = next(step for step in workspace["steps"] if step["step_key"] == "scene_details")
+    scenes = [dict(s) for s in scene_step["draft"]["scenes"]]
+    assert len(scenes) >= 2, "需要至少两个场景来对比有/无 cost_requirement 的诊断差异"
+
+    baseline_items = workspace["triage_items"]
+    baseline_item = next(item for item in baseline_items if item["scene_id"] == scenes[0]["scene_id"])
+    assert "missing_cost_requirement" in baseline_item["pressure_flags"], baseline_item
+    baseline_score = baseline_item["score"]
+
+    cost_text = "拿到线索的代价是永久失去这个线人的信任。"
+    scenes[0] = {**scenes[0], "cost_requirement": cost_text}
+
+    patch_response = client.patch(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/steps/scene_details",
+        json={"draft": {"scenes": scenes}},
+    )
+    assert patch_response.status_code == 200, patch_response.text
+    triage_items = patch_response.json()["data"]["workspace"]["triage_items"]
+    filled_item = next(item for item in triage_items if item["scene_id"] == scenes[0]["scene_id"])
+    bare_item = next(item for item in triage_items if item["scene_id"] == scenes[1]["scene_id"])
+    # 同一场景填前/填后对比：只应该是 cost_requirement 这一个变量的效应。
+    assert "missing_cost_requirement" not in filled_item["pressure_flags"], filled_item
+    assert filled_item["score"] > baseline_score
+    # 没碰过的场景（对照组）应该保持原样，继续报缺失。
+    assert "missing_cost_requirement" in bare_item["pressure_flags"], bare_item
+
+    # 编辑已确认的 scene_details 会把它打回 pending_review，需要重新确认才能物化。
+    _approve_step(client, project["project_id"], "scene_details")
+
+    materialize_response = client.post(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/materialize",
+        json={},
+        headers={"X-Idempotency-Key": "materialize-cost-requirement"},
+    )
+    assert materialize_response.status_code == 200, materialize_response.text
+    approve_response = client.post(
+        f"/api/v2/projects/{project['project_id']}/snowflake-workspace/outline/approve",
+        json={},
+        headers={"X-Idempotency-Key": "approve-cost-requirement-outline"},
+    )
+    assert approve_response.status_code == 200, approve_response.text
+
+    session.expire_all()
+    plan = session.execute(
+        select(SnowflakeScenePlan).where(
+            SnowflakeScenePlan.project_id == project["project_id"],
+            SnowflakeScenePlan.scene_id == scenes[0]["scene_id"],
+        )
+    ).scalars().first()
+    assert plan is not None
+    assert plan.cost_requirement == cost_text
+
+    scene_card = session.get(SceneCard, scenes[0]["scene_id"])
+    assert scene_card is not None
+    assert scene_card.writer_brief_json["cost_requirement"] == cost_text
+
+
 def test_workspace_v2_resync_previews_and_updates_materialized_scene_cards_without_overwriting_drafts(
     client,
     session,
@@ -1581,6 +1658,10 @@ def test_workspace_v2_persists_triage_repair_metadata_and_blocks_rewrite_materia
     error = materialize_response.json()["error"]
     assert error["code"] == "SNOWFLAKE_TRIAGE_BLOCKED"
     assert error["details"]["materialization_gate"]["status"] == "blocked"
+    # 回归守护：这条 message 曾经硬编码英文，直接被 React 前端 window.alert 原样展示给
+    # 中文用户（ws-snow.jsx::materializeFromHeader）。锁定为中文，避免再次退化。
+    assert "重写" in error["message"], error["message"]
+    assert all(ch.isascii() is False or not ch.isalpha() for ch in error["message"]), error["message"]
 
     session.expire_all()
     first_triage = (

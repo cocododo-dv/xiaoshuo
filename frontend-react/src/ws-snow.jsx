@@ -1109,7 +1109,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     const patch = (item && item.repair_patch) || {};
     if (!Object.keys(patch).length) return;
     pushHist("应用修复补丁", `10 场景规划 · ${rowUid} 修复前留底`, "我", snapNow("planning"));
-    const planKeys = ["goal", "conflict", "setback", "reaction", "dilemma", "decision"];
+    const planKeys = ["goal", "conflict", "setback", "reaction", "dilemma", "decision", "cost_requirement"];
     setScaffolds(prev => {
       const cur = prev.planning || {};
       const plan = { ...((cur.plans || {})[rowUid] || {}) };
@@ -2644,7 +2644,7 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
   const selIdx = list.findIndex(s => s.id === selId);
   // 类型跟随 09 的真相：主动/反应在场景列表里定，这里不再各说各话
   const proactive = scene ? scene.type !== "reactive" : true;
-  const plan = { mode: proactive ? "proactive" : "reactive", pov: (scene && scene.pov) || "", goal: "", conflict: "", setback: "", reaction: "", dilemma: "", decision: "", ...(plans[selId] || {}) };
+  const plan = { mode: proactive ? "proactive" : "reactive", pov: (scene && scene.pov) || "", goal: "", conflict: "", setback: "", reaction: "", dilemma: "", decision: "", cost_requirement: "", ...(plans[selId] || {}) };
   plan.mode = proactive ? "proactive" : "reactive";
   const setPlan = (f, v) => onScaffold(s => ({ ...s, sel: selId, plans: { ...(s.plans || {}), [selId]: { ...plan, [f]: v } } }));
   const selScene = (id) => onScaffold(s => ({ ...s, sel: id }));
@@ -2680,11 +2680,13 @@ function S2ScenePlan({ scaffold, onScaffold, refs, go, ai }) {
         { f: "goal",     label: "目标 · Goal",     desc: "POV 角色进入这场时想要的、具体可达的东西" },
         { f: "conflict", label: "冲突 · Conflict", desc: "一连串挡在目标前的阻碍，逐级升级" },
         { f: "setback",  label: "挫败 · Setback",  desc: "结尾给一记打击——通常是「是的，但…」" },
+        { f: "cost_requirement", label: "代价 · Cost", desc: "角色为这个结果具体付出了什么——免费的选择 = 注水" },
       ]
     : [
         { f: "reaction", label: "反应 · Reaction", desc: "对上一场挫败的情绪反应（容许角色崩一下）" },
         { f: "dilemma",  label: "两难 · Dilemma",  desc: "没有好选项，只有两个坏选项" },
         { f: "decision", label: "决定 · Decision", desc: "她选一个坏选项——它成为下一场的目标" },
+        { f: "cost_requirement", label: "代价 · Cost", desc: "角色为这个决定具体付出了什么——免费的选择 = 注水" },
       ];
   return (
     <div className="sf-scaffold sf-scene">
