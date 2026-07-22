@@ -8,6 +8,8 @@ __pycache__/
 *.db
 *.db-shm
 *.db-wal
+# 迁移前留的运行库备份(如 novel_system.db.bak-0075-20260718),含真实数据,不入仓库
+*.db.bak-*
 *.egg-info/
 .pytest_cache/
 .venv/
