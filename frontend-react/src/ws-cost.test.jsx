@@ -31,7 +31,11 @@ const DASH = {
   by_node: { top: [{ node_id: "style_draft", phase: "candidate_generation", cost: 1, tokens: 600, call_count: 2 }], remainder: null },
   by_chapter: [{ chapter_id: "C1", cost: 1.2, tokens: 900, call_count: 3, scene_count: 2 }],
   top_calls: [{ llm_call_id: "c1", cost: 0.6, total_tokens: 300, phase: "candidate_generation" }],
-  quota: { daily_tokens: { used: 100, limit: 1000 }, period_timezone: "UTC" },
+  quota: {
+    period_timezone: "UTC",
+    any_enforced: true,
+    daily_tokens: { used: 100, limit: 1000, enforced: true },
+  },
 };
 
 describe("WsCost store（成本看板）", () => {

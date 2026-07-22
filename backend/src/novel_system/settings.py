@@ -24,13 +24,15 @@ class Settings:
     llm_auto_critique_enabled: bool = False
     # §2 opt-in: extract narrative events from finished prose (not just the spec).
     llm_event_extraction_enabled: bool = False
-    # Singleton-local hard fences. Zero disables only the optional money fence;
-    # token/request/concurrency defaults remain finite to prevent runaway loops.
-    llm_daily_token_limit: int = 1_000_000
-    llm_monthly_token_limit: int = 20_000_000
-    llm_project_daily_token_limit: int = 250_000
-    llm_daily_request_limit: int = 2_000
-    llm_max_concurrent_requests: int = 4
+    # Singleton-local hard fences, all opt-in: ``0`` disables a fence outright.
+    # A single-author desktop install has no third party to fence off, and a
+    # finite default only ever fires at the author mid-draft, so every fence
+    # ships off and is re-armed by setting its env var to a positive value.
+    llm_daily_token_limit: int = 0
+    llm_monthly_token_limit: int = 0
+    llm_project_daily_token_limit: int = 0
+    llm_daily_request_limit: int = 0
+    llm_max_concurrent_requests: int = 0
     # Startup reconciliation only touches unowned, non-scene reservations
     # older than this conservative TTL.  It must comfortably exceed normal
     # provider retries so a live legacy request is not mistaken for a crash.
@@ -111,6 +113,21 @@ def _get_positive_int_env(name: str, default: int) -> int:
     return value
 
 
+def _get_quota_int_env(name: str, default: int) -> int:
+    """Parse an optional hard-fence bound, where ``0`` disables the fence."""
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    message = f"{name} must be a non-negative integer (0 disables the limit)"
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(message) from exc
+    if value < 0:
+        raise ValueError(message)
+    return value
+
+
 def _get_list_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     raw_value = os.environ.get(name)
     if raw_value is None:
@@ -151,13 +168,13 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     llm_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_ENABLED", False)
     llm_auto_critique_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", False)
     llm_event_extraction_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", False)
-    llm_daily_token_limit = _get_positive_int_env("NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT", 1_000_000)
-    llm_monthly_token_limit = _get_positive_int_env("NOVEL_SYSTEM_LLM_MONTHLY_TOKEN_LIMIT", 20_000_000)
-    llm_project_daily_token_limit = _get_positive_int_env(
-        "NOVEL_SYSTEM_LLM_PROJECT_DAILY_TOKEN_LIMIT", 250_000
+    llm_daily_token_limit = _get_quota_int_env("NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT", 0)
+    llm_monthly_token_limit = _get_quota_int_env("NOVEL_SYSTEM_LLM_MONTHLY_TOKEN_LIMIT", 0)
+    llm_project_daily_token_limit = _get_quota_int_env(
+        "NOVEL_SYSTEM_LLM_PROJECT_DAILY_TOKEN_LIMIT", 0
     )
-    llm_daily_request_limit = _get_positive_int_env("NOVEL_SYSTEM_LLM_DAILY_REQUEST_LIMIT", 2_000)
-    llm_max_concurrent_requests = _get_positive_int_env("NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS", 4)
+    llm_daily_request_limit = _get_quota_int_env("NOVEL_SYSTEM_LLM_DAILY_REQUEST_LIMIT", 0)
+    llm_max_concurrent_requests = _get_quota_int_env("NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS", 0)
     llm_reservation_recovery_ttl_seconds = _get_positive_int_env(
         "NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS",
         3_600,

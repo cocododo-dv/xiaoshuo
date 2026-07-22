@@ -353,12 +353,39 @@ function TopCallsTable({ topCalls, currency, onDrillScene, loading }) {
   );
 }
 
-function QuotaRow({ label, meter, suffix = "token", decimals = 0 }) {
-  if (!meter || meter.limit === null || meter.limit === undefined) return null;
+const QUOTA_METER_KEYS = [
+  "daily_tokens",
+  "monthly_tokens",
+  "project_daily_tokens",
+  "daily_requests",
+  "concurrent_requests",
+  "daily_cost_usd",
+];
+
+// 只认 limit：后端仅在闸门关闭时把 limit 置 null。不要拿 enforced 当判据——
+// 缺该字段的载荷（旧后端、下钻时保留的旧 quota）会被判成「未设限」，在闸门
+// 其实已启用时谎报无上限。安全展示必须朝「有上限」的方向失败。
+function quotaArmed(meter) {
+  return !!meter && meter.limit !== null && meter.limit !== undefined;
+}
+
+function QuotaRow({ label, meter, suffix = "token", decimals = 0, armedOnly = false }) {
+  if (!meter) return null;
+  const armed = quotaArmed(meter);
+  if (armedOnly && !armed) return null;
   const used = Number(meter.used || 0);
-  const limit = Number(meter.limit || 0);
-  const ratio = limit > 0 ? Math.min(1, used / limit) : 0;
   const fmt = (v) => (decimals > 0 ? Number(v).toFixed(decimals) : Number(v).toLocaleString());
+  // 额度关闭时仍然报用量，只是没有可填的进度条。
+  if (!armed) {
+    return (
+      <div className="text-xs" style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
+        <span>{label}</span>
+        <span style={{ color: "var(--ink-3)" }}>{fmt(used)} {suffix} · 未设限</span>
+      </div>
+    );
+  }
+  const limit = Number(meter.limit);
+  const ratio = limit > 0 ? Math.min(1, used / limit) : 0;
   return (
     <div style={{ marginBottom: 8 }}>
       <div className="text-xs" style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 2 }}>
@@ -376,20 +403,29 @@ function QuotaRow({ label, meter, suffix = "token", decimals = 0 }) {
 
 function QuotaSection({ quota }) {
   if (!quota) return null;
+  // 同样不信任 any_enforced：由各 meter 自行推导，缺字段时判为「已武装」。
+  const armed = QUOTA_METER_KEYS.some((key) => quotaArmed(quota[key]));
+  const tz = quota.period_timezone || "UTC";
   return (
-    <section className="card" aria-label="全局模型额度" style={{ padding: "12px 14px", borderRadius: 12, border: "1px solid var(--line, #e5e2dc)" }}>
+    <section className="card" aria-label={armed ? "全局模型额度" : "全局模型用量"} style={{ padding: "12px 14px", borderRadius: 12, border: "1px solid var(--line, #e5e2dc)" }}>
       <h3 className="text-serif" style={{ margin: "0 0 10px", fontSize: 15 }}>
-        {I && I.ShieldCheck && <I.ShieldCheck size={14} />} 全局硬额度
+        {I && I.ShieldCheck && <I.ShieldCheck size={14} />} {armed ? "全局硬额度" : "全局用量"}
       </h3>
       <QuotaRow label="今日总量" meter={quota.daily_tokens} />
       <QuotaRow label="本月总量" meter={quota.monthly_tokens} />
       <QuotaRow label="本项目今日" meter={quota.project_daily_tokens} />
       <QuotaRow label="今日请求" meter={quota.daily_requests} suffix="次" />
       <QuotaRow label="并发请求" meter={quota.concurrent_requests} suffix="路" />
-      <QuotaRow label="今日金额" meter={quota.daily_cost_usd} suffix="USD" decimals={4} />
+      {/* 金额只在闸门启用时出现：它按 env 单价计价，与本页其余 pricing.yaml 口径
+          不同，未启用时恒为 0，摆出来会和上方「全书累计成本」自相矛盾。 */}
+      <QuotaRow label="今日金额" meter={quota.daily_cost_usd} suffix="USD" decimals={4} armedOnly />
       <small style={{ color: "var(--ink-3)" }}>
-        额度按 {quota.period_timezone || "UTC"} 结算；达到上限会在请求发出前拒绝，不产生模型费用。
-        {quota.daily_cost_usd && !quota.daily_cost_usd.enforced ? " 金额上限尚未启用（需配置模型单价）。" : ""}
+        {armed
+          ? `额度按 ${tz} 结算；达到上限会在请求发出前拒绝，不产生模型费用。`
+          : `按 ${tz} 结算的用量读数。当前未设任何硬额度，生成不会被额度拦下；需要上限时在后端设置对应的额度环境变量（如 NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT、NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS）并重启后端。`}
+        {armed && !quotaArmed(quota.daily_cost_usd)
+          ? " 金额上限未启用：需同时设置 NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD 与模型单价。"
+          : ""}
       </small>
     </section>
   );
@@ -534,7 +570,7 @@ function WsCost() {
         </div>
         <h1 className="rv-title">成本看板</h1>
         <p className="rv-sub">
-          每一次候选、重试、批判、补丁与 QC 都计入账本；本页解释钱花在哪、趋势如何、额度还剩多少。
+          每一次候选、重试、批判、补丁与 QC 都计入账本；本页解释钱花在哪、趋势如何、用量走到了哪一步。
           价格为 <code>config/pricing.yaml</code> 快照——占位估算价会标「估算」，接入真实计费后替换单价即可。
         </p>
       </header>
@@ -644,4 +680,4 @@ function WsCost() {
 Object.assign(window, { WsCost, costLoad, costBack, csSnapshot });
 
 /* ESM 导出（window.* 赋值过渡期保留） */
-export { WsCost, costLoad, costBack, csSnapshot, useCostState, PHASE_LABEL };
+export { WsCost, costLoad, costBack, csSnapshot, useCostState, PHASE_LABEL, QuotaSection, quotaArmed };

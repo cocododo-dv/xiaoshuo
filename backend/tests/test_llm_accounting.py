@@ -1702,6 +1702,148 @@ def test_daily_money_quota_requires_prices_and_rejects_conservatively(session, m
     assert session.query(LlmCallAttempt).count() == 0
 
 
+def test_global_fences_ship_disarmed_and_never_reject_a_default_install(
+    session,
+    monkeypatch,
+) -> None:
+    """A default install arms no fence: a heavy ledger still dispatches."""
+
+    accounting = _accounting_module()
+    for env_name in (
+        "NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT",
+        "NOVEL_SYSTEM_LLM_MONTHLY_TOKEN_LIMIT",
+        "NOVEL_SYSTEM_LLM_PROJECT_DAILY_TOKEN_LIMIT",
+        "NOVEL_SYSTEM_LLM_DAILY_REQUEST_LIMIT",
+        "NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS",
+        "NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+    now = datetime.now(UTC).isoformat()
+    # Spend that would have tripped every fence this build used to ship with
+    # (1M daily / 20M monthly / 250K project-daily tokens).
+    spent = LlmCall(
+        llm_call_id="already-spent-past-every-legacy-fence",
+        scope_type="project",
+        scope_id="project-1",
+        project_id="project-1",
+        node_id="neutral_draft",
+        step="draft",
+        prompt_tokens=4_000_000,
+        completion_tokens=1_000_000,
+        total_tokens=5_000_000,
+        estimated_tokens=5_000_000,
+        reserved_tokens=5_000_000,
+        budget_charged_tokens=5_000_000,
+        usage_is_estimate=False,
+        accounting_status="settled",
+        request_dispatched_at=now,
+        settled_at=now,
+    )
+    session.add(spent)
+    session.add(
+        LlmCallAttempt(
+            attempt_id="already-spent-attempt",
+            llm_call_id=spent.llm_call_id,
+            provider_attempt_no=0,
+            dispatch_kind="initial",
+            request_max_output_tokens=64,
+            prompt_tokens=4_000_000,
+            completion_tokens=1_000_000,
+            total_tokens=5_000_000,
+            estimated_tokens=5_000_000,
+            reserved_tokens=5_000_000,
+            budget_charged_tokens=5_000_000,
+            usage_is_estimate=False,
+            accounting_status="settled",
+            request_dispatched_at=now,
+            settled_at=now,
+        )
+    )
+    session.commit()
+
+    class SuccessfulClient(accounting.OnlineAccountedExecution):
+        physical_posts = 0
+
+        def generate_accounted(self, request: LLMRequest, *, accounting_hook) -> LLMResponse:
+            handle = accounting_hook.before_dispatch(request=request, dispatch_kind="initial")
+            self.physical_posts += 1
+            response = LLMResponse(
+                request_id="unfenced-call",
+                provider="fake",
+                model=request.model,
+                text="{}",
+                structured_output={},
+                response_format="json_object",
+                raw_response={"id": "unfenced-call"},
+                usage={"input_tokens": 4, "output_tokens": 1, "total_tokens": 5},
+                raw_usage={"input_tokens": 4, "output_tokens": 1, "total_tokens": 5},
+                usage_present=True,
+                usage_complete=True,
+                finish_reason="stop",
+            )
+            accounting_hook.after_response(handle, request=request, response=response, latency_ms=1)
+            return response
+
+    client = SuccessfulClient()
+    accounting.execute_accounted_call(session, client, _request(), _context(accounting))
+
+    assert client.physical_posts == 1
+    snapshot = accounting.llm_quota_snapshot(session, project_id="project-1")
+    assert snapshot["any_enforced"] is False
+    for meter_key in (
+        "daily_tokens",
+        "monthly_tokens",
+        "project_daily_tokens",
+        "daily_requests",
+        "concurrent_requests",
+        "daily_cost_usd",
+    ):
+        assert snapshot[meter_key]["limit"] is None, meter_key
+        assert snapshot[meter_key]["enforced"] is False, meter_key
+    # Disarming the fences must not stop the ledger: the dashboard still reads
+    # real consumption, it just has no ceiling to plot it against.
+    assert snapshot["daily_tokens"]["used"] == 5_000_005
+    assert snapshot["monthly_tokens"]["used"] == 5_000_005
+    assert snapshot["project_daily_tokens"]["used"] == 5_000_005
+    assert snapshot["daily_requests"]["used"] == 2
+
+
+@pytest.mark.parametrize(
+    ("env_name", "settings_attr"),
+    [
+        ("NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT", "llm_daily_token_limit"),
+        ("NOVEL_SYSTEM_LLM_MONTHLY_TOKEN_LIMIT", "llm_monthly_token_limit"),
+        ("NOVEL_SYSTEM_LLM_PROJECT_DAILY_TOKEN_LIMIT", "llm_project_daily_token_limit"),
+        ("NOVEL_SYSTEM_LLM_DAILY_REQUEST_LIMIT", "llm_daily_request_limit"),
+        ("NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS", "llm_max_concurrent_requests"),
+    ],
+)
+def test_quota_env_accepts_zero_as_disabled_and_still_rejects_negative(
+    monkeypatch,
+    env_name: str,
+    settings_attr: str,
+) -> None:
+    """``0`` is the documented "no ceiling" value; a negative stays a config error.
+
+    The disarmed-install test above exercises the dataclass default, so without
+    this the parser swap (`_get_positive_int_env` -> `_get_quota_int_env`) has no
+    coverage at all — and `_get_positive_int_env` rejects the very ``0`` that
+    docs/runtime-safety.md tells the operator to set.
+    """
+
+    from novel_system.settings import get_settings
+
+    monkeypatch.setenv(env_name, "0")
+    assert getattr(get_settings(include_runtime_config=False), settings_attr) == 0
+
+    monkeypatch.setenv(env_name, "7")
+    assert getattr(get_settings(include_runtime_config=False), settings_attr) == 7
+
+    monkeypatch.setenv(env_name, "-1")
+    with pytest.raises(ValueError, match=env_name):
+        get_settings(include_runtime_config=False)
+
+
 def test_business_attempt_budget_rejection_is_distinct_and_has_zero_provider_io(session) -> None:
     accounting = _accounting_module()
     scene_id = "scene-business-attempt-budget"

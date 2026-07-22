@@ -11,15 +11,19 @@
 
 ## LLM 硬额度
 
-额度在真正调用供应商之前原子检查。达到上限时请求不会发给模型，也不会被记成已消费 token。
+**所有额度默认关闭（`0` = 不限制）。** 本系统是单作者本机服务，硬额度挡不住任何第三方，只会在作者写到一半时把生成拦下来，因此不预设上限；需要给自己上闸门时，把对应环境变量设成正数即可立即生效。
+
+启用后的额度在真正调用供应商之前原子检查：达到上限时请求不会发给模型，也不会被记成已消费 token。一道闸门都没启用时，派发前的检查会直接短路，不做任何计数扫描。
+
+关掉额度不等于停止记账：账本与成本看板的用量读数照常记录，只是不再有上限可比对，看板对应行显示为「未设限」。唯一的例外是「今日金额」行——它按上表的 env 单价计价，与看板其余成本数字（走 `config/pricing.yaml` 快照）不是同一口径，未启用金额闸门时恒为 0，因此只在该闸门启用时才显示。
 
 | 环境变量 | 默认值 | 说明 |
 |---|---:|---|
-| `NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT` | `1000000` | 全实例 UTC 日 token 上限 |
-| `NOVEL_SYSTEM_LLM_MONTHLY_TOKEN_LIMIT` | `20000000` | 全实例 UTC 月 token 上限 |
-| `NOVEL_SYSTEM_LLM_PROJECT_DAILY_TOKEN_LIMIT` | `250000` | 单项目 UTC 日 token 上限 |
-| `NOVEL_SYSTEM_LLM_DAILY_REQUEST_LIMIT` | `2000` | 全实例 UTC 日请求上限 |
-| `NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS` | `4` | 同时在途的供应商请求上限 |
+| `NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT` | `0`（不限制） | 全实例 UTC 日 token 上限 |
+| `NOVEL_SYSTEM_LLM_MONTHLY_TOKEN_LIMIT` | `0`（不限制） | 全实例 UTC 月 token 上限 |
+| `NOVEL_SYSTEM_LLM_PROJECT_DAILY_TOKEN_LIMIT` | `0`（不限制） | 单项目 UTC 日 token 上限 |
+| `NOVEL_SYSTEM_LLM_DAILY_REQUEST_LIMIT` | `0`（不限制） | 全实例 UTC 日请求上限 |
+| `NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS` | `0`（不限制） | 同时在途的供应商请求上限 |
 | `NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS` | `3600` | 启动时回收无场景/任务所有权的陈旧 LLM 预留前，至少等待的秒数 |
 | `NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD` | `0` | 可选日美元上限；`0` 表示不用金额闸门 |
 | `NOVEL_SYSTEM_LLM_INPUT_COST_PER_MILLION_USD` | `0` | 金额估算所用输入单价 |
@@ -27,7 +31,7 @@
 
 启用金额上限时必须至少配置一种 token 单价。不同供应商或模型价格不同时，应使用能够覆盖风险的保守单价；系统内的金额仍是治理估算，不是供应商账单。
 
-全局日/月/项目 token 配额对尚未结束的调用按 reservation 占位，对终态调用按供应商返回的实际 `total_tokens`（缺失时按保守估算）计费。场景预算的 `budget_charged_tokens` 仍受 reservation 上限约束；它不是全局供应商用量口径。
+启用后，全局日/月/项目 token 配额对尚未结束的调用按 reservation 占位，对终态调用按供应商返回的实际 `total_tokens`（缺失时按保守估算）计费。场景预算的 `budget_charged_tokens` 仍受 reservation 上限约束；它不是全局供应商用量口径。
 
 ## 内容与来源安全
 

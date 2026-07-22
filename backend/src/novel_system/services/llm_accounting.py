@@ -878,6 +878,19 @@ def _execution_step_conflict(existing_call: LlmCall) -> LLMAccountingError:
     )
 
 
+def _global_fences_armed(settings: Any) -> bool:
+    """Whether any singleton-wide provider fence is configured (``0`` = off)."""
+
+    return (
+        settings.llm_max_concurrent_requests > 0
+        or settings.llm_daily_request_limit > 0
+        or settings.llm_daily_token_limit > 0
+        or settings.llm_monthly_token_limit > 0
+        or settings.llm_project_daily_token_limit > 0
+        or settings.llm_daily_cost_limit_usd > 0
+    )
+
+
 def _enforce_global_llm_quotas(
     session: Session,
     context: LLMCallContext,
@@ -885,42 +898,58 @@ def _enforce_global_llm_quotas(
 ) -> None:
     """Atomically fence singleton-wide, monthly, and project provider spend.
 
-    The caller has already opened an immediate claim transaction on SQLite.
-    Open attempts count at their full reservation; terminal attempts count at
-    actual provider usage (or the conservative usage estimate persisted for a
-    failed response).  ``budget_charged_tokens`` intentionally remains capped
-    by the reservation for scene-budget semantics and must not be reused as a
-    singleton-wide spend counter.
+    Every fence is opt-in and ships disabled: a limit of ``0`` means "no
+    ceiling", and an install with nothing armed returns before running any of
+    the counting scans below.  The caller has already opened an immediate claim
+    transaction on SQLite.  Open attempts count at their full reservation;
+    terminal attempts count at actual provider usage (or the conservative usage
+    estimate persisted for a failed response).  ``budget_charged_tokens``
+    intentionally remains capped by the reservation for scene-budget semantics
+    and must not be reused as a singleton-wide spend counter.
     """
 
     settings = get_settings(include_runtime_config=False)
+    if not _global_fences_armed(settings):
+        return
     now = datetime.now(UTC)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
 
-    concurrent_count = len(
-        list(
-            session.scalars(
-                select(LlmCallAttempt.attempt_id)
-                .where(LlmCallAttempt.accounting_status == "reserved")
-                .limit(settings.llm_max_concurrent_requests)
+    if settings.llm_max_concurrent_requests > 0:
+        concurrent_count = len(
+            list(
+                session.scalars(
+                    select(LlmCallAttempt.attempt_id)
+                    .where(LlmCallAttempt.accounting_status == "reserved")
+                    .limit(settings.llm_max_concurrent_requests)
+                )
             )
         )
-    )
-    if concurrent_count >= settings.llm_max_concurrent_requests:
-        _reject_global_quota(
-            session,
-            "LLM_GLOBAL_CONCURRENCY_LIMIT",
-            "global provider concurrency limit reached",
-            used=concurrent_count,
-            requested=1,
-            limit=settings.llm_max_concurrent_requests,
-            period="concurrent",
-        )
+        if concurrent_count >= settings.llm_max_concurrent_requests:
+            _reject_global_quota(
+                session,
+                "LLM_GLOBAL_CONCURRENCY_LIMIT",
+                "global provider concurrency limit reached",
+                used=concurrent_count,
+                requested=1,
+                limit=settings.llm_max_concurrent_requests,
+                period="concurrent",
+            )
 
-    daily_rows = _quota_attempt_rows(session, created_after=day_start)
-    daily_tokens, daily_requests, daily_cost = _quota_usage(daily_rows, settings=settings)
-    if daily_requests + 1 > settings.llm_daily_request_limit:
+    daily_tokens = 0
+    daily_requests = 0
+    daily_cost = 0.0
+    if (
+        settings.llm_daily_request_limit > 0
+        or settings.llm_daily_token_limit > 0
+        or settings.llm_daily_cost_limit_usd > 0
+    ):
+        daily_rows = _quota_attempt_rows(session, created_after=day_start)
+        daily_tokens, daily_requests, daily_cost = _quota_usage(daily_rows, settings=settings)
+    if (
+        settings.llm_daily_request_limit > 0
+        and daily_requests + 1 > settings.llm_daily_request_limit
+    ):
         _reject_global_quota(
             session,
             "LLM_DAILY_REQUEST_LIMIT",
@@ -930,7 +959,10 @@ def _enforce_global_llm_quotas(
             limit=settings.llm_daily_request_limit,
             period="utc_day",
         )
-    if daily_tokens + estimate.reserved_tokens > settings.llm_daily_token_limit:
+    if (
+        settings.llm_daily_token_limit > 0
+        and daily_tokens + estimate.reserved_tokens > settings.llm_daily_token_limit
+    ):
         _reject_global_quota(
             session,
             "LLM_DAILY_TOKEN_LIMIT",
@@ -941,20 +973,21 @@ def _enforce_global_llm_quotas(
             period="utc_day",
         )
 
-    monthly_rows = _quota_attempt_rows(session, created_after=month_start)
-    monthly_tokens, _, _ = _quota_usage(monthly_rows, settings=settings)
-    if monthly_tokens + estimate.reserved_tokens > settings.llm_monthly_token_limit:
-        _reject_global_quota(
-            session,
-            "LLM_MONTHLY_TOKEN_LIMIT",
-            "monthly provider token limit reached",
-            used=monthly_tokens,
-            requested=estimate.reserved_tokens,
-            limit=settings.llm_monthly_token_limit,
-            period="utc_month",
-        )
+    if settings.llm_monthly_token_limit > 0:
+        monthly_rows = _quota_attempt_rows(session, created_after=month_start)
+        monthly_tokens, _, _ = _quota_usage(monthly_rows, settings=settings)
+        if monthly_tokens + estimate.reserved_tokens > settings.llm_monthly_token_limit:
+            _reject_global_quota(
+                session,
+                "LLM_MONTHLY_TOKEN_LIMIT",
+                "monthly provider token limit reached",
+                used=monthly_tokens,
+                requested=estimate.reserved_tokens,
+                limit=settings.llm_monthly_token_limit,
+                period="utc_month",
+            )
 
-    if context.project_id:
+    if context.project_id and settings.llm_project_daily_token_limit > 0:
         project_rows = _quota_attempt_rows(
             session,
             created_after=day_start,
@@ -1098,21 +1131,29 @@ def llm_quota_snapshot(session: Session, *, project_id: str | None = None) -> di
     )
     return {
         "period_timezone": "UTC",
-        "daily_tokens": {"used": daily_tokens, "limit": settings.llm_daily_token_limit},
-        "monthly_tokens": {"used": monthly_tokens, "limit": settings.llm_monthly_token_limit},
+        "any_enforced": _global_fences_armed(settings),
+        "daily_tokens": _quota_meter(daily_tokens, settings.llm_daily_token_limit),
+        "monthly_tokens": _quota_meter(monthly_tokens, settings.llm_monthly_token_limit),
         "project_daily_tokens": {
             "project_id": project_id,
-            "used": project_tokens,
-            "limit": settings.llm_project_daily_token_limit,
+            **_quota_meter(project_tokens, settings.llm_project_daily_token_limit),
         },
-        "daily_requests": {"used": daily_requests, "limit": settings.llm_daily_request_limit},
-        "concurrent_requests": {"used": concurrent, "limit": settings.llm_max_concurrent_requests},
-        "daily_cost_usd": {
-            "used": round(daily_cost, 8),
-            "limit": settings.llm_daily_cost_limit_usd or None,
-            "enforced": settings.llm_daily_cost_limit_usd > 0,
-        },
+        "daily_requests": _quota_meter(daily_requests, settings.llm_daily_request_limit),
+        "concurrent_requests": _quota_meter(concurrent, settings.llm_max_concurrent_requests),
+        "daily_cost_usd": _quota_meter(
+            round(daily_cost, 8), settings.llm_daily_cost_limit_usd
+        ),
     }
+
+
+def _quota_meter(used: int | float | None, limit: int | float) -> dict[str, Any]:
+    """Shape one dashboard meter; a ``0`` limit reports the fence as disarmed.
+
+    ``used`` is always reported so the dashboard keeps its consumption reading
+    after every fence is turned off.
+    """
+
+    return {"used": used, "limit": limit or None, "enforced": limit > 0}
 
 
 def _reserve_scene_capacity(
