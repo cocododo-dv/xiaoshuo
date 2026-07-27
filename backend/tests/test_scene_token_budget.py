@@ -451,6 +451,7 @@ def test_public_scene_budget_initialization_creates_missing_state_once_under_two
         "baseline_tokens": expected_baseline,
         "budget_multiplier": 5,
         "scene_token_budget": 5 * expected_baseline,
+        "scene_budget_armed": True,
         "topup_audit_cutoff_operation_id": 0,
         "provider_attempt_budget": {
             "config_key": "retry_budget.provider_attempt_budget",
@@ -832,6 +833,72 @@ def test_rerun_with_exhausted_attempt_budget_makes_zero_provider_calls(
     state = session.get(SceneRunState, SCENE_ID)
     assert state.scene_tokens_reserved == 0
     assert state.total_attempt_count == attempts_before
+
+
+# ---------- 单作者默认：解除武装（NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER=0） ----------
+
+def test_disarmed_scene_budget_initializes_finite_sentinels(monkeypatch, session) -> None:
+    """multiplier=0：三道额度落到有限哨兵，依据打上 disarmed 标记，且不违反任何不变量。"""
+    from novel_system.services.scene_budget import (
+        UNARMED_ATTEMPT_BUDGET,
+        UNARMED_SCENE_TOKEN_BUDGET,
+        is_scene_budget_disarmed,
+    )
+
+    monkeypatch.setenv("NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", "0")
+    _seed_scene(session)
+
+    state = ensure_scene_budget_initialized(session, SCENE_ID)
+    assert state.scene_token_budget == UNARMED_SCENE_TOKEN_BUDGET
+    assert state.provider_attempt_budget == UNARMED_ATTEMPT_BUDGET
+    assert state.attempt_budget == UNARMED_ATTEMPT_BUDGET
+    assert state.scene_budget_basis_json["budget_multiplier"] == 0
+    assert state.scene_budget_basis_json["scene_budget_armed"] is False
+    assert is_scene_budget_disarmed(state) is True
+    # 再次进入公共校验器不报「预算腐坏」——哨兵额度满足全部有限正值/审计不变量。
+    again = ensure_scene_budget_initialized(session, SCENE_ID)
+    assert again.scene_token_budget == UNARMED_SCENE_TOKEN_BUDGET
+
+
+def test_disarmed_scene_lifecycle_budget_never_blocks_the_author(monkeypatch, session) -> None:
+    """端到端跑一场：解除武装后不再抛 LLM_SCENE_TOKEN_BUDGET_EXHAUSTED，但记账照旧累计。"""
+    from novel_system.services.scene_budget import (
+        UNARMED_ATTEMPT_BUDGET,
+        UNARMED_SCENE_TOKEN_BUDGET,
+        is_scene_budget_disarmed,
+    )
+
+    monkeypatch.setenv("NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", "0")
+    _seed_scene(session)
+
+    scene_client = CountingSceneClient()
+    result = _make_orchestrator(session, scene_client=scene_client).run_scene(SCENE_ID)
+
+    assert result["scene_status"] == "archived"
+    assert scene_client.requests  # provider 真的被调用了（不是被闸门拦在派发前）
+    state = session.get(SceneRunState, SCENE_ID)
+    assert state.scene_token_budget == UNARMED_SCENE_TOKEN_BUDGET
+    assert state.provider_attempt_budget == UNARMED_ATTEMPT_BUDGET
+    assert is_scene_budget_disarmed(state) is True
+    # 关闸门 ≠ 停记账：真实 usage 仍逐次累计进账本。
+    assert state.scene_tokens_used > 0
+
+
+def test_disarmed_scene_budget_view_reports_unlimited(monkeypatch, session) -> None:
+    """成本看板对解除武装的场景显示「不限」（budget=None）而非哨兵天文数字，usage 照常透出。"""
+    from novel_system.services.cost_aggregation import _budget_view
+
+    monkeypatch.setenv("NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", "0")
+    _seed_scene(session)
+    state = ensure_scene_budget_initialized(session, SCENE_ID)
+    state.scene_tokens_used = 4321
+    session.commit()
+
+    view = _budget_view(state)
+    assert view["budget"] is None
+    assert view["disarmed"] is True
+    assert view["over_budget"] is False
+    assert view["used"] == 4321
 
 
 # ---------- 扩容唯一入口：作者显式 topup ----------

@@ -169,10 +169,28 @@ SNOWFLAKE_STEP_CATALOG: list[dict[str, Any]] = [
         "english_label": "Long Synopsis",
         "phase": "雪花第6步",
         "description": "将一页梗概扩展为四到五页详细大纲。这是最接近实际写作的规划阶段。",
-        "default_draft": {"paragraphs": ["", "", "", ""]},
+        # P2：章表成为结构化字段。paragraphs 保留为可读文本镜像（提示词和历史草稿仍用
+        # 「NN 章名：一句话（灾一）」的行格式），但真相是 chapters —— 物化分章读的是它。
+        "default_draft": {"paragraphs": ["", "", "", ""], "chapters": []},
         "editor": {
             "kind": "form",
-            "fields": [{"key": "paragraphs", "kind": "paragraphs", "label": "长篇大纲段落"}],
+            "fields": [
+                {"key": "paragraphs", "kind": "paragraphs", "label": "长篇大纲段落"},
+                {
+                    "key": "chapters",
+                    "kind": "chapters",
+                    "label": "章节表",
+                    "template": {
+                        "row_uid": "",
+                        "chapter_seq": 0,
+                        "act": 1,
+                        "title": "",
+                        "summary": "",
+                        "spine": "",
+                        "chapter_goal": "",
+                    },
+                },
+            ],
         },
     },
     {

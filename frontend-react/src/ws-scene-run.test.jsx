@@ -1937,3 +1937,37 @@ describe("作者状态门（Wave 2：无法继续 vs 有稿建议修改）", () 
     expect(client.apiPost).toHaveBeenCalledWith("/api/v1/scenes/s1/adopt-current", expect.anything());
   });
 });
+
+describe("scnQueueDismiss（移出名单：满了也不能让「移出」变成假动作）", () => {
+  // 名单按作品持久化在 localStorage 里，用例之间必须自己隔离
+  beforeEach(() => { localStorage.clear(); });
+
+  it("名单满 200 之后，新移出的场仍然被记住", async () => {
+    const { mod } = await loadSceneRun();
+    const older = Array.from({ length: 200 }, (_, i) => `old-${i}`);
+    mod.scnQueueDismissAdd(older);
+    expect(mod.scnQueueDismissLoad()).toHaveLength(200);
+
+    // 作者移出第 201 场：追加在尾部 + slice(0, 200) 会把它整个丢掉
+    const stored = mod.scnQueueDismissAdd(["scene-201"]);
+    expect(stored).toContain("scene-201");
+    expect(mod.scnQueueDismissLoad()).toContain("scene-201");
+    expect(mod.scnQueueDismissLoad()).toHaveLength(200);
+    // 让位的是最老的一条，不是刚移出的那条
+    expect(mod.scnQueueDismissLoad()).not.toContain("old-0");
+  });
+
+  it("scnQueueDismissAdd 返回的是真正落盘的名单", async () => {
+    const { mod } = await loadSceneRun();
+    mod.scnQueueDismissAdd(Array.from({ length: 260 }, (_, i) => `s-${i}`));
+    // 调用方拿返回值当「现在的移出名单」用，它必须和 localStorage 里的一致
+    expect(mod.scnQueueDismissAdd(["s-260"])).toEqual(mod.scnQueueDismissLoad());
+  });
+
+  it("重新入列时销名（原有契约不被截断改动打坏）", async () => {
+    const { mod } = await loadSceneRun();
+    mod.scnQueueDismissAdd(["a", "b", "c"]);
+    expect(mod.scnQueueDismissClear(["b"])).toEqual(["a", "c"]);
+    expect(mod.scnQueueDismissLoad()).toEqual(["a", "c"]);
+  });
+});

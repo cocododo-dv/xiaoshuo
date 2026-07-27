@@ -97,6 +97,29 @@ def extract_chat_finish_reason(body: dict[str, Any]) -> str | None:
     return None
 
 
+def extract_responses_finish_reason(body: dict[str, Any]) -> str | None:
+    """Responses API 用 status=incomplete + incomplete_details.reason 表达截断。
+
+    真实 Responses API 顶层没有 finish_reason:被 max_output_tokens 砍断时它给
+    ``status="incomplete"`` 和 ``incomplete_details={"reason":"max_output_tokens"}``。
+    把这个 reason 归一成 finish_reason 语义(例如 "max_output_tokens"),上层的截断判定
+    才能在 responses 模式下生效——否则 snowflake_step_generate(默认 api_mode=responses)
+    的截断永远抓不到。部分中转会直接把 finish_reason 放顶层,兼容保留。
+    """
+    status = body.get("status")
+    if isinstance(status, str) and status.strip().lower() == "incomplete":
+        details = body.get("incomplete_details")
+        if isinstance(details, dict):
+            reason = details.get("reason")
+            if isinstance(reason, str) and reason.strip():
+                return reason
+        return "incomplete"
+    finish_reason = body.get("finish_reason")
+    if isinstance(finish_reason, str):
+        return finish_reason
+    return None
+
+
 def bearer_generate_headers(provider_config: ProviderRuntimeConfig) -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
     if provider_config.credential_mode == "api_key" and provider_config.api_key:

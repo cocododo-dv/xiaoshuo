@@ -866,7 +866,11 @@ class LongformTowerService:
         project = self._require_project(project_id)
         plans = self.session.scalars(
             select(SnowflakeScenePlan)
-            .where(SnowflakeScenePlan.project_id == project.project_id)
+            .where(
+                SnowflakeScenePlan.project_id == project.project_id,
+                # P1-3：作者在场景列表里删掉的场不进结构投影
+                SnowflakeScenePlan.removed_at.is_(None),
+            )
             .order_by(SnowflakeScenePlan.scene_seq.asc())
         ).all()
         if not plans:

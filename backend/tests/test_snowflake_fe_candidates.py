@@ -12,6 +12,27 @@ from novel_system.services.snowflake_workspace_llm import _collect_generation_ga
 from tests.accounted_llm_fakes import accounted_generate_method
 
 
+def _prompt_payload(prompt: str) -> dict:
+    """把 Working payload 那段 JSON 解出来（与渲染格式无关）。"""
+    try:
+        body = prompt.split("Working payload:\n", 1)[1].rsplit("\n\nRequired top-level", 1)[0]
+        parsed = json.loads(body)
+    except (IndexError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _root_step_key(prompt: str) -> str:
+    """提示词根层的 step_key。
+
+    替身**不能**用裸子串匹配判断"这是哪一步"：upstream_steps 里带着每个上游步骤
+    自己的 step_key，裸匹配会把「深化 scene_details」误判成「生成 scene_list」。
+    也**不能**认缩进：载荷以紧凑 JSON 渲染（省输入预算），根层键不再有固定缩进——
+    要按结构从解析后的载荷里取。
+    """
+    return str(_prompt_payload(prompt).get("step_key") or "")
+
+
 def _fake_generate_capturing(captured: list, payload: dict):
     """monkeypatch 用：捕获发往 LLM 的请求，回放固定 structured_output。"""
 
@@ -135,8 +156,8 @@ def test_fe_candidates_prompt_grounded_in_backend_truth_not_fe_fold(client, monk
 
     assert len(captured) == 1
     user_prompt = captured[0].messages[1]["content"]
-    # 后端权威上下文：已批准的 01 步 + 当前步压力诊断都在提示里
-    assert '"approved_steps"' in user_prompt
+    # 后端权威上下文：上游 01 步 + 当前步压力诊断都在提示里
+    assert '"upstream_steps"' in user_prompt
     assert "读者定位" in user_prompt
     assert '"current_pressure_diagnosis"' in user_prompt
     assert '"pressure_rubric"' in user_prompt
@@ -411,9 +432,11 @@ def test_generate_step_focus_scene_only_touches_target(client, monkeypatch) -> N
     def fake_generate(self, request):  # noqa: ANN001
         captured.append(request)
         prompt = request.messages[1]["content"]
-        if '"step_key": "scene_list"' in prompt:
+        if _root_step_key(prompt) == "scene_list":
             payload = _SCENE_LIST_PAYLOAD
-        elif "focus_scenes" in prompt:
+        elif '"focus_scenes"' in prompt:
+            # 定向判别必须认 payload 里的 JSON 键，不能认裸词——task_prompt 本身
+            # 就要向模型解释 focus_scenes，裸词匹配会把整表生成误判成定向生成。
             # 单场定向：只回焦点场（scene 2），换一个可断言的 dilemma
             payload = {"scenes": [dict(_scene_detail_items(["IGNORED", _focus_ids[1]])[1], dilemma="聚焦后的新两难：交出母本或守住职位")]}
         else:
@@ -477,7 +500,7 @@ def test_scene_triage_suggest_items_carry_row_uid(client, monkeypatch) -> None:
 
     def fake_generate(self, request):  # noqa: ANN001
         prompt = request.messages[1]["content"]
-        if '"step_key": "scene_list"' in prompt:
+        if _root_step_key(prompt) == "scene_list":
             payload = _SCENE_LIST_PAYLOAD
         elif "triage_rules" in prompt:
             payload = {"items": []}  # 归一化会回落到确定性诊断底稿
@@ -555,7 +578,7 @@ def test_save_scene_triage_reuses_triage_id_without_duplicating_rows(client, mon
 
     def fake_generate(self, request):  # noqa: ANN001
         prompt = request.messages[1]["content"]
-        if '"step_key": "scene_list"' in prompt:
+        if _root_step_key(prompt) == "scene_list":
             payload = _SCENE_LIST_PAYLOAD
         elif "triage_rules" in prompt:
             payload = {"items": []}
@@ -738,7 +761,8 @@ def test_generate_step_focus_character_only_touches_target(client, monkeypatch) 
     assert len(captured) - calls_before == 1  # 焦点角色完整 → 不追加修复重试
     focus_prompt = captured[-1].messages[1]["content"]
     assert '"focus_characters"' in focus_prompt and "只深化" in focus_prompt
-    assert '"character_id": "c2"' in focus_prompt
+    focus_members = _prompt_payload(focus_prompt)["focus_characters"]["characters"]
+    assert [m["character_id"] for m in focus_members] == ["c2"]
 
     missing = client.post(
         f"/api/v2/projects/{pid}/snowflake-workspace/steps/character_sheets/generate",
@@ -757,7 +781,7 @@ def test_generate_step_focus_character_resolves_from_roster(client, monkeypatch)
     def fake_generate(self, request):  # noqa: ANN001
         captured.append(request)
         prompt = request.messages[1]["content"]
-        if '"step_key": "character_sheets"' in prompt:
+        if _root_step_key(prompt) == "character_sheets":
             payload = {"characters": [_char_sheet_item("c1", "林岑"), _char_sheet_item("c2", "周岚", role="对立面")]}
         else:
             payload = {"characters": [{"character_id": "c2", "display_name": "周岚", "role": "对立面",

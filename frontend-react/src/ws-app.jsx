@@ -23,7 +23,7 @@ import { onRovingTabKeyDown } from "./a11y-tabs.js";
 
 /* global React, ReactDOM, I, useTweaks, TweaksPanel, TweakSection, TweakSlider, TweakToggle, TweakRadio,
    WsHome, WsReview, useReviewBadge, WsSnowflake, WriterRoom, WriterTweaks, WRITER_TWEAK_DEFAULTS, SceneTweaks,
-   WsFlowmap, WsLibrary, WsTrash, WsStyleRef, WsAuthor, WsScene, WsManuscripts, WsLongform6, WsQuality, WsEval,
+   WsFlowmap, WsLibrary, WsTrash, WsStyleRef, WsAuthor, WsScene, WsManuscripts, WsQuality, WsEval,
    WsCost, WsIndex, WsInterop, WsSettings, WsPalette, WsWorks, useActiveWork, useWorks */
 const { useState: useAS, useEffect: useAE, useRef: useARef } = React;
 const wsPortal = ReactDOM.createPortal;

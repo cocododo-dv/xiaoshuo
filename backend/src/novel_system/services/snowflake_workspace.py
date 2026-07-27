@@ -18,6 +18,7 @@ from novel_system.db.models import (
     SnowflakeAssistantTurn,
     SnowflakeCharacterPlan,
     SnowflakeRevisionLink,
+    SnowflakeChapterPlan,
     SnowflakeScenePlan,
     SnowflakeSceneTriageItem,
     SnowflakeStepRun,
@@ -29,7 +30,12 @@ from novel_system.services.author_actions import author_action
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import PLAN_STATUS_PENDING_REVIEW, ProjectService, outline_plan_payload, project_payload
 from novel_system.services.project_runtime_invalidation import ProjectRuntimeInvalidationService
-from novel_system.services.snowflake_planner import GATE_STATUSES, SnowflakePlannerService
+from novel_system.services.snowflake_planner import (
+    GATE_STATUSES,
+    SnowflakePlannerService,
+    _beats_from_detail,
+    _scene_writer_brief,
+)
 from novel_system.services.snowflake_staleness import (
     field_sigs,
     recompute_stale,
@@ -52,8 +58,14 @@ from novel_system.services.snowflake_steps import (
     step_completeness,
     step_guidance,
 )
+from novel_system.services.snowflake_chaptering import (
+    SnowflakeChapteringService,
+    chapter_target_id,
+    mint_chapter_row_uid,
+    parse_outline_chapters,
+)
 from novel_system.services.snowflake_workspace_assistant import SnowflakeWorkspaceAssistantService
-from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMService
+from novel_system.services.snowflake_workspace_llm import SnowflakeWorkspaceLLMService, draft_has_content
 
 STRUCTURED_GATE_STATUSES = set(GATE_STATUSES)
 SCENE_PATCH_FIELDS = {
@@ -62,6 +74,9 @@ SCENE_PATCH_FIELDS = {
     "chapter_title",
     "chapter_goal",
     "chapter_role",
+    # 灾一/灾二/灾三：作者标在场上的结构铰链，脊柱锚点分章要用（P2）。
+    # 它是内容标注，不是身份，所以可编辑。
+    "spine",
     "scene_seq",
     "pov_character_id",
     "onstage_chars_json",
@@ -92,6 +107,7 @@ class SnowflakeWorkspaceService:
         self.session = session
         self._projects = ProjectService(session)
         self._planner = SnowflakePlannerService(session)
+        self._chaptering = SnowflakeChapteringService(session)
         self._llm = SnowflakeWorkspaceLLMService(session)
         self._assistant = SnowflakeWorkspaceAssistantService()
 
@@ -147,8 +163,10 @@ class SnowflakeWorkspaceService:
         triage_items = self._triage_items(project_id)
         latest_plan = self._latest_plan(project_id)
         steps = [self._workspace_step(step, latest_by_step, project_id=project_id) for step in list_step_definitions()]
-        gate = self._materialization_gate(latest_by_step, triage_items, scene_plans)
+        chapter_plan_status = self._chaptering.status(project_id, scene_plans)
+        gate = self._materialization_gate(latest_by_step, triage_items, scene_plans, chapter_plan_status)
         return {
+            "chapter_plan_status": chapter_plan_status,
             "project": project_payload(project),
             "method_version": SNOWFLAKE_METHOD_VERSION,
             "quality_policy": deepcopy(QUALITY_POLICY),
@@ -172,6 +190,7 @@ class SnowflakeWorkspaceService:
         if self._draft_gate_mode(project) == "strict":
             self._require_previous_gates(step_key, latest_by_step)
 
+        generation_notice: dict[str, Any] | None = None
         if body.get("skip"):
             draft = self._skip_draft(step_key, body)
             source = "skip"
@@ -199,7 +218,7 @@ class SnowflakeWorkspaceService:
                     if not str(key).startswith("fe_")
                 }
                 override_payload = {key: value for key, value in draft_override.items() if not str(key).startswith("fe_")}
-                draft_override = _merge_dicts(base_payload, override_payload)
+                draft_override = _merge_dicts_keeping_members(base_payload, override_payload)
             if body.get("require_llm") and not self._llm.llm_enabled():
                 raise DomainError(
                     "SNOWFLAKE_LLM_REQUIRED",
@@ -223,6 +242,8 @@ class SnowflakeWorkspaceService:
             draft = llm_result.payload
             source = llm_result.source
             llm_call_id = llm_result.llm_call_id
+            # 分批深化中途失败等「作者必须知道但不属于草稿」的事实随健康度落库
+            generation_notice = llm_result.notice
             status = "pending_review"
             approved_at = None
 
@@ -233,14 +254,23 @@ class SnowflakeWorkspaceService:
             version=self._next_step_version(project.project_id, step_key),
             status=status,
             draft_json=draft,
-            health_json=self._step_health(step_key, draft, status, generation_source=source),
+            health_json=self._step_health(
+                step_key, draft, status, generation_source=source, generation_notice=generation_notice
+            ),
             input_refs_json=self._input_refs(step_key, latest_by_step),
             llm_call_id=llm_call_id,
             approved_at=approved_at,
         )
         self.session.add(run)
         self.session.flush()
-        self._sync_structured_step_data(project, step_key, draft, run)
+        sync_notice = self._sync_structured_step_data(project, step_key, draft, run)
+        if sync_notice:
+            # 章表收缩只有落库时才知道（要比对既有章行），此时 health_json 已经建好——
+            # 补挂回去，绝不让「已生成」盖住「全书归属松了 N 场」。
+            run.health_json = self._step_health(
+                step_key, draft, status, generation_source=source,
+                generation_notice=generation_notice or sync_notice,
+            )
         if status == "skipped":
             self._supersede_same_step(run)
             self._mark_downstream_stale(run)
@@ -632,7 +662,7 @@ class SnowflakeWorkspaceService:
         if row is None or row.project_id != project.project_id:
             raise DomainError("SNOWFLAKE_TRIAGE_NOT_FOUND", "未找到该场景急救记录。", status_code=404)
         scene = self.session.get(SnowflakeScenePlan, row.scene_plan_id)
-        if scene is None or scene.project_id != project.project_id:
+        if scene is None or scene.project_id != project.project_id or scene.removed_at:
             raise DomainError("SNOWFLAKE_SCENE_PLAN_NOT_FOUND", "未找到该场景计划。", status_code=404)
         patch = _sanitize_scene_patch(row.repair_patch_json or {})
         if not patch:
@@ -694,7 +724,7 @@ class SnowflakeWorkspaceService:
     def update_scene_plan(self, project_id: str, scene_plan_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
         scene = self.session.get(SnowflakeScenePlan, scene_plan_id)
-        if scene is None or scene.project_id != project.project_id:
+        if scene is None or scene.project_id != project.project_id or scene.removed_at:
             raise DomainError("SNOWFLAKE_SCENE_PLAN_NOT_FOUND", "未找到该场景计划。", status_code=404)
         self._apply_scene_patch(scene, _sanitize_scene_patch(payload or {}))
         scene.status = "draft" if scene.status in {"approved", "stale"} else scene.status
@@ -705,8 +735,22 @@ class SnowflakeWorkspaceService:
         self.session.flush()
         return {"scene": _scene_plan_payload(scene), "workspace": self.workspace(project.project_id)}
 
-    def materialize(self, project_id: str) -> dict[str, Any]:
+    def materialize(self, project_id: str, payload: dict[str, Any] | None = None, *, actor_ref: str = "operator") -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
+        body = payload or {}
+        # 分章面板确认时把 {chapters, assignments} 一并带来：先落分章再物化，同一事务，
+        # 不留「分了章但没物化」或「物化了但用的是上一版分章」的中间态。
+        if body.get("assignments"):
+            self._chaptering.save(project.project_id, body, actor_ref=actor_ref)
+        elif body.get("strategy"):
+            # 脚本 / API 调用方不必往返预览，但必须**显式指名策略** —— 这仍是一次
+            # 有主的分章决定，而不是服务端替作者悄悄决定（那正是本次要修掉的老毛病）。
+            self._chaptering.autoassign(project.project_id, str(body["strategy"]), actor_ref=actor_ref)
+        else:
+            # 既没带分章也没指名策略：只做「派生已经存在的事实」——目录里已有的章、
+            # 或场景行自己带着的章归属。派生不出来（前端那一路所有场都是 CH01）时
+            # 什么也不做，下面的闸门会把作者送进分章面板。
+            self._chaptering.ensure_chapter_plans(project.project_id)
         workspace = self.workspace(project.project_id)
         gate = workspace.get("materialization_gate") or {}
         if gate.get("status") == "blocked":
@@ -734,16 +778,106 @@ class SnowflakeWorkspaceService:
             project_id=project.project_id,
             version=self._next_plan_version(project.project_id),
             status=PLAN_STATUS_PENDING_REVIEW,
-            plan_json=self._planner._build_outline_plan(
-                project,
-                {"scenes": [_scene_list_payload(scene) for scene in scene_plans]},
-                {"scenes": [_scene_plan_payload(scene) for scene in scene_plans]},
-            ),
+            plan_json=self._build_chaptered_outline_plan(project, scene_plans),
         )
         project.status = "outline_review"
         self.session.add(plan)
         self.session.flush()
         return {"plan": outline_plan_payload(plan), "workspace": self.workspace(project.project_id)}
+
+    def _build_chaptered_outline_plan(
+        self,
+        project: StoryProject,
+        scene_plans: list[SnowflakeScenePlan],
+    ) -> dict[str, Any]:
+        """按构思侧章表分组产出 OutlinePlan（P2）。
+
+        与被它取代的 ``snowflake_planner._build_outline_plan`` 的关键差别：章不再从
+        场景行的 ``chapter_id`` 反推（那条路上所有场都写着 ``…_CH01``，于是全书一章，
+        章标题就是章 id 字符串），而是读作者在 07 里真正编出来的章 —— 标题、幕、脊柱、
+        章目标都来自那里。v1 路由 ``/snowflake/materialize-outline-plan`` 仍走旧
+        builder，本方法不改它。
+        """
+        chapters = self._chaptering.ensure_chapter_plans(project.project_id)
+        by_plan_id = {chapter.chapter_plan_id: chapter for chapter in chapters}
+        grouped: dict[str, list[SnowflakeScenePlan]] = {chapter.chapter_plan_id: [] for chapter in chapters}
+        for scene in scene_plans:
+            key = scene.chapter_plan_id or ""
+            if key in grouped:
+                grouped[key].append(scene)
+
+        chapter_payloads: list[dict[str, Any]] = []
+        for index, chapter in enumerate(chapters, start=1):
+            members = sorted(grouped[chapter.chapter_plan_id], key=lambda item: (item.scene_seq, item.scene_id))
+            if not members:
+                continue  # 空章不落库：预览里已经就此告警过，作者选择保留就是不要它
+            chapter_id = chapter_target_id(project.project_id, index)
+            goal = (chapter.chapter_goal or chapter.summary or "").strip() or f"推进本章：{chapter.title or chapter_id}"
+            scenes_payload: list[dict[str, Any]] = []
+            for seq, scene in enumerate(members, start=1):
+                detail = _scene_plan_payload(scene)
+                scene_type = detail.get("primary_form") or "proactive"
+                scenes_payload.append(
+                    {
+                        "scene_id": scene.scene_id,
+                        "chapter_id": chapter_id,
+                        "scene_seq": seq,
+                        "pov_character_id": detail.get("pov_character_id") or None,
+                        "onstage_chars_json": detail.get("onstage_chars_json") or [],
+                        "location": detail.get("location") or None,
+                        "scene_goal": detail.get("summary") or detail.get("title") or goal,
+                        "beats_json": detail.get("beats_json") or _beats_from_detail(scene_type, detail),
+                        "must_include_text": detail.get("must_include_text") or detail.get("summary") or "",
+                        "forbidden_text": "不得复制参考书原文表达、人物、设定或桥段。",
+                        "exit_change": detail.get("exit_change") or "场景结束时至少改变一个信息、关系或行动目标。",
+                        "hook": detail.get("hook") or "以未解决的选择、代价或发现推动下一场。",
+                        "target_length_band": detail.get("target_length_band") or "medium",
+                        "primary_form": scene_type,
+                        "scene_type": scene_type,
+                        "is_chapter_last": 1 if seq == len(members) else 0,
+                        "writer_brief_json": _scene_writer_brief(scene_type, detail),
+                    }
+                )
+            chapter_payloads.append(
+                {
+                    "chapter_id": chapter_id,
+                    "chapter_plan_row_uid": chapter.row_uid,
+                    "title": chapter.title or chapter_id,
+                    "display_order": index,
+                    "planned_scene_count": len(scenes_payload),
+                    "chapter_goal": goal,
+                    "main_plot_push": (chapter.summary or goal).strip(),
+                    "emotional_target": "让人物目标、阻碍和代价在行动中显形。",
+                    "ending_effect": "用新的选择、代价或信息推动下一章。",
+                    "must_not": "不得复制参考书原文表达、人物、设定或桥段。",
+                    "notes": "由雪花法分章物化，需确认后进入逐章运行。",
+                    "narrative_json": {
+                        "title": chapter.title or chapter_id,
+                        "act": int(chapter.act or 1),
+                        "spine": chapter.spine or "",
+                    },
+                    "writer_brief_json": {
+                        "source": "snowflake_method",
+                        "chapter_title": chapter.title or chapter_id,
+                        "chapter_act": int(chapter.act or 1),
+                        "chapter_spine": chapter.spine or "",
+                    },
+                    "scenes": scenes_payload,
+                }
+            )
+
+        return {
+            "source": "snowflake_method",
+            "project_id": project.project_id,
+            "project_title": project.title,
+            "outline_text": project.outline_text,
+            "reference_safety": [
+                "参考书只进入抽象风格画像，不复制原文表达。",
+                "不得复刻参考书人物、设定、桥段、特殊意象或标志性句式。",
+                "运行时只使用节奏、句法、叙事手法、结构技巧和禁复刻规则。",
+            ],
+            "chapters": chapter_payloads,
+        }
 
     def approve_outline(self, project_id: str) -> dict[str, Any]:
         project = self._require_snowflake_project(project_id)
@@ -789,6 +923,7 @@ class SnowflakeWorkspaceService:
 
         results: list[dict[str, Any]] = []
         affected_scene_ids: list[str] = []
+        pending_moves: list[dict[str, Any]] = []
         for plan in plans:
             scene = self.session.get(SceneCard, plan.scene_id)
             if scene is None or scene.project_id != project.project_id:
@@ -804,6 +939,15 @@ class SnowflakeWorkspaceService:
                 continue
             chapter = self.session.get(ChapterGoal, scene.chapter_id)
             scene_patch = self._scene_card_resync_patch(plan, scene)
+            blocked_move = self._unmaterialized_chapter_move(project.project_id, scene, scene_patch)
+            if blocked_move:
+                # 搬不动就别搬：``SceneCard.chapter_id`` 是指向 chapter_goals 的外键，
+                # 写一个目录里还不存在的章号 = FOREIGN KEY constraint failed，整次回流
+                # 500「database operation failed」，连能同步的内容改动一起赔进去。
+                # 作者重新分了章但还没「整理为章节结构」时这就是常态，不是异常。
+                # scene_seq 跟着一起放弃：位置 = 章 + 序，只搬序会让它在**旧**章里撞号。
+                scene_patch.pop("chapter_id", None)
+                scene_patch.pop("scene_seq", None)
             diff = self._scene_card_diff(scene, scene_patch)
             if diff:
                 affected_scene_ids.append(scene.scene_id)
@@ -834,24 +978,64 @@ class SnowflakeWorkspaceService:
                         },
                     )
                 )
-            results.append(
-                {
-                    "scene_plan_id": plan.scene_plan_id,
-                    "scene_id": scene.scene_id,
-                    "synced": bool(diff) and not dry_run,
-                    "reason": "changed" if diff else "already_current",
-                    "diff": diff,
-                }
-            )
+            entry = {
+                "scene_plan_id": plan.scene_plan_id,
+                "scene_id": scene.scene_id,
+                "synced": bool(diff) and not dry_run,
+                "reason": "changed" if diff else "already_current",
+                "diff": diff,
+            }
+            if blocked_move:
+                entry["blocked_chapter_move"] = blocked_move
+                pending_moves.append({"scene_id": scene.scene_id, **blocked_move})
+            results.append(entry)
 
         if not dry_run:
             self.session.flush()
         affected_runtime = self._affected_runtime_summary(project.project_id, affected_scene_ids)
-        return {
+        result: dict[str, Any] = {
             "dry_run": dry_run,
             "results": results,
             "affected_runtime": affected_runtime,
             "workspace": self.workspace(project.project_id),
+        }
+        if pending_moves:
+            # 静默跳过等于撒谎：作者以为回流做完了，目录其实还停在上一版章节结构。
+            targets = sorted({item["target_chapter_id"] for item in pending_moves})
+            result["notice"] = {
+                "code": "CHAPTER_MOVE_NEEDS_MATERIALIZE",
+                "severity": "warning",
+                "message": (
+                    f"有 {len(pending_moves)} 场要搬到目录里还不存在的章"
+                    f"（{'、'.join(targets[:3])}{'…' if len(targets) > 3 else ''}），"
+                    "这一部分没有回流。请先「整理为章节结构」把新的章写进目录，再回流一次。"
+                ),
+                "pending_moves": pending_moves,
+            }
+        return result
+
+    def _unmaterialized_chapter_move(
+        self,
+        project_id: str,
+        scene: SceneCard,
+        patch: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """这条补丁想把场景卡搬进一个目录里还不存在的章吗？
+
+        重新分章只写构思侧（``SnowflakeScenePlan.chapter_id`` = ``{project}_CH{seq:02d}``），
+        目录里的 ``ChapterGoal`` 要等「整理为章节结构」才建。两者之间的窗口里，构思侧
+        指向的章号可以完全没有对应的目录行——而 ``SceneCard.chapter_id`` 是外键。
+        """
+        target = str(patch.get("chapter_id") or "").strip()
+        if not target or target == scene.chapter_id:
+            return None
+        chapter = self.session.get(ChapterGoal, target)
+        if chapter is not None and chapter.project_id == project_id and not chapter.trashed_flag:
+            return None
+        return {
+            "target_chapter_id": target,
+            "current_chapter_id": scene.chapter_id,
+            "reason": "chapter_not_in_catalog",
         }
 
     def _require_snowflake_project(self, project_id: str) -> StoryProject:
@@ -1045,9 +1229,14 @@ class SnowflakeWorkspaceService:
         ).scalars().first()
 
     def _scene_plans(self, project_id: str) -> list[SnowflakeScenePlan]:
+        """活跃场景计划。软删的场（P1-3）在这里就被挡掉——工作台、诊断、闸门、
+        回流状态和物化输入全部经过这一个入口，所以幽灵场不会再从任何一处冒出来。"""
         return self.session.execute(
             select(SnowflakeScenePlan)
-            .where(SnowflakeScenePlan.project_id == project_id)
+            .where(
+                SnowflakeScenePlan.project_id == project_id,
+                SnowflakeScenePlan.removed_at.is_(None),
+            )
             .order_by(SnowflakeScenePlan.chapter_id.asc(), SnowflakeScenePlan.scene_seq.asc(), SnowflakeScenePlan.scene_id.asc())
         ).scalars().all()
 
@@ -1128,6 +1317,9 @@ class SnowflakeWorkspaceService:
             "exit_change": plan.exit_change or plan.setback or plan.decision or scene.exit_change,
             "hook": plan.hook or scene.hook,
             "target_length_band": plan.target_length_band or scene.target_length_band,
+            # P2：重新分章后，回流要把场景卡也搬到新章去，否则目录停留在上一版结构。
+            "chapter_id": plan.chapter_id or scene.chapter_id,
+            "scene_seq": plan.scene_seq or scene.scene_seq,
             "scene_type": plan.scene_type or scene.scene_type,
             "pov_character_id": plan.pov_character_id or scene.pov_character_id,
             "onstage_chars_json": list(plan.onstage_chars_json or scene.onstage_chars_json or []),
@@ -1314,6 +1506,7 @@ class SnowflakeWorkspaceService:
         latest_by_step: dict[str, SnowflakeStepRun],
         triage_items: list[dict[str, Any]],
         scene_plans: list[SnowflakeScenePlan] | None = None,
+        chapter_plan_status: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         blockers: list[str] = []
         warnings: list[str] = []
@@ -1543,6 +1736,38 @@ class SnowflakeWorkspaceService:
                     message=f"{scene_display} 人工覆盖了自动废除重写诊断；整理前请复核急救备注。",
                     item=item,
                 )
+
+        # P2 分章闸门：章归属没定就物化，等于回到「全书落进一章」的老路。
+        # 这一条把它挡在前面，并把作者送进分章面板而不是让他对着结果发懵。
+        status_payload = chapter_plan_status or {}
+        unassigned_count = int(status_payload.get("unassigned_scene_count") or 0)
+        chapter_count = int(status_payload.get("chapter_count") or 0)
+        if scene_plans and (not chapter_count or unassigned_count):
+            message = (
+                "还没有分章：章节结构要先决定每一场归哪一章。"
+                if not chapter_count
+                else f"还有 {unassigned_count} 场没有分到章，整理后它们不会进入章节目录。"
+            )
+            blockers.append(message)
+            items.append(
+                {
+                    "id": "blocker:chapter_plan_required:project",
+                    "severity": "blocker",
+                    "kind": "chapter_plan_required",
+                    "message": message,
+                    "step_key": "long_synopsis" if not chapter_count else "scene_list",
+                    "scene_id": None,
+                    "scene_plan_id": None,
+                    "target_view": "snowflake-workbench",
+                    "primary_action": {
+                        "type": "open_chapter_plan",
+                        "label": "去分章",
+                        "panel": "chapter_plan",
+                    },
+                    "assistant_action": None,
+                }
+            )
+
         return {
             "status": "blocked" if blockers else "warning" if warnings else "ready",
             "blockers": blockers,
@@ -1558,11 +1783,126 @@ class SnowflakeWorkspaceService:
         run: SnowflakeStepRun,
         *,
         approved: bool = False,
-    ) -> None:
+    ) -> dict[str, Any] | None:
+        """同步结构化步数据。返回「作者必须知道、但不属于草稿」的事实（目前只有章表收缩）。"""
         if step_key in {"character_sheets", "character_synopses", "character_bibles"}:
             self._sync_character_plans(project.project_id, step_key, draft.get("characters") or [], approved=approved)
+        if step_key == "long_synopsis":
+            return self._sync_chapter_plans(project.project_id, draft, run, approved=approved)
         if step_key in {"scene_list", "scene_details"}:
             self._sync_scene_plans(project.project_id, step_key, draft.get("scenes") or [], run, approved=approved)
+        return None
+
+    def _sync_chapter_plans(
+        self,
+        project_id: str,
+        draft: dict[str, Any],
+        run: SnowflakeStepRun,
+        *,
+        approved: bool,
+    ) -> dict[str, Any] | None:
+        """07 长篇大纲 → 构思侧章表（P2）。
+
+        身份锚是 ``row_uid``，规则与场景计划一致：作者改标题、改幕、重排都不会重建行，
+        所以已经分好的场景归属（``SnowflakeScenePlan.chapter_plan_id``）不会因为一次
+        改标题就断掉。删掉的章软删，分在里面的场退回「未分章」。
+
+        章表**收缩**（新表比旧表短，尾部的章连同它的场景归属一起没了）是作者必须知道的
+        事：返回一份摘要，由调用方挂进健康度 ``generation_notice``——绝不静默报「已生成」。
+        """
+        incoming = parse_outline_chapters(draft)
+        if not incoming:
+            return None  # 空草稿不收口——同 P1-3 的护栏，一次空 PATCH 不能清掉全书的章
+
+        existing = {
+            row.row_uid: row
+            for row in self.session.execute(
+                select(SnowflakeChapterPlan).where(SnowflakeChapterPlan.project_id == project_id)
+            ).scalars()
+        }
+        seen: set[str] = set()
+        minted = False
+        for index, item in enumerate(incoming, start=1):
+            row_uid = str(item.get("row_uid") or "").strip()
+            if row_uid and row_uid in seen:
+                row_uid = ""  # 本次 payload 内重号 → 当作新章
+            row = existing.get(row_uid) if row_uid else None
+            if row is None:
+                row_uid = row_uid or mint_chapter_row_uid()
+                row = SnowflakeChapterPlan(
+                    chapter_plan_id=f"snowflake_chapter_plan_{project_id}_{row_uid}",
+                    project_id=project_id,
+                    row_uid=row_uid,
+                )
+                self.session.add(row)
+                existing[row_uid] = row
+                minted = True
+            elif row.removed_at:
+                row.removed_at = None
+                row.removed_by = None
+            row.chapter_seq = index
+            row.act = _coerce_int(item.get("act"), 1)
+            row.title = str(item.get("title") or "").strip()
+            row.summary = str(item.get("summary") or "").strip()
+            row.spine = str(item.get("spine") or "").strip()
+            row.chapter_goal = str(item.get("chapter_goal") or "").strip() or row.chapter_goal
+            row.status = "approved" if approved else "draft"
+            row.source_step_run_id = run.step_run_id
+            seen.add(row_uid)
+            if item.get("row_uid") != row_uid:
+                item["row_uid"] = row_uid
+                minted = True
+
+        removed_at = utcnow()
+        dropped: list[dict[str, Any]] = []
+        for row_uid, row in existing.items():
+            if row_uid in seen or row.removed_at:
+                continue
+            row.removed_at = removed_at
+            row.removed_by = "operator"
+            self.session.add(
+                OperationLog(
+                    event_type="snowflake_chapter_plan_removed",
+                    object_type="snowflake_chapter_plan",
+                    object_ref=row.chapter_plan_id,
+                    payload_json={
+                        "project_id": project_id,
+                        "row_uid": row_uid,
+                        "title": row.title or "",
+                        "removed_at": removed_at,
+                    },
+                )
+            )
+            # 分在这章里的场退回「未分章」，由分章面板重新指派——绝不静默塞进别的章
+            unbound = 0
+            for plan in self.session.execute(
+                select(SnowflakeScenePlan).where(
+                    SnowflakeScenePlan.project_id == project_id,
+                    SnowflakeScenePlan.chapter_plan_id == row.chapter_plan_id,
+                )
+            ).scalars():
+                plan.chapter_plan_id = None
+                unbound += 1
+            dropped.append({"title": row.title or row_uid, "unbound_scene_count": unbound})
+
+        # 把铸好的 row_uid 回写进草稿，让下一次保存和前端水合都拿到同一个锚
+        if minted and isinstance(run.draft_json, dict):
+            run.draft_json = {**run.draft_json, "chapters": incoming}
+
+        loosened = sum(item["unbound_scene_count"] for item in dropped)
+        if not loosened:
+            return None  # 没有场因此松绑 = 纯粹的章表编辑，不必打扰作者
+        titles = "、".join(item["title"] for item in dropped if item["unbound_scene_count"])[:120]
+        return {
+            "code": "CHAPTER_PLAN_SHRUNK",
+            "severity": "warning",
+            "message": (
+                f"章表变短了：{titles} 已从章表消失，其中 {loosened} 场退回「未分章」。"
+                "请到分章面板重新指派，否则它们不会进入章节目录。"
+            ),
+            "dropped_chapters": dropped,
+            "unbound_scene_count": loosened,
+        }
 
     def _sync_character_plans(self, project_id: str, step_key: str, characters: list[Any], *, approved: bool) -> None:
         for index, item in enumerate(characters, start=1):
@@ -1628,6 +1968,12 @@ class SnowflakeWorkspaceService:
         current_chapter_id = f"{project_id}_CH01"
         seq_by_chapter: dict[str, int] = {}
         minted = False
+        # P1-2：同一份 payload 里出现两次的 row_uid 必须拆开。前端 addScene 曾用
+        # `"S" + (list.length + 1)` 编号，删掉中间一场后新增就会撞上仍然存活的那一场，
+        # 于是后一条会绑到前一条的行上，把它的内容整段覆盖掉。
+        seen_row_uids: set[str] = set()
+        seen_scene_ids: set[str] = set()
+        touched_row_uids: set[str] = set()
         for index, item in enumerate(scenes, start=1):
             if not isinstance(item, dict):
                 continue
@@ -1636,11 +1982,32 @@ class SnowflakeWorkspaceService:
             # bind to the plan that step-8 seeded — but never trust an author's edit
             # of scene_id / chapter_id to *re-key* an existing row.
             row_uid = str(item.get("row_uid") or "").strip()
+            incoming_scene_id = str(item.get("scene_id") or "").strip()
+            # 本次 payload 内重号：当作一条新戏重新铸造身份，且**不再**走 scene_id 回退
+            # ——否则回退会把它又认到刚被前一条占用的那一行上，等于没拆。
+            duplicate_in_payload = bool(row_uid) and row_uid in seen_row_uids
+            if duplicate_in_payload:
+                row_uid = ""
             plan = self._scene_plan_by_row_uid(project_id, row_uid) if row_uid else None
-            if plan is None:
-                incoming_scene_id = str(item.get("scene_id") or "").strip()
-                plan = self._scene_plan_by_scene_id(project_id, incoming_scene_id) if incoming_scene_id else None
+            if plan is None and not duplicate_in_payload and incoming_scene_id:
+                # row_uid 缺席或未命中时回退到 scene_id 查找：规划器骨架与 LLM 结构化输出
+                # 只回显 scene_id（提示词明确要求 row_uid 留空），这条回退是第 10 步能绑回
+                # 第 9 步建下的行、而不是每次生成都复制一份的唯一依据。
+                plan = self._scene_plan_by_scene_id(project_id, incoming_scene_id)
+            if plan is not None and plan.row_uid and plan.row_uid in seen_row_uids:
+                plan = None  # 已被本轮前一条认领，不能二次绑定
             created = plan is None
+            if plan is not None and plan.removed_at:
+                # 作者把删掉的场又加了回来（同一 row_uid）：复活，而不是撞唯一索引。
+                plan.removed_at = None
+                plan.removed_by = None
+            if plan is not None and plan.orphaned_flag:
+                # 孤儿标记必须在这里清，不能只在上面那个「复活」分支里清：已物化的场被删时
+                # 走的是**打标记不软删**那条路（removed_at 保持 NULL），所以复活分支永远
+                # 摸不到它。结果是 orphaned_flag 只写不清，分章面板的 blocker 永久挂着、
+                # 「确认分章」按钮再也点不动——而它自己的提示语还写着「请先决定」。
+                # 场回到了场景列表里，按定义就不再是孤儿。
+                plan.orphaned_flag = 0
 
             input_chapter_id = str(item.get("chapter_id") or current_chapter_id or f"{project_id}_CH01").strip()
             if created:
@@ -1657,7 +2024,13 @@ class SnowflakeWorkspaceService:
 
             if created:
                 row_uid = row_uid or _mint_row_uid()
-                scene_id = f"{chapter_id}_SC{scene_seq:02d}"
+                # P1-2 铸造规则：草稿自带 scene_id 就沿用它（骨架/LLM 输出靠这个字符串
+                # 在第 9→10 步之间对位；换成别的值会让第 10 步认不回第 9 步的行）。只有
+                # 在它缺席或已被占用时才用 row_uid 铸——前端 canonFromFE 恰好不发
+                # scene_id，所以作者手改场景表这一路始终走 row_uid 基、天然不撞号。
+                scene_id = incoming_scene_id or _mint_scene_id(project_id, row_uid)
+                if scene_id in seen_scene_ids or self._scene_plan_by_scene_id(project_id, scene_id) is not None:
+                    scene_id = _mint_scene_id(project_id, row_uid)
                 plan = SnowflakeScenePlan(
                     scene_plan_id=f"snowflake_scene_plan_{project_id}_{row_uid}",
                     project_id=project_id,
@@ -1695,6 +2068,10 @@ class SnowflakeWorkspaceService:
                 plan.chapter_title = str(item.get("chapter_title") or chapter_id).strip()
             plan.diagnosis_json = diagnose_scene_detail(_scene_plan_payload(plan))
 
+            seen_row_uids.add(row_uid)
+            seen_scene_ids.add(scene_id)
+            touched_row_uids.add(row_uid)
+
             # Stamp the minted identity back onto the draft row so the persisted
             # draft_json and every later re-seed carry the same stable anchor.
             if item.get("row_uid") != row_uid or item.get("scene_id") != scene_id or item.get("chapter_id") != chapter_id:
@@ -1703,8 +2080,57 @@ class SnowflakeWorkspaceService:
                 item["chapter_id"] = chapter_id
                 minted = True
 
+        if step_key == "scene_list" and touched_row_uids:
+            self._reconcile_removed_scene_plans(project_id, touched_row_uids)
+
         if minted and isinstance(run.draft_json, dict):
             run.draft_json = {**run.draft_json, "scenes": scenes}
+
+    def _reconcile_removed_scene_plans(self, project_id: str, kept_row_uids: set[str]) -> None:
+        """P1-3 收口：把不在本次场景列表里的场标记为已删除。
+
+        只在 ``scene_list`` 步生效 —— 「哪些场存在」是第 9 步的职责，第 10 步只负责
+        深化，它的草稿如果因为 LLM 截断少返回几场，绝不能因此删掉作者的场。
+
+        两条护栏：
+        - ``kept_row_uids`` 为空（空草稿）时调用方不会进来，避免一次空 PATCH 清空全书。
+        - 已经物化成 ``SceneCard`` 的场只打 ``orphaned_flag``，不软删 —— 那边可能已经
+          有正文了，删不删要作者自己决定。
+        """
+        rows = self.session.execute(
+            select(SnowflakeScenePlan).where(
+                SnowflakeScenePlan.project_id == project_id,
+                SnowflakeScenePlan.removed_at.is_(None),
+            )
+        ).scalars().all()
+        removed_at = utcnow()
+        for plan in rows:
+            if (plan.row_uid or "") in kept_row_uids:
+                continue
+            materialized = self.session.get(SceneCard, plan.scene_id)
+            if materialized is not None and materialized.project_id == project_id:
+                if plan.orphaned_flag:
+                    continue
+                plan.orphaned_flag = 1
+                event_type = "snowflake_scene_plan_orphaned"
+            else:
+                plan.removed_at = removed_at
+                plan.removed_by = "operator"
+                event_type = "snowflake_scene_plan_removed"
+            self.session.add(
+                OperationLog(
+                    event_type=event_type,
+                    object_type="snowflake_scene_plan",
+                    object_ref=plan.scene_plan_id,
+                    payload_json={
+                        "project_id": project_id,
+                        "scene_id": plan.scene_id,
+                        "row_uid": plan.row_uid or "",
+                        "title": plan.title or plan.summary or "",
+                        "removed_at": removed_at,
+                    },
+                )
+            )
 
     def _scene_plan_by_scene_id(self, project_id: str, scene_id: str) -> SnowflakeScenePlan | None:
         return self.session.execute(
@@ -1724,7 +2150,7 @@ class SnowflakeWorkspaceService:
         if scene is None:
             scene_id = str(item.get("scene_id") or "").strip()
             scene = self._scene_plan_by_scene_id(project_id, scene_id) if scene_id else None
-        if scene is None or scene.project_id != project_id:
+        if scene is None or scene.project_id != project_id or scene.removed_at:
             raise DomainError("SNOWFLAKE_SCENE_PLAN_NOT_FOUND", "未找到该场景计划。", status_code=404)
         return scene
 
@@ -1904,7 +2330,15 @@ class SnowflakeWorkspaceService:
             raise DomainError("SNOWFLAKE_SKIP_REASON_REQUIRED", "跳过时必须填写理由。", status_code=400)
         return {"skipped": True, "skip_reason": reason}
 
-    def _step_health(self, step_key: str, draft: dict[str, Any], status: str, *, generation_source: str | None = None) -> dict[str, Any]:
+    def _step_health(
+        self,
+        step_key: str,
+        draft: dict[str, Any],
+        status: str,
+        *,
+        generation_source: str | None = None,
+        generation_notice: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if status == "skipped":
             return {
                 "severity": "info",
@@ -1924,13 +2358,17 @@ class SnowflakeWorkspaceService:
             }
         completeness = step_completeness(step_key, draft)
         missing = completeness.get("missing_fields") or []
-        return {
+        health = {
             "severity": "warning" if missing else "info",
             "message": "step has missing fields" if missing else "step draft is structurally complete",
             "generation_source": generation_source or "fallback",
             "missing_fields": missing,
             **diagnose_step_pressure(step_key, draft),
         }
+        if generation_notice:
+            health["generation_notice"] = deepcopy(generation_notice)
+            health["severity"] = "warning"
+        return health
 
     @staticmethod
     def _step_run_payload(run: SnowflakeStepRun | None) -> dict[str, Any] | None:
@@ -2016,14 +2454,23 @@ class SnowflakeWorkspaceService:
 
     @staticmethod
     def _approved_context(workspace: dict[str, Any]) -> list[dict[str, Any]]:
+        """驻场教练/场景急救看到的全书上下文。
+
+        和 _upstream_step_context 同一条纪律：不能只收 gate_satisfied（approved/skipped）。
+        explore 模式下作者可以一路不确认，改上游又会把下游打成 stale，只收已确认
+        就等于让教练看不见这本书的故事，只能泛泛而谈或另编一套。未确认草稿照给，
+        如实标注状态即可。
+        """
         return [
             {
                 "step_key": item["step_key"],
                 "label": item["label"],
+                "status": item.get("status"),
+                "confirmed": bool(item.get("gate_satisfied")),
                 "draft": deepcopy(item.get("draft") or {}),
             }
             for item in workspace.get("steps") or []
-            if item.get("gate_satisfied")
+            if draft_has_content(item.get("draft"))
         ]
 
     @staticmethod
@@ -2036,7 +2483,14 @@ class SnowflakeWorkspaceService:
         if not isinstance(draft_override, dict):
             return step
         merged_step = deepcopy(step)
-        merged_step["draft"] = _merge_dicts(merged_step.get("draft") or {}, draft_override)
+        # 与 generate_step 同源:draft_override 是「作者刚编辑、还没自动保存上行」的叠加,
+        # 不是删除指令。助手/场景三分类同样必须按成员对位合并——整表替换会让前端少带几个
+        # 成员就把存档里的成员整片抹掉,教练/分类器于是只看到半截故事(与 generate 同一 bug)。
+        # 先剥掉 fe_* 写透键,再按成员 id 对位。
+        override_payload = {
+            key: value for key, value in draft_override.items() if not str(key).startswith("fe_")
+        }
+        merged_step["draft"] = _merge_dicts_keeping_members(merged_step.get("draft") or {}, override_payload)
         merged_step["draft"] = merge_step_draft(
             str(merged_step.get("step_key") or ""),
             merged_step.get("draft") or {},
@@ -2045,13 +2499,83 @@ class SnowflakeWorkspaceService:
         return merged_step
 
 
-def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+# 集合步里成员身份键：按它对位合并，而不是整表替换。
+_COLLECTION_ID_KEYS = {
+    "scenes": ("scene_id", "row_uid"),
+    "characters": ("character_id", "display_name"),
+    # 章表同理：FE 少带几章不能把存档里的章整片抹掉，那会连带解绑全书的场景归属。
+    "chapters": ("row_uid",),
+}
+
+
+def _merge_dicts_keeping_members(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """generate 的 draft_override 专用合并：集合按成员 id 对位，不整表替换。
+
+    draft_override 的语义是「补上作者刚编辑、还没自动保存上行的内容」（见调用点注释），
+    是叠加，不是删除指令——真正的删除走 PATCH save_step，那里仍然整表替换。
+    朴素的整表替换会让前端少带几个成员就把存档里的成员整片抹掉：作品《何有》的
+    场景规划就这样从 12 场无声掉回 5 场，而且发生在调 LLM 之前。
+    """
     merged = deepcopy(base)
     for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_dicts(merged[key], value)
+        id_keys = _COLLECTION_ID_KEYS.get(str(key))
+        if id_keys and isinstance(value, list) and isinstance(merged.get(key), list):
+            merged[key] = _merge_member_lists(merged[key], value, id_keys=id_keys)
+        elif isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_dicts_keeping_members(merged[key], value)
         else:
             merged[key] = deepcopy(value)
+    return merged
+
+
+def _merge_member_lists(
+    base_items: list[Any],
+    override_items: list[Any],
+    *,
+    id_keys: tuple[str, ...],
+) -> list[Any]:
+    """按成员 id 对位合并两份集合，保持 override 的顺序，base 独有的成员追加在尾部。
+
+    身份匹配对 id_keys 里**任一**键取交集：同一场景在 base 里带 scene_id、在 override 里
+    只带 row_uid（前端刚编辑、后端 id 还没回填的成员，两边键不同）也能对上，不会被当成两个
+    成员重复留下。只有当两份成员完全没有共享任一 id 值时才视为不同成员——那本就是不同成员。
+    """
+
+    def id_values(item: Any) -> list[str]:
+        if not isinstance(item, dict):
+            return []
+        values: list[str] = []
+        for id_key in id_keys:
+            value = str(item.get(id_key) or "").strip()
+            if value:
+                values.append(f"{id_key}:{value}")
+        return values
+
+    # 一个 base 成员按它携带的每个 id 值都建索引，这样 override 用其中任一键都能命中同一成员。
+    base_by_id_value: dict[str, Any] = {}
+    for item in base_items:
+        for value in id_values(item):
+            base_by_id_value.setdefault(value, item)
+
+    merged: list[Any] = []
+    matched_base: set[int] = set()
+    for item in override_items:
+        existing = None
+        for value in id_values(item):
+            if value in base_by_id_value:
+                existing = base_by_id_value[value]
+                break
+        if isinstance(existing, dict) and isinstance(item, dict):
+            merged.append(_merge_dicts_keeping_members(existing, item))
+            matched_base.add(id(existing))
+        else:
+            merged.append(deepcopy(item))
+    # 前端这次没带上来的成员不代表作者删了它——留在尾部，等真正的 PATCH 来决定去留。
+    merged.extend(
+        deepcopy(item)
+        for item in base_items
+        if id_values(item) and id(item) not in matched_base
+    )
     return merged
 
 
@@ -2114,10 +2638,12 @@ def _scene_plan_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
         "scene_plan_id": scene.scene_plan_id,
         "row_uid": scene.row_uid or "",
         "scene_id": scene.scene_id,
+        "chapter_plan_id": scene.chapter_plan_id or "",
         "chapter_id": scene.chapter_id,
         "chapter_title": scene.chapter_title or "",
         "chapter_goal": scene.chapter_goal or "",
         "chapter_role": scene.chapter_role or "",
+        "spine": scene.spine or "",
         "scene_seq": scene.scene_seq,
         "pov_character_id": scene.pov_character_id or "",
         "onstage_chars_json": list(scene.onstage_chars_json or []),
@@ -2154,9 +2680,11 @@ def _scene_list_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
         "scene_plan_id": scene.scene_plan_id,
         "row_uid": scene.row_uid or "",
         "scene_id": scene.scene_id,
+        "chapter_plan_id": scene.chapter_plan_id or "",
         "chapter_id": scene.chapter_id,
         "chapter_title": scene.chapter_title or scene.chapter_id,
         "chapter_goal": scene.chapter_goal or "",
+        "spine": scene.spine or "",
         "scene_seq": scene.scene_seq,
         "pov_character_id": scene.pov_character_id or "",
         "summary": scene.summary or scene.title or "",
@@ -2215,3 +2743,15 @@ def _mint_row_uid() -> str:
     reorder or an ID re-mint can never orphan a plan or break the diff chain.
     """
     return f"row_{uuid.uuid4().hex}"
+
+
+def _mint_scene_id(project_id: str, row_uid: str) -> str:
+    """Mint the scene's materialization identity from its immutable row anchor (P1-2).
+
+    The old rule was ``f"{chapter_id}_SC{scene_seq:02d}"``, frozen at creation while
+    ``scene_seq`` was recomputed on every save — so deleting a scene and adding another
+    reliably produced two rows with the same ``scene_id``, and materialization then lost
+    one of them without a word. Deriving it from ``row_uid`` instead makes it unique by
+    construction and independent of both chapter membership and ordering.
+    """
+    return f"{project_id}_SC_{row_uid}"

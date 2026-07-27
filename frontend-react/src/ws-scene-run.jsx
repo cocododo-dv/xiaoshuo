@@ -21,6 +21,7 @@ import { cancelRunJob, getLatestSceneRunJob } from "./lib/client.js";
 const SCN_RUN_FIELDS = ["state", "draft", "metrics", "alignment", "verdict", "log", "attempts", "attempt", "at", "words", "gate", "budgetBlock", "authorNote"];
 const scnRunKey = (sid) => (wsKey ? wsKey("scn-run:" + sid) : "scn-run:" + sid);
 const scnQueueKey = () => (wsKey ? wsKey("scn-queue:v1") : "scn-queue:v1");
+const scnDismissKey = () => (wsKey ? wsKey("scn-queue-dismissed:v1") : "scn-queue-dismissed:v1");
 
 const RUN_JOB_POLLING_STATUSES = new Set(["queued", "running", "cancel_requested"]);
 const RUN_JOB_CANCELABLE_STATUSES = new Set(["queued", "running"]);
@@ -319,6 +320,38 @@ function scnQueueLoad() {
 }
 function scnQueueSave(sids) {
   try { localStorage.setItem(scnQueueKey(), JSON.stringify(sids.slice(0, 40))); } catch (e) {}
+}
+/* 移出队列的场：本地队列只是「在办清单」，但队列成员也会从后端
+   scene-run-states 恢复（换浏览器/后台跑完的场不该消失）。若不记下作者的移出意图，
+   下次进页面这一场又会被恢复回来——删除就成了假动作。这里按作品持久化移出名单，
+   重新入列时销名。 */
+function scnQueueDismissLoad() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(scnDismissKey()));
+    return Array.isArray(raw) ? raw : [];
+  } catch (e) { return []; }
+}
+const SCN_DISMISS_CAP = 200;
+function scnQueueDismissSave(sids) {
+  /* 留**最近**的 200 条。新移出的场追加在尾部，所以 slice(0, 200) 恰好把它们整批丢掉：
+     名单一满，「移出」就退化成假动作 —— 界面上那一场消失了，下次进页面
+     scnBackendQueueSids 的恢复过滤名单里根本没有它，它又原样回到队列里。
+     这正是这份名单当初被引入要防的那种「删除是假动作」。 */
+  const kept = (sids || []).slice(-SCN_DISMISS_CAP);
+  try { localStorage.setItem(scnDismissKey(), JSON.stringify(kept)); } catch (e) {}
+  return kept;
+}
+function scnQueueDismissAdd(sids) {
+  const next = scnQueueDismissLoad();
+  (sids || []).forEach((sid) => { if (sid && !next.includes(sid)) next.push(sid); });
+  /* 返回真正落盘的那份，而不是截断前的 next —— 调用方拿它当「现在的移出名单」用。 */
+  return scnQueueDismissSave(next);
+}
+function scnQueueDismissClear(sids) {
+  const drop = new Set(sids || []);
+  if (!drop.size) return scnQueueDismissLoad();
+  const next = scnQueueDismissLoad().filter((sid) => !drop.has(sid));
+  return scnQueueDismissSave(next);
 }
 
 /* ---- 上游上下文：雪花构思折叠成提示词材料 ---- */
@@ -1060,7 +1093,7 @@ function scnPickList(queuedSids) {
   } catch (e) { return []; }
 }
 
-Object.assign(window, { scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection });
+Object.assign(window, { scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { SceneRunJobControl, scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };
+export { SceneRunJobControl, scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };

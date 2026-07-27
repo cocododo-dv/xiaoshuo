@@ -538,7 +538,10 @@ def _snowflake_unit(step_key: str, label: str, opt: str) -> dict[str, Any]:
         "inputs": (
             "user_prompt = task_prompt + JSON payload（_render_user_prompt）。payload 键：project（项目元信息）、"
             "step_key/step_label/step_description/step_instruction/step_guidance/step_editor（步骤定义与编辑器约束）、"
-            "approved_steps（上游已确认步骤的成果——跨步一致性的唯一来源，已剥 fe_* 写穿键）、current_draft（合并后的当前草稿，已剥 fe_*）、"
+            "upstream_steps（本步之前每一步的规范草稿，按雪花顺序、带 status/confirmed 标注，已剥 fe_* 写穿键——"
+            "跨步一致性的唯一来源；**不限于已确认步骤**，未确认/已过期草稿同样是作品的故事事实，"
+            "只收 approved 会让模型只剩书名可用而另编一本书）、upstream_steps_how_to_use（用法说明）、"
+            "current_draft（合并后的当前草稿，已剥 fe_*）、"
             "pressure_rubric + current_pressure_diagnosis（压力评分标尺与当前诊断）、scene_rules（场景规则，后期步骤）、"
             "adopted_direction（可选：作者采纳的候选方向蓝本 + how_to_use 指令）、"
             "focus_scenes（可选，仅 scene_details：单场定向——只输出焦点场景，服务端按 scene_id 合并并硬过滤焦点外输出）、"
@@ -581,7 +584,7 @@ UNITS: list[dict[str, Any]] = [
         "call_chain": [
             (f"{SVC}/snowflake_workspace_llm.py", 'task_key="snowflake_step_candidates"', 1, "step_candidates"),
         ],
-        "inputs": "payload 键：project、步骤定义/指引、approved_steps（后端已批准上游规范草稿，已剥 fe_*）、current_canonical_draft、pressure_rubric、current_pressure_diagnosis（缺口导向）、fe_local_context（前端折叠补充）、current_draft_text、target_chars（目标字数）。",
+        "inputs": "payload 键：project、步骤定义/指引、upstream_steps（本步之前的规范草稿，带 status/confirmed，含未确认草稿，已剥 fe_*）、current_canonical_draft、pressure_rubric、current_pressure_diagnosis（缺口导向）、fe_local_context（前端折叠补充）、current_draft_text、target_chars（目标字数）。",
         "output_contract": "candidates 数组；经 _normalize_candidates_output 归一。",
         "parser_refs": [(f"{SVC}/snowflake_workspace_llm.py", "def _normalize_candidates_output", 1)],
         "failure": "LLM 未启用 → fallback {\"candidates\": []}；错误码同雪花家族。",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
@@ -24,10 +25,16 @@ from novel_system.services.llm_accounting import (
 from novel_system.services.author_actions import llm_setup_action
 from novel_system.services.llm_audit import sanitize_audit_summary, text_fingerprint
 from novel_system.services.prompt_builder import PromptConfigurationError, load_prompt_templates
+from novel_system.services.snowflake_prompt_budget import (
+    apply_snowflake_prompt_budget,
+    budget_audit_fields,
+)
 from novel_system.services.snowflake_steps import (
+    STEP_ORDER,
     diagnose_scene_detail,
     diagnose_step_pressure,
     get_step_definition,
+    list_step_definitions,
     merge_step_draft,
     step_completeness,
     step_guidance,
@@ -41,6 +48,21 @@ class WorkspaceLLMResult:
     source: str
     llm_call_id: str | None
     payload: dict[str, Any]
+    # 生成过程里作者必须知道、但不属于草稿内容的事实（分批深化的进度 / 中途失败）。
+    # 落到 health_json.generation_notice，FE 据此把「已生成」提示降级为警告。
+    notice: dict[str, Any] | None = None
+
+
+# 场景规划分批深化的每批场数。整表一次生成对任何真实体量的书都不可行：
+# 30 场的完整 Scene/Sequel 明细就已逼近 max_output_tokens=8192（客户端降级阶梯的
+# 上限，见 llm_client.MAX_OUTPUT_TOKENS_CEILING），60-150 场的长篇必然被砍断——
+# 要么硬失败，要么模型自行「只深化前几场」交回一份半新半旧的割裂草稿。
+# 6 场/批留足余量：reasoning 模型的思考 token 同样吃 max_output_tokens。
+SCENE_DETAIL_BATCH_SIZE = 6
+# 单次请求最多跑几批。分批把一次调用换成若干次串行调用，长篇（100+ 场）不设上限
+# 就会让一次点击变成半小时的同步请求（幂等租约只有 600s，见 config/models.yaml
+# job_runtime）。封顶后剩余场次由 notice 告诉作者，再点一次从第一场未完成处续深。
+SCENE_DETAIL_MAX_BATCHES_PER_RUN = 6
 
 
 class SnowflakeWorkspaceLLMService:
@@ -60,6 +82,162 @@ class SnowflakeWorkspaceLLMService:
         self._settings = None
 
     def generate_step(
+        self,
+        *,
+        project: StoryProject,
+        step_key: str,
+        latest_by_step: Mapping[str, Any],
+        adopted_direction: str | None = None,
+        focus_scene_refs: list[str] | None = None,
+        focus_character_refs: list[str] | None = None,
+        draft_override: dict[str, Any] | None = None,
+    ) -> WorkspaceLLMResult:
+        """整步生成入口。场景规划的「整表生成 / 全部补全」在这里分批派发。"""
+        if step_key == "scene_details" and not focus_scene_refs:
+            current_draft = merge_step_draft(
+                step_key,
+                draft_override
+                or (
+                    latest_by_step.get(step_key).artifact_json
+                    if latest_by_step.get(step_key) is not None
+                    else None
+                ),
+                latest_by_step=dict(latest_by_step),
+            )
+            # 没有场景可深化时立刻报错：场景规划的名册来自场景列表，模型无权凭空加场
+            # （提示词里就写死了「服务端会丢弃草稿里没有的 scene_id」）。不拦就是稳赔一次
+            # 调用换一份空草稿，还报「已生成」。
+            if not (current_draft.get("scenes") or []):
+                raise DomainError(
+                    "SNOWFLAKE_SCENE_LIST_EMPTY",
+                    "场景规划还没有可深化的场景：请先在「场景列表」里生成或手工列出场景，再回来补全每一场的规划。",
+                    status_code=409,
+                    details={
+                        "node_id": "snowflake_step_generate",
+                        "step_key": step_key,
+                        "author_action": {
+                            "kind": "navigate_step",
+                            "step_key": "scene_list",
+                            "label": "去场景列表",
+                        },
+                        "next_action": "generate_scene_list_first",
+                    },
+                )
+            batches, pending = _scene_detail_batches(current_draft)
+            if batches:
+                return self._generate_scene_details_batched(
+                    project=project,
+                    latest_by_step=latest_by_step,
+                    adopted_direction=adopted_direction,
+                    base_draft=current_draft,
+                    batches=batches,
+                    pending=pending,
+                )
+        return self._generate_step_once(
+            project=project,
+            step_key=step_key,
+            latest_by_step=latest_by_step,
+            adopted_direction=adopted_direction,
+            focus_scene_refs=focus_scene_refs,
+            focus_character_refs=focus_character_refs,
+            draft_override=draft_override,
+        )
+
+    def _generate_scene_details_batched(
+        self,
+        *,
+        project: StoryProject,
+        latest_by_step: Mapping[str, Any],
+        adopted_direction: str | None,
+        base_draft: dict[str, Any],
+        batches: list[list[str]],
+        pending: int,
+    ) -> WorkspaceLLMResult:
+        """把整表深化拆成若干次定向生成，逐批把结果并回底稿。
+
+        每批复用既有的单场定向通道，因此白拿三条既有防线：服务端焦点过滤
+        （模型改写焦外场景一律丢弃）、按 scene_id 合并（其余场保持原样）、
+        以及作用域收窄到本批的完备性修复重试。
+
+        中途失败不回滚已完成的批次——那些场是真花了 token 深化出来的。但也绝不
+        静默：失败与本次未覆盖的剩余场次都进 notice，由 health_json 交给作者。
+        第一批就失败则直接抛出（什么都没完成，报错才是诚实的）。
+        """
+        accumulated = base_draft
+        last_call_id: str | None = None
+        completed = 0
+        failure: DomainError | None = None
+        budget_notice: dict[str, Any] | None = None
+        for index, batch in enumerate(batches):
+            try:
+                result = self._generate_step_once(
+                    project=project,
+                    step_key="scene_details",
+                    latest_by_step=latest_by_step,
+                    adopted_direction=adopted_direction,
+                    focus_scene_refs=batch,
+                    focus_character_refs=None,
+                    draft_override=accumulated,
+                )
+            except DomainError as exc:
+                if index == 0:
+                    raise
+                failure = exc
+                break
+            accumulated = result.payload
+            last_call_id = result.llm_call_id or last_call_id
+            # 提示词预算警告对每一批都成立（同一份上游材料），留第一条即可
+            budget_notice = budget_notice or result.notice
+            completed += 1
+
+        planned = sum(len(batch) for batch in batches)
+        done = sum(len(batch) for batch in batches[:completed])
+        # 本次没轮到的场 = 中断后剩下的 + 一开始就被单次上限挡在外面的
+        left = planned - done + pending
+        notice: dict[str, Any] | None = None
+        if failure is not None:
+            notice = {
+                "code": "SCENE_DETAILS_PARTIAL",
+                "message": (
+                    f"分批深化在第 {completed + 1}/{len(batches)} 批中断：{failure.message} "
+                    f"本次已深化 {done} 场，还剩 {left} 场——再次点击生成会从第一场未完成的场继续。"
+                ),
+                "error_code": failure.code,
+            }
+        elif pending:
+            notice = {
+                "code": "SCENE_DETAILS_MORE_TO_GO",
+                "message": (
+                    f"本次已深化 {done} 场（单次上限 {SCENE_DETAIL_MAX_BATCHES_PER_RUN} 批），"
+                    f"还剩 {left} 场——再次点击生成继续深化剩余场景。"
+                ),
+            }
+        if notice is not None:
+            notice.update(
+                {
+                    "severity": "warning",
+                    "batches_total": len(batches),
+                    "batches_completed": completed,
+                    "scenes_deepened": done,
+                    "scenes_remaining": left,
+                }
+            )
+            # 进度类提示优先（作者当下要做的决定是「还要不要再点一次」），
+            # 但预算超限这件事不能因此丢掉——并进同一条提示。
+            if budget_notice is not None:
+                notice["message"] = f"{notice['message']} 另：{budget_notice['message']}"
+                notice["prompt_budget"] = {
+                    key: budget_notice.get(key)
+                    for key in ("budget_tokens", "estimated_before", "estimated_after", "applied")
+                }
+        return WorkspaceLLMResult(
+            source="llm",
+            llm_call_id=last_call_id,
+            payload=accumulated,
+            notice=notice if notice is not None else budget_notice,
+        )
+
+    def _generate_step_once(
         self,
         *,
         project: StoryProject,
@@ -94,7 +272,10 @@ class SnowflakeWorkspaceLLMService:
                     continue
                 if {str(scene.get("row_uid") or ""), str(scene.get("scene_id") or "")} & refs:
                     focus_scenes.append(scene)
-                    focus_scene_ids.append(str(scene.get("scene_id") or ""))
+                    # 身份口径必须与 _scene_detail_batches 一致：分批按 scene_id or row_uid
+                    # 指场，这里若只认 scene_id，缺编号的场就会让空转防线与修复重试
+                    # 双双对着空串比对，等于失效。
+                    focus_scene_ids.append(_scene_ref(scene))
                     focus_scene_allowed |= {str(scene.get("scene_id") or ""), str(scene.get("row_uid") or "")}
             focus_scene_allowed = {ref for ref in (focus_scene_allowed | refs) if ref}
             if not focus_scenes:
@@ -151,7 +332,16 @@ class SnowflakeWorkspaceLLMService:
                     status_code=409,
                     details={"focus_character_refs": focus_character_refs},
                 )
-        approved_steps = _approved_step_context(latest_by_step)
+        upstream_steps = _upstream_step_context(latest_by_step, step_key=step_key)
+        if focus_scenes and step_key == "scene_details":
+            # 上游的场景列表是同一份场表的另一副本，整表随每批重发就是按批数翻倍。
+            # 焦点场保留全量（pov/章内职能只在这里有），其余压成参照条目。
+            upstream_steps = [
+                dict(item, draft=_compact_scene_context(item["draft"], focus_scene_allowed))
+                if item.get("step_key") == "scene_list"
+                else item
+                for item in upstream_steps
+            ]
         guidance = step_guidance(step_key)
         prompt_payload = {
             "project": _project_prompt_payload(project),
@@ -162,8 +352,15 @@ class SnowflakeWorkspaceLLMService:
             "step_instruction": guidance.get("instruction"),
             "step_guidance": guidance,
             "step_editor": step_definition.get("editor") or {},
-            "approved_steps": approved_steps,
-            "current_draft": _sanitize_canonical_draft(current_draft),
+            "upstream_steps": upstream_steps,
+            "upstream_steps_how_to_use": UPSTREAM_STEPS_HOW_TO_USE,
+            # 定向深化时焦外场景压成参照条目：全表明细 × 每批一次 = 输入成本按批数翻倍，
+            # 而模型对焦外场只需要「它是什么、接在哪」。紧邻前后场保留衔接字段。
+            "current_draft": (
+                _compact_scene_context(current_draft, focus_scene_allowed)
+                if (focus_scenes and step_key == "scene_details")
+                else _sanitize_canonical_draft(current_draft)
+            ),
             "pressure_rubric": _pressure_rubric(step_key),
             "current_pressure_diagnosis": diagnose_step_pressure(step_key, current_draft),
             "scene_rules": _scene_rules(step_key),
@@ -203,7 +400,13 @@ class SnowflakeWorkspaceLLMService:
         # 默认底稿是空骨架 / 从 scene_list 重新播种的骨架，模型没回传的成员会被整体
         # 丢掉——作者手工加的角色、焦点外场景的既有深化都要在这里幸存。
         # scene_list 的「AI 生成整表」保持替换语义：重排整表时不让旧场景残留混排。
-        keep_members = step_key in _CHARACTER_COLLECTION_STEPS or step_key == "scene_details"
+        # long_synopsis 也要拿真底稿，但目的不同：章表**仍然整表替换**（模型重排/增删章是
+        # 合法的重生成），只是清洗器要能看见既有章的 row_uid 才能按章序把身份传下去。
+        # 底稿给空骨架 = 每次生成都判成全新的章 → 全书场景归属整片解绑（见 #1）。
+        keep_members = (
+            step_key in _CHARACTER_COLLECTION_STEPS
+            or step_key in {"scene_details", "long_synopsis"}
+        )
         merge_base = (
             {key: value for key, value in current_draft.items() if not str(key).startswith("fe_")}
             if keep_members
@@ -233,6 +436,12 @@ class SnowflakeWorkspaceLLMService:
         result = self._run_structured_task(prompt_payload=prompt_payload, **run_kwargs)
         if result.source != "llm":
             return result
+        _assert_scene_details_advanced(
+            step_key,
+            base=current_draft,
+            merged=result.payload,
+            targeted_ids=set(focus_scene_ids) if focus_scene_ids else None,
+        )
 
         # 完备性修复重试（残缺兜底）：模型输出经清洗（丢契约外键）后仍有空字段时，
         # 带着空字段清单再给模型一次机会；只有重试确实更完整才采用，失败保留首版。
@@ -303,7 +512,8 @@ class SnowflakeWorkspaceLLMService:
             )
             prompt_payload.update(
                 {
-                    "approved_steps": _approved_step_context(latest_by_step),
+                    "upstream_steps": _upstream_step_context(latest_by_step, step_key=step_key),
+                    "upstream_steps_how_to_use": UPSTREAM_STEPS_HOW_TO_USE,
                     "current_canonical_draft": _sanitize_canonical_draft(current_canonical),
                     "pressure_rubric": _pressure_rubric(step_key),
                     "current_pressure_diagnosis": diagnose_step_pressure(step_key, current_canonical),
@@ -402,6 +612,41 @@ class SnowflakeWorkspaceLLMService:
             fallback_payload={"items": _fallback_triage_items(draft)},
         )
 
+    def chapter_plan_suggestions(
+        self,
+        *,
+        project: dict[str, Any],
+        chapters: list[dict[str, Any]],
+        scenes: list[dict[str, Any]],
+        current_assignment: list[dict[str, Any]],
+        approved_context: list[dict[str, Any]],
+    ) -> WorkspaceLLMResult:
+        """分章建议（P3，顾问通道）。
+
+        **不给 fallback_payload —— 这个端点 fail-closed。** 作者点的是「让 AI 建议分章」，
+        LLM 没配好时返回一份规则算出来的东西并称之为建议，就是撒谎；而规则分章本来就
+        以 `spine_anchor` 策略明明白白摆在面板上，作者随时能用，不需要伪装成 AI 建议。
+        """
+        prompt_payload = {
+            "project": project,
+            "chapters": chapters,
+            "scenes": scenes,
+            "current_assignment": current_assignment,
+            "approved_context": approved_context,
+        }
+        allowed_scene_ids = {str(item.get("scene_plan_id") or "") for item in scenes}
+        allowed_chapter_uids = {str(item.get("row_uid") or "") for item in chapters}
+        return self._run_structured_task(
+            task_key="snowflake_chapter_plan",
+            template_name="snowflake_chapter_plan_suggest",
+            project_id=str(project.get("project_id") or ""),
+            step_ref="long_synopsis",
+            prompt_payload=prompt_payload,
+            normalize_output=lambda output: _normalize_chapter_plan_output(
+                output, allowed_scene_ids, allowed_chapter_uids
+            ),
+        )
+
     def _run_structured_task(
         self,
         *,
@@ -465,6 +710,14 @@ class SnowflakeWorkspaceLLMService:
                 },
             ) from exc
 
+        # 输入预算在这里统一施加：所有雪花 LLM 节点共用这一条渲染路径，
+        # 载荷（上游十步 + 全表底稿）会随作品体量无界增长，不设闸就是把
+        # 「一次点击」变成几十万 token，甚至撑爆模型上下文窗口。
+        prompt_payload, budget_report = apply_snowflake_prompt_budget(
+            prompt_payload,
+            budget_tokens=self._input_token_budget(template),
+            step_key=step_ref,
+        )
         user_prompt = _render_user_prompt(template, prompt_payload)
         prompt_hash = _prompt_hash(template_name, template.version, template.system_prompt, user_prompt, template.structured_schema)
         llm_call_id = f"llm_call_project_{task_key}_{uuid.uuid4().hex[:12]}"
@@ -493,6 +746,9 @@ class SnowflakeWorkspaceLLMService:
                 "template_name": template.name,
                 "template_version": template.version,
                 "step_key": step_ref,
+                # 降载过的提示词必须在审计里留痕：否则「模型怎么把这个角色写丢了」
+                # 将永远查不出是预算削的还是模型的锅。摊平是为了在摘要超限压缩时存活。
+                **budget_audit_fields(budget_report),
                 **normalize(prompt_payload),
             }
         )
@@ -579,7 +835,16 @@ class SnowflakeWorkspaceLLMService:
             source="llm",
             llm_call_id=response.llm_call_id or llm_call_id,
             payload=normalized_output,
+            notice=_budget_notice(budget_report),
         )
+
+    def _input_token_budget(self, template: Any) -> int:
+        """本次渲染的输入预算：环境变量优先（小上下文的本地模型要能收紧），
+        否则用模板声明值；两者皆无 → 0 = 不设预算。"""
+        override = int(getattr(self._settings_payload(), "snowflake_input_token_budget", 0) or 0)
+        if override > 0:
+            return override
+        return int(getattr(template, "input_token_budget", 0) or 0)
 
     def llm_enabled(self) -> bool:
         """公开可用性探针：FE 的「采纳并结构化」用它决定报错而不是落 fallback 版本。"""
@@ -679,22 +944,236 @@ def _sanitize_canonical_draft(draft: dict[str, Any] | None) -> dict[str, Any]:
     return payload
 
 
-def _approved_step_context(latest_by_step: Mapping[str, Any]) -> list[dict[str, Any]]:
+CONFIRMED_STEP_STATUSES = {"approved", "skipped"}
+
+# 上游上下文的用法说明：状态是「这份材料有多稳」的提示，不是「要不要遵守」的开关。
+UPSTREAM_STEPS_HOW_TO_USE = (
+    "这是本步之前每一步的规范草稿，按雪花顺序排列，是本作品故事事实的唯一来源："
+    "人物姓名与 id、地点、时间线、已埋的冲突与灾难链，全部以它们为准，不得另起炉灶。"
+    "confirmed=false 表示作者还没确认这一步（草稿仍可能变动），"
+    "但它依然是作者当前认定的故事，必须照样遵守——不要因为未确认就忽略它、也不要去改写它。"
+)
+
+
+def _upstream_step_context(
+    latest_by_step: Mapping[str, Any],
+    *,
+    step_key: str | None = None,
+) -> list[dict[str, Any]]:
+    """本步之前所有步骤的规范草稿（按雪花顺序），带确认状态。
+
+    这里**不能**只收 approved/skipped。explore 模式（雪花工作台建的作品默认就是它）
+    允许作者一路生成不确认，而改动上游又会把下游整片打成 stale——只收已确认就等于
+    把整条故事线从提示词里删掉，模型只剩书名可用，于是凭空另编一本书。这不是假想：
+    作品《何有》的场景列表主角叫「林一鸣」，与前八步的「何有」毫无关系，就是这么来的。
+
+    未确认的草稿同样是作者此刻认定的故事事实，必须进上下文，只是要如实标注状态。
+    """
+    limit = STEP_ORDER.get(str(step_key or ""), len(STEP_ORDER))
     items: list[dict[str, Any]] = []
-    for step_key, artifact in latest_by_step.items():
-        if artifact is None or str(getattr(artifact, "status", "")) not in {"approved", "skipped"}:
+    for definition in list_step_definitions():
+        key = str(definition["step_key"])
+        if STEP_ORDER[key] >= limit:
             continue
-        step_definition = get_step_definition(step_key)
+        artifact = latest_by_step.get(key)
+        if artifact is None:
+            continue
+        draft = _sanitize_canonical_draft(
+            merge_step_draft(key, getattr(artifact, "artifact_json", None), latest_by_step=dict(latest_by_step))
+        )
+        # 空骨架（还没写的步骤）不占提示预算，也别让模型误以为作者已经交代过什么。
+        if not _has_value(draft):
+            continue
+        status = str(getattr(artifact, "status", "") or "")
         items.append(
             {
-                "step_key": step_key,
-                "label": step_definition.get("label"),
-                "draft": _sanitize_canonical_draft(
-                    merge_step_draft(step_key, getattr(artifact, "artifact_json", None), latest_by_step=dict(latest_by_step))
-                ),
+                "step_key": key,
+                "label": definition.get("label"),
+                "status": status,
+                "confirmed": status in CONFIRMED_STEP_STATUSES,
+                "draft": draft,
             }
         )
     return items
+
+
+# 焦外场景在提示词里保留的参照键（它是什么、接在哪），以及紧邻前后场额外保留的
+# 衔接键（上一场的挫败/决定要能接出本场的目标）。
+_SCENE_REFERENCE_KEYS = (
+    "scene_id", "row_uid", "chapter_id", "chapter_title", "scene_seq",
+    "title", "summary", "primary_form", "scene_type", "location",
+    "pov_character_id", "chapter_role",
+)
+_SCENE_NEIGHBOR_KEYS = _SCENE_REFERENCE_KEYS + (
+    "goal", "setback", "decision", "exit_change", "hook",
+)
+
+
+def _budget_notice(report: dict[str, Any]) -> dict[str, Any] | None:
+    """降载阶梯跑完仍超预算 → 作者可见的警告。
+
+    只在**超出**时提示。正常范围内的降载是设计动作（本来就只发本次要用的材料），
+    每次都弹提示只会训练作者忽略它；真正需要作者知道的是「这本书的上游材料已经
+    超出提示词预算，模型这次看到的是删减版」。
+    """
+    if report.get("within_budget", True):
+        return None
+    return {
+        "code": "PROMPT_BUDGET_EXCEEDED",
+        "severity": "warning",
+        "message": (
+            f"上游材料已超出提示词输入预算（约 {report.get('estimated_after')} / "
+            f"{report.get('budget_tokens')} token）：本次已按无关材料优先的顺序删减"
+            f"（{'、'.join(report.get('applied') or []) or '无可删减项'}），模型看到的是删减版。"
+            "可精简上游步骤，或调高该节点的输入预算。"
+        ),
+        **{key: report.get(key) for key in ("budget_tokens", "estimated_before", "estimated_after", "applied")},
+    }
+
+
+def _scene_ref(scene: dict[str, Any]) -> str:
+    """定向指认一场的统一口径：优先系统指派的 scene_id，退到前端铸的 row_uid。
+
+    分批、焦点解析、空转防线三处必须用同一口径——口径不一致时，缺 scene_id 的场
+    会被「分批指得着、防线看不见」，一次白跑还报成功。
+    """
+    return str(scene.get("scene_id") or "").strip() or str(scene.get("row_uid") or "").strip()
+
+
+def _scene_detail_batches(draft: dict[str, Any]) -> tuple[list[list[str]], int]:
+    """把场景规划草稿切成分批深化的场景 ref 列表，返回 (批次, 本次未覆盖的场数)。
+
+    返回空批次列表 = 不需要分批，调用方走原来的整表单次通道。两种情况会这样：
+    场表本身不超过一批；或者有场既没有 scene_id 也没有 row_uid（定向指不着它）——
+    分批的代价绝不能是「指不着的场永远轮不到」，宁可慢，不可漏。
+
+    起点取「第一场还缺必填项的场」：整表全空时就是第 0 场（首次整表生成），
+    深化到一半时就是上次断掉的地方（作者点的按钮本来就叫「全部补全」）。
+    注意剩余不足一批时**仍然分批**——那正是续深场景，退回整表通道会把已经
+    深化好的场连带重做一遍，既烧 token 又可能改写作者已认可的内容。
+
+    单次封顶剩下的场数原样返回，由调用方告诉作者还剩多少、再点一次继续。
+    """
+    scenes = [scene for scene in (draft or {}).get("scenes") or [] if isinstance(scene, dict)]
+    refs: list[str] = []
+    for scene in scenes:
+        ref = _scene_ref(scene)
+        if not ref:
+            return [], 0
+        refs.append(ref)
+    if len(refs) <= SCENE_DETAIL_BATCH_SIZE:
+        return [], 0
+
+    start = next(
+        (
+            index
+            for index, scene in enumerate(scenes)
+            if diagnose_scene_detail(scene, index=index + 1).get("missing_fields")
+        ),
+        0,
+    )
+    todo = refs[start:]
+    batches = [todo[i : i + SCENE_DETAIL_BATCH_SIZE] for i in range(0, len(todo), SCENE_DETAIL_BATCH_SIZE)]
+    pending = sum(len(batch) for batch in batches[SCENE_DETAIL_MAX_BATCHES_PER_RUN:])
+    return batches[:SCENE_DETAIL_MAX_BATCHES_PER_RUN], pending
+
+
+def _compact_scene_context(draft: dict[str, Any], focus_refs: set[str]) -> dict[str, Any]:
+    """定向深化的提示上下文：焦点场给全量明细，焦外场压成参照条目。"""
+    payload = _sanitize_canonical_draft(draft)
+    scenes = [scene for scene in payload.get("scenes") or [] if isinstance(scene, dict)]
+
+    def _is_focus(scene: dict[str, Any]) -> bool:
+        return bool({str(scene.get("scene_id") or ""), str(scene.get("row_uid") or "")} & focus_refs)
+
+    focus_positions = [index for index, scene in enumerate(scenes) if _is_focus(scene)]
+    neighbor_positions = {pos + offset for pos in focus_positions for offset in (-1, 1)}
+    compacted = []
+    for index, scene in enumerate(scenes):
+        if _is_focus(scene):
+            compacted.append(scene)
+            continue
+        keys = _SCENE_NEIGHBOR_KEYS if index in neighbor_positions else _SCENE_REFERENCE_KEYS
+        compacted.append({key: scene[key] for key in keys if key in scene and _has_value(scene[key])})
+    payload["scenes"] = compacted
+    return payload
+
+
+# 场景规划里承载「这一场被深化过」的内容键——身份/序号/章归属不算内容。
+_SCENE_CONTENT_KEYS = (
+    "title", "summary", "location", "scene_crucible", "crucible",
+    "goal", "conflict", "setback", "reaction", "dilemma", "decision",
+    "cost_requirement", "must_include_text", "exit_change", "hook", "beats_json",
+)
+
+
+def _assert_scene_details_advanced(
+    step_key: str,
+    *,
+    base: dict[str, Any],
+    merged: dict[str, Any],
+    targeted_ids: set[str] | None,
+) -> None:
+    """场景规划的空转防线：模型必须真的动过被点名的场，否则报错而不是「生成成功」。
+
+    真实故障：模型自造场景编号（SC001 → S1）或整段复述底稿，清洗器按 scene_id
+    合并后一个字都没变——旧行为是抛出一份与原稿逐字相同的草稿、盖上 llm 来源、
+    弹「已生成」，作者白等一轮、白付一次 token，还以为模型认可了现状。
+    """
+    if step_key != "scene_details":
+        return
+    base_scenes = [scene for scene in (base or {}).get("scenes") or [] if isinstance(scene, dict)]
+    merged_scenes = [scene for scene in (merged or {}).get("scenes") or [] if isinstance(scene, dict)]
+    # 场景规划的名册来自底稿，生成只深化、从不删场。合并后场数变少 = 有场在清洗/合并
+    # 里掉了（例如没有 scene_id 的场对不上号，被整表丢弃）。这是最极端的空转：
+    # 作者点一次生成，换回一份更空的草稿，旧代码还报「已生成」。
+    if len(merged_scenes) < len(base_scenes):
+        raise DomainError(
+            "SNOWFLAKE_SCENE_DETAILS_LOST",
+            f"生成后场景数从 {len(base_scenes)} 掉到 {len(merged_scenes)}——本次结果已丢弃，原草稿保持不变。"
+            "通常是有场缺少系统指派的场景编号；请回「场景列表」重新保存一次以补齐编号后重试。",
+            status_code=409,
+            details={
+                "node_id": "snowflake_step_generate",
+                "step_key": step_key,
+                "scenes_before": len(base_scenes),
+                "scenes_after": len(merged_scenes),
+                "next_action": "resave_scene_list_to_assign_ids",
+            },
+        )
+    base_by_id = {
+        str(scene.get("scene_id") or scene.get("row_uid") or ""): scene
+        for scene in base_scenes
+    }
+    advanced = False
+    inspected = 0
+    for scene in (merged or {}).get("scenes") or []:
+        if not isinstance(scene, dict):
+            continue
+        identity = {str(scene.get("scene_id") or ""), str(scene.get("row_uid") or "")}
+        if targeted_ids is not None and not (identity & targeted_ids):
+            continue
+        inspected += 1
+        before = base_by_id.get(str(scene.get("scene_id") or scene.get("row_uid") or "")) or {}
+        for key in _SCENE_CONTENT_KEYS:
+            if normalize(scene.get(key)) != normalize(before.get(key)):
+                advanced = True
+                break
+        if advanced:
+            break
+    if inspected and not advanced:
+        raise DomainError(
+            "SNOWFLAKE_LLM_EMPTY_GENERATION",
+            "模型这次没有对指定场景产出任何新内容（常见原因是它回传了草稿里不存在的场景编号）。"
+            "原草稿已原样保留，请重试；若反复如此，请检查该节点绑定的模型是否支持 JSON 结构化输出。",
+            status_code=409,
+            details={
+                "node_id": "snowflake_step_generate",
+                "step_key": step_key,
+                "scenes_inspected": inspected,
+                "next_action": "retry_or_check_node_model",
+            },
+        )
 
 
 def _scene_rules(step_key: str) -> dict[str, Any] | None:
@@ -745,7 +1224,9 @@ def _focus_scene_payload(step: dict[str, Any], focus_scene_id: str | None) -> di
 def _render_user_prompt(template: Any, prompt_payload: dict[str, Any]) -> str:
     required = template.structured_schema.get("required") or []
     required_text = ", ".join(str(item) for item in required if isinstance(item, str))
-    prompt_json = json.dumps(normalize(prompt_payload), ensure_ascii=False, indent=2)
+    # 紧凑 JSON：缩进对模型没有价值，却给这份嵌套载荷凭空加了约六成体积——
+    # 场景规划分批后同一份上下文要重发 N 次，这笔浪费按批数翻倍。
+    prompt_json = json.dumps(normalize(prompt_payload), ensure_ascii=False, separators=(",", ":"))
     return (
         f"{template.task_prompt.strip()}\n\n"
         f"Working payload:\n{prompt_json}\n\n"
@@ -1074,6 +1555,13 @@ def _sanitize_field_value(
             latest_by_step=latest_by_step,
             base_items=base.get(key) if isinstance(base.get(key), list) else [],
         )
+    if kind == "chapters":
+        template = field.get("template") if isinstance(field.get("template"), dict) else {}
+        return _sanitize_chapter_items(
+            value,
+            template=template,
+            base_items=base.get(key) if isinstance(base.get(key), list) else [],
+        )
     if kind == "scene_list":
         template = field.get("template") if isinstance(field.get("template"), dict) else {}
         return _sanitize_scene_list_items(
@@ -1089,6 +1577,102 @@ def _sanitize_field_value(
             base_items=base.get(key) if isinstance(base.get(key), list) else [],
         )
     return None
+
+
+def _normalize_chapter_plan_output(
+    output: dict[str, Any],
+    allowed_scene_ids: set[str],
+    allowed_chapter_uids: set[str],
+) -> dict[str, Any]:
+    """把模型给的分章建议约束回一份可安全展示的提案。
+
+    服务端硬约束（模型违约时是过滤掉，不是报错——建议本来就允许不完美，但绝不能
+    因为它编了一个不存在的 id 就把作者的场丢掉或绑到不存在的章上）：
+    - 只保留 id 在白名单里的条目；
+    - 一个场只认第一次出现（重复分配会让场在两章里各出现一次）；
+    - 没被提到的场不在这里补——调用方按「缺哪些」如实展示。
+    """
+    raw = output.get("assignments") if isinstance(output, dict) else None
+    assignments: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        scene_plan_id = str(item.get("scene_plan_id") or "").strip()
+        chapter_row_uid = str(item.get("chapter_row_uid") or "").strip()
+        if scene_plan_id not in allowed_scene_ids or chapter_row_uid not in allowed_chapter_uids:
+            continue
+        if scene_plan_id in seen:
+            continue
+        seen.add(scene_plan_id)
+        assignments.append({"scene_plan_id": scene_plan_id, "chapter_row_uid": chapter_row_uid})
+    rationale = str((output or {}).get("rationale") or "").strip()[:600]
+    return {
+        "assignments": assignments,
+        "rationale": rationale,
+        "missing_scene_plan_ids": sorted(allowed_scene_ids - seen),
+    }
+
+
+_SPINE_MARKS = ("灾一", "灾二", "灾三")
+
+
+def _sanitize_chapter_items(
+    value: Any,
+    *,
+    template: dict[str, Any],
+    base_items: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """07 长篇大纲的结构化章表（P2）。
+
+    章序由服务端按数组顺序重排（模型给的编号常和顺序对不上）。``row_uid`` 是系统铸造的
+    身份锚，**绝不收模型编的**——提示词也明说「Leave row_uid as ""」，模型自己编一个出来
+    会把两章绑成同一行。
+
+    但也不能一律清空。清空等于每次「AI 生成」都把整张章表判成**全新的**一批章：
+    ``_sync_chapter_plans`` 于是给每一章铸新 uid、软删全部旧章行，并把分在旧章里的场
+    ``chapter_plan_id`` 统统置空——作者只是想润一下章标题，已经分好的全书归属整片消失，
+    物化闸门无声退回 blocked。所以这里按**最终章序对位**从底稿继承身份：第 N 章还是第
+    N 章。模型多出来的章留空 uid，交给同步层铸新的（那才是真的新章）。
+
+    脊柱只认三个合法标记。
+    """
+    if not isinstance(value, list):
+        return []
+    # 对位用最终章序（作者在分章面板看到的就是这个序），而不是模型数组下标——
+    # 空壳章会被下面跳过，用下标对位会让身份整体错位一格。
+    base_uids = [
+        str(item.get("row_uid") or "").strip()
+        for item in (base_items or [])
+        if isinstance(item, dict)
+    ]
+    chapters: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        summary = str(item.get("summary") or "").strip()
+        if not title and not summary:
+            continue  # 空壳章不进草稿：宁可少一章，也不要在分章面板里摆一行空的
+        spine = str(item.get("spine") or "").strip()
+        try:
+            act = int(item.get("act") or 1)
+        except (TypeError, ValueError):
+            act = 1
+        index = len(chapters) + 1
+        chapters.append(
+            {
+                **deepcopy(template),
+                "row_uid": base_uids[index - 1] if index <= len(base_uids) else "",
+                "chapter_seq": index,
+                "act": act if act in (1, 2, 3) else 1,
+                "title": title,
+                "summary": summary,
+                "spine": spine if spine in _SPINE_MARKS else "",
+                "chapter_goal": str(item.get("chapter_goal") or "").strip(),
+            }
+        )
+    return chapters
 
 
 def _sanitize_character_items(
@@ -1152,6 +1736,28 @@ def _prune_empty_values(value: Any) -> Any:
     return value
 
 
+def _apply_scene_list_spine(items: list[dict[str, Any]]) -> None:
+    """把模型标的灾一/灾二/灾三 收进场景表——原地改写 ``items``。
+
+    ``spine`` **故意**不在 scene_list 的编辑器模板里，所以上面那圈模板遍历碰不到它。
+    直接加进模板不行：模型没回 spine 时会落一个 ``spine: ""``，``_sanitize_scene_patch``
+    照写进库，作者亲手标的三个灾难被无声抹掉。完全不收也不行：提示词明写要模型标 spine、
+    还说「服务端丢弃其它键」，而 spine 恰恰就是被丢的那个 —— 脊柱锚点分章找不到锚，
+    退化成按场数平均切章，三个灾难随机落在幕中间。
+
+    规则按「模型这一轮到底有没有在用这个字段」分岔：
+
+    - 一个合法标记都没有 → 模型压根没碰 spine，作者的标记原样留着（不落键）。
+    - 标了至少一个 → 整表生成里模型给的脊柱就是新真相，未标的场显式清成 ""，
+      否则新旧标记会并存（实测：旧的灾一在第 3 场、新的在第 5 场，两个灾一同时生效）。
+    """
+    if not any(item.get("spine") in _SPINE_MARKS for item in items):
+        return
+    for item in items:
+        if item.get("spine") not in _SPINE_MARKS:
+            item["spine"] = ""
+
+
 def _sanitize_scene_list_items(
     value: Any,
     *,
@@ -1197,7 +1803,11 @@ def _sanitize_scene_list_items(
         scene_type = scene_type if scene_type in {"proactive", "reactive"} else "proactive"
         item["primary_form"] = scene_type
         item["scene_type"] = scene_type
+        spine = str(raw_item.get("spine") or "").strip()
+        if spine in _SPINE_MARKS:
+            item["spine"] = spine
         result.append(item)
+    _apply_scene_list_spine(result)
     if not result and base_items:
         return normalize(base_items)
     return result
@@ -1511,7 +2121,19 @@ def _llm_failure_message(exc: Exception, task_key: str) -> str:
             "请到配置环境把该提供方“调用协议”切换为 chat，保存后点击“一键补齐”，"
             "或改用支持 Responses API 的提供方。"
         )
+    if getattr(exc, "code", "") == "LLM_RESPONSE_TRUNCATED":
+        # 抬预算已在客户端自动试过（最高 8192）还是装不下，只能由作者缩小这一次的范围。
+        return (
+            f"LLM 输出被长度上限截断：节点 {task_key} 这一步要生成的内容超出了模型单次输出上限，"
+            "自动提高输出预算后仍然装不下。请分批生成——例如先用「AI 补全这一场 / 这个角色」"
+            "逐个深化，或先减少本步的成员数量；也可以到配置环境把该节点的输出预算调得更高。"
+        )
     return str(exc)
+
+
+def draft_has_content(draft: Any) -> bool:
+    """草稿里是否有任何非空内容——空骨架代表作者还没写，不该占提示上下文。"""
+    return _has_value(draft)
 
 
 def _has_value(value: Any) -> bool:

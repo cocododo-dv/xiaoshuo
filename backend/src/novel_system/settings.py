@@ -18,7 +18,12 @@ class Settings:
     llm_provider: str = "openai_compatible"
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str | None = None
-    llm_timeout_seconds: float = 30.0
+    # Per-call LLM wall-clock ceiling. ``0`` = no ceiling (the default): a long
+    # extraction/synthesis on a slow model is normal authoring work, not a fault,
+    # and a fixed 30s cut it off mid-generation. Connection setup keeps its own
+    # finite timeout (``llm_client.LLM_CONNECT_TIMEOUT_SECONDS``) so an
+    # unreachable endpoint still fails fast. Set a positive value to re-arm.
+    llm_timeout_seconds: float = 0.0
     llm_enabled: bool = False
     # §8 opt-in: layer an independent LLM "editor" critic on top of the rule-based pass.
     llm_auto_critique_enabled: bool = False
@@ -40,6 +45,23 @@ class Settings:
     llm_daily_cost_limit_usd: float = 0.0
     llm_input_cost_per_million_usd: float = 0.0
     llm_output_cost_per_million_usd: float = 0.0
+    # Per-scene lifecycle budget multiplier: the scene end-to-end token ceiling is
+    # ``N × single-shot baseline`` plus finite business/provider attempt caps. This
+    # was the one hard fence that still shipped armed. A single-author desktop
+    # install has no third party to fence off and a finite per-scene ceiling only
+    # ever fires at the author mid-draft, so it now ships DISARMED like the rest of
+    # the fence family: ``0`` = no scene ceiling (finite sentinel budgets, the CAS
+    # gate is a no-op). Accounting is unchanged — the ledger and 成本看板 still
+    # record every token. Set a positive value to re-arm ``N × baseline`` (and the
+    # attempt caps fall back to their config/model defaults).
+    scene_token_budget_multiplier: int = 0
+    # Snowflake workspace prompt input budget override, in estimated tokens.
+    # ``0`` = use each template's declared ``input_token_budget``. Set a positive
+    # value to tighten it for a small-context local model (e.g. ollama), where the
+    # per-template defaults would overflow the window. Over-budget payloads are
+    # shed by relevance (never the step contract or the focused members) and the
+    # shedding is reported, never silent.
+    snowflake_input_token_budget: int = 0
     admin_token: str | None = None
     config_secret: str | None = None
     auto_create_tables: bool = False
@@ -164,7 +186,7 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     llm_provider = os.environ.get("NOVEL_SYSTEM_LLM_PROVIDER", "openai_compatible")
     llm_base_url = os.environ.get("NOVEL_SYSTEM_LLM_BASE_URL", "https://api.openai.com/v1")
     llm_api_key = os.environ.get("NOVEL_SYSTEM_LLM_API_KEY")
-    llm_timeout_seconds = _get_float_env("NOVEL_SYSTEM_LLM_TIMEOUT_SECONDS", 30.0)
+    llm_timeout_seconds = _get_float_env("NOVEL_SYSTEM_LLM_TIMEOUT_SECONDS", 0.0)
     llm_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_ENABLED", False)
     llm_auto_critique_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", False)
     llm_event_extraction_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", False)
@@ -185,6 +207,12 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     )
     llm_output_cost_per_million_usd = _get_float_env(
         "NOVEL_SYSTEM_LLM_OUTPUT_COST_PER_MILLION_USD", 0.0
+    )
+    scene_token_budget_multiplier = _get_quota_int_env(
+        "NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", 0
+    )
+    snowflake_input_token_budget = _get_quota_int_env(
+        "NOVEL_SYSTEM_SNOWFLAKE_INPUT_TOKEN_BUDGET", 0
     )
     if llm_daily_cost_limit_usd > 0 and max(
         llm_input_cost_per_million_usd,
@@ -242,6 +270,8 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         llm_daily_cost_limit_usd=llm_daily_cost_limit_usd,
         llm_input_cost_per_million_usd=llm_input_cost_per_million_usd,
         llm_output_cost_per_million_usd=llm_output_cost_per_million_usd,
+        scene_token_budget_multiplier=scene_token_budget_multiplier,
+        snowflake_input_token_budget=snowflake_input_token_budget,
         admin_token=admin_token,
         config_secret=config_secret,
         auto_create_tables=auto_create_tables,

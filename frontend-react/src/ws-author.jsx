@@ -8,6 +8,7 @@ import { ArrDoctor } from "./ws-author-doctor.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
 import { ArrChapterRunAction } from "./ws-chapter-run.jsx";
 import { ArrBlueprintCard, ArrPlanPanel, ArrAiHealthBlock } from "./ws-author-plan.jsx";
+import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 
 /* global React, I, ARR_ACTS, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE, ARR_ARCHIVED, ArrThreadLoom, ArrPacingLens, ArrThreadMini, arrDeriveThreads, ArrDoctor */
 const { useState: useStA, useRef: useRefA, useEffect: useEfA, useMemo: useMemoA } = React;
@@ -183,11 +184,23 @@ function ArrTensionCurve({ chapters, numOf, pickedId, onPick }) {
   );
 }
 
-function ArrChapterCard({ c, num, picked, onOpen, dnd }) {
+function ArrChapterCard({ c, num, picked, onOpen, dnd, selectMode, selected, onToggleSelect }) {
   const done = c.scenes.filter((s) => s.state === "done").length;
+  const locked = c.state === "approved";
   return (
-    <div className={`arr-card s-${c.state} ${picked ? "is-picked" : ""}`} {...dnd} onClick={() => onOpen(c.id)}>
-      <span className="arr-card-grip" title="拖动重排（可跨卷）"><I.GripVertical size={15} /></span>
+    <div className={`arr-card s-${c.state} ${picked ? "is-picked" : ""} ${selected ? "is-selected" : ""} ${selectMode && locked ? "is-unselectable" : ""}`}
+      {...(selectMode ? {} : dnd)}
+      onClick={() => { if (!selectMode) { onOpen(c.id); return; } if (!locked) onToggleSelect(c.id); }}>
+      {selectMode ? (
+        <label className="arr-card-check" onClick={(e) => e.stopPropagation()}
+          title={locked ? "已批准终稿不可删除——请先到成稿中心重新打开" : "选中本章"}>
+          <input type="checkbox" checked={!!selected} disabled={locked}
+            aria-label={`选择第 ${num} 章 · ${c.title}`}
+            onChange={() => onToggleSelect(c.id)} />
+        </label>
+      ) : (
+        <span className="arr-card-grip" title="拖动重排（可跨卷）"><I.GripVertical size={15} /></span>
+      )}
       <div className="arr-card-top">
         <span className="arr-card-num">{num}</span>
         <ArrChPill s={c.state} sm />
@@ -203,11 +216,13 @@ function ArrChapterCard({ c, num, picked, onOpen, dnd }) {
   );
 }
 
-function ArrOverview({ chapters, numOf, pickedId, onOpen, chDnd, boardDnd, onNew, lens, setLens }) {
+function ArrOverview({ chapters, numOf, pickedId, onOpen, chDnd, boardDnd, onNew, lens, setLens, batch }) {
   const totalTarget = chapters.reduce((s, c) => s + c.words.target, 0);
   const totalCur = chapters.reduce((s, c) => s + c.words.cur, 0);
   const drafted = chapters.filter((c) => c.state !== "planned").length;
   const approved = chapters.filter((c) => c.state === "approved").length;
+  const bt = batch || {};
+  const selectMode = !!bt.mode;
 
   return (
     <div className="arr-ov-scroll">
@@ -271,10 +286,13 @@ function ArrOverview({ chapters, numOf, pickedId, onOpen, chDnd, boardDnd, onNew
               <span className="arr-actsec-meta tab-num">{items.length} 章 · {w.toLocaleString()} 字</span>
             </header>
             <div className="arr-board" {...boardDnd(a.id)}>
+              {/* 多选态不再叠加「当前章」高亮：两者都是 crimson 描边，同屏出现分不清
+                  哪张是选中的、哪张只是上次打开过的 */}
               {items.map((c) => (
-                <ArrChapterCard key={c.id} c={c} num={numOf[c.id]} picked={c.id === pickedId} onOpen={onOpen} dnd={chDnd(c.id)} />
+                <ArrChapterCard key={c.id} c={c} num={numOf[c.id]} picked={!selectMode && c.id === pickedId} onOpen={onOpen} dnd={chDnd(c.id)}
+                  selectMode={selectMode} selected={selectMode && bt.has && bt.has(c.id)} onToggleSelect={bt.onToggle} />
               ))}
-              <button className="arr-card-add" onClick={() => onNew(a.id)}><I.Plus size={16} /><span>在{a.n}新建章节</span></button>
+              {!selectMode && <button className="arr-card-add" onClick={() => onNew(a.id)}><I.Plus size={16} /><span>在{a.n}新建章节</span></button>}
             </div>
           </section>
         );
@@ -357,7 +375,7 @@ function ArrGmcEdit({ s, onEdit, locked = false }) {
   );
 }
 
-function ArrSceneRow({ s, n, picked, onPick, onCycleKind, onDelete, onEdit, dragHandle, dropZone, locked = false }) {
+function ArrSceneRow({ s, n, picked, onPick, onCycleKind, onDelete, onEdit, dragHandle, dropZone, locked = false, selectMode = false, selected = false, onToggleSelect }) {
   /* 分流执行：同一张场景卡，自己写去写作台，或交给 AI 起草台排队 */
   const forkWrite = (e) => {
     e.stopPropagation();
@@ -371,27 +389,41 @@ function ArrSceneRow({ s, n, picked, onPick, onCycleKind, onDelete, onEdit, drag
     setTimeout(() => window.dispatchEvent(new CustomEvent("ws:scene-enqueue", { detail: { sid: s.sid } })), 80);
   };
   return (
-    <li className={`arr-scene s-${s.state} ${picked ? "is-active" : ""}`} {...dropZone} onClick={onPick}>
-      <span className="arr-scene-grip" title={locked ? "终稿已锁定" : "拖动重排"} {...dragHandle}><I.GripVertical size={14} /></span>
+    <li className={`arr-scene s-${s.state} ${picked ? "is-active" : ""} ${selected ? "is-selected" : ""} ${selectMode ? "is-selecting" : ""}`} {...dropZone}
+      onClick={() => { if (selectMode) { if (!locked) onToggleSelect(s.sid); return; } onPick(); }}>
+      {selectMode ? (
+        <label className="arr-scene-check" onClick={(e) => e.stopPropagation()}>
+          <input type="checkbox" checked={!!selected} disabled={locked} aria-label={`选择场景 ${s.title}`}
+            onChange={() => onToggleSelect(s.sid)} />
+        </label>
+      ) : (
+        <span className="arr-scene-grip" title={locked ? "终稿已锁定" : "拖动重排"} {...dragHandle}><I.GripVertical size={14} /></span>
+      )}
       <span className="arr-scene-num">{n}</span>
-      <span className="arr-scene-body" onClick={(e) => e.stopPropagation()}>
+      {/* 多选态：整行只做「选择」——正文编辑、分流执行、单删一律收起，
+          否则一个模式里同时摆着四种含义的点击，误操作只是时间问题 */}
+      <span className="arr-scene-body" onClick={(e) => { if (!selectMode) e.stopPropagation(); }}>
         <input className="arr-scene-title-input text-serif" defaultValue={s.title} key={s.sid + s.title}
-          disabled={locked}
+          disabled={locked || selectMode}
           onBlur={(e) => onEdit({ title: e.target.value.trim() || "未命名场景" })}
           onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} aria-label="场景标题" />
-        <ArrGmcEdit s={s} onEdit={onEdit} locked={locked} />
+        <ArrGmcEdit s={s} onEdit={onEdit} locked={locked || selectMode} />
       </span>
-      <span className="arr-scene-fork" onClick={(e) => e.stopPropagation()}>
-        <button className="arr-fork-btn" disabled={locked} title={locked ? "请先在成稿中心重新打开终稿" : "把这张场景卡送入 AI 起草台排队"} onClick={forkAI}><I.Play size={11} /> 交给 AI</button>
-        <button className="arr-fork-btn is-write" disabled={locked} title={locked ? "请先在成稿中心重新打开终稿" : "带着这张卡去写作台写这一场"} onClick={forkWrite}><I.Pen size={11} /> 自己写</button>
-      </span>
+      {!selectMode && (
+        <span className="arr-scene-fork" onClick={(e) => e.stopPropagation()}>
+          <button className="arr-fork-btn" disabled={locked} title={locked ? "请先在成稿中心重新打开终稿" : "把这张场景卡送入 AI 起草台排队"} onClick={forkAI}><I.Play size={11} /> 交给 AI</button>
+          <button className="arr-fork-btn is-write" disabled={locked} title={locked ? "请先在成稿中心重新打开终稿" : "带着这张卡去写作台写这一场"} onClick={forkWrite}><I.Pen size={11} /> 自己写</button>
+        </span>
+      )}
       <span className="arr-scene-tags">
-        <button className="arr-pill-btn arr-cyc" disabled={locked} title={locked ? "终稿已锁定" : "点击切换 主动 / 反应"} onClick={(e) => { e.stopPropagation(); onCycleKind && onCycleKind(); }}>
+        <button className="arr-pill-btn arr-cyc" disabled={locked || selectMode} title={locked ? "终稿已锁定" : "点击切换 主动 / 反应"} onClick={(e) => { e.stopPropagation(); onCycleKind && onCycleKind(); }}>
           <span className={`pill text-xs ${s.kind === "主动" ? "pill-crimson" : "pill-slate"}`}><span className="pill-dot" />{s.kind}</span>
         </button>
         <span className="arr-pill-readonly" title="场景完成状态由正文归档流程推进"><ArrScenePill s={s.state} /></span>
       </span>
-      <button className="btn btn-quiet btn-sm arr-scene-more" disabled={locked} title={locked ? "终稿已锁定" : "移入服务端回收站"} onClick={(e) => { e.stopPropagation(); onDelete && onDelete(); }}><I.Trash size={13} /></button>
+      {!selectMode && (
+        <button className="btn btn-quiet btn-sm arr-scene-more" disabled={locked} title={locked ? "终稿已锁定" : "移入服务端回收站"} onClick={(e) => { e.stopPropagation(); onDelete && onDelete(); }}><I.Trash size={13} /></button>
+      )}
     </li>
   );
 }
@@ -416,10 +448,13 @@ function ArrHandoffStrip({ prev, ch, next, numOf, onJump }) {
   );
 }
 
-function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDragHandle, sceneDropZone, onAddScene, onCycleKind, onDeleteScene, onEditScene, onPatchTitle, onPatchDrama, onDeleteChapter, onOpenTrash, pickedScene, setPickedScene, onJump, onBack, snow, chapterRun }) {
+function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDragHandle, sceneDropZone, onAddScene, onCycleKind, onDeleteScene, onEditScene, onPatchTitle, onPatchDrama, onDeleteChapter, onOpenTrash, pickedScene, setPickedScene, onJump, onBack, snow, chapterRun, sceneBatch }) {
   const tallies = { todo: 0, writing: 0, done: 0 };
   ch.scenes.forEach((s) => { tallies[s.state] = (tallies[s.state] || 0) + 1; });
   const locked = ch.state === "approved";
+  const sb = sceneBatch || {};
+  const sceneSelectMode = !!sb.mode && !locked;
+  const sceneSelected = ch.scenes.filter((s) => sb.has && sb.has(s.sid)).length;
 
   return (
     <section className="arr-ed">
@@ -500,18 +535,41 @@ function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDra
 
         {/* scene board */}
         <section className="card arr-scenes">
+          {/* 与全书编排同一套模式语言：多选态下看板头部只剩批量操作 */}
           <div className="card-head">
-            <div>
-              <div className="card-title">场景看板</div>
-              <div className="card-sub">排场景顺序、标记结尾场景，把旧版本移入回收。拖动 ⠿ 可重排。</div>
-            </div>
-            <div className="flex gap-2 items-center">
-              <div className="seg">
-                <button className={`seg-btn ${sceneTab === "active" ? "is-active" : ""}`} onClick={() => setSceneTab("active")}>活跃 {ch.scenes.length}</button>
-                <button className={`seg-btn ${sceneTab === "archived" ? "is-active" : ""}`} onClick={() => setSceneTab("archived")}>回收站</button>
+            {sceneSelectMode ? (
+              <div className="arr-batch is-inline" role="toolbar" aria-label="场景批量操作">
+                <span className="arr-batch-n">已选 <strong className="tab-num">{sceneSelected}</strong> / {ch.scenes.length} 场</span>
+                <span className="arr-batch-hint">点行选中；删除后进入回收站，可恢复。</span>
+                <button className="btn btn-quiet btn-sm" onClick={sb.onSelectAll}>
+                  {sceneSelected === ch.scenes.length && ch.scenes.length ? "取消全选" : "全选"}
+                </button>
+                <button className="btn btn-danger btn-sm" data-testid="author-batch-delete-scenes" disabled={!sceneSelected} onClick={sb.onDelete}>
+                  <I.Trash size={13} /> 删除所选{sceneSelected ? ` · ${sceneSelected} 场` : ""}
+                </button>
+                <button className="btn btn-ghost btn-sm" data-testid="author-scene-select-exit" onClick={sb.onToggleMode}>完成</button>
               </div>
-              <button className="btn btn-accent btn-sm" disabled={locked} onClick={onAddScene}><I.Plus size={13} /> 新场景</button>
-            </div>
+            ) : (
+              <React.Fragment>
+                <div>
+                  <div className="card-title">场景看板</div>
+                  <div className="card-sub">排场景顺序、标记结尾场景，把旧版本移入回收。拖动 ⠿ 可重排。</div>
+                </div>
+                <div className="flex gap-2 items-center">
+                  <div className="seg">
+                    <button className={`seg-btn ${sceneTab === "active" ? "is-active" : ""}`} onClick={() => setSceneTab("active")}>活跃 {ch.scenes.length}</button>
+                    <button className={`seg-btn ${sceneTab === "archived" ? "is-active" : ""}`} onClick={() => setSceneTab("archived")}>回收站</button>
+                  </div>
+                  {sceneTab === "active" && (
+                    <button className="btn btn-quiet btn-sm" data-testid="author-scene-select-mode" disabled={locked || !ch.scenes.length}
+                      title={locked ? "终稿已锁定" : "多选场景后可一次删除"} onClick={sb.onToggleMode}>
+                      <I.Check size={13} /> 多选
+                    </button>
+                  )}
+                  <button className="btn btn-accent btn-sm" disabled={locked} onClick={onAddScene}><I.Plus size={13} /> 新场景</button>
+                </div>
+              </React.Fragment>
+            )}
           </div>
 
           {sceneTab === "active" && (
@@ -528,7 +586,8 @@ function ArrEditor({ ch, num, prev, next, numOf, sceneTab, setSceneTab, sceneDra
                 <ArrSceneRow key={s.sid} s={s} n={String(idx + 1).padStart(2, "0")} picked={pickedScene === String(idx)}
                   onPick={() => setPickedScene(String(idx))} onCycleKind={() => onCycleKind(idx)}
                   onDelete={() => onDeleteScene(idx)} onEdit={(patch) => onEditScene(idx, patch)}
-                  dragHandle={sceneDragHandle(idx)} dropZone={sceneDropZone(idx)} locked={locked} />
+                  dragHandle={sceneDragHandle(idx)} dropZone={sceneDropZone(idx)} locked={locked}
+                  selectMode={sceneSelectMode} selected={sceneSelectMode && sb.has && sb.has(s.sid)} onToggleSelect={sb.onToggle} />
               ))}
             </ul>
           ) : (
@@ -710,6 +769,13 @@ function WsAuthor({ go }) {
   });
   const [chDragId, setChDragId] = useStA(null);
   const [scDragIdx, setScDragIdx] = useStA(null);
+  /* 批量删除的选择集（只活在本次会话里，不落 localStorage：
+     选择是瞬时意图，跨刷新保留只会让作者对着一份看不见来路的勾选下手） */
+  const [chSelectMode, setChSelectMode] = useStA(false);
+  const [chSel, setChSel] = useStA(() => new Set());
+  const [scSelectMode, setScSelectMode] = useStA(false);
+  const [scSel, setScSel] = useStA(() => new Set());
+  const { toast, show: showNotice, clear: clearNotice } = useUndoToast();
   const chaptersRef = useRefA(chapters);
   chaptersRef.current = chapters;
 
@@ -725,6 +791,15 @@ function WsAuthor({ go }) {
       const fallback = next.find((item) => item.current) || next[0];
       return fallback ? fallback.id : null;
     });
+    /* 目录换了：把指向已消失章/场的勾选摘掉，避免对着幽灵 id 再发一次删除 */
+    const liveCh = new Set(next.map((item) => item.id));
+    const liveSc = new Set(next.flatMap((item) => (item.scenes || []).map((s) => s.sid)));
+    const prune = (live) => (prevSel) => {
+      const kept = new Set([...prevSel].filter((id) => live.has(id)));
+      return kept.size === prevSel.size ? prevSel : kept;
+    };
+    setChSel(prune(liveCh));
+    setScSel(prune(liveSc));
   }, [catalogChapters]);
 
   const commitChapters = (recipe) => {
@@ -828,7 +903,10 @@ function WsAuthor({ go }) {
   const prev = idx > 0 ? chapters[idx - 1] : null;
   const next = idx >= 0 && idx < chapters.length - 1 ? chapters[idx + 1] : null;
 
-  const openChapter = (id) => { setPickedId(id); setPickedScene("0"); setSceneTab("active"); setMode("detail"); };
+  const openChapter = (id) => {
+    setPickedId(id); setPickedScene("0"); setSceneTab("active"); setMode("detail");
+    setScSelectMode(false); setScSel(new Set());   // 换章即清空场景勾选，避免跨章误删
+  };
 
   /* chapter drag — cross-volume: dragged chapter adopts the target's act + position */
   const chDnd = (id) => ({
@@ -955,17 +1033,96 @@ function WsAuthor({ go }) {
     if (c.id !== ch.id) return c;
     return { ...c, scenes: c.scenes.map((sc, idx) => idx === i ? { ...sc, kind: sc.kind === "主动" ? "反应" : "主动" } : sc) };
   })); };
-  const deleteScene = (i) => { if (ch.state !== "approved") commitChapters((cs) => cs.map((c) => {
-    if (c.id !== ch.id || c.scenes.length <= 1) return c;
-    return { ...c, scenes: c.scenes.filter((_, idx) => idx !== i) };
-  })); };
+  const deleteScene = (i) => {
+    if (ch.state === "approved") return;
+    const victim = ch.scenes[i];
+    commitChapters((cs) => cs.map((c) => {
+      if (c.id !== ch.id) return c;
+      return { ...c, scenes: c.scenes.filter((_, idx) => idx !== i) };
+    }));
+    noticeTrashed(`已把场景「${(victim && victim.title) || "未命名场景"}」移入回收站`);
+  };
   const deleteChapter = () => {
-    if (ch.state === "approved" || chapters.length <= 1) return;
-    if (typeof window !== "undefined" && !window.confirm(`删除第 ${numOf[ch.id]} 章「${ch.title}」？此操作不可撤销。`)) return;
+    if (ch.state === "approved") return;
+    const scenes = (ch.scenes || []).length;
+    if (typeof window !== "undefined" && !window.confirm(`把第 ${numOf[ch.id]} 章「${ch.title}」移入回收站？${scenes ? `连同章下 ${scenes} 个场景。` : ""}`)) return;
     const i = chapters.findIndex((c) => c.id === ch.id);
     const neighbor = chapters[i + 1] || chapters[i - 1];
     commitChapters((cs) => cs.filter((c) => c.id !== ch.id));
     if (neighbor) { setPickedId(neighbor.id); setPickedScene("0"); }
+    noticeTrashed(`已把第 ${numOf[ch.id]} 章移入回收站${scenes ? `（含 ${scenes} 场）` : ""}`);
+  };
+
+  /* —— 批量删除 ——
+     已批准终稿始终排除在选择之外：后端也会 blocked，这里先在 UI 上说清楚，
+     免得作者勾了一批、只删掉一部分还得自己对账。
+     删完给一条回执（删了几条 / 去了哪 / 怎么找回）——不然作者只能看着东西消失。 */
+  const noticeTrashed = (text) => showNotice({
+    text,
+    actionLabel: "打开回收站",
+    onAction: () => { if (go) go("trash"); else location.hash = "#trash"; },
+  });
+  const selectableChapters = chapters.filter((c) => c.state !== "approved");
+  const toggleChSel = (id) => setChSel((prev) => {
+    const nextSel = new Set(prev);
+    if (nextSel.has(id)) nextSel.delete(id); else nextSel.add(id);
+    return nextSel;
+  });
+  const selectedChapters = selectableChapters.filter((c) => chSel.has(c.id));
+  const chapterBatch = {
+    mode: chSelectMode,
+    has: (id) => chSel.has(id),
+    onToggle: toggleChSel,
+    selectedCount: selectedChapters.length,
+    selectableCount: selectableChapters.length,
+    allSelected: !!selectableChapters.length && selectedChapters.length === selectableChapters.length,
+    onSelectAll: () => setChSel((prev) => (
+      prev.size === selectableChapters.length ? new Set() : new Set(selectableChapters.map((c) => c.id))
+    )),
+    onExit: () => { setChSelectMode(false); setChSel(new Set()); },
+    onDelete: () => {
+      const targets = selectedChapters;
+      if (!targets.length) return;
+      const scenes = targets.reduce((n, c) => n + (c.scenes || []).length, 0);
+      const what = targets.length === 1
+        ? `第 ${numOf[targets[0].id]} 章「${targets[0].title}」`
+        : `所选 ${targets.length} 章`;
+      if (typeof window !== "undefined" && !window.confirm(`把${what}移入回收站？${scenes ? `连同章下 ${scenes} 个场景。` : ""}`)) return;
+      const drop = new Set(targets.map((c) => c.id));
+      const survivor = chapters.find((c) => !drop.has(c.id));
+      commitChapters((cs) => cs.filter((c) => !drop.has(c.id)));
+      setChSel(new Set());
+      setChSelectMode(false);
+      if (drop.has(pickedId)) { setPickedId(survivor ? survivor.id : null); setPickedScene("0"); }
+      noticeTrashed(`已把 ${targets.length} 章移入回收站${scenes ? `（含 ${scenes} 场）` : ""}`);
+    },
+  };
+  const sceneBatch = {
+    mode: scSelectMode,
+    has: (sid) => scSel.has(sid),
+    onToggleMode: () => { setScSelectMode((v) => !v); setScSel(new Set()); },
+    onToggle: (sid) => setScSel((prev) => {
+      const nextSel = new Set(prev);
+      if (nextSel.has(sid)) nextSel.delete(sid); else nextSel.add(sid);
+      return nextSel;
+    }),
+    onSelectAll: () => setScSel((prev) => (
+      prev.size === ch.scenes.length ? new Set() : new Set(ch.scenes.map((s) => s.sid))
+    )),
+    selectedCount: ch.scenes.filter((s) => scSel.has(s.sid)).length,
+    onDelete: () => {
+      if (ch.state === "approved") return;
+      const targets = ch.scenes.filter((s) => scSel.has(s.sid));
+      if (!targets.length) return;
+      const what = targets.length === 1 ? `场景「${targets[0].title}」` : `本章 ${targets.length} 个场景`;
+      if (typeof window !== "undefined" && !window.confirm(`把${what}移入回收站？`)) return;
+      const drop = new Set(targets.map((s) => s.sid));
+      commitChapters((cs) => cs.map((c) => (c.id !== ch.id ? c : { ...c, scenes: c.scenes.filter((s) => !drop.has(s.sid)) })));
+      setScSel(new Set());
+      setScSelectMode(false);
+      setPickedScene("0");
+      noticeTrashed(`已把 ${targets.length} 个场景移入回收站`);
+    },
   };
   const refreshData = async () => {
     if (!WsCatalog || !WsCatalog.__refresh) return;
@@ -998,21 +1155,46 @@ function WsAuthor({ go }) {
       <div className={`arr-main ${mode === "overview" ? "arr-main-ov" : "arr-main-detail"}`}>
         {mode === "overview" ? (
           <React.Fragment>
-            <header className="arr-ov-head">
-              <div>
-                <div className="page-eyebrow" style={{ margin: 0 }}>章节编排</div>
-                <h1 className="arr-ov-title text-serif">全书编排 · {WsWorks ? WsWorks.active().title : "未命名作品"}</h1>
-              </div>
-              <div className="arr-ov-head-r">
-                <button className="btn btn-quiet btn-sm" onClick={refreshData} title="从服务端重新载入目录"><I.Refresh size={13} /> 刷新</button>
-                <div className="seg">
-                  <button className="seg-btn is-active" disabled title="当前正在查看全书编排">全书编排</button>
-                  <button className="seg-btn" onClick={() => setMode("detail")}>章节详情</button>
+            {/* 多选是一个独占模式：进入后头部只剩这条批量操作栏，
+                页面上不再同时摆着「新建 / 切视图 / 逐章打开」等与选择无关的动作 */}
+            <header className={`arr-ov-head ${chSelectMode ? "is-selecting" : ""}`}>
+              {chSelectMode ? (
+                <div className="arr-batch" role="toolbar" aria-label="章节批量操作">
+                  <span className="arr-batch-n">已选 <strong className="tab-num">{chapterBatch.selectedCount}</strong> / {chapterBatch.selectableCount} 章</span>
+                  <span className="arr-batch-hint">点卡片选中；已批准终稿不可选。删除后进入回收站，可恢复。</span>
+                  <button className="btn btn-quiet btn-sm" onClick={chapterBatch.onSelectAll} disabled={!chapterBatch.selectableCount}>
+                    {chapterBatch.allSelected ? "取消全选" : "全选"}
+                  </button>
+                  <button className="btn btn-danger btn-sm" data-testid="author-batch-delete-chapters"
+                    disabled={!chapterBatch.selectedCount} onClick={chapterBatch.onDelete}>
+                    <I.Trash size={13} /> 删除所选{chapterBatch.selectedCount ? ` · ${chapterBatch.selectedCount} 章` : ""}
+                  </button>
+                  <button className="btn btn-ghost btn-sm" data-testid="author-chapter-select-exit" onClick={chapterBatch.onExit}>完成</button>
                 </div>
-                <button className="btn btn-accent btn-sm" onClick={() => addChapter(firstAct)}><I.Plus size={13} /> 新建章节</button>
-              </div>
+              ) : (
+                <React.Fragment>
+                  <div>
+                    <div className="page-eyebrow" style={{ margin: 0 }}>章节编排</div>
+                    <h1 className="arr-ov-title text-serif">全书编排 · {WsWorks ? WsWorks.active().title : "未命名作品"}</h1>
+                  </div>
+                  <div className="arr-ov-head-r">
+                    <button className="btn btn-quiet btn-sm" onClick={refreshData} title="从服务端重新载入目录"><I.Refresh size={13} /> 刷新</button>
+                    <div className="seg">
+                      <button className="seg-btn is-active" disabled title="当前正在查看全书编排">全书编排</button>
+                      <button className="seg-btn" onClick={() => setMode("detail")}>章节详情</button>
+                    </div>
+                    <button className="btn btn-quiet btn-sm" data-testid="author-chapter-select-mode"
+                      title="多选章节后可一次删除（已批准终稿不可选）"
+                      disabled={!chapterBatch.selectableCount}
+                      onClick={() => { setChSelectMode(true); setChSel(new Set()); }}>
+                      <I.Check size={13} /> 多选
+                    </button>
+                    <button className="btn btn-accent btn-sm" onClick={() => addChapter(firstAct)}><I.Plus size={13} /> 新建章节</button>
+                  </div>
+                </React.Fragment>
+              )}
             </header>
-            <ArrOverview chapters={chapters} numOf={numOf} pickedId={pickedId} onOpen={openChapter} chDnd={chDnd} boardDnd={boardDnd} onNew={addChapter} lens={lens} setLens={setLens} />
+            <ArrOverview chapters={chapters} numOf={numOf} pickedId={pickedId} onOpen={openChapter} chDnd={chDnd} boardDnd={boardDnd} onNew={addChapter} lens={lens} setLens={setLens} batch={chapterBatch} />
           </React.Fragment>
         ) : (
           <React.Fragment>
@@ -1023,11 +1205,12 @@ function WsAuthor({ go }) {
               onPatchTitle={patchTitle} onPatchDrama={patchDrama} onDeleteChapter={deleteChapter}
               onOpenTrash={() => { if (go) go("trash"); else location.hash = "#trash"; }}
               pickedScene={pickedScene} setPickedScene={setPickedScene}
-              onJump={openChapter} onBack={() => setMode("overview")} snow={snow} chapterRun={chapterRun} />
+              onJump={openChapter} onBack={() => setMode("overview")} snow={snow} chapterRun={chapterRun} sceneBatch={sceneBatch} />
             <ArrChapterContext ch={ch} chapters={chapters} numOf={numOf} snow={snow} />
           </React.Fragment>
         )}
       </div>
+      <UndoToast toast={toast} onClose={clearNotice} />
     </div>
   );
 }

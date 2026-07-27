@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import socket
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -73,9 +74,23 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
-RETRYABLE_RESPONSE_ERROR_CODES = {"LLM_RESPONSE_INVALID_JSON", "LLM_RESPONSE_MISSING_TEXT"}
+RETRYABLE_RESPONSE_ERROR_CODES = {
+    "LLM_RESPONSE_INVALID_JSON",
+    "LLM_RESPONSE_MISSING_TEXT",
+    "LLM_RESPONSE_TRUNCATED",
+}
+# provider 用来表示"输出被 max_tokens 砍断"的 finish_reason 别名(各家写法不同)。
+TRUNCATED_FINISH_REASONS = {"length", "max_tokens", "max_output_tokens", "model_length"}
+# 这两类失败都是"输出预算不够"的症状,原样重发只会复现同一个结果——跳过重试,
+# 直接走降级阶梯抬预算。
+BUDGET_DEGRADE_ERROR_CODES = {"LLM_RESPONSE_MISSING_TEXT", "LLM_RESPONSE_TRUNCATED"}
 SUPPORTED_PROVIDERS = frozenset(supported_provider_types())
 MAX_RETRY_BACKOFF_SECONDS = 30.0
+
+# 建连/写入/连接池握手的超时上限。生成本身可以慢(大模型长任务是正常的),
+# 但"连不上"必须快速失败——否则填错 base_url 只会让界面无限转圈。
+# timeout_seconds <= 0 时只保留这一层,读取(等待模型出字)不设上限。
+LLM_CONNECT_TIMEOUT_SECONDS = 30.0
 
 # LLM 连通性降级阶梯:一次 generate 最多降级次数(api_mode 404 换 chat →
 # 弃 json_schema → 弃 wire response_format),防御环路。
@@ -102,6 +117,54 @@ _STRUCTURED_OUTPUT_ERROR_SIGNATURES = (
 def _structured_output_rejection_signature(text: str | None) -> bool:
     lowered = (text or "").lower()
     return any(sig in lowered for sig in _STRUCTURED_OUTPUT_ERROR_SIGNATURES)
+
+
+def resolve_request_timeout(timeout_seconds: float | None) -> httpx.Timeout:
+    """把配置的秒数翻译成 httpx 超时:<=0 / None = **生成**不限时。
+
+    不限时只解掉 ``read``:等不到"第一个字"和连不上是两回事,前者是慢任务(合法),
+    后者是配置错误(必须立刻报错)。``write`` / ``pool`` 仍然有限——把请求体写出去、
+    从连接池取一条连接,都不存在"合法的慢"; 让它们也变成 None 是把"模型在想"的豁免
+    错发给了两个纯粹的传输动作,一次卡住就永久占着 worker 线程。
+    """
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return httpx.Timeout(
+            None,
+            connect=LLM_CONNECT_TIMEOUT_SECONDS,
+            write=LLM_CONNECT_TIMEOUT_SECONDS,
+            pool=LLM_CONNECT_TIMEOUT_SECONDS,
+        )
+    return httpx.Timeout(timeout_seconds)
+
+
+def _keepalive_socket_options() -> list[tuple[int, int, int]]:
+    """TCP keepalive:让"对端已经死了"和"模型还在想"在传输层可区分。
+
+    read 不限时是产品决定(长上下文生成慢是正常工作,不是故障),代价是半开连接
+    ——中转接了 TCP、随后一个字节都不发、也不回 RST(路由被丢、网关过载)——会让
+    ``client.post`` 永久阻塞,同步的雪花端点因此吃掉一个 worker 线程,作者重试几次
+    就把线程池耗光。keepalive 探针由内核发,活着的对端(哪怕模型正在思考)一定会回
+    ACK,所以慢生成完全不受影响;真死的对端在 ~150s 内被内核判定不可达,``post``
+    抛连接错误而不是挂着。这是"不限时"唯一还能保留的活性检测。
+    """
+    options: list[tuple[int, int, int]] = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
+    # 平台差异:KEEPIDLE/KEEPINTVL/KEEPCNT 是 Linux 名字,macOS 只有 TCP_KEEPALIVE,
+    # Windows 一个都没有——缺哪个跳哪个,退化成"只开 keepalive、用系统默认间隔"。
+    for name, value in (("TCP_KEEPIDLE", 60), ("TCP_KEEPALIVE", 60), ("TCP_KEEPINTVL", 15), ("TCP_KEEPCNT", 6)):
+        option = getattr(socket, name, None)
+        if option is not None:
+            options.append((socket.IPPROTO_TCP, option, value))
+    return options
+
+
+def describe_timeout_failure(timeout_seconds: float | None) -> str:
+    """不限时下唯一可能的超时是建连,消息必须说清楚,别谎报成"响应超时"。"""
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return (
+            "llm request timed out while connecting "
+            f"(connect ceiling {LLM_CONNECT_TIMEOUT_SECONDS}s, no response ceiling)"
+        )
+    return f"llm request timed out after {timeout_seconds} seconds"
 
 
 MAX_OUTPUT_TOKENS_CEILING = 8192
@@ -159,11 +222,21 @@ def _degrade_request_after_failure(
       wire 层 response_format(prompt 本身要求 JSON,客户端解析不变)
     - 200 但正文为空(LLM_RESPONSE_MISSING_TEXT):典型是 reasoning 模型把
       max_tokens 烧在思考上——关 reasoning + 关引擎思考开关 + 输出预算×2
+    - 输出被 max_tokens 砍断(LLM_RESPONSE_TRUNCATED):同样抬输出预算重试;
+      已经顶到上限还截断就返 None,让上层如实报错——半截结构化输出没有可用形态。
     限流(429)不属于能力不匹配,不降级。
     """
     if isinstance(exc, LLMRateLimitError):
         return None
     if isinstance(exc, LLMResponseError):
+        if exc.code == "LLM_RESPONSE_TRUNCATED":
+            if request.max_output_tokens >= MAX_OUTPUT_TOKENS_CEILING:
+                return None
+            raised = min(request.max_output_tokens * 2, MAX_OUTPUT_TOKENS_CEILING)
+            return (
+                replace(request, max_output_tokens=raised),
+                f"输出截断降级:输出预算 {request.max_output_tokens}→{raised}",
+            )
         if exc.code != "LLM_RESPONSE_MISSING_TEXT":
             return None
         req = request
@@ -296,8 +369,8 @@ class TaskModelConfig:
     frequency_penalty: float | None = None
     presence_penalty: float | None = None
     top_p: float | None = None
-    # 按节点覆盖 LLM 调用超时(秒);None 用 client 全局默认。重抽取/长上下文节点
-    # (style_ref extract/synthesize 等)在 30s 全局默认下容易 LLM_REQUEST_TIMEOUT。
+    # 按节点覆盖 LLM 调用超时(秒);None 用 client 全局默认(默认不限时)。
+    # 只有明确想给某个节点封顶时才填正数——填了就是给该节点重新装上闸门。
     timeout_seconds: float | None = None
 
 
@@ -429,11 +502,15 @@ class LLMClient(OnlineAccountedExecution):
     ) -> LLMResponse:
         endpoint, payload, headers, native_reasoning = self._build_http_request(request, provider_config)
         timeout_seconds = request.timeout_seconds or self._timeout_seconds
+        timeout_message = describe_timeout_failure(timeout_seconds)
 
+        # 调用方给了 transport(测试的 MockTransport)就用它;没给才自己造——
+        # 造的时候一定带上 keepalive,否则 read 不限时下半开连接会永久挂住 worker。
+        transport = self._transport or httpx.HTTPTransport(socket_options=_keepalive_socket_options())
         with httpx.Client(
             base_url=provider_config.base_url.rstrip("/"),
-            timeout=timeout_seconds,
-            transport=self._transport,
+            timeout=resolve_request_timeout(timeout_seconds),
+            transport=transport,
         ) as client:
             dispatch_kind = initial_dispatch_kind
             for attempt in range(self._max_retries + 1):
@@ -449,7 +526,7 @@ class LLMClient(OnlineAccountedExecution):
                 except httpx.TimeoutException as exc:
                     error = LLMTimeoutError(
                         "LLM_REQUEST_TIMEOUT",
-                        f"llm request timed out after {timeout_seconds} seconds",
+                        timeout_message,
                         retryable=True,
                         details=_with_attempt_metadata({}, attempt=attempt, max_retries=self._max_retries),
                     )
@@ -670,11 +747,12 @@ class LLMClient(OnlineAccountedExecution):
                         provider_request_id=_extract_request_id(body),
                         started_at=started_at,
                     )
-                    # 空正文(MISSING_TEXT)不是瞬时故障(同 prompt 重发大概率同样为空,
-                    # 每次白等一整个生成时长)——立即交给降级阶梯(关 reasoning/扩预算)
+                    # 空正文/截断不是瞬时故障:同 prompt 同预算重发,大概率同样为空、
+                    # 同样在原地被砍断,每次白等一整个生成时长——直接交给降级阶梯
+                    # (关 reasoning / 扩输出预算),别浪费重试次数。
                     if (
                         exc.code in RETRYABLE_RESPONSE_ERROR_CODES
-                        and exc.code != "LLM_RESPONSE_MISSING_TEXT"
+                        and exc.code not in BUDGET_DEGRADE_ERROR_CODES
                         and attempt < self._max_retries
                     ):
                         self._sleep_before_retry(attempt)
@@ -760,11 +838,26 @@ class LLMClient(OnlineAccountedExecution):
         adapter = get_adapter(provider_config.provider_type)
         raw_usage = _extract_raw_usage(body)
         text = adapter.extract_output_text(body, request=request)
+        finish_reason = adapter.extract_finish_reason(body, api_mode=request.api_mode)
         structured_output: dict[str, Any] | None = None
         if request.response_format == "json_object":
+            # 先解析、再判截断——顺序很关键:
+            # 1) 一份正好在 max_tokens 处收尾的**完整** JSON(finish_reason=length)仍然是
+            #    可用结果,不能因为 finish_reason 就丢弃(否则顶到上限时会把好答案误杀)。
+            # 2) _loads_json_object_text 只救援**顶层**配平对象,被砍断的顶层对象括号配不平
+            #    → 解析必然失败,绝不会像旧救援那样捞出内层第一个场景对象当整份结果
+            #    (真实故障:场景规划每次只推进一场、草稿半新半旧)。
+            # 3) 只有解析失败时才区分:provider 报了截断(chat 的 finish_reason=length /
+            #    Responses 的 status=incomplete)→ 可抬预算重试的 TRUNCATED;否则是真坏 JSON。
             try:
                 structured_output = _loads_json_object_text(text)
             except json.JSONDecodeError as exc:
+                if str(finish_reason or "").strip().lower() in TRUNCATED_FINISH_REASONS:
+                    raise LLMResponseError(
+                        "LLM_RESPONSE_TRUNCATED",
+                        "llm output hit the max output token ceiling before the JSON was complete "
+                        f"(finish_reason={finish_reason}, max_output_tokens={request.max_output_tokens})",
+                    ) from exc
                 raise LLMResponseError(
                     "LLM_RESPONSE_INVALID_JSON",
                     "llm provider returned malformed JSON content",
@@ -789,7 +882,7 @@ class LLMClient(OnlineAccountedExecution):
             response_format=request.response_format,
             raw_response=body,
             usage=normalized_usage or _normalize_usage(raw_usage),
-            finish_reason=adapter.extract_finish_reason(body, api_mode=request.api_mode),
+            finish_reason=finish_reason,
             native_reasoning=native_reasoning,
             attempt_count=attempt_count,
             max_retries=max_retries,
@@ -1064,6 +1157,20 @@ def _optional_str(value: Any) -> str | None:
 
 
 def _loads_json_object_text(text: str) -> Any:
+    """从正文里取出 JSON 对象;正文带 markdown 围栏或前后缀说明时做救援解析。
+
+    救援**只认顶层配平的对象**——嵌在一个尚未闭合的外层对象里的片段一概不认。
+    这条限制是有意的:正文被 max_tokens 砍断时,最外层大括号永远配不平,但内层成员
+    (比如场景数组里的第一个场景)自身是配平的;救援若捞出它当整份结果,接口报成功、
+    内容却是错的(真实故障:场景规划每次只推进一场、草稿半新半旧)。静默的错答比报错
+    糟得多,所以配不平就抛错,交给上层按 TRUNCATED / INVALID_JSON 重试。
+
+    「顶层」是结构判据,不是位置判据。曾经用「只看第一个 `{`」来近似它,但那会误伤
+    另一类完全正常的回复:``按 {step_key} 的要求,输出如下:\\n{"scenes": [...]}``——
+    第一个配平片段是提示词占位符,不是 JSON,于是整份可用的回复被判成坏 JSON,还要
+    白烧一轮重试预算。按深度判定则两种情况都对:占位符和真正的载荷都是顶层候选,
+    依次尝试;而被砍断的正文里内层成员的深度≥1,永远进不了候选。
+    """
     try:
         return json.loads(text)
     except json.JSONDecodeError as original_exc:
@@ -1076,32 +1183,37 @@ def _loads_json_object_text(text: str) -> Any:
 
 
 def _iter_json_object_candidates(text: str) -> list[str]:
+    """正文里所有**顶层**配平的 `{...}` 片段,按出现顺序。
+
+    单趟扫描,全程跟踪字符串与转义(免得正文里的 `{` / `"` 把深度算歪)。深度回到 0
+    才收一个候选;外层始终没闭合(截断)时一个候选都不产出——这正是要的行为。
+    """
     candidates: list[str] = []
-    start = text.find("{")
-    while start != -1:
-        depth = 0
-        in_string = False
-        escaped = False
-        for index in range(start, len(text)):
-            char = text[index]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = False
-                continue
-            if char == '"':
-                in_string = True
-            elif char == "{":
-                depth += 1
-            elif char == "}":
+    depth = 0
+    in_string = False
+    escaped = False
+    start = -1
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}":
+            if depth:
                 depth -= 1
-                if depth == 0:
+                if depth == 0 and start >= 0:
                     candidates.append(text[start : index + 1])
-                    break
-        start = text.find("{", start + 1)
+                    start = -1
     return candidates
 
 

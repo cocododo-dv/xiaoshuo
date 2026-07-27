@@ -315,6 +315,15 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         model_profile="quality_strong",
     ),
     LLMNodeSpec(
+        "snowflake_chapter_plan",
+        "Snowflake chapter plan suggestion",
+        "snowflake",
+        template_name="snowflake_chapter_plan_suggest",
+        temperature=0.2,
+        max_output_tokens=2600,
+        model_profile="quality_strong",
+    ),
+    LLMNodeSpec(
         "scene_blueprint",
         "Scene blueprint",
         "scene_generation",

@@ -192,6 +192,40 @@ class SnowflakeCharacterPlan(Base):
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
+class SnowflakeChapterPlan(Base):
+    """构思侧的「章」（P2）。
+
+    在此之前章在整条雪花管线里没有归属者：09/10 步没有章字段，提示词让 LLM 把
+    chapter_id 留空说「server assigns」，而服务端的起始值就是 ``{project_id}_CH01``
+    并丢弃作者输入 —— 全书落进一章。唯一编了章的 07 长篇大纲只是四段自由文本，
+    物化时根本不读。这张表把章变成有稳定身份、可编辑标题与章目标的一等规划行。
+    """
+
+    __tablename__ = "snowflake_chapter_plans"
+    __table_args__ = (
+        # 与场景计划同一条纪律（P1-1）：作者可改的序号/标题不能当身份，row_uid 才是。
+        Index("ix_snowflake_chapter_plans_row_uid", "project_id", "row_uid", unique=True),
+        Index("ix_snowflake_chapter_plans_seq", "project_id", "chapter_seq"),
+    )
+
+    chapter_plan_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    row_uid: Mapped[str] = mapped_column(String)
+    chapter_seq: Mapped[int] = mapped_column(Integer, default=1)
+    act: Mapped[int] = mapped_column(Integer, default=1)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 灾一 / 灾二 / 灾三 —— 三幕结构的铰链，分章时与同标记的场互相锚定
+    spine: Mapped[str | None] = mapped_column(String, nullable=True)
+    chapter_goal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="draft")
+    source_step_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    removed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    removed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
 class SnowflakeScenePlan(Base):
     __tablename__ = "snowflake_scene_plans"
     __table_args__ = (
@@ -199,13 +233,29 @@ class SnowflakeScenePlan(Base):
         # derived from the author-editable ``scene_id`` — ``row_uid`` is the stable
         # anchor the staleness diff (P0-3) relies on.
         Index("ix_snowflake_scene_plans_row_uid", "project_id", "row_uid", unique=True),
+        # P1-2: scene_id 是这一行对外的物化目标身份 —— SceneCard 直接拿它当主键。
+        # 历史铸造规则是 f"{chapter_id}_SC{scene_seq:02d}"，创建时铸死而 scene_seq
+        # 每次保存都按传入列表重算，于是「删一场再加一场」必然撞号；撞号后
+        # _build_outline_plan 的 detail_by_id 与 approve_outline_plan 的
+        # session.get(SceneCard, scene_id) 会双重覆盖，静默丢掉一场。铸造规则已改成
+        # row_uid 基（见 snowflake_workspace._mint_scene_id），这条唯一索引是结构兜底：
+        # 万一还有别的路径铸出重复 id，宁可硬报错也不要静默丢场。
+        Index("ix_snowflake_scene_plans_scene_id", "project_id", "scene_id", unique=True),
     )
 
     scene_plan_id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
     row_uid: Mapped[str | None] = mapped_column(String, nullable=True)
     scene_id: Mapped[str] = mapped_column(String)
+    # P2：章归属。chapter_id 从「创建时铸死的系统身份」降级为由分章结果推导的
+    # 物化目标 id；真正的归属锚是 chapter_plan_id（NULL = 还没分章）。
+    chapter_plan_id: Mapped[str | None] = mapped_column(
+        ForeignKey("snowflake_chapter_plans.chapter_plan_id"), nullable=True
+    )
     chapter_id: Mapped[str] = mapped_column(String)
+    # 作者在 09 场景列表上标的灾一/灾二/灾三。历史上前端从不上行、水合还硬写回 ""，
+    # 标记每次刷新就丢；脊柱锚点分章要靠它，所以现在往返保真。
+    spine: Mapped[str | None] = mapped_column(String, nullable=True)
     chapter_title: Mapped[str | None] = mapped_column(String, nullable=True)
     chapter_goal: Mapped[str | None] = mapped_column(Text, nullable=True)
     chapter_role: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -241,6 +291,14 @@ class SnowflakeScenePlan(Base):
     stale_accepted_by: Mapped[str | None] = mapped_column(String, nullable=True)
     stale_accepted_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     diagnosis_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=dict)
+    # P1-3 收口：作者在场景列表里删掉的场。历史上 _sync_scene_plans 只增不删，
+    # 被删的场永远留在库里、拿不到第 10 步细化、被诊断成 rewrite，于是用一个
+    # 作者根本看不见的场把物化闸门永久堵死。软删（不物删）保留可恢复与可审计。
+    removed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    removed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 构思侧已删、但目录侧已经落库成 SceneCard（可能已有正文）的场：不能静默删，
+    # 标记出来交作者裁决（Phase 2 的分章预览面板会把它列进告警区）。
+    orphaned_flag: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 

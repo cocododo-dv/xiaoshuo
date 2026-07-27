@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createApp, nextTick } from "vue";
+import { createApp, h, nextTick } from "vue";
 
 import * as api from "../src/lib/api";
 
@@ -529,6 +529,64 @@ describe("snowflake workspace store", () => {
     expect(source).toContain("gateItemTargetsScene");
     expect(source).toContain("gateItemTargetsStep");
     expect(source.indexOf("if (gateItemTargetsScene")).toBeLessThan(source.indexOf("if (gateItemTargetsStep"));
+  });
+
+  // 分章闸门（chapter_plan_required）带着 step_key=long_synopsis，会被 gateItemTargetsStep
+  // 送到第 07 步——但章节表在这条兼容面上根本渲染不出来（planning stage 没有 chapters 分支）。
+  // 这条守的是「不把作者送进空白编辑区」：宁可直说分章在潮汐工作台，也不假装能就地解决。
+  it("tells the author where chaptering lives instead of jumping to an empty step editor", async () => {
+    const SnowflakeMaterializationPanel = (
+      await import("../src/components/SnowflakeMaterializationPanel.vue")
+    ).default;
+    const { useSnowflakeWorkbenchStore } = await import("../src/stores/snowflakeWorkbench");
+    const store = useSnowflakeWorkbenchStore();
+    store.workspace = {
+      ...workspace,
+      materialization_gate: {
+        status: "blocked",
+        blockers: ["还没有分章：章节结构要先决定每一场归哪一章。"],
+        warnings: [],
+        items: [
+          {
+            id: "blocker:chapter_plan_required:project",
+            severity: "blocker",
+            kind: "chapter_plan_required",
+            message: "还没有分章：章节结构要先决定每一场归哪一章。",
+            step_key: "long_synopsis",
+            scene_id: null,
+            scene_plan_id: null,
+            target_view: "snowflake-workbench",
+            primary_action: { type: "open_chapter_plan", label: "去分章", panel: "chapter_plan" },
+          },
+        ],
+      },
+    };
+    store.project = project;
+    store.selectedProjectId = project.project_id;
+    const setWorkbenchMode = vi.spyOn(store, "setWorkbenchMode");
+    const selectStep = vi.spyOn(store, "selectStep");
+
+    const notices = [];
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const app = createApp({
+      render: () => h(SnowflakeMaterializationPanel, { onNotice: (message) => notices.push(message) }),
+    });
+    app.mount(host);
+    await nextTick();
+
+    const button = [...host.querySelectorAll("button")].find((el) => el.textContent.includes("去分章"));
+    expect(button).toBeTruthy();
+    button.click();
+    await nextTick();
+
+    expect(notices.join("\n")).toContain("潮汐工作台");
+    // 关键断言：没有跳到第 07 步。跳过去看到的是一片空白，比不跳更糟。
+    expect(selectStep).not.toHaveBeenCalled();
+    expect(setWorkbenchMode).not.toHaveBeenCalledWith("planning");
+
+    app.unmount();
+    host.remove();
   });
 
   it("creates a workspace project and drives step save and approval through structured drafts", async () => {

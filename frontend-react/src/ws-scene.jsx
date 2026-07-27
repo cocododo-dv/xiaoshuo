@@ -3,8 +3,9 @@ import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
 import { TweakRadio, TweakSection, TweakSlider, TweakToggle } from "./tweaks-panel.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
-import { SceneRunJobControl, scnQueueLoad, scnRunLoad, scnQueueSave, scnReQC, scnRun, scnCreateCards, scnTopupBudget, scnRunSave, scnAdoptToDoc, scnPrepareAdoption, scnPickList, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
+import { SceneRunJobControl, scnQueueLoad, scnRunLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnReQC, scnRun, scnCreateCards, scnTopupBudget, scnRunSave, scnAdoptToDoc, scnPrepareAdoption, scnPickList, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
 import { ContentSafetyReviewDialog, contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
+import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 import { WsWorks } from "./ws-works.jsx";
 
 /* global React, I */
@@ -87,6 +88,8 @@ function WsSceneBoard({ go, t }) {
     const pushFront = (sid) => { if (sid && !sids.includes(sid)) sids.unshift(sid); };
     if (p && Array.isArray(p.sids)) p.sids.slice().reverse().forEach(pushFront);
     if (p && p.sid) pushFront(p.sid);
+    // 明确入列的场先销掉「已移出」记号，否则刚加进来的场会被移出名单挡在门外
+    if (p && scnQueueDismissClear) scnQueueDismissClear([...(p.sids || []), p.sid].filter(Boolean));
     const items = sids.map(sid => scnFromCatalog(sid)).filter(Boolean);
     const runs0 = {};
     items.forEach(it => { const r = scnRunLoad ? scnRunLoad(it.sid) : null; if (r) runs0[it.id] = r; });
@@ -96,6 +99,9 @@ function WsSceneBoard({ go, t }) {
   const [extras, setExtras] = useSt8(initRef.current.items);
   const [runs, setRuns] = useSt8(initRef.current.runs0);
   const [picker, setPicker] = useSt8(false);
+  const [qSelMode, setQSelMode] = useSt8(false);          // 队列多选态（会话内，不持久化）
+  const [qSel, setQSel] = useSt8(() => new Set());
+  const { toast, show: showNotice, clear: clearNotice } = useUndoToast();
   const runSeq = useRef8({});
   const runAbortControllers = useRef8({});
   const runProgressTimers = useRef8({});
@@ -145,12 +151,14 @@ function WsSceneBoard({ go, t }) {
   const enqueueSid = (sid) => {
     const it = scnFromCatalog(sid);
     if (!it) return;
+    if (scnQueueDismissClear) scnQueueDismissClear([sid]);   // 重新入列 = 撤销之前的移出
     setExtras(x => {
       if (x.some(y => y.id === it.id)) return x;
       const nx = [it, ...x];
       if (scnQueueSave) scnQueueSave(nx.map(i => i.sid));
       return nx;
     });
+    setQSel(prev => (prev.size ? new Set([...prev].filter(id => id !== "cq-" + sid)) : prev));
     const r = scnRunLoad ? scnRunLoad(sid) : null;
     if (r) setRuns(m => ({ ...m, ["cq-" + sid]: r }));
     else if (scnHydrateFromBackend) {
@@ -160,6 +168,45 @@ function WsSceneBoard({ go, t }) {
         .catch(() => {});
     }
     setPicked("cq-" + sid);
+  };
+
+  /* 移出队列：只把这一场从「在办清单」里拿掉——场景卡、已生成的 AI 稿和后端运行记录
+     一概不动（重新入列即原样回来，所以这里说「移出」而不是「删除」；要删场景卡请去章节编排）。
+     正因为不破坏任何东西，这里不拦一道确认弹窗，而是移完给一条带「撤销」的回执：
+     动作即时、后悔成本近乎为零，比「先弹窗问一遍」顺手得多。
+     运行中的场仍然拦下：后端任务还在跑，悄悄丢掉跟踪会让作者以为已经停了。 */
+  const removeFromQueue = (ids) => {
+    const wanted = new Set(ids || []);
+    const targets = extras.filter(x => wanted.has(x.id));
+    if (!targets.length) return;
+    const stateOf = (item) => (runs[item.id] && runs[item.id].state) || item.state || "queued";
+    const running = targets.filter(x => stateOf(x) === "running");
+    if (running.length) {
+      showNotice({ tone: "warn", text: `有 ${running.length} 场正在运行，不能移出队列——请先「中止」或等它跑完。` });
+      return;
+    }
+    const removeIds = new Set(targets.map(x => x.id));
+    const removedSids = targets.map(x => x.sid);
+    const snapshot = extras;                       // 撤销 = 整体还原这份快照（runs 全程没动，稿还在）
+    const prevPicked = pickedIdRef.current;
+    if (scnQueueDismissAdd) scnQueueDismissAdd(removedSids);
+    const nx = extras.filter(x => !removeIds.has(x.id));
+    setExtras(nx);
+    if (scnQueueSave) scnQueueSave(nx.map(i => i.sid));
+    if (removeIds.has(prevPicked)) setPicked(nx.length ? nx[0].id : null);
+    setQSel(prev => (prev.size ? new Set([...prev].filter(id => !removeIds.has(id))) : prev));
+    showNotice({
+      text: targets.length === 1
+        ? `已把「${targets[0].title}」移出队列 · 场景卡与 AI 稿都保留`
+        : `已把 ${targets.length} 场移出队列 · 场景卡与 AI 稿都保留`,
+      actionLabel: "撤销",
+      onAction: () => {
+        if (scnQueueDismissClear) scnQueueDismissClear(removedSids);
+        setExtras(snapshot);
+        if (scnQueueSave) scnQueueSave(snapshot.map(i => i.sid));
+        setPicked(prevPicked);
+      },
+    });
   };
 
   /* FE 补缝：本地没有 scn-run 记录的入列场，从后端 workbench 恢复运行态——
@@ -190,6 +237,10 @@ function WsSceneBoard({ go, t }) {
     (async () => {
       let sids = [];
       try { sids = await scnBackendQueueSids(); } catch (e) {}
+      /* 作者移出过的场不再从后端恢复：管线里仍有它的运行记录，但队列是「在办清单」，
+         恢复它等于把删除撤销掉。重新入列（加入场景 / 交给 AI）会销名。 */
+      const dismissed = new Set(scnQueueDismissLoad ? scnQueueDismissLoad() : []);
+      sids = sids.filter(sid => !dismissed.has(sid));
       if (!alive || !sids.length) return;
       const restored = sids.map(sid => scnFromCatalog(sid)).filter(Boolean);
       setExtras(prev => {
@@ -609,6 +660,7 @@ function WsSceneBoard({ go, t }) {
           </div>
         </div>
         {picker && <ScenePicker queued={extras.map(x => x.sid)} onPick={(sid) => { enqueueSid(sid); setPicker(false); }} onClose={() => setPicker(false)} />}
+        <UndoToast toast={toast} onClose={clearNotice} />
       </div>
     );
   }
@@ -622,6 +674,20 @@ function WsSceneBoard({ go, t }) {
         queue={queue} sceneOfX={sceneOfX}
         pickedId={pickedId} setPicked={setPicked} counts={counts} dxDone={dxDone}
         onAdd={() => setPicker(true)}
+        onRemove={(id) => removeFromQueue([id])}
+        select={{
+          mode: qSelMode,
+          has: (id) => qSel.has(id),
+          count: qSel.size,
+          onToggleMode: () => { setQSelMode(v => !v); setQSel(new Set()); },
+          onToggle: (id) => setQSel(prev => {
+            const nextSel = new Set(prev);
+            if (nextSel.has(id)) nextSel.delete(id); else nextSel.add(id);
+            return nextSel;
+          }),
+          onSelectAll: () => setQSel(prev => (prev.size === queue.length ? new Set() : new Set(queue.map(q => q.id)))),
+          onRemoveSelected: () => { removeFromQueue([...qSel]); setQSelMode(false); },
+        }}
       />
 
       <section className="scn2-stage" key={pickedId}>
@@ -670,6 +736,7 @@ function WsSceneBoard({ go, t }) {
 
       <Evidence scene={scene} state={renderState} activeBeat={activeBeat} setActiveBeat={setActiveBeat} onView={setCompare} />
       {picker && <ScenePicker queued={extras.map(x => x.sid)} onPick={(sid) => { enqueueSid(sid); setPicker(false); }} onClose={() => setPicker(false)} />}
+      <UndoToast toast={toast} onClose={clearNotice} />
       {adoptionDecision && scnPortal(
         <AdoptionProtectDialog
           decision={adoptionDecision}
@@ -797,7 +864,10 @@ function AdoptionProtectDialog({ decision, busy, message, onClose, onCandidate, 
 
 /* ============================ Queue ============================ */
 
-function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, dxDone, onAdd }) {
+function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, dxDone, onAdd, onRemove, select }) {
+  const sel = select || {};
+  const selectMode = !!sel.mode;
+  const selectedCount = sel.count || 0;
   return (
     <aside className="scn2-queue">
       <header className="scn2-queue-head">
@@ -813,14 +883,39 @@ function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, dxDone, onAd
         <QStat n={counts.archived} label="归档" tone="sage" />
       </div>
 
+      {selectMode && (
+        <div className="scn2-queue-batch" role="toolbar" aria-label="队列批量操作">
+          <div className="scn2-queue-batch-top">
+            <span className="scn2-queue-batch-n">已选 <strong>{selectedCount}</strong> / {queue.length}</span>
+            <button className="btn btn-quiet btn-sm" onClick={sel.onSelectAll}>
+              {selectedCount === queue.length && queue.length ? "取消全选" : "全选"}
+            </button>
+          </div>
+          <div className="scn2-queue-batch-top">
+            <button className="btn btn-danger btn-sm" data-testid="scene-queue-batch-remove" style={{ flex: 1 }}
+              disabled={!selectedCount} onClick={sel.onRemoveSelected}>
+              <I.Trash size={12} /> 移出所选
+            </button>
+            <button className="btn btn-ghost btn-sm" data-testid="scene-queue-select-exit" onClick={sel.onToggleMode}>完成</button>
+          </div>
+        </div>
+      )}
+
       <ul className="scn2-queue-list">
         {queue.map(q => {
           const s = sceneOfX(q.id);
           const st = q.state;
           const active = pickedId === q.id;
+          const checked = !!(sel.has && sel.has(q.id));
           return (
-            <li key={q.id}>
-              <button className={`scn2-qrow ${active ? "is-active" : ""} s-${st}`} data-testid="scene-queue-item" data-scene-sid={s.sid || ""} onClick={() => setPicked(q.id)}>
+            <li key={q.id} className={`scn2-qrow-wrap ${checked ? "is-selected" : ""}`}>
+              {selectMode && (
+                <label className="scn2-qrow-check" title="选中后可批量移出队列">
+                  <input type="checkbox" checked={checked} aria-label={`选择 ${s.n} ${s.title}`} onChange={() => sel.onToggle(q.id)} />
+                </label>
+              )}
+              <button className={`scn2-qrow ${active ? "is-active" : ""} s-${st}`} data-testid="scene-queue-item" data-scene-sid={s.sid || ""}
+                onClick={() => (selectMode ? sel.onToggle(q.id) : setPicked(q.id))}>
                 <span className={`scn2-qrow-spine s-${st}`} />
                 <div className="scn2-qrow-main">
                   <div className="scn2-qrow-top">
@@ -834,14 +929,25 @@ function SceneQueue({ queue, sceneOfX, pickedId, setPicked, counts, dxDone, onAd
                   </div>
                 </div>
               </button>
+              {!selectMode && (
+                <button className="scn2-qrow-x" data-testid="scene-queue-remove" aria-label={`把 ${s.title} 移出队列`}
+                  title="移出队列（保留场景卡与已生成的 AI 稿，可撤销）"
+                  onClick={(e) => { e.stopPropagation(); onRemove && onRemove(q.id); }}><I.Trash size={12} /></button>
+              )}
             </li>
           );
         })}
       </ul>
 
-      <div className="scn2-queue-foot">
-        <button className="btn btn-accent btn-sm" data-testid="scene-add" style={{ flex: 1 }} onClick={onAdd}><I.Plus size={13} /> 加入场景</button>
-      </div>
+      {!selectMode && (
+        <div className="scn2-queue-foot">
+          <button className="btn btn-accent btn-sm" data-testid="scene-add" style={{ flex: 1 }} onClick={onAdd}><I.Plus size={13} /> 加入场景</button>
+          <button className="btn btn-quiet btn-sm" data-testid="scene-queue-select-mode"
+            disabled={!queue.length} title="多选后可一次移出多场" onClick={sel.onToggleMode}>
+            <I.Check size={13} /> 多选
+          </button>
+        </div>
+      )}
     </aside>
   );
 }

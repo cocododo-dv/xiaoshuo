@@ -1680,9 +1680,23 @@ templates:
         requires_human_review:
           type: boolean
 
+  # ── 雪花工作台模板族（下面 14 个）的 input_token_budget 统一为 24000 ──
+  # 这个数字是量出来的，不是猜的。这一族共用同一条渲染路径，载荷成分也相同
+  # （project + 本步契约 + upstream_steps + current_draft + focus_*），体量由作品
+  # 规模决定而不是由第几步决定，所以取同一个值。
+  #
+  # 实测（120 场 / 8 角色 / 十步全填，场景规划一批）：未降载 60,967 tok；
+  # services/snowflake_prompt_budget.py 的降载阶梯逐级为
+  # 52,783 → 26,179 → 18,333 → 14,477，14,477 就是这本书的下限。
+  # 旧值 2200–3600 对这种体量根本不可达——那会导致每次生成都跑满阶梯、削到只剩
+  # 焦点场，还照样报超限。24000 的取法：中等规模的书基本不触发降载（保上下文完整
+  # 与一致性），超大规模的书按「与本批无关的材料优先」有序削减并如实上报。
+  #
+  # 要为小上下文的本地模型（如 ollama）收紧，用 NOVEL_SYSTEM_SNOWFLAKE_INPUT_TOKEN_BUDGET
+  # 覆盖，无须改这里。
   snowflake_generate_book_brief:
     version: "2026-07-04.v2"
-    input_token_budget: 2600
+    input_token_budget: 24000
     system_prompt: |
       You are a senior fiction development editor working inside a snowflake-method planning workspace.
       Produce transferable planning guidance only. Do not copy protected source text, characters, settings, or signature imagery.
@@ -1723,7 +1737,7 @@ templates:
 
   snowflake_generate_one_sentence_summary:
     version: "2026-07-04.v2"
-    input_token_budget: 2200
+    input_token_budget: 24000
     system_prompt: |
       You are refining a snowflake-method novel premise into a memorable one-sentence summary.
       Preserve causal clarity and concrete stakes.
@@ -1743,7 +1757,7 @@ templates:
 
   snowflake_generate_one_paragraph_summary:
     version: "2026-07-04.v2"
-    input_token_budget: 2600
+    input_token_budget: 24000
     system_prompt: |
       You are expanding a one-sentence premise into a five-sentence snowflake summary.
       Keep the escalation causal and specific.
@@ -1768,14 +1782,14 @@ templates:
 
   snowflake_generate_character_sheets:
     version: "2026-07-06.v3"
-    input_token_budget: 2800
+    input_token_budget: 24000
     system_prompt: |
       You are outlining major character pressure inside a snowflake-method workspace.
       Make each character distinct in desire, value, conflict, and change.
       Preserve the user's input language and approved facts; every important character should feel like the lead of their own pressure story.
     task_prompt: |
       Return structured character sheets for the key cast. Emphasize concrete goals, blocking forces, value conflicts, epiphanies, and how each character can generate scenes.
-      Each character object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: character_id (reuse the id from approved_steps or current_draft when the character already exists; leave "" for a brand-new character and the server assigns one), display_name, role (主角/对手/盟友/镜像 in the input language), goal (concrete, scene-actionable desire), ambition (the deeper abstract want behind the goal), values (array of belief statements, each phrased like "相信……"), conflict (who or what blocks the goal, and why that opposition cannot be waved away — the belief this character must risk belongs here), epiphany (what changes and what concrete event triggers it), one_sentence_summary (this character's private arc in one sentence), one_paragraph_summary (that arc expanded to a short paragraph tied to the three disasters, ending with what kind of scenes this character's pressure can generate).
+      Each character object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: character_id (reuse the id from upstream_steps or current_draft when the character already exists; leave "" for a brand-new character and the server assigns one), display_name, role (主角/对手/盟友/镜像 in the input language), goal (concrete, scene-actionable desire), ambition (the deeper abstract want behind the goal), values (array of belief statements, each phrased like "相信……"), conflict (who or what blocks the goal, and why that opposition cannot be waved away — the belief this character must risk belongs here), epiphany (what changes and what concrete event triggers it), one_sentence_summary (this character's private arc in one sentence), one_paragraph_summary (that arc expanded to a short paragraph tied to the three disasters, ending with what kind of scenes this character's pressure can generate).
       Fill every key for every character with substantive content — an empty string or a name-only entry is a defect. Keep characters distinct: if two characters share the same goal/conflict shape, sharpen one until the overlap is gone.
     structured_schema:
       type: object
@@ -1791,7 +1805,7 @@ templates:
 
   snowflake_generate_short_synopsis:
     version: "2026-07-04.v2"
-    input_token_budget: 2600
+    input_token_budget: 24000
     system_prompt: |
       You are expanding a five-sentence snowflake summary into a short synopsis.
       Keep the synopsis act-shaped and causally linked.
@@ -1812,7 +1826,7 @@ templates:
 
   snowflake_generate_character_synopses:
     version: "2026-07-06.v3"
-    input_token_budget: 2800
+    input_token_budget: 24000
     system_prompt: |
       You are writing concise character-backstory synopses for a snowflake workspace.
       Emphasize how each character enters the story conflict and changes under pressure.
@@ -1840,30 +1854,37 @@ templates:
             additionalProperties: true
 
   snowflake_generate_long_synopsis:
-    version: "2026-07-06.v3"
-    input_token_budget: 3200
+    version: "2026-07-25.v4"
+    input_token_budget: 24000
     system_prompt: |
       You are expanding a short snowflake synopsis into a chapter-grain long outline.
       Preserve escalation, reversals, and ending cost.
       Preserve the user's input language and approved facts; deepen the same story rather than replacing it.
     task_prompt: |
-      Return the long synopsis as exactly three structured paragraphs, one per act: paragraphs[0] = act one, paragraphs[1] = act two, paragraphs[2] = act three.
-      Inside each paragraph write one line per chapter in the exact format "NN 章名：本章的因果推进一句话" (two-digit chapter number, one space, chapter title, full-width colon, one causal sentence stating what changes and why it cannot be undone), with chapter lines separated by newlines — the workspace parses this format into an editable chapter table, so deviating from it loses content.
-      Plan 12-20 chapters total so the middle act has room to develop instead of collapsing into a summary jump from setup to ending. Mark the three disaster chapters by appending （灾一）/（灾二）/（灾三） at the end of their lines. Disasters 2 and 3 must each introduce a different kind of opposition or pressure mechanism than the one before — escalating the same conflict's stakes without changing its shape counts as a sagging middle and should be avoided.
+      Return BOTH a structured `chapters` array and the readable `paragraphs` mirror. `chapters` is the source of truth — materialization groups scenes by it, so a chapter missing from `chapters` never reaches the author's catalog.
+      Each chapter object: act (1/2/3), title (the chapter's name, no numbering prefix), summary (one causal sentence stating what changes and why it cannot be undone), spine ("灾一"/"灾二"/"灾三" on the three disaster chapters, "" on all others), chapter_goal (what this chapter must accomplish for the book). Leave row_uid as "" — the server assigns identities. Order the array in reading order; do not number the titles.
+      `paragraphs` is the same content as readable text, one entry per act: paragraphs[0] = act one, paragraphs[1] = act two, paragraphs[2] = act three. Inside each, write one line per chapter as "NN 章名：本章的因果推进一句话", appending （灾一）/（灾二）/（灾三） on the disaster chapters.
+      Plan 12-20 chapters total so the middle act has room to develop instead of collapsing into a summary jump from setup to ending. Disasters 2 and 3 must each introduce a different kind of opposition or pressure mechanism than the one before — escalating the same conflict's stakes without changing its shape counts as a sagging middle and should be avoided.
     structured_schema:
       type: object
       additionalProperties: false
       required:
         - paragraphs
+        - chapters
       properties:
         paragraphs:
           type: array
           items:
             type: string
+        chapters:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
 
   snowflake_generate_character_bibles:
     version: "2026-07-06.v3"
-    input_token_budget: 3200
+    input_token_budget: 24000
     system_prompt: |
       You are deepening character bibles for a snowflake-method novel.
       Keep biography in service of scene pressure and transformation.
@@ -1886,15 +1907,18 @@ templates:
             additionalProperties: true
 
   snowflake_generate_scene_list:
-    version: "2026-07-06.v3"
-    input_token_budget: 3200
+    version: "2026-07-25.v5"
+    input_token_budget: 24000
     system_prompt: |
       You are breaking a snowflake synopsis into a scene list.
       Each scene should have a clear job in the chapter and a distinct point-of-view pressure.
-      Preserve the user's input language and approved facts; do not add scenes that only explain backstory or atmosphere.
+      Preserve the user's input language and established facts; do not add scenes that only explain backstory or atmosphere.
+      You are decomposing an EXISTING plan, never starting a new story. Every character, place, and plot turn must already appear in upstream_steps — the summaries, the cast, and the long outline. Inventing a fresh protagonist or an unrelated premise is the single worst failure of this step, and `confirmed: false` on an upstream step is not permission to do it.
+      If upstream_steps is empty or too thin to decompose, say so by returning an empty scenes array rather than inventing a story to fill it.
     task_prompt: |
       Return the scene list as structured scene cards covering the whole story spine. Each scene needs POV pressure, conflict, and a result/change that forces the next scene.
-      Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: scene_seq (1-based order), pov_character_id (reuse character ids from the approved cast), summary (one dense line — for a proactive scene: the goal, the conflict blocking it, and the ending setback/change; for a reactive scene: the reaction, the dilemma it creates, and the decision that launches the next goal), primary_form and scene_type (set both to the same value, "proactive" or "reactive" — decide it here; the planning step deepens the scene using the type you assign, it does not re-decide it), location (concrete place), crucible (the pressure that traps the POV in this scene and blocks simply walking away), chapter_role (this scene's job in the arc, e.g. 起疑/取证/灾难一·一幕高潮/收束). Leave row_uid/scene_id/chapter_id/chapter_title/chapter_goal as "" — the server assigns identities.
+      Every pov_character_id must be a character id that already exists in upstream_steps (the cast sheets / character bibles). Every scene must be traceable to a beat of the one-paragraph summary or the long outline — do not introduce people or events that appear nowhere upstream.
+      Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key, so a different key name means lost content: scene_seq (1-based order), pov_character_id (reuse character ids from the established cast), summary (one dense line — for a proactive scene: the goal, the conflict blocking it, and the ending setback/change; for a reactive scene: the reaction, the dilemma it creates, and the decision that launches the next goal), primary_form and scene_type (set both to the same value, "proactive" or "reactive" — decide it here; the planning step deepens the scene using the type you assign, it does not re-decide it), location (concrete place), crucible (the pressure that traps the POV in this scene and blocks simply walking away), chapter_role (this scene's job in the arc, e.g. 起疑/取证/灾难一·一幕高潮/收束), spine ("灾一"/"灾二"/"灾三" on the three disaster scenes, "" on every other scene — the chaptering step anchors these against the same marks on the chapter table, so marking them correctly is what keeps the disasters on the act boundaries). Leave row_uid/scene_id/chapter_id/chapter_title/chapter_goal as "" — the server assigns identities, and chapter membership is decided by the author in the chaptering step, not here.
       Fill summary, pov_character_id, location, crucible, and chapter_role for every scene — an empty one is a defect. Alternate proactive and reactive deliberately, and mark the three disaster scenes in chapter_role.
     structured_schema:
       type: object
@@ -1909,16 +1933,19 @@ templates:
             additionalProperties: true
 
   snowflake_generate_scene_details:
-    version: "2026-07-20.v4"
-    input_token_budget: 3600
+    version: "2026-07-26.v6"
+    input_token_budget: 24000
     system_prompt: |
       You are converting a scene list into Scene / Sequel detail.
-      Respect existing scene membership and order. Do not invent extra scenes.
-      Preserve the user's input language, scene IDs, chapter membership, and approved facts.
+      Respect existing scene membership and order. Do not invent extra scenes — the server drops any scene_id that is not already in the draft, so an invented scene is wasted output, not a contribution.
+      Preserve the user's input language, scene IDs, chapter membership, and established facts.
+      Every name, place, and event you write must already exist in upstream_steps or the current draft; `confirmed: false` on an upstream step means it may still change, not that you may contradict it.
+      When focus_scenes is present, it is the complete assignment for this call — the server deepens a long scene table in small batches and will call you again for the rest. Deepen every focus scene completely; do not ration your output across scenes you were not asked about.
+      Scenes outside the assignment appear in current_draft as continuity reference only. Nearby scenes are shown with their goal/setback/decision so your work connects to them; distant scenes are shown as one-line entries. Never echo, rewrite, or fill in a scene that is not in your assignment.
     task_prompt: |
-      Deepen every scene from the current draft into Scene/Sequel detail. Echo each scene's scene_id unchanged — the server matches your output to the draft by scene_id and silently drops scenes it cannot match.
+      Deepen the scenes you were assigned — focus_scenes when present, otherwise every scene in the current draft — into Scene/Sequel detail. Echo each scene's scene_id unchanged — the server matches your output to the draft by scene_id and rejects the call if nothing matches.
       Each scene object must use exactly the canonical keys the workspace stores — the server discards any other key: scene_id, title (short scene title), summary, scene_type (echo the draft's type), location, scene_crucible and crucible (both set to the trap that keeps the POV in the scene), the trio matching its scene_type — proactive: goal (concrete and time-bound), conflict (2-3 rounds of attempt→blocked), setback (the scene ends worse than it started); reactive: reaction (felt first in the body, before analysis), dilemma (two options, each genuinely costly to refuse), decision (directly spawns the next scene's goal) — plus cost_requirement (what the POV character concretely gives up, loses, or can no longer undo because of this scene's choice or outcome — a free choice with no stated cost is a defect), exit_change (what is irreversibly different when the scene ends), hook (the open loop that forces the page turn), target_length_band ("short"/"medium"/"long"), must_include_text (a concrete beat, object, or line that must appear; "" if none), beats_json (array of 3-6 short beat lines tracing the scene's turn).
-      Keep the other trio's keys as empty strings — do not mix both trios onto one scene. Fill title, summary, location, scene_crucible, crucible, cost_requirement, exit_change, and hook for every scene — an empty one is a defect.
+      Keep the other trio's keys as empty strings — do not mix both trios onto one scene. Fill title, summary, location, scene_crucible, crucible, cost_requirement, exit_change, and hook for every assigned scene — an empty one is a defect.
       A dilemma is fake if one option is clearly superior once its cost is stated plainly — a real dilemma needs two options that are each genuinely costly to refuse, so the character's choice reveals character rather than stating the obvious. Use pressure_rubric and current_pressure_diagnosis to avoid weak conflict, weak setback, fake dilemma, and decisions that do not trigger the next goal.
     structured_schema:
       type: object
@@ -1933,8 +1960,8 @@ templates:
             additionalProperties: true
 
   snowflake_workspace_assistant:
-    version: "2026-07-04.v2"
-    input_token_budget: 2600
+    version: "2026-07-22.v3"
+    input_token_budget: 24000
     system_prompt: |
       You are a resident snowflake-method writing coach.
       Give concrete editorial guidance tied to the author's current step, and only propose writeback for the current step.
@@ -1944,6 +1971,7 @@ templates:
       Only populate candidate_patch when the author explicitly asks for a rewrite or generation of the current step, or names a concrete structural defect that a patch can fix directly. For open questions, clarifying discussion, or brainstorming where no single patch would be safe, answer through reply and suggestions only.
       If no safe writeback is appropriate, return an empty object for candidate_patch and an empty string for candidate_label.
       Use pressure_rubric and current_pressure_diagnosis to target missing goal, opposition, cost, change, or next-step expandability.
+      approved_context holds every other step's draft, each tagged with `confirmed`. Treat all of them as this book's established facts — `confirmed: false` means the author has not signed that step off yet, not that you may ignore or contradict it. Ground your answer in those names, places, and conflicts rather than generic craft advice.
     structured_schema:
       type: object
       additionalProperties: false
@@ -1968,10 +1996,11 @@ templates:
   # FE-ALIGN G5: 构思视图「生成候选」— 3 条不同方向的步骤草稿候选（原型契约形状）
   snowflake_step_candidates:
     version: "2026-07-06.v3"
-    input_token_budget: 3400
+    input_token_budget: 24000
     system_prompt: |
       You are a snowflake-method writing assistant generating divergent draft candidates for one step of a long-form Chinese novel plan.
-      Ground every candidate in the payload's authoritative material: approved_steps (backend-approved canonical drafts of upstream steps) and current_canonical_draft are the source of truth; fe_local_context only reflects the author's latest unsynced edits and supplements them.
+      Ground every candidate in the payload's authoritative material: upstream_steps (the canonical drafts of every earlier snowflake step, each tagged with a `confirmed` flag) and current_canonical_draft are the source of truth; fe_local_context only reflects the author's latest unsynced edits and supplements them.
+      `confirmed: false` means the author has not signed that step off yet, not that you may ignore it — an unconfirmed upstream draft is still this book's story, so its characters, places, and conflicts bind you exactly like a confirmed one.
       Stay strictly consistent with that material (characters, conflicts, moral premise). Never invent facts that contradict it.
       Write candidate text in the author's input language (Chinese unless the material says otherwise).
     task_prompt: |
@@ -2008,9 +2037,37 @@ templates:
                 items:
                   type: string
 
+  snowflake_chapter_plan_suggest:
+    version: "2026-07-25.v1"
+    input_token_budget: 24000
+    system_prompt: |
+      You are grouping an ordered scene list into chapters for a novel already planned with the snowflake method.
+      You are ARRANGING an existing plan, never rewriting it. Every chapter you propose must already exist in `chapters`, and every scene must already exist in `scenes`. Do not invent, merge, split, rename, or drop a scene.
+      A chapter break is a reading decision, not arithmetic: it should land where a scene closes one pressure and the next opens another, so the reader can put the book down and still want to pick it up.
+      The three disaster scenes are structural hinges. If a scene carries spine 灾一/灾二/灾三, it belongs in the chapter carrying the same mark — that alignment outranks any preference about even chapter length.
+    task_prompt: |
+      Assign every scene in `scenes` to exactly one chapter in `chapters`, and return the assignments in reading order.
+      Return `assignments`: an array of objects with `scene_plan_id` (echo verbatim from `scenes`) and `chapter_row_uid` (echo verbatim from `chapters`). Order within a chapter is the order you list them.
+      Also return `rationale`: at most 3 short sentences naming the two or three chapter breaks you are least sure about and why, so the author knows where to look first. Do not summarise the plot back.
+      Constraints, in priority order: (1) spine-marked scenes sit in the chapter with the same spine mark; (2) scene reading order is preserved — a scene may not appear before an earlier-numbered scene; (3) every scene is assigned exactly once; (4) no chapter is left empty; (5) chapter lengths are reasonably balanced, but never at the cost of 1-4.
+      `current_assignment` shows the deterministic spine-anchor proposal the author is looking at right now. Deviate from it only where you can say why in `rationale` — an unexplained reshuffle is worse than no suggestion.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - assignments
+      properties:
+        assignments:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        rationale:
+          type: string
+
   snowflake_scene_triage_suggest:
     version: "2026-07-04.v2"
-    input_token_budget: 2600
+    input_token_budget: 24000
     system_prompt: |
       You are reviewing scene pressure in a snowflake workspace before outline materialization.
       Evaluate only whether each scene is passable, needs revision, or should be rebuilt.

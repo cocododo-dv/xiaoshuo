@@ -208,6 +208,7 @@ class ProjectService:
             if not chapter_id:
                 raise DomainError("OUTLINE_PLAN_INVALID", "chapter_id is required", status_code=422)
             chapter = self.session.get(ChapterGoal, chapter_id)
+            is_new_chapter = chapter is None
             if chapter is None:
                 chapter = ChapterGoal(chapter_id=chapter_id, chapter_goal="")
                 self.session.add(chapter)
@@ -220,6 +221,18 @@ class ProjectService:
             chapter.planned_scene_count = len(chapter_plan.get("scenes") or [])
             chapter.mid_aggregate_enabled = 0
             chapter.chapter_goal = str(chapter_plan.get("chapter_goal") or chapter_plan.get("title") or chapter_id)
+            # 目录侧读章名的首选字段是 narrative_json["title"]（catalog.chapter_title）。
+            # 雪花物化以前不写它，于是作者在 07 里起的章名到不了目录，用户看到的是章 id
+            # 字符串。这里补上 —— 但**只在新建章时播种**：narrative_json / display_order
+            # 是目录侧的权威字段（章节编排里能改名、能重排），重新物化不得把作者在那边
+            # 的改动冲掉。
+            if is_new_chapter:
+                narrative = dict(chapter_plan.get("narrative_json") or {})
+                if narrative:
+                    chapter.narrative_json = {**dict(chapter.narrative_json or {}), **narrative}
+                display_order = chapter_plan.get("display_order")
+                if display_order is not None:
+                    chapter.display_order = int(display_order)
             chapter.main_plot_push = _optional_text(chapter_plan.get("main_plot_push"))
             chapter.emotional_target = _optional_text(chapter_plan.get("emotional_target"))
             chapter.ending_effect = _optional_text(chapter_plan.get("ending_effect"))

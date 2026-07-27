@@ -340,7 +340,36 @@
 }
 
 /* ---------- Outline (left drawer) ---------- */
+.wr-drawer-sel {
+  margin-left: auto; height: 26px; padding: 0 9px; border-radius: 8px; gap: 4px;
+  display: inline-flex; align-items: center; border: 1px solid var(--line-1);
+  background: transparent; color: var(--ink-3); cursor: pointer; font-size: 12px; font-weight: 600;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+}
+.wr-drawer-sel:hover { background: var(--paper-2); color: var(--ink-1); border-color: var(--line-2); }
+.wr-drawer-sel.is-on { background: var(--crimson-wash); color: var(--crimson); border-color: var(--crimson-soft); }
+.wr-drawer-sel + .wr-drawer-x { margin-left: 0; }
+
+/* 批量条常驻抽屉底部：勾选后不必滚回顶部找按钮 */
+.wr-outline-batch {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 14px; border-top: 1px solid var(--line-1); background: var(--paper-2);
+}
+.wr-outline-batch-n { font-size: 12px; color: var(--ink-2); flex: 1; min-width: 0; line-height: 1.5; }
+.wr-outline-batch-n strong { color: var(--ink-1); font-size: 13px; }
+/* 随章带走的场：勾上但不可单独取消，视觉上弱一档，说明它不是一次独立选择 */
+.wr-sc-check input:disabled { opacity: 0.6; }
+
 .wr-ch { margin-bottom: 6px; }
+.wr-ch-head { display: flex; align-items: center; gap: 4px; border-radius: var(--r-md); }
+.wr-ch-head .wr-ch-row { flex: 1; min-width: 0; }
+.wr-ch-head.is-selected { background: var(--crimson-wash); }
+.wr-ch-check, .wr-sc-check { display: grid; place-items: center; padding-left: 6px; cursor: pointer; }
+.wr-ch-check input, .wr-sc-check input { width: 15px; height: 15px; accent-color: var(--crimson); cursor: pointer; }
+.wr-ch-check input:disabled, .wr-sc-check input:disabled { cursor: not-allowed; }
+.wr-ch-del { opacity: 0; flex: 0 0 auto; margin-right: 4px; }
+.wr-ch-head:hover .wr-ch-del, .wr-ch-head:focus-within .wr-ch-del { opacity: 1; }
+.wr-sc.is-selected { background: var(--crimson-wash); }
 .wr-ch-row {
   display: flex; align-items: center; gap: 8px; width: 100%;
   padding: 8px 8px; border: 0; background: transparent; cursor: pointer;

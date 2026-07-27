@@ -8,6 +8,7 @@ import { ContentSafetyReviewDialog, contentSafetyReviewFromError } from "./wr-co
 import { wsKey, WsWorks } from "./ws-works.jsx";
 import { wrDeepUnmark, wrDeepScan, wrDxLog, wrDeepMark, wrDeepAdopt, wrDxPushLog, wrDxAddSkip, wrDxClearSkips, WrDeepDrawer } from "./ws-deep.jsx";
 import { OrchestrationSignals } from "./ws-signals.jsx";
+import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 import { onRovingTabKeyDown } from "./a11y-tabs.js";
 
 /* global React, I */
@@ -222,6 +223,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   const tw = { ...WRITER_TWEAK_DEFAULTS, ...(t || {}) };
 
   const [activeScene, setActiveScene] = useWS(wrInitialScene);
+  const { toast, show: showNotice, clear: clearNotice } = useUndoToast();
   /* FE-ALIGN G4 授权接缝：当前在写场景镜像到模块级（inline rewrite 的后端定位） */
   useWE(() => { WR_ACTIVE_SID = activeScene; return () => { WR_ACTIVE_SID = null; }; }, [activeScene]);
   const [entityPop, setEntityPop] = useWS(null);
@@ -875,6 +877,23 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     if (WsCatalog) { WsCatalog.renameScene(chId, sid, title); refreshChapters(); return; }
     setChapters(prev => prev.map(c => c.id !== chId ? c : { ...c, scenes: c.scenes.map(s => s.id === sid ? { ...s, title } : s) }));
   };
+  /* 删除后把光标放到还活着的第一场（正文文档留在存储里，随回收站恢复一并回来），
+     并给一条回执说明东西去了哪——删完一片安静是最容易让人以为「丢了」的时刻。 */
+  const settleAfterDelete = (removedSceneIds, noticeText) => {
+    const next = wrFromCatalog();
+    setChapters(next);
+    if (removedSceneIds.has(activeScene)) {
+      const flat = next.flatMap(c => c.scenes);
+      setActiveScene(flat.length ? flat[0].id : null);
+    }
+    if (noticeText) {
+      showNotice({
+        text: noticeText,
+        actionLabel: "打开回收站",
+        onAction: () => { if (go) go("trash"); else location.hash = "#trash"; },
+      });
+    }
+  };
   const deleteScene = (chId, sid) => {
     if (chapterLocked(chId)) return;
     if (WsCatalog) {
@@ -887,13 +906,9 @@ function WriterRoom({ t, setTweak, onExit, go }) {
           payload: { type: "scene", chId: hit.chapter.id, index: hit.index, scene: hit.scene },
         });
       }
+      const title = (hit && hit.scene.title) || "未命名场景";
       WsCatalog.removeScene(chId, sid);
-      const next = wrFromCatalog();
-      setChapters(next);
-      if (activeScene === sid) {
-        const flat = next.flatMap(c => c.scenes);
-        setActiveScene(flat.length ? flat[0].id : null);
-      }
+      settleAfterDelete(new Set([sid]), `已把场景「${title}」移入回收站`);
       return;
     }
     if (activeScene === sid) {
@@ -907,6 +922,36 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     if (WsCatalog) { WsCatalog.addScene(chId, "新场景"); refreshChapters(); return; }
     const nid = "sc" + Date.now();
     setChapters(prev => prev.map(c => c.id !== chId ? c : { ...c, scenes: [...c.scenes, { id: nid, title: "新场景", state: "todo" }] }));
+  };
+  const deleteChapter = (chId) => {
+    if (!WsCatalog || chapterLocked(chId)) return;
+    const target = chapters.find(c => c.id === chId);
+    if (!target) return;
+    const scenes = target.scenes.length;
+    if (!window.confirm(`把第 ${target.n} 章「${target.title}」移入回收站？${scenes ? `连同章下 ${scenes} 个场景。` : ""}`)) return;
+    WsCatalog.removeChapters([chId]);
+    settleAfterDelete(new Set(target.scenes.map(s => s.id)), `已把第 ${target.n} 章移入回收站${scenes ? `（含 ${scenes} 场）` : ""}`);
+  };
+  /* 批量删除：章 + 场一次提交（被删章下的场不再单独进场景桶，
+     否则后端会以「章下已有单独回收的场景」为由挡下整章删除） */
+  const deleteBatch = (chapterIds, sceneIds) => {
+    if (!WsCatalog) return;
+    const chDrop = new Set(chapterIds.filter(id => !chapterLocked(id)));
+    const scDrop = new Set();
+    const removedScenes = new Set();
+    chapters.forEach((c) => {
+      c.scenes.forEach((s) => {
+        if (chDrop.has(c.id)) { removedScenes.add(s.id); return; }
+        if (sceneIds.includes(s.id) && c.state !== "approved") { scDrop.add(s.id); removedScenes.add(s.id); }
+      });
+    });
+    if (!chDrop.size && !scDrop.size) return;
+    const parts = [];
+    if (chDrop.size) parts.push(`${chDrop.size} 章`);
+    if (scDrop.size) parts.push(`${scDrop.size} 场`);
+    if (!window.confirm(`把所选 ${parts.join(" · ")} 移入回收站？共 ${removedScenes.size} 个场景受影响。`)) return;
+    WsCatalog.removeMixed([...chDrop], [...scDrop]);
+    settleAfterDelete(removedScenes, `已把 ${parts.join(" · ")} 移入回收站`);
   };
   /* 空白作品：创建第一章 + 开场，立刻可写 */
   const createFirstChapter = () => {
@@ -1095,7 +1140,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
       </div>
 
       <div className={`wr-scrim wr-scrim-drawer ${drawerOpen ? "show" : ""}`} onClick={() => { setLeftOpen(false); setRightOpen(false); }} />
-      <WrOutline open={leftOpen} activeScene={activeScene} chapters={chapters} onReorder={reorderScene} onRename={renameScene} onDelete={deleteScene} onAdd={addScene} onPick={(id) => { setActiveScene(id); if (!coexist) setLeftOpen(false); }} onClose={() => setLeftOpen(false)} />
+      <WrOutline open={leftOpen} activeScene={activeScene} chapters={chapters} onReorder={reorderScene} onRename={renameScene} onDelete={deleteScene} onDeleteChapter={deleteChapter} onDeleteBatch={deleteBatch} onAdd={addScene} onPick={(id) => { setActiveScene(id); if (!coexist) setLeftOpen(false); }} onClose={() => setLeftOpen(false)} />
       {posture === "deep" && WrDeepDrawer
         ? <WrDeepDrawer open={rightOpen} issues={dxIssues} activeKey={dxActive} onPick={dxPick} onAdopt={dxAdopt} onIgnore={dxIgnore} onRescan={dxRescanAll} onEditDraft={dxEditDraft} onUndo={dxUndo} canUndo={!!(dxUndoRef.current && dxUndoRef.current.sid === activeScene)} log={dxLog} onClose={() => setRightOpen(false)} />
         : <WrContext open={rightOpen} tab={rightTab} setTab={setRightTab} onClose={() => setRightOpen(false)} onOpenAI={() => { setRightOpen(false); setTrayOpen(true); }} place={tw.aiPlace} onAdopt={adopt} onMerge={merge} onAdoptText={adoptText} scene={activeScene} editorRef={editorRef} />}
@@ -1103,6 +1148,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
       <WrTray open={trayOpen} onClose={() => setTrayOpen(false)} onAdopt={adopt} onMerge={merge} onAdoptText={adoptText}
         sceneLabel={am.stamp ? am.stamp + (am.title ? " · " + am.title : "") : null}
         pov={wrCtx(activeScene).pov !== "—" ? wrCtx(activeScene).pov : null} />
+      <UndoToast toast={toast} onClose={clearNotice} />
       <WrInlineRewrite editorRef={editorRef} onCommit={commitEdit} />
       <WrEntityPop pop={entityPop} onOpen={openDossier} />
       <WrMentionPicker mention={mention} list={mentionList} idx={mentionIdx} onPick={insertMention} onHover={setMentionIdx} />
@@ -1243,15 +1289,43 @@ function WrNextCue({ show, onGo, onDismiss }) {
 }
 
 /* ---- outline drawer ---- */
-function WrOutline({ open, activeScene, chapters, onReorder, onRename, onDelete, onAdd, onPick, onClose }) {
+function WrOutline({ open, activeScene, chapters, onReorder, onRename, onDelete, onDeleteChapter, onDeleteBatch, onAdd, onPick, onClose }) {
   const list = chapters || [];
   const allScenes = list.flatMap(c => c.scenes);
   const doneCount = allScenes.filter(s => s.state === "done").length;
   const pct = allScenes.length ? Math.round((doneCount / allScenes.length) * 100) : 0;
+  /* 多选态只活在抽屉里（不落 localStorage）：退出多选或删除完成即清空——
+     勾选是瞬时意图，跨会话留着只会让作者对着一份看不见来路的勾选下手 */
+  const [selectMode, setSelectMode] = useWS(false);
+  const [selCh, setSelCh] = useWS(() => new Set());
+  const [selSc, setSelSc] = useWS(() => new Set());
+  const openable = list.filter(c => c.state !== "approved");
+  const selectableScenes = openable.flatMap(c => c.scenes);
+  /* 勾了整章就等于勾了它名下所有场：单独再算一遍会把「3 章 + 7 场」这种
+     数字报成作者根本没做过的选择，删除范围也跟着看不懂。这里只统计
+     「不在已选章名下的散场」，并让那些场在行上显示为随章带走。 */
+  const scenesUnderSelectedChapters = new Set(
+    list.filter(c => selCh.has(c.id)).flatMap(c => c.scenes.map(s => s.id))
+  );
+  const looseScenes = [...selSc].filter(id => !scenesUnderSelectedChapters.has(id));
+  const selectedCount = selCh.size + looseScenes.length;
+  const exitSelect = () => { setSelectMode(false); setSelCh(new Set()); setSelSc(new Set()); };
+  const toggle = (setter) => (id) => setter(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const allSelected = !!(openable.length || selectableScenes.length)
+    && selCh.size === openable.length && selSc.size === selectableScenes.length;
   return (
     <aside className={`wr-drawer left ${open ? "show" : ""}`}>
       <header className="wr-drawer-head">
-        <I.BookOpen size={16} /><span className="wr-drawer-title">章节大纲</span>
+        <I.BookOpen size={16} /><span className="wr-drawer-title">{selectMode ? "选择要删除的内容" : "章节大纲"}</span>
+        <button className={`wr-drawer-sel ${selectMode ? "is-on" : ""}`} title={selectMode ? "退出多选" : "多选章节 / 场景后可批量删除"}
+          data-testid="writer-outline-select-mode"
+          onClick={() => (selectMode ? exitSelect() : setSelectMode(true))}>
+          <I.Check size={13} />{selectMode ? "完成" : "多选"}
+        </button>
         <button className="wr-drawer-x" onClick={onClose} title="收起 (Esc)"><I.X size={16} /></button>
       </header>
       <div className="wr-drawer-body">
@@ -1262,12 +1336,37 @@ function WrOutline({ open, activeScene, chapters, onReorder, onRename, onDelete,
           </div>
           <div className="wr-rail-progress-bar"><div className="wr-rail-progress-fill" style={{ width: pct + "%" }} /></div>
         </div>
-        {list.map(c => <WrChapter key={c.id} ch={c} activeScene={activeScene} onPick={onPick} onReorder={onReorder} onRename={onRename} onDelete={onDelete} onAdd={onAdd} />)}
+        {list.map(c => (
+          <WrChapter key={c.id} ch={c} activeScene={activeScene} onPick={onPick} onReorder={onReorder} onRename={onRename}
+            onDelete={onDelete} onDeleteChapter={onDeleteChapter} onAdd={onAdd}
+            selectMode={selectMode} chChecked={selCh.has(c.id)}
+            scChecked={(id) => selSc.has(id) || scenesUnderSelectedChapters.has(id)}
+            scFollowsChapter={selCh.has(c.id)}
+            onToggleCh={toggle(setSelCh)} onToggleSc={toggle(setSelSc)} />
+        ))}
       </div>
+      {selectMode && (
+        <footer className="wr-outline-batch" role="toolbar" aria-label="大纲批量操作">
+          <span className="wr-outline-batch-n">
+            {selectedCount
+              ? <>已选 <strong>{selCh.size}</strong> 章 · <strong>{looseScenes.length}</strong> 场{scenesUnderSelectedChapters.size ? `（另含随章带走 ${scenesUnderSelectedChapters.size} 场）` : ""}</>
+              : "勾选章或场；点场景行也可选中"}
+          </span>
+          <button className="btn btn-quiet btn-sm" onClick={() => {
+            if (allSelected) { setSelCh(new Set()); setSelSc(new Set()); return; }
+            setSelCh(new Set(openable.map(c => c.id)));
+            setSelSc(new Set(selectableScenes.map(s => s.id)));
+          }}>{allSelected ? "取消全选" : "全选"}</button>
+          <button className="btn btn-danger btn-sm" data-testid="writer-outline-batch-delete" disabled={!selectedCount}
+            onClick={() => { onDeleteBatch && onDeleteBatch([...selCh], [...selSc]); exitSelect(); }}>
+            <I.Trash size={13} /> 删除所选
+          </button>
+        </footer>
+      )}
     </aside>
   );
 }
-function WrChapter({ ch, activeScene, onPick, onReorder, onRename, onDelete, onAdd }) {
+function WrChapter({ ch, activeScene, onPick, onReorder, onRename, onDelete, onDeleteChapter, onAdd, selectMode, chChecked, scChecked, scFollowsChapter, onToggleCh, onToggleSc }) {
   const [open, setOpen] = useWS(ch.expanded || ch.scenes.some(s => s.id === activeScene));
   const [over, setOver] = useWS(null);
   const [editing, setEditing] = useWS(null);
@@ -1280,25 +1379,46 @@ function WrChapter({ ch, activeScene, onPick, onReorder, onRename, onDelete, onA
   const commit = () => { if (editing && onRename) onRename(ch.id, editing, editVal.trim() || "未命名"); setEditing(null); };
   return (
     <div className="wr-ch">
-      <button className="wr-ch-row" onClick={() => setOpen(v => !v)}>
-        <span className="wr-ch-chev" style={{ transform: open ? "rotate(90deg)" : "none" }}><I.ChevronRight size={13} /></span>
-        <span className="wr-ch-num">{ch.n}</span>
-        <span className="wr-ch-title">{ch.title}</span>
-        <span className={`pill pill-${tone} text-xs`} style={{ padding: "0 6px" }}><span className="pill-dot" />{label}</span>
-      </button>
+      <div className={`wr-ch-head ${chChecked ? "is-selected" : ""}`}>
+        {selectMode && (
+          <label className="wr-ch-check" title={locked ? "已批准终稿不可删除——请先在成稿中心重新打开" : "选中本章（含章下场景）"}>
+            <input type="checkbox" checked={!!chChecked} disabled={locked} aria-label={`选择第 ${ch.n} 章 · ${ch.title}`}
+              onChange={() => onToggleCh && onToggleCh(ch.id)} />
+          </label>
+        )}
+        <button className="wr-ch-row" onClick={() => setOpen(v => !v)}>
+          <span className="wr-ch-chev" style={{ transform: open ? "rotate(90deg)" : "none" }}><I.ChevronRight size={13} /></span>
+          <span className="wr-ch-num">{ch.n}</span>
+          <span className="wr-ch-title">{ch.title}</span>
+          <span className={`pill pill-${tone} text-xs`} style={{ padding: "0 6px" }}><span className="pill-dot" />{label}</span>
+        </button>
+        {!selectMode && (
+          <button className="wr-sc-actbtn danger wr-ch-del" disabled={locked}
+            title={locked ? "终稿已锁定" : "删除本章（含章下场景）"}
+            onClick={(e) => { e.stopPropagation(); onDeleteChapter && onDeleteChapter(ch.id); }}><I.Trash size={12} /></button>
+        )}
+      </div>
       {open && (
         <ul className="wr-sc-list">
           {ch.scenes.map((s, i) => (
             <li key={s.id}
-              draggable={!locked && editing !== s.id}
+              draggable={!locked && !selectMode && editing !== s.id}
               onDragStart={(e) => { dragFrom.current = i; if (e.dataTransfer) e.dataTransfer.effectAllowed = "move"; }}
               onDragOver={(e) => { e.preventDefault(); if (over !== i) setOver(i); }}
               onDrop={(e) => { e.preventDefault(); const from = dragFrom.current; if (from != null && from !== i && onReorder) onReorder(ch.id, from, i); dragFrom.current = null; setOver(null); }}
               onDragEnd={() => { dragFrom.current = null; setOver(null); }}>
-              <div className={`wr-sc ${activeScene === s.id ? "is-active" : ""} ${over === i ? "is-over" : ""} ${editing === s.id ? "is-editing" : ""}`}
+              <div className={`wr-sc ${activeScene === s.id ? "is-active" : ""} ${over === i ? "is-over" : ""} ${editing === s.id ? "is-editing" : ""} ${selectMode && scChecked && scChecked(s.id) ? "is-selected" : ""}`}
                 role="button" tabIndex={0}
-                onClick={() => { if (editing !== s.id) onPick(s.id); }}>
-                <span className="wr-sc-grip" title={locked ? "终稿已锁定" : "拖拽重排"}><I.GripVertical size={13} /></span>
+                onClick={() => { if (selectMode) { if (!locked && !scFollowsChapter) onToggleSc && onToggleSc(s.id); return; } if (editing !== s.id) onPick(s.id); }}>
+                {selectMode ? (
+                  <label className="wr-sc-check" onClick={(e) => e.stopPropagation()}
+                    title={scFollowsChapter ? "本章已选中，这一场随章一起删除" : undefined}>
+                    <input type="checkbox" checked={!!(scChecked && scChecked(s.id))} disabled={locked || scFollowsChapter}
+                      aria-label={`选择场景 ${s.title}`} onChange={() => onToggleSc && onToggleSc(s.id)} />
+                  </label>
+                ) : (
+                  <span className="wr-sc-grip" title={locked ? "终稿已锁定" : "拖拽重排"}><I.GripVertical size={13} /></span>
+                )}
                 <span className={`wr-sc-mark s-${s.state}`}>
                   {s.state === "done" && <I.Check size={11} />}
                   {s.state === "active" && <span className="wr-sc-dot" />}
@@ -1313,7 +1433,7 @@ function WrChapter({ ch, activeScene, onPick, onReorder, onRename, onDelete, onA
                 ) : (
                   <span className="wr-sc-name" onDoubleClick={(e) => { e.stopPropagation(); startEdit(s); }}>{s.title}</span>
                 )}
-                {editing !== s.id && (
+                {editing !== s.id && !selectMode && (
                   <span className="wr-sc-act">
                     <button className="wr-sc-actbtn" disabled={locked} title={locked ? "终稿已锁定" : "重命名"} onClick={(e) => { e.stopPropagation(); startEdit(s); }}><I.Edit size={12} /></button>
                     <button className="wr-sc-actbtn danger" disabled={locked} title={locked ? "终稿已锁定" : "删除场景"} onClick={(e) => { e.stopPropagation(); onDelete && onDelete(ch.id, s.id); }}><I.Trash size={12} /></button>
@@ -1322,7 +1442,7 @@ function WrChapter({ ch, activeScene, onPick, onReorder, onRename, onDelete, onA
               </div>
             </li>
           ))}
-          <li className="wr-sc-add"><button className="wr-sc-addbtn" disabled={locked} title={locked ? "终稿已锁定" : undefined} onClick={() => onAdd && onAdd(ch.id)}><I.Plus size={12} /> 添加场景</button></li>
+          {!selectMode && <li className="wr-sc-add"><button className="wr-sc-addbtn" disabled={locked} title={locked ? "终稿已锁定" : undefined} onClick={() => onAdd && onAdd(ch.id)}><I.Plus size={12} /> 添加场景</button></li>}
         </ul>
       )}
     </div>

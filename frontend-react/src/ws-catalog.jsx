@@ -347,17 +347,46 @@ function catCreateSceneViaApi(workId, chId, s, at) {
   return p;
 }
 
+/* 批量软删：后端逐条判定，把过不去的项放进 blocked 而不是抛错
+   （已批准终稿、章下已有单删场景…）。静默丢弃会让作者以为删掉了、刷新后又冒出来，
+   所以这里把 blocked 翻成异常，交由 catRecover 提示 + 以服务端为准重拉。 */
+async function catTrash(path, body) {
+  const res = await apiPost(path, body);
+  const blocked = (res && res.blocked) || [];
+  if (blocked.length) {
+    const seen = [];
+    blocked.forEach((b) => {
+      const msg = (b && (b.message || b.code)) || "未说明原因";
+      if (!seen.includes(msg)) seen.push(msg);
+    });
+    throw new Error(`有 ${blocked.length} 项未能删除：${seen.slice(0, 3).join("；")}${seen.length > 3 ? "…" : ""}`);
+  }
+  return res;
+}
+
 /* set() 写穿点的 diff 拆解（视图层零修改的关键）：乐观缓存已先行，
-   这里按差异派发端点调用；任何一步失败 → 整体重拉恢复。 */
+   这里按差异派发端点调用；任何一步失败 → 整体重拉恢复。
+   删除先于其它操作、且章/场各合并成一次批量调用：批量删 20 章不再打 20 个请求，
+   场景删除也必须早于 scene-order（后端要求顺序集合覆盖章内全部在册场景）。 */
 async function catDispatchDiff(workId, prev, next) {
   const ops = [];
   const prevById = Object.fromEntries(prev.map(c => [c.id, c]));
   const nextIds = new Set(next.map(c => c.id));
+  const trashChapterIds = [];
+  const trashSceneIds = [];
   for (const c of prev) {
-    if (!nextIds.has(c.id) && c.backendId) {
-      ops.push(() => apiPost("/api/v1/chapters/trash", { chapter_ids: [c.backendId] }));
+    if (!nextIds.has(c.id) && c.backendId) trashChapterIds.push(c.backendId);
+  }
+  for (const nc of next) {
+    const pc = prevById[nc.id];
+    if (!pc) continue;
+    const nextSids = new Set((nc.scenes || []).map(s => s.sid));
+    for (const s of pc.scenes || []) {
+      if (!nextSids.has(s.sid) && s.backendId) trashSceneIds.push(s.backendId);
     }
   }
+  if (trashChapterIds.length) ops.push(() => catTrash("/api/v1/chapters/trash", { chapter_ids: trashChapterIds }));
+  if (trashSceneIds.length) ops.push(() => catTrash("/api/v1/scenes/trash", { scene_ids: trashSceneIds }));
   for (const nc of next) {
     const pc = prevById[nc.id];
     if (!pc) {
@@ -375,11 +404,6 @@ async function catDispatchDiff(workId, prev, next) {
     const nextScenes = nc.scenes || [];
     const prevBySid = Object.fromEntries(prevScenes.map(s => [s.sid, s]));
     const nextSids = new Set(nextScenes.map(s => s.sid));
-    for (const s of prevScenes) {
-      if (!nextSids.has(s.sid) && s.backendId) {
-        ops.push(() => apiPost("/api/v1/scenes/trash", { scene_ids: [s.backendId] }));
-      }
-    }
     nextScenes.forEach((s, index) => {
       const ps = prevBySid[s.sid];
       if (!ps) {
@@ -416,8 +440,10 @@ async function catDispatchDiff(workId, prev, next) {
   }
   /* 章节拖拽过去只改了内存顺序，刷新即还原。顺序也是目录真相的一部分：
      所有增删/重排操作完成后，再用完整的服务端 chapter_id 集合一次性落 display_order。
-     任何 id 无法解析都 fail-closed，避免把半份顺序写进后端。 */
-  const prevChapterOrder = prev.map((c) => c.id);
+     任何 id 无法解析都 fail-closed，避免把半份顺序写进后端。
+     纯删除不改变存活章的相对次序，这里按「存活章」比对，免得每次删除都追发一次
+     等价于现状的 chapter-order（后端要求提交全量在册集合）。 */
+  const prevChapterOrder = prev.map((c) => c.id).filter((id) => nextIds.has(id));
   const nextChapterOrder = next.map((c) => c.id);
   if (next.length && prevChapterOrder.join("|") !== nextChapterOrder.join("|")) {
     ops.push(async () => {
@@ -508,6 +534,29 @@ const WsCatalog = {
   removeScene(chId, sid) {
     this.set(this.get().map(c => c.id !== chId ? c : { ...c, scenes: c.scenes.filter(s => s.sid !== sid) }));
   },
+  /* —— 批量删除（编排台 / 写作台大纲的多选）——
+     一次 set() 出一份新目录，diff 引擎把它压成单次批量 trash 调用；
+     章与场同批时，被删章下的场不再单独进场景桶（后端会随章一起软删，
+     而「章下已有单独回收的场景」恰好是章删除的阻断条件）。 */
+  removeChapters(ids) {
+    const drop = new Set(ids || []);
+    if (!drop.size) return false;
+    return this.set(this.get().filter(c => !drop.has(c.id)));
+  },
+  removeScenes(sids) {
+    const drop = new Set(sids || []);
+    if (!drop.size) return false;
+    return this.set(this.get().map(c => ({ ...c, scenes: (c.scenes || []).filter(s => !drop.has(s.sid)) })));
+  },
+  /* 章 + 场混选：先摘掉整章，再从存活章里摘场 */
+  removeMixed(chapterIds, sids) {
+    const dropCh = new Set(chapterIds || []);
+    const dropSc = new Set(sids || []);
+    if (!dropCh.size && !dropSc.size) return false;
+    return this.set(this.get()
+      .filter(c => !dropCh.has(c.id))
+      .map(c => (dropSc.size ? { ...c, scenes: (c.scenes || []).filter(s => !dropSc.has(s.sid)) } : c)));
+  },
   /* 从回收站恢复场景；原章节已删时退而插入当前章（P4 切换为后端 restore 端点） */
   restoreScene(chId, scene, index) {
     const chs = this.get();
@@ -536,65 +585,11 @@ const WsCatalog = {
     this.set([...chs.map(c => ({ ...c, current: false })), ch]);
     return this.get().find(c => c.id === id);
   },
-  /* —— 雪花大纲 → 目录。FE-ALIGN F3：构思已接 v2 工作台——后端闸门全过
-     （ready_to_materialize）时走 materialize 主路径（approved scene plans →
-     ChapterGoal/SceneCard，成功后目录重拉）；闸门未满足时降级为目录直建：
-     优先走本地物化引擎（s2Materialize：章 + 场按脊柱锚点分配、带 GCS/RDD 三拍），
-     只有构思数据不足以出预览（09 还没有场）时才落到「只建章」的最后兜底——
-     旧兜底每章只塞一个「开场」占位场，9/10 步的场景卡全部丢失，正是
-     「物化出来的章是空壳、场孤立」的来源。 */
-  async adoptOutline(list, scaffoldsOverride = null) {
-    if (window.SnowSync && window.SnowSync.readyToMaterialize()) {
-      // 物化 + 批准大纲（两步），返回后端真实落库章节数；失败上抛由调用方诚实提示，
-      // 不再回退 __adoptByDiff（那会经目录 POST 重复建章）。
-      const res = await window.SnowSync.materialize();
-      return (res && res.created_chapter_count) || 0;
-    }
-    try {
-      const eng = window.s2Materialize;
-      const st = scaffoldsOverride ? { scaffolds: scaffoldsOverride } : (window.s2ExportState ? window.s2ExportState() : null);
-      if (eng && st) {
-        const preview = eng.preview(st.scaffolds || {});
-        if (preview && preview.ok) {
-          const r = eng.apply(preview); // WsCatalog.set 写穿目录 API（章+场一起落）
-          return r ? r.newCh : 0;
-        }
-      }
-    } catch (e) { /* 预览/应用失败：落到只建章兜底，不吞新章 */ }
-    return this.__adoptByDiff(list);
-  },
-  __adoptByDiff(list) {
-    const cur = this.get();
-    const existing = new Set(cur.map(c => (c.title || "").trim()));
-    const fresh = (list || []).filter(c => {
-      const t = (c.title || "").trim();
-      return t && !t.includes("待补") && !existing.has(t);
-    });
-    if (!fresh.length) return 0;
-    const wasEmpty = cur.length === 0;
-    const next = cur.slice();
-    fresh.forEach((c, i) => {
-      const n = String(next.length + 1).padStart(2, "0");
-      let id = "ch" + n;
-      if (next.some(x => x.id === id)) id = id + "-" + Date.now().toString(36) + i;
-      const first = wasEmpty && i === 0;
-      const summary = (c.summary || "").trim();
-      next.push({
-        id, act: "act" + (c.act || 1), n, title: (c.title || "").trim(),
-        state: first ? "writing" : "planned",
-        tension: c.act === 3 ? 0.7 : c.act === 2 ? 0.5 : 0.3,
-        pov: "", time: "", place: "", current: first,
-        words: { cur: 0, target: 4000 },
-        entry: "", exit: "", align: true,
-        promise: summary,
-        drama: { promise: summary, spine: c.spine ? `灾难落点 · ${c.spine}` : "", arc: "", problem: "", aftertaste: "", ending: "", forbidden: "", notes: "由雪花大纲采用" },
-        threads: [],
-        scenes: [{ title: "开场", kind: "主动", state: first ? "writing" : "todo", goal: summary || "（本场目标待规划）", obstacle: "", turn: "" }],
-      });
-    });
-    this.set(next);
-    return fresh.length;
-  },
+  /* 雪花构思 → 目录只有一条路径：分章面板确认 → SnowSync.materialize（后端物化 +
+     批准大纲）。这里曾有个 adoptOutline 包装和一个 __adoptByDiff 降级实现 —— P2 之前
+     它们按闸门状态在三条产出完全不同的落库路径之间分叉（后端物化全书落一章 / 前端脊柱
+     锚点 / 只建空壳章），雪花做得越完整反而掉进越差的那条。分章算法搬到后端、作者在预览
+     面板里确认之后，两者都没有了调用方，留着只会让人以为还有第二条路。 */
   /* —— 字数（写作器自动保存时调用）：本地即时更新；
      权威 rollup 由正文保存响应经 __applyWordsRollup 注入，统计走服务端 —— */
   recordSceneWords(sid, count) {

@@ -281,6 +281,22 @@ def _budget_view(state: SceneRunState | None) -> dict[str, Any]:
         }
     budget = int(state.scene_token_budget)
     used = int(state.scene_tokens_used or 0)
+    from novel_system.services.scene_budget import is_scene_budget_disarmed
+
+    if is_scene_budget_disarmed(state):
+        # 解除武装的场景没有真实上限——用 budget=None 表达「不限」，避免把哨兵天文数字
+        # 当成预算展示（前端 cost 视图对 budget===null 已优雅隐藏预算卡）。记账值照常透出。
+        return {
+            "budget": None,
+            "used": used,
+            "remaining": None,
+            "over_budget": False,
+            "usage_ratio": None,
+            "baseline": None,
+            "multiplier_used": None,
+            "disarmed": True,
+            "run_policy": state.run_policy,
+        }
     baseline = max(1, budget // BUDGET_MULTIPLIER)
     return {
         "budget": budget,

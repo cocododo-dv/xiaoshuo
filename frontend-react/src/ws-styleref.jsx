@@ -263,7 +263,10 @@ function WsStyleRef({ go }) {
           </p>
         </aside>
 
-        {/* Right: stage workspace */}
+        {/* Right: stage workspace（书库为空时给空状态；删光最后一本后 SR_BOOKS 为 []，
+           book 为 undefined，若继续解引用 book.color/book.author 会抛错整页白屏——
+           演示样书已下线，不再有「回落演示书」兜底，必须显式处理空库） */}
+        {book ? (
         <section className="sr-stage">
           <header className="sr-stage-head">
             <div className="flex items-center gap-3">
@@ -318,6 +321,20 @@ function WsStyleRef({ go }) {
             {stage === "apply"      && <SrApply go={setStage} book={book} />}
           </div>
         </section>
+        ) : (
+        <section className="sr-stage sr-stage-empty">
+          <div style={{ minHeight: "60vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 24px", textAlign: "center" }}>
+            <I.BookOpen size={40} />
+            <h1 className="text-serif" style={{ fontSize: 20, margin: "14px 0 6px" }}>参考书库还是空的</h1>
+            <p className="text-muted text-sm" style={{ maxWidth: 380, lineHeight: 1.7 }}>
+              导入一本参考书后，这里会展示它的维度矩阵、风格画像、回测校验与注入应用。系统只学习抽象风格画像，不复刻原文表达、人物或桥段。
+            </p>
+            <button className="btn btn-accent" style={{ marginTop: 18 }} onClick={() => setImportOpen(true)}>
+              <I.FileInput size={14} /> 导入第一本参考书
+            </button>
+          </div>
+        </section>
+        )}
       </div>
 
       <SrImportDialog

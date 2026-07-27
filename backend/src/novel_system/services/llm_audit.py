@@ -69,7 +69,7 @@ _SAFE_LITERAL_SUFFIXES = (
     "_type",
     "_version",
 )
-_SAFE_LITERAL_LIST_KEYS = frozenset({"included_sections"})
+_SAFE_LITERAL_LIST_KEYS = frozenset({"included_sections", "prompt_budget_applied"})
 # These identifiers originate outside the application trust boundary.  They
 # need deterministic correlation, but never a readable ``*_id`` fast path.
 _UNTRUSTED_IDENTIFIER_KEYS = frozenset({"provider_request_id", "request_id"})

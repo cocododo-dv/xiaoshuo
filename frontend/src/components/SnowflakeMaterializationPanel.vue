@@ -118,6 +118,14 @@ function gateItemTargetsStep(item) {
 
 function goToGateItem(item) {
   const action = item?.primary_action || {};
+  // 分章面板只在潮汐工作台（React）里存在，这条兼容面上没有、也不会有第二套分章逻辑。
+  // 这一项带着 step_key，会被下面的 gateItemTargetsStep 送到第 07 步——而章节表在这里
+  // 根本渲染不出来（planning stage 没有 chapters 字段分支），跳过去只是把人丢进空白区。
+  // 与其假装能就地解决，不如直说它在哪。
+  if (String(item?.kind || "").toLowerCase() === "chapter_plan_required") {
+    emit("notice", "分章要在潮汐工作台（React，默认 http://127.0.0.1:5174）完成：那里的「整理成章节结构」会先给出可调整的分章预览，确认后才落库。此兼容页面不提供分章。");
+    return;
+  }
   if (gateItemTargetsScene(item)) {
     store.setWorkbenchMode("triage");
     store.selectTriageScene(item.scene_id || action.scene_id || "");

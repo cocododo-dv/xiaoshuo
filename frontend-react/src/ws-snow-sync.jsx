@@ -61,9 +61,18 @@ function canonFromFE(feKey, saved) {
     })) };
   }
   if (feKey === "outline") {
+    /* P2：章表升级为结构化字段。paragraphs 保留为可读文本镜像（提示词与历史草稿仍用
+       「NN 章名：一句话（灾一）」的行格式），但物化分章读的是 chapters —— 以前只发
+       文本、后端再用正则解析回来，章名里带个全角冒号就会解错。 */
     const byAct = (n) => (sc.chapters || []).filter(c => c.act === n)
       .map(c => `${c.id} ${txt(c.title)}：${txt(c.summary)}${c.spine ? `（${c.spine}）` : ""}`).join("\n");
-    return { paragraphs: [byAct(1), byAct(2), byAct(3), ""] };
+    return {
+      paragraphs: [byAct(1), byAct(2), byAct(3), ""],
+      chapters: (sc.chapters || []).map((c, i) => ({
+        row_uid: txt(c.row_uid), chapter_seq: i + 1, act: c.act || 1,
+        title: txt(c.title), summary: txt(c.summary), spine: txt(c.spine), chapter_goal: txt(c.goal),
+      })),
+    };
   }
   if (feKey === "profile") {
     return { characters: Object.entries(sc.chars || {}).map(([id, c]) => ({
@@ -79,6 +88,9 @@ function canonFromFE(feKey, saved) {
       row_uid: s.id || `S${String(i + 1).padStart(2, "0")}`, scene_seq: i + 1,
       summary: txt(s.event), primary_form: s.type === "reactive" ? "reactive" : "proactive",
       pov_character_id: txt(s.pov), location: txt(s.place), crucible: txt(s.crucible), chapter_role: txt(s.fn),
+      // P2：脊柱标记（灾一/灾二/灾三）以前从不上行、水合还硬写回 ""，作者标完一刷新就丢。
+      // 分章的锚点靠它，必须往返保真。
+      spine: txt(s.spine),
     })) };
   }
   if (feKey === "planning") {
@@ -89,7 +101,7 @@ function canonFromFE(feKey, saved) {
       const form = (plan.mode || (s.type === "reactive" ? "reactive" : "proactive"));
       return {
         row_uid: s.id || `S${String(i + 1).padStart(2, "0")}`, title: txt(s.event), summary: txt(s.event),
-        primary_form: form, location: txt(s.place), crucible: txt(s.crucible), scene_crucible: txt(s.crucible),
+        primary_form: form, location: txt(s.place), crucible: txt(s.crucible), scene_crucible: txt(s.crucible), spine: txt(s.spine),
         pov_character_id: txt(plan.pov) || txt(s.pov),
         goal: txt(plan.goal), conflict: txt(plan.conflict), setback: txt(plan.setback),
         reaction: txt(plan.reaction), dilemma: txt(plan.dilemma), decision: txt(plan.decision),
@@ -149,6 +161,13 @@ function feFromCanon(feKey, draft) {
     return { scaffold: { paras: { setup: p[0] || "", d1: p[1] || "", d2: p[2] || "", d3: p[3] || "", resolution: p[4] || "" } } };
   }
   if (feKey === "outline") {
+    // 结构化 chapters 优先（P2 新契约，无损）；缺席时才回退解析文本行（历史草稿 / 旧 LLM 输出）
+    if (Array.isArray(d.chapters) && d.chapters.length) {
+      return { scaffold: { chapters: d.chapters.map((c, i) => ({
+        row_uid: c.row_uid || "", id: pad2(i + 1), act: Math.min(Math.max(c.act || 1, 1), 3),
+        title: c.title || "", summary: c.summary || "", spine: c.spine || "", goal: c.chapter_goal || "",
+      })) } };
+    }
     const chapters = [];
     (d.paragraphs || []).forEach((para, ai) => {
       String(para || "").split("\n").map(x => x.trim()).filter(Boolean).forEach(line => {
@@ -161,7 +180,8 @@ function feFromCanon(feKey, draft) {
   if (feKey === "scenes") {
     return { scaffold: { lines: [], list: (d.scenes || []).map((s, i) => ({
       id: s.row_uid || "S" + pad2(i + 1), type: s.primary_form === "reactive" ? "reactive" : "proactive", line: "main",
-      pov: s.pov_character_id || "", place: s.location || "", event: s.summary || "", crucible: s.crucible || "", fn: s.chapter_role || "", spine: "",
+      pov: s.pov_character_id || "", place: s.location || "", event: s.summary || "", crucible: s.crucible || "", fn: s.chapter_role || "",
+      spine: s.spine || "",
     })) } };
   }
   if (feKey === "planning") {
@@ -308,6 +328,8 @@ function shapeStepHealth(step) {
    9/10 步再改动后与目录场景卡（SceneCard）的 diff。pendingCount>0 = 构思领先于目录，
    写作台 / AI 起草台拿到的还是旧三拍。只读后端真相，与写穿缓存分开存。 */
 const snowResync = {}; // workId -> { pendingCount, pendingScenes }
+/* P2 分章现状（后端只读真相）：章数、未分章场数、是否已分完。随 workspace 回包更新。 */
+const snowChapterStatus = {}; // workId -> chapter_plan_status
 const snowSyncStates = {}; // workId -> 本机缓存 / 服务端写穿的诚实状态
 
 function snowErrorShape(error, fallback, scope = "remote") {
@@ -352,6 +374,19 @@ function captureResync(workId, ws) {
   try { window.dispatchEvent(new CustomEvent("ws:snow-resync", { detail: workId })); } catch (e) {}
 }
 
+function captureChapterStatus(workId, ws) {
+  if (!workId || !ws || !ws.chapter_plan_status) return;
+  const s = ws.chapter_plan_status;
+  snowChapterStatus[workId] = {
+    chapterCount: Number(s.chapter_count) || 0,
+    assignedSceneCount: Number(s.assigned_scene_count) || 0,
+    unassignedSceneCount: Number(s.unassigned_scene_count) || 0,
+    unassignedScenes: Array.isArray(s.unassigned_scenes) ? s.unassigned_scenes : [],
+    chaptered: !!s.chaptered,
+  };
+  try { window.dispatchEvent(new CustomEvent("ws:snow-chapter-plan", { detail: workId })); } catch (e) {}
+}
+
 async function snowHydrate(workId, opts) {
   const force = !!(opts && opts.force);
   if (!workId || snowUnsupported[workId]) return;
@@ -374,6 +409,7 @@ async function snowHydrate(workId, opts) {
   }
   snowReadyFlags[workId] = !!(ws && ws.ready_to_materialize);
   captureResync(workId, ws);
+  captureChapterStatus(workId, ws);
   const remote = { drafts: {}, scaffolds: {}, checks: {}, states: {}, _t: 0 };
   const health = {};
   let any = false;
@@ -504,7 +540,14 @@ async function snowPushKey(cacheKey) {
       }
     } catch (error) {
       mine[feKey] = { ...(mine[feKey] || {}), state: "done", approvalPending: true };
-      failures.push({ feKey, beKey, stage: "approve", error });
+      // 「需要先确认前面的雪花步骤」不是同步故障：本步 draft 已由上面的 PATCH 存到服务器，
+      // 只是「确认」被上游依赖挡住。保留 approvalPending，等作者补确认前面步骤后，下一次
+      // autosave 会按序自动补批；但绝不计入 failures——否则每次编辑都把这条正常的依赖等待
+      // 谎报成红色「仅本机已保存 · 服务器同步失败」，且「重试」按钮对它毫无作用（重试不会
+      // 替作者确认前面的步骤）。其余 approve 失败（真·闸门/网络）照旧上报并可重试。
+      if (!(error && error.code === "SNOWFLAKE_PREVIOUS_STEP_REQUIRED")) {
+        failures.push({ feKey, beKey, stage: "approve", error });
+      }
     }
   }
   // 物化过（目录里已有章）的作品：9/10 步保存后强制重拉一次工作台，让「N 场待同步」
@@ -648,6 +691,7 @@ const SnowSync = {
     const workspace = await apiGet(`/api/v2/projects/${id}/snowflake-workspace`);
     snowReadyFlags[id] = !!(workspace && workspace.ready_to_materialize);
     captureResync(id, workspace || {});
+    captureChapterStatus(id, workspace || {});
     const normalizedLocal = s2NormalizeState(local);
     try { localStorage.setItem(snowCacheKey(id), JSON.stringify(normalizedLocal)); } catch (e) {}
     // The import already wrote and approved every step. Seed the autosave
@@ -669,7 +713,10 @@ const SnowSync = {
   resyncStatus(workId) { return snowResync[workId || activeWork()] || { pendingCount: 0, pendingScenes: [] }; },
   /* 把构思的改动写回目录场景卡（POST /resync：SceneCard 三拍/POV/题名 + 章 brief），
      成功后目录重拉，写作台 / AI 起草台即拿到最新场景卡。scenePlanIds 缺省 = 全部待同步场。
-     返回 { synced, skipped, results }；失败上抛由调用方诚实提示。 */
+     返回 { synced, skipped, results, notice }；失败上抛由调用方诚实提示。
+     notice = 后端「有一部分没能回流」的如实交代（目前只有一种：场要搬进的章还没被
+     「整理为章节结构」写进目录，外键指不过去），调用方必须显示它 —— 只报 synced
+     会让作者以为回流做完了，目录其实还停在上一版章节结构。 */
   async resync(workId, scenePlanIds) {
     const id = workId || activeWork();
     const body = Array.isArray(scenePlanIds) && scenePlanIds.length ? { scene_plan_ids: scenePlanIds } : {};
@@ -681,6 +728,7 @@ const SnowSync = {
       synced: results.filter(r => r && r.synced).length,
       skipped: results.filter(r => r && !r.synced).length,
       results,
+      notice: (data && data.notice) || null,
     };
   },
   /* 后端 per-step 权威健康（feKey -> {score,status,gaps,nextActions,missingFields,gateSatisfied,...}）；
@@ -720,12 +768,47 @@ const SnowSync = {
     const base = server ? mergeCanon(server, canon) : canon;
     return feFromCanon(feKey, applyCanonPatch(base, patch || {}));
   },
+  /* 分章现状（后端只读真相）：{chapter_count, unassigned_scene_count, chaptered, …}。
+     顶部「整理为章节结构」据此决定是直接开面板还是先提示补 07 章表。 */
+  chapterPlanStatus(workId) { return snowChapterStatus[workId || activeWork()] || { chapter_count: 0, unassigned_scene_count: 0, chaptered: false }; },
+  /* 分章预览：只读推演，不落库。strategy = spine_anchor（默认，脊柱锚点）/ even / keep_current。 */
+  async chapterPreview(strategy, workId) {
+    const id = workId || activeWork();
+    return apiPost(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan/preview`, strategy ? { strategy } : {});
+  },
+  /* 让 AI 给一份分章建议（只读，不落库）。fail-closed：LLM 没配好会 409 上抛，
+     调用方如实提示去配置 —— 绝不拿规则算出来的东西冒充 AI 建议。 */
+  async chapterSuggest(baseStrategy, workId) {
+    const id = workId || activeWork();
+    return apiPost(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan/suggest`,
+      baseStrategy ? { base_strategy: baseStrategy } : {});
+  },
+  /* 处置孤儿场：action = "discard"（正文一并进回收站）/ "keep"（正文留在目录里）。
+     孤儿场 = 作者从 09 删掉、但目录里已经有场景卡（可能已写正文）的那些场。它们是
+     分章面板上的 blocker，没有这个动作就永远清不掉，「确认分章」按钮从此点不动。 */
+  async resolveOrphanedScene(scenePlanId, action, workId) {
+    const id = workId || activeWork();
+    const data = await apiPost(
+      `/api/v2/projects/${id}/snowflake-workspace/orphaned-scenes/${scenePlanId}/resolve`,
+      { action });
+    if (data && data.workspace) captureChapterStatus(id, data.workspace);
+    return data;
+  },
+  /* 只保存分章（不物化）：作者在面板里调完想先存一版。 */
+  async saveChapterPlan(payload, workId) {
+    const id = workId || activeWork();
+    const data = await apiPatch(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan`, payload || {});
+    if (data && data.workspace) captureChapterStatus(id, data.workspace);
+    return data;
+  },
   /* 物化主路径：approved scene plans → ChapterGoal/SceneCard（成功后目录重拉）。
+     plan = 分章面板确认时的 {chapters, assignments}，与物化同一事务落库，
+     不留「分了章但没物化」的中间态。
      注意：materialize 端点只建 pending OutlinePlan，章节要 outline/approve 才落库——
      必须两步都走，否则目录为空却谎称「已并入 N 章」。返回真实 created_chapter_count。 */
-  async materialize(workId) {
+  async materialize(workId, plan) {
     const id = workId || activeWork();
-    const data = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/materialize`, {});
+    const data = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/materialize`, plan || {});
     const approved = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/outline/approve`, {});
     try { if (WsCatalog && WsCatalog.reset) WsCatalog.reset(); } catch (e) {}
     const createdChapters = (approved && approved.created_chapter_count) || 0;

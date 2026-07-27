@@ -16,6 +16,22 @@ from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.db.models import ChapterRunJob, FinalScene, LlmCall, QcReport, SceneDraft
 
 
+def _alembic_head() -> str:
+    """当前迁移链的 head。
+
+    这两处断言的意思是「upgrade head 确实跑到了头」，不是「head 必须永远是某个具体
+    修订号」——以前写死修订号，于是每加一条迁移这个测试就过期一次（本次就是被未提交
+    的 0074 挂在 0073 上）。从脚本目录取真值，链再长也不会假红。
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    backend_dir = Path(__file__).resolve().parents[1]
+    config = Config(str(backend_dir / "alembic.ini"))
+    config.set_main_option("script_location", str(backend_dir / "alembic"))
+    return ScriptDirectory.from_config(config).get_current_head()
+
+
 EXPECTED_PATCH_CANDIDATE_METADATA_COLUMNS = {
     "candidate_category",
     "target_range_json",
@@ -436,7 +452,7 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     finally:
         connection.close()
 
-        assert version_row == ("20260716_0073",)
+        assert version_row == (_alembic_head(),)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
@@ -596,7 +612,7 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     finally:
         connection.close()
 
-    assert version_row == ("20260716_0073",)
+    assert version_row == (_alembic_head(),)
     assert "llm_calls" in table_names
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names

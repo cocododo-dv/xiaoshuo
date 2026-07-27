@@ -112,6 +112,36 @@
 .arr-budget-num { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; }
 .arr-budget-sep { color: var(--ink-4); margin-left: 2px; }
 
+/* ---------- 批量选择 / 批量删除 ----------
+   多选是独占模式：批量条直接占据原本的头部/看板头位置（而不是再叠一条
+   sticky 横幅——那会和同样 sticky 的页头抢同一个 top:0），进入模式后
+   新建/切视图/单条动作全部收起，一屏只剩「选择」这一件事。 */
+.arr-ov-head.is-selecting { padding: 12px 32px; align-items: center; }
+.arr-batch {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; width: 100%;
+}
+.arr-batch.is-inline { margin: 0; }
+.arr-batch-n { font-size: 12.5px; color: var(--ink-2); white-space: nowrap; }
+.arr-batch-n strong { font-size: 15px; color: var(--ink-1); margin: 0 2px; }
+.arr-batch-hint { font-size: 11.5px; color: var(--ink-3); flex: 1; min-width: 0; }
+
+.arr-card-check { position: absolute; top: 10px; right: 10px; display: flex; cursor: pointer; }
+.arr-card-check input { width: 16px; height: 16px; accent-color: var(--crimson); cursor: pointer; }
+.arr-card-check input:disabled { cursor: not-allowed; }
+.arr-card.is-selected { border-color: var(--crimson); box-shadow: 0 0 0 3px var(--crimson-wash); }
+.arr-card.is-selected::after {
+  content: ""; position: absolute; inset: 0; border-radius: var(--r-lg);
+  background: var(--crimson-wash); opacity: 0.35; pointer-events: none;
+}
+.arr-card.is-unselectable { opacity: 0.5; cursor: not-allowed; }
+.arr-card.is-unselectable:hover { transform: none; box-shadow: none; border-color: var(--line-1); }
+.arr-scene-check { display: flex; justify-content: center; cursor: pointer; }
+.arr-scene-check input { width: 15px; height: 15px; accent-color: var(--crimson); cursor: pointer; }
+.arr-scene.is-selecting { grid-template-columns: 16px 28px minmax(0, 1fr) auto; }
+.arr-scene.is-selecting .arr-scene-title-input,
+.arr-scene.is-selecting .arr-gmc-input { cursor: pointer; }
+.arr-scene.is-selected { border-color: var(--crimson); background: var(--crimson-wash); }
+
 .arr-card-add {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
   min-height: 120px; border: 1px dashed var(--line-2); border-radius: var(--r-lg); background: transparent;

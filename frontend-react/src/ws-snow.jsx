@@ -3,6 +3,7 @@ import { I } from "./icons.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
 import { onRovingTabKeyDown } from "./a11y-tabs.js";
+import { WsChapterPlanPanel } from "./ws-snow-chapters.jsx";
 
 /* global React, I */
 /* ==========================================================
@@ -163,132 +164,6 @@ function s2PlanAuto(scaffold, scenesScaffold) {
   ];
 }
 
-/* ---- 物化引擎：07 章节 + 09 场景 + 10 规划 → 章节目录（WsCatalog）----
-   分配规则（确定性、可解释）：三个灾难是结构铰链——带同一脊柱标记的
-   场和章互相锚定；锚点之间的场，按顺序均匀铺进锚点之间的章。 */
-function s2MaterializePreview(scaffolds) {
-  const sc = scaffolds || {};
-  const chs = (((sc.outline || {}).chapters) || []).filter(c => (c.title || "").trim() && !c.title.includes("待补"));
-  const list = (((sc.scenes || {}).list) || []).filter(s => ((s.event || s.place || "")).trim());
-  const plans = ((sc.planning || {}).plans) || {};
-  if (!chs.length) return { ok: false, reason: "07 长篇大纲还没有可用章节（占位「待补」章不计）", chapters: [], total: 0 };
-  if (!list.length) return { ok: false, reason: "09 场景列表还没有场景", chapters: [], total: 0 };
-
-  // 脊柱锚点：同一灾难标记的 场↔章 互相锁定（只保留单调递增的锚）
-  const anchors = [];
-  ["灾一", "灾二", "灾三"].forEach(sp => {
-    const si = list.findIndex(s => s.spine === sp);
-    const ci = chs.findIndex(c => c.spine === sp);
-    if (si >= 0 && ci >= 0) anchors.push({ si, ci, sp });
-  });
-  anchors.sort((a, b) => a.si - b.si);
-  const mono = []; anchors.forEach(a => { if (!mono.length || (a.si > mono[mono.length - 1].si && a.ci > mono[mono.length - 1].ci)) mono.push(a); });
-
-  const assign = new Array(list.length).fill(-1);
-  mono.forEach(a => { assign[a.si] = a.ci; });
-  const segs = [{ si: -1, ci: -1 }, ...mono, { si: list.length, ci: chs.length }];
-  for (let k = 0; k < segs.length - 1; k++) {
-    const a = segs[k], b = segs[k + 1];
-    const sIdx = []; for (let i = a.si + 1; i < b.si; i++) sIdx.push(i);
-    if (!sIdx.length) continue;
-    const cIdx = []; for (let j = a.ci + 1; j < b.ci; j++) cIdx.push(j);
-    if (!cIdx.length) {
-      const fb = a.ci >= 0 ? a.ci : Math.min(b.ci, chs.length - 1);
-      sIdx.forEach(i => { assign[i] = Math.max(0, fb); });
-    } else {
-      sIdx.forEach((i, t) => { assign[i] = cIdx[Math.min(cIdx.length - 1, Math.floor(t * cIdx.length / sIdx.length))]; });
-    }
-  }
-
-  const mapScene = (s) => {
-    const plan = plans[s.id] || null;
-    const reactive = s.type === "reactive";
-    return {
-      srcId: s.id, spine: s.spine || "",
-      pov: ((plan && plan.pov) || s.pov || "").trim(),
-      kind: reactive ? "反应" : "主动",
-      title: (s.event || s.place || "").trim(),
-      goal: ((plan && (reactive ? plan.reaction : plan.goal)) || s.event || "").trim() || "（本场目标待规划）",
-      obstacle: ((plan && (reactive ? plan.dilemma : plan.conflict)) || s.crucible || "").trim(),
-      turn: ((plan && (reactive ? plan.decision : plan.setback)) || "").trim(),
-      planned: s2PlanState(plan) > 0,
-    };
-  };
-  const chapters = chs.map((c, j) => ({
-    act: c.act || 1, title: (c.title || "").trim(), summary: (c.summary || "").trim(), spine: c.spine || "",
-    scenes: list.filter((_, i) => assign[i] === j).map(mapScene),
-  }));
-  const planned = list.filter(s => s2PlanState(plans[s.id]) > 0).length;
-  return { ok: true, chapters, total: list.length, planned, anchored: mono.length };
-}
-
-function s2MaterializeApply(preview) {
-  if (!WsCatalog || !preview || !preview.ok) return null;
-  const cur = WsCatalog.get();
-  const next = cur.slice();
-  const wasEmpty = cur.length === 0;
-  let newCh = 0, newSc = 0, skipSc = 0;
-  preview.chapters.forEach((pc, i) => {
-    let idx = next.findIndex(c => (c.title || "").trim() === pc.title);
-    if (idx < 0) {
-      const n = String(next.length + 1).padStart(2, "0");
-      let id = "ch" + n; if (next.some(x => x.id === id)) id = id + "-" + Date.now().toString(36) + i;
-      const first = wasEmpty && newCh === 0;
-      next.push({
-        id, act: "act" + (pc.act || 1), n, title: pc.title,
-        state: first ? "writing" : "planned",
-        tension: pc.act === 3 ? 0.7 : pc.act === 2 ? 0.5 : 0.3,
-        pov: "", time: "", place: "", current: first,
-        words: { cur: 0, target: 4000 },
-        entry: "", exit: "", align: true, promise: pc.summary,
-        drama: { promise: pc.summary, spine: pc.spine ? `灾难落点 · ${pc.spine}` : "", arc: "", problem: "", aftertaste: "", ending: "", forbidden: "", notes: "由雪花整理写入" },
-        threads: [], scenes: [],
-      });
-      idx = next.length - 1; newCh++;
-    }
-    const ch = next[idx];
-    const existing = new Set((ch.scenes || []).map(s => (s.title || "").trim()));
-    const fresh = pc.scenes
-      .filter(s => { if (existing.has(s.title)) { skipSc++; return false; } return true; })
-      .map(s => ({ title: s.title, kind: s.kind, state: "todo", goal: s.goal, obstacle: s.obstacle, turn: s.turn }));
-    if (fresh.length) { next[idx] = { ...ch, scenes: [...(ch.scenes || []), ...fresh] }; newSc += fresh.length; }
-  });
-  WsCatalog.set(next);
-  return { newCh, newSc, skipSc };
-}
-
-/* 单一「大纲 → 章节目录」采用入口。
-   顶部主按钮与 07 长篇大纲共用这段契约，避免一个只切演示页签、另一个才真正物化。
-   ready 时由 WsCatalog 走后端 materialize；未 ready 时走带场景的本地确定性降级。 */
-async function s2AdoptOutline(chapters, { scaffolds = null, confirmFn = (message) => window.confirm(message) } = {}) {
-  if (!WsCatalog) throw new Error("章节目录尚未就绪，请稍后重试。");
-  const adoptable = (chapters || []).filter(c => (c.title || "").trim() && !c.title.includes("待补"));
-  if (!adoptable.length) throw new Error("07 长篇大纲还没有可采用的章节，请先补全至少一个章节标题。");
-  const existing = WsCatalog.get().length;
-  const ready = !!(window.SnowSync && window.SnowSync.readyToMaterialize && window.SnowSync.readyToMaterialize());
-  const preview = !ready && scaffolds ? s2MaterializePreview(scaffolds) : null;
-  const pathNote = ready
-    ? "构思闸门已全过：走后端物化主路径——章、场、三拍一起落库，之后构思改动可一键回流同步。"
-    : preview && preview.ok
-      ? `构思闸门还没全过：采用本地确定性路径——${preview.total} 场会按脊柱锚点写入章节，其中 ${preview.planned} 场带完整规划。`
-      : `构思闸门还没全过，且当前还不能生成场景预览（${(preview && preview.reason) || "场景规划尚未就绪"}）；本次会先建立可用章节，之后可再次物化补齐场景。`;
-  const accepted = confirmFn(
-    `把大纲中的 ${adoptable.length} 章并入目录？（同名章自动跳过${existing ? `；目录现有 ${existing} 章` : ""}）\n\n${pathNote}`,
-  );
-  if (!accepted) return { cancelled: true, adopted: 0, ready, adoptable };
-  const adopted = await WsCatalog.adoptOutline(adoptable, scaffolds);
-  return { cancelled: false, adopted: Number(adopted) || 0, ready, adoptable };
-}
-
-/* 物化后回查：预览里的某一场在目录里的真实 sid（写正文深链用） */
-function s2MaterializedSid(chTitle, scTitle) {
-  try {
-    const ch = WsCatalog.get().find(c => (c.title || "").trim() === (chTitle || "").trim());
-    if (!ch) return null;
-    const s = (ch.scenes || []).find(x => (x.title || "").trim() === (scTitle || "").trim());
-    return s ? { sid: s.sid, chId: ch.id, chTitle: ch.title } : null;
-  } catch (e) { return null; }
-}
 
 // 分形管线：本步在雪花展开链上的位置（上游 → 本步×倍率 → 下游）
 function s2Pipeline(stepKey) {
@@ -304,6 +179,21 @@ function s2Pipeline(stepKey) {
 }
 
 function s2HC(s) { return s >= 80 ? "var(--sage)" : s >= 62 ? "var(--gold)" : "var(--crimson)"; }
+
+/* 09 场景行的 id 就是上行到后端的 row_uid —— 场景计划的不可变身份锚，必须全局不重号。
+   旧写法 `"S" + (list.length + 1)` 只看当前长度：删掉中间一场再新增，铸出的号会撞上
+   仍然存活的那一场，后端按 row_uid 对位时后者整段覆盖前者的内容（构思侧丢戏）。
+   规则改成「已用过的最大编号 + 1」，并兜底跳过任何仍被占用的号。 */
+function s2NextSceneRowId(list) {
+  const rows = Array.isArray(list) ? list : [];
+  const used = new Set(rows.map(row => String((row && row.id) || "")));
+  let next = rows.reduce((max, row) => {
+    const n = parseInt(String((row && row.id) || "").replace(/^S/, ""), 10);
+    return Number.isFinite(n) && n > max ? n : max;
+  }, 0) + 1;
+  while (used.has("S" + String(next).padStart(2, "0"))) next++;
+  return "S" + String(next).padStart(2, "0");
+}
 
 
 /* Per-step content: draft / target / explainer / hints / candidates,
@@ -813,7 +703,6 @@ function WsSnowflake({ go, initialStep, onOverview }) {
      pendingCount>0 时顶部横幅给一键「同步到目录」——不同步，写作台/AI 起草台拿到的是旧三拍 */
   const [resyncInfo, setResyncInfo] = useSS(() => { try { return (window.SnowSync && window.SnowSync.resyncStatus()) || { pendingCount: 0, pendingScenes: [] }; } catch (e) { return { pendingCount: 0, pendingScenes: [] }; } });
   const [resyncBusy, setResyncBusy] = useSS(false);
-  const [materializeBusy, setMaterializeBusy] = useSS(false);
   useSE(() => {
     const refresh = () => { try { setResyncInfo((window.SnowSync && window.SnowSync.resyncStatus()) || { pendingCount: 0, pendingScenes: [] }); } catch (e) {} };
     window.addEventListener("ws:snow-resync", refresh);
@@ -826,33 +715,26 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     setResyncBusy(true);
     try {
       const r = await window.SnowSync.resync();
-      showToast(`已把 ${r.synced} 场的构思改动同步到目录场景卡`, "sage");
+      // 有一部分没能回流时不能报干净的成功——作者会以为目录已经是最新的。
+      if (r.notice && r.notice.message) showToast(r.notice.message, "crimson");
+      else showToast(`已把 ${r.synced} 场的构思改动同步到目录场景卡`, "sage");
     } catch (e) {
       window.alert("同步到目录失败：" + ((e && e.message) || "请稍后重试"));
     } finally { setResyncBusy(false); }
   };
-  const materializeFromHeader = async () => {
-    if (materializeBusy) return;
-    setMaterializeBusy(true);
-    try {
-      const result = await s2AdoptOutline((scaffolds.outline && scaffolds.outline.chapters) || [], { scaffolds });
-      if (result.cancelled) return;
-      setActiveKey("outline");
-      setTabFor("outline", "edit");
-      showToast(
-        result.adopted
-          ? `已整理并写入 ${result.adopted} 章 · 可到章节编排复核`
-          : "章节目录已是最新 · 未重复写入同名章节",
-        "sage",
-      );
-    } catch (e) {
-      const message = (e && e.message) || "请稍后重试";
-      setActiveKey("outline");
-      setTabFor("outline", "edit");
-      window.alert("整理章节结构失败：" + message);
-    } finally {
-      setMaterializeBusy(false);
-    }
+  /* 「整理为章节结构」= 打开分章预览面板（P2）。
+     以前这里是个 window.confirm 加三条互不相同的落库路径（后端物化 / 前端脊柱锚点 /
+     只建空壳章），选哪条取决于闸门状态 —— 做得越完整反而掉进最差的那条，而且确认框
+     说「并入 12 章」、实际写 1 章。现在只有一条：预览 → 作者确认 → 一次落库。 */
+  const [chapterPlanOpen, setChapterPlanOpen] = useSS(false);
+  const openChapterPlan = () => setChapterPlanOpen(true);
+  const onChapterPlanDone = (result) => {
+    setChapterPlanOpen(false);
+    const chapters = (result && result.created_chapter_count) || 0;
+    showToast(
+      chapters ? `已整理并写入 ${chapters} 章 · 可到章节编排复核` : "章节目录已是最新 · 未重复写入同名章节",
+      "sage",
+    );
   };
   const toastTimer = useSR(null);
 
@@ -1008,8 +890,18 @@ function WsSnowflake({ go, initialStep, onOverview }) {
         setDrafts(prev => ({ ...prev, [key]: fallbackText })); // 兜底：至少落自由草稿
       }
       if (switchTab) setTabFor(key, "edit");
-      pushHist(doneAction || histAction, `${step.num} ${step.name}${doneNote ? " · " + doneNote : ""}`, "Claude");
-      showToast(toastOk || "已生成 · 可回滚", "gold");
+      /* 分批深化中途失败等半成品：后端把事实放在 health.generation_notice，
+         这里必须把绿色的「已生成」降级成警告——否则作者以为整表都做完了 */
+      const notice = ((res.step || {}).health || {}).generation_notice;
+      const noticeMsg = notice && String(notice.message || "").trim();
+      pushHist(doneAction || histAction,
+        `${step.num} ${step.name}${doneNote ? " · " + doneNote : ""}${noticeMsg ? " · " + noticeMsg : ""}`, "Claude");
+      if (noticeMsg) {
+        setGenErrMap(prev => ({ ...prev, [key]: noticeMsg }));
+        showToast(noticeMsg.slice(0, 60), "crimson");
+      } else {
+        showToast(toastOk || "已生成 · 可回滚", "gold");
+      }
       return true;
     } catch (err) {
       setGenErrMap(prev => ({ ...prev, [key]: (err && err.message) || "生成失败，请稍后重试" }));
@@ -1413,9 +1305,12 @@ function WsSnowflake({ go, initialStep, onOverview }) {
             <button className="btn btn-ghost btn-sm" onClick={resetAll} title="清空本地草稿"><I.Refresh size={13} /> 重置</button>
             <button className="btn btn-ghost btn-sm" data-testid="snow-import-open" onClick={() => { setImportError(""); setImportOpen(true); }} title="从已有策划稿导入十步规范 JSON；仍逐步经过后端保存与批准闸门"><I.Download size={13} /> 导入结构</button>
             <button className="btn btn-ghost btn-sm" onClick={exportOutline} title="导出全书大纲为 Markdown"><I.UploadCloud size={13} /> 导出大纲</button>
-            <button className="btn btn-accent btn-sm" data-testid="snow-materialize-top" disabled={materializeBusy}
-              onClick={materializeFromHeader} title="07 章节 + 09 场景 + 10 规划 → 章节目录（确认后写入）">
-              <I.Layout size={13} /> {materializeBusy ? "整理中…" : "整理为章节结构"}
+            {/* 这里曾有个 materializeBusy 忙态（disabled + 「整理中…」）。物化搬进分章面板之后
+                没有任何代码再写它，按钮永远可点、文案永远是「整理为章节结构」—— 一个只会误导
+                读代码的人的死状态。真正的忙态在面板内部（saving）。 */}
+            <button className="btn btn-accent btn-sm" data-testid="snow-materialize-top"
+              onClick={openChapterPlan} title="07 章节 + 09 场景 + 10 规划 → 先预览分章，确认后写入章节目录">
+              <I.Layout size={13} /> 整理为章节结构
             </button>
           </div>
         </div>
@@ -1615,6 +1510,10 @@ function WsSnowflake({ go, initialStep, onOverview }) {
         <S2ImportPlanDialog value={importText} busy={importBusy} error={importError}
           onChange={setImportText} onImport={importCanonicalPlan}
           onClose={() => { if (!importBusy) { setImportOpen(false); setImportError(""); } }} />
+      )}
+
+      {chapterPlanOpen && (
+        <WsChapterPlanPanel onClose={() => setChapterPlanOpen(false)} onDone={onChapterPlanDone} />
       )}
 
       {toast && (
@@ -2264,18 +2163,13 @@ function S2ChapterOutline({ scaffold, onScaffold, refs }) {
   });
   const spineHits = chapters.filter(c => c.spine).length;
   const placeholders = chapters.filter(c => !c.summary.trim() || c.title.includes("待补")).length;
-  /* 采用到章节编排：构思产出物落进目录单一真相源（同名章跳过）。
-     确认框明示走的是哪条通道——后端物化主路径 vs 闸门未过的目录直建（降级）。 */
+  /* 采用到章节编排 = 打开同一个分章预览面板（P2 路径合一）。
+     以前这里和顶部按钮共用 s2AdoptOutline，但那条契约按闸门状态在三种落库路径之间
+     分叉，结果同一个动作在不同状态下产出完全不同的章节结构。现在两个入口一条路。 */
   const [adopted, setAdopted] = useSS(null);
+  const [planOpen, setPlanOpen] = useSS(false);
   const adoptable = chapters.filter(c => (c.title || "").trim() && !c.title.includes("待补"));
-  const adopt = async () => {
-    try {
-      const result = await s2AdoptOutline(chapters, { scaffolds: refs });
-      if (!result.cancelled) setAdopted(result.adopted);
-    } catch (e) {
-      window.alert("并入章节失败：" + (e && e.message ? e.message : "请稍后重试，或检查构思各步是否已确认。"));
-    }
-  };
+  const adopt = () => setPlanOpen(true);
   /* 并入成功后的第二动线：把已规划好的 todo 场批量送进 AI 起草台（入列后跳转） */
   const goDraft = async () => {
     try {
@@ -2290,6 +2184,12 @@ function S2ChapterOutline({ scaffold, onScaffold, refs }) {
   };
   return (
     <div className="sf-scaffold sf-chapters">
+      {planOpen && (
+        <WsChapterPlanPanel
+          onClose={() => setPlanOpen(false)}
+          onDone={(result) => { setPlanOpen(false); setAdopted((result && result.created_chapter_count) || 0); }}
+        />
+      )}
       <div className="sf-scaffold-note">
         <I.Layers size={14} />
         <span>第三次展开：把一页梗概拆成<b>三幕章节</b>。三个灾难必须落在幕与幕的交界——它们是结构的铰链。</span>
@@ -2437,10 +2337,10 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
   })();
 
   const setScene = (i, f, v) => onScaffold(s => ({ ...s, list: s.list.map((sc, j) => j === i ? { ...sc, [f]: v } : sc) }));
-  const addScene = () => onScaffold(s => {
-    const n = (s.list.length + 1).toString().padStart(2, "0");
-    return { ...s, list: [...s.list, { id: "S" + n, type: "proactive", line: hiLine || "main", pov: mainCharId, place: "", event: "", crucible: "", fn: "", spine: "" }] };
-  });
+  const addScene = () => onScaffold(s => ({
+    ...s,
+    list: [...s.list, { id: s2NextSceneRowId(s.list), type: "proactive", line: hiLine || "main", pov: mainCharId, place: "", event: "", crucible: "", fn: "", spine: "" }],
+  }));
   const delScene = (i) => onScaffold(s => ({ ...s, list: s.list.filter((_, j) => j !== i) }));
   const moveScene = (i, d) => onScaffold(s => {
     const j = i + d; if (j < 0 || j >= s.list.length) return s;
@@ -2468,31 +2368,6 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
   const tightMax = pacing.tight.length ? Math.max(...pacing.tight.map(r => r.len)) : 0;
   const slackMax = pacing.slack.length ? Math.max(...pacing.slack.map(r => r.len)) : 0;
 
-  /* 采用到当前章：把场景行落进目录的当前在写章（同名场跳过，
-     之后可在编排台拖拽分配到各章） */
-  const [adoptedSc, setAdoptedSc] = useSS(null);
-  const adoptableSc = list.filter(s => ((s.event || s.place || "")).trim());
-  const adoptScenes = () => {
-    if (!WsCatalog || !adoptableSc.length) return;
-    const cur = WsCatalog.currentChapter();
-    if (!cur) { window.alert("目录里还没有章节——先在第 7 步「长篇大纲」采用章节，或在编排台建一章。"); return; }
-    if (!window.confirm(`把 ${adoptableSc.length} 场并入当前章《${cur.title}》？（同名场自动跳过，之后可在编排台分配到各章）`)) return;
-    const existing = new Set((cur.scenes || []).map(s => (s.title || "").trim()));
-    const fresh = adoptableSc
-      .map(s => ({
-        title: (s.event || s.place || "").trim(),
-        kind: s.type === "proactive" ? "主动" : "反应",
-        state: "todo",
-        goal: (s.event || "").trim() || "（本场目标待规划）",
-        obstacle: (s.crucible || "").trim(),
-        turn: "",
-      }))
-      .filter(s => !existing.has(s.title));
-    if (fresh.length) {
-      WsCatalog.set(WsCatalog.get().map(c => c.id !== cur.id ? c : { ...c, scenes: [...c.scenes, ...fresh] }));
-    }
-    setAdoptedSc(fresh.length);
-  };
 
   return (
     <div className="sf-scaffold sf-scenelist">
@@ -2518,15 +2393,6 @@ function S2SceneList({ scaffold, onScaffold, refs, ai }) {
               ai.onGenerateAll();
             }}>
             <I.Wand size={13} className={ai.structBusy ? "sf-spin" : ""} /> {ai.structBusy ? "生成中…" : "AI 生成整表"}
-          </button>
-        )}
-        {adoptedSc == null ? (
-          <button className="btn btn-quiet btn-sm" onClick={adoptScenes} disabled={!adoptableSc.length} title="把这份场景表落进目录的当前在写章">
-            <I.Play size={13} /> 采用到当前章
-          </button>
-        ) : (
-          <button className="btn btn-quiet btn-sm" onClick={() => { location.hash = "#writer"; }}>
-            <I.Check size={13} /> {adoptedSc ? `已并入 ${adoptedSc} 场` : "无新增（同名已存在）"} · 去写作
           </button>
         )}
       </div>
@@ -3309,6 +3175,40 @@ function S2Styles() {
 .sf-sd-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; border-top: 1px solid var(--line-1, #eee); }
 .sf-sd-hint { font-size: 12px; color: var(--ink-3, #999); }
 .sf-import-card { width: min(900px, 94vw); }
+/* 分章预览面板（P2）：整理为章节结构不再是黑盒，作者在这里看见并调整归属 */
+.sf-chapterplan { width: min(920px, 95vw); max-height: 88vh; display: flex; flex-direction: column; }
+.sf-chapterplan-bar { display: flex; align-items: center; gap: 8px; padding: 10px 18px; border-bottom: 1px solid var(--line-1, #ddd); flex-wrap: wrap; }
+.sf-chapterplan-rhythm { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 7px 18px; border-bottom: 1px solid var(--line-1, #ddd); font-size: 11px; color: var(--ink-3, #888); }
+.sf-chapterplan-rhythmitem { white-space: nowrap; }
+.sf-chapterplan-rationale { display: flex; align-items: flex-start; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line-1, #ddd); font-size: 12px; line-height: 1.6; color: var(--ink-2, #555); background: var(--paper-2, #f2efe9); }
+.sf-chapterplan-empty { padding: 32px 18px; text-align: center; color: var(--ink-3, #888); font-size: 13px; }
+.sf-chapterplan-empty.tone-rose { color: var(--crimson, #b4453c); }
+.sf-chapterplan-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 18px; display: grid; gap: 14px; }
+.sf-chapterplan-act { display: grid; gap: 8px; }
+.sf-chapterplan-actlabel { font-size: 11px; letter-spacing: .12em; color: var(--ink-3, #888); text-transform: uppercase; }
+.sf-chapterplan-chapter { border: 1px solid var(--line-1, #ddd); border-radius: 10px; background: var(--paper-1, #faf9f7); overflow: hidden; }
+.sf-chapterplan-chapter.is-empty { border-style: dashed; opacity: .72; }
+.sf-chapterplan-chapter.is-unassigned { border-color: var(--crimson, #b4453c); }
+.sf-chapterplan-chaphead { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line-1, #ddd); }
+.sf-chapterplan-title { flex: 1; min-width: 0; border: none; background: transparent; color: var(--ink-1); font: 600 13px/1.5 var(--font-serif, serif); padding: 2px 4px; border-radius: 6px; }
+.sf-chapterplan-title:focus { outline: 1px solid var(--gold, #b8913c); background: var(--paper-0, #fff); }
+.sf-chapterplan-title.as-text { font-weight: 600; }
+.sf-chapterplan-spine { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--gold, #b8913c); color: #fff; }
+.sf-chapterplan-count { font-size: 11px; color: var(--ink-3, #888); }
+.sf-chapterplan-scenes { list-style: none; margin: 0; padding: 4px 6px; display: grid; gap: 2px; }
+.sf-chapterplan-scene { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 6px; font-size: 12px; }
+.sf-chapterplan-scene:hover { background: var(--paper-2, #f2efe9); }
+.sf-chapterplan-scene.is-placeholder { color: var(--ink-3, #888); font-style: italic; }
+.sf-chapterplan-kind { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--paper-2, #f2efe9); color: var(--ink-2, #555); flex: none; }
+.sf-chapterplan-kind.is-reactive { background: var(--slate-soft, #e5e9ef); }
+.sf-chapterplan-scenetitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sf-chapterplan-anchor { font-size: 10px; color: var(--gold, #b8913c); flex: none; }
+.sf-chapterplan-unplanned { font-size: 10px; color: var(--crimson, #b4453c); flex: none; }
+.sf-chapterplan-warnings { border-top: 1px solid var(--line-1, #ddd); padding: 8px 18px; display: grid; gap: 4px; max-height: 22vh; overflow: auto; }
+.sf-chapterplan-warn { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 1.6; }
+.sf-chapterplan-warn.tone-rose { color: var(--crimson, #b4453c); }
+.sf-chapterplan-warn-actions { display: inline-flex; gap: 6px; margin-left: 8px; flex: none; }
+.sf-chapterplan-warn.tone-gold { color: var(--gold-ink, #8a6a1f); }
 .sf-import-body { display: grid; gap: 10px; padding: 14px 18px; min-height: 0; overflow: auto; }
 .sf-import-warning { display: flex; align-items: center; gap: 7px; padding: 9px 11px; border-radius: 9px; background: var(--gold-wash); color: var(--ink-2); font-size: 12.5px; }
 .sf-import-body textarea { width: 100%; min-height: 46vh; resize: vertical; box-sizing: border-box; border: 1px solid var(--line-1, #ddd); border-radius: 10px; background: var(--paper-1, #faf9f7); color: var(--ink-1); padding: 12px; font: 12px/1.65 var(--font-mono, monospace); }
@@ -3909,9 +3809,10 @@ function WsConstruct({ go }) {
   return <WsSnowflake key={step} go={go} initialStep={step} onOverview={() => setMode("overview")} />;
 }
 
-Object.assign(window, { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2GenerateCands, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState,
-  s2Materialize: { preview: s2MaterializePreview, apply: s2MaterializeApply, sid: s2MaterializedSid, planState: s2PlanState } });
+/* P2：s2Materialize（前端脊柱锚点物化引擎）与 s2AdoptOutline 已删除 —— 分章算法
+   搬到后端 snowflake_chaptering.py，成为唯一实现；「整理为章节结构」只剩
+   分章预览面板一条路径。 */
+Object.assign(window, { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2GenerateCands, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState, s2NormalizeState, s2AdoptOutline };
-export const s2Materialize = { preview: s2MaterializePreview, apply: s2MaterializeApply, sid: s2MaterializedSid, planState: s2PlanState };
+export { WsSnowflake, WsConstruct, S2_STEPS, S2_BE_STEPS, s2PacingRuns, s2LineStats, s2StepSummary, s2ExportState, s2NormalizeState, s2NextSceneRowId };

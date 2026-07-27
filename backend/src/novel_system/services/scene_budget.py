@@ -1,10 +1,15 @@
 """场景 token 预算（结果闭环治理 §4.6/§5.5/§5.8/§7.12，Wave 3）。
 
 单发基线（§4.6）：对同一冻结 Bundle、同一 writer 路由执行一次 N=1 正文生成，
-再执行一次确定性 Q0/Q1 与来源安全检查（本地，0 token）。生产预算按生成调用
-的**估算输入上限 + 配置输出上限**计算。关键场景端到端上限 = 5 × 基线。
+再执行一次确定性 Q0/Q1 与来源安全检查（本地，0 token）。武装态下关键场景端到端
+上限 = ``N × 基线``（N = ``settings.scene_token_budget_multiplier``，武装默认 5）。
 
-硬行为（§5.8）：
+**默认解除武装（单作者装机）**：这道硬闸门是最后一道还常开的闸门，现已并入其余
+额度族——``NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER=0``（默认）时三道额度落到有限
+哨兵（见 ``UNARMED_*``），预留 CAS 闸门恒不触发，单场 run 永不被中途拦停。记账完全
+不变（账本与成本看板照旧逐 token 记账）。设正整数即重新武装 ``N × 基线`` + 配置重试上限。
+
+硬行为（§5.8，仅在武装态生效）：
 - 预算耗尽后停止**新**调用，返回已有最佳稿——基线必经调用不拦但照常计数；
   可选支出（补候选 / LLM 批判 / 补丁 / near-final 重写）过 ``can_spend`` 闸。
 - 预算按场景生命周期累计；自动流程不得重置（§7.12），扩容唯一入口是作者
@@ -37,6 +42,29 @@ FALLBACK_INPUT_TOKENS = 4000
 FALLBACK_OUTPUT_TOKENS = 2400
 BASELINE_WRITER_NODE = "style_draft"
 LEGACY_INITIAL_ATTEMPT_BUDGET = 4
+
+# 场景生命周期预算「解除武装」哨兵（单作者默认，见 settings.scene_token_budget_multiplier）。
+# 三道额度（token / 业务重试 / provider 重试）全部落到远超任何真实场景的**有限**值——
+# 预留 CAS 闸门因此恒不触发，但「有限正值」不变量与审计回放的 int64 上限（1<<63-1）仍成立。
+# 记账完全不受影响：账本照旧逐次累计真实 usage，只是「拦截」退化为空操作。
+# 想重新武装：设 NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER=正数（恢复 N×基线 + 配置重试上限）。
+UNARMED_SCENE_TOKEN_BUDGET = 1 << 52  # ~4.5e15 token
+UNARMED_ATTEMPT_BUDGET = 1 << 30  # ~1.07e9 次；远超任何真实重试，且给 topup/int64 留足余量
+
+
+def _armed_scene_budget_multiplier() -> int:
+    """武装态倍率（>0）；返回 0 表示解除武装（默认）。
+
+    单作者本地装机默认不设这道硬闸门。settings 读不到时保守回退到历史默认（武装 5×），
+    绝不因一次读配置失败就把安全闸门静默变成「不限」。
+    """
+    try:
+        from novel_system.settings import get_settings
+
+        value = int(get_settings(include_runtime_config=False).scene_token_budget_multiplier)
+    except Exception:  # noqa: BLE001 — 保守回退到武装态，见 docstring
+        return BUDGET_MULTIPLIER
+    return value if value > 0 else 0
 
 
 def _insert_scene_run_state_if_missing(session: Session, scene_id: str) -> None:
@@ -141,20 +169,30 @@ def ensure_scene_budget_initialized(
         )
     else:
         _validate_uninitialized_scene_budget_state(state)
-        effective_baseline, effective_provider_budget = _canonical_budget_candidate(session)
-        scene_budget = BUDGET_MULTIPLIER * effective_baseline
+        effective_baseline, armed_provider_budget = _canonical_budget_candidate(session)
+        multiplier = _armed_scene_budget_multiplier()
+        if multiplier > 0:
+            scene_budget = multiplier * effective_baseline
+            effective_provider_budget = armed_provider_budget
+            effective_attempt_budget = int(state.attempt_budget)
+        else:
+            # 解除武装（单作者默认）：三道额度落到有限哨兵，预留闸门恒不触发；记账照旧。
+            scene_budget = UNARMED_SCENE_TOKEN_BUDGET
+            effective_provider_budget = UNARMED_ATTEMPT_BUDGET
+            effective_attempt_budget = UNARMED_ATTEMPT_BUDGET
         basis = {
             "baseline_tokens": effective_baseline,
-            "budget_multiplier": BUDGET_MULTIPLIER,
+            "budget_multiplier": multiplier,
             "scene_token_budget": scene_budget,
+            "scene_budget_armed": multiplier > 0,
             "topup_audit_cutoff_operation_id": _current_operation_id(session),
             "provider_attempt_budget": {
                 "config_key": PROVIDER_ATTEMPT_BUDGET_CONFIG_KEY,
                 "value": effective_provider_budget,
             },
             "attempt_budget": {
-                "source": "scene_run_states.initial",
-                "value": int(state.attempt_budget),
+                "source": "scene_run_states.initial" if multiplier > 0 else "scene_lifecycle_disarmed",
+                "value": effective_attempt_budget,
             },
         }
         session.execute(
@@ -172,6 +210,7 @@ def ensure_scene_budget_initialized(
                 scene_token_budget=scene_budget,
                 scene_budget_basis_json=basis,
                 provider_attempt_budget=effective_provider_budget,
+                attempt_budget=effective_attempt_budget,
             )
         )
     session.commit()
@@ -541,3 +580,22 @@ def can_spend(state: SceneRunState | None, estimated_tokens: int) -> bool:
         return True
     used = int(state.scene_tokens_used or 0)
     return used + max(0, int(estimated_tokens)) <= int(state.scene_token_budget)
+
+
+def is_scene_budget_disarmed(state: SceneRunState | None) -> bool:
+    """场景 token 闸门是否处于解除武装态（哨兵额度，无真实上限）。
+
+    优先看不可变依据里的 ``scene_budget_armed`` 标记（新场景都带）；旧场景无此键时
+    退回哨兵阈值判断。成本看板据此把「预算」显示为「不限」而非天文数字。
+    """
+    if state is None:
+        return False
+    basis = state.scene_budget_basis_json
+    if isinstance(basis, dict) and "scene_budget_armed" in basis:
+        return basis.get("scene_budget_armed") is False
+    budget = state.scene_token_budget
+    return (
+        isinstance(budget, int)
+        and not isinstance(budget, bool)
+        and budget >= UNARMED_SCENE_TOKEN_BUDGET
+    )

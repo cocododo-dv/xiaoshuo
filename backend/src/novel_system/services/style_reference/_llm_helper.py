@@ -30,9 +30,6 @@ from novel_system.services.style_reference.untrusted_data import (
     render_untrusted_user_prompt,
 )
 
-# 路由未显式配置 timeout_seconds 时 style_ref 节点的调用超时保底(秒)
-DEFAULT_TIMEOUT_SECONDS = 120.0
-
 
 class LLMNodeError(Exception):
     """LLM 调用 / 解析失败的统一异常。
@@ -118,9 +115,9 @@ def call_llm_node(
         max_output_tokens=task_config.max_output_tokens,
         response_format=task_config.response_format,
         provider=task_config.provider,
-        # style_ref 节点吃长 prompt(20 段原文 + schema)+ 长输出,30s 全局默认在
-        # 慢速中转上容易 LLM_REQUEST_TIMEOUT;路由未显式配置时按 120s 保底
-        timeout_seconds=getattr(task_config, "timeout_seconds", None) or DEFAULT_TIMEOUT_SECONDS,
+        # style_ref 节点吃长 prompt(20 段原文 + schema)+ 长输出,本来就该慢。
+        # 只在路由显式配置时封顶,否则交给 client 全局设置(默认不限时)。
+        timeout_seconds=getattr(task_config, "timeout_seconds", None),
         node_id=node_id,
         provider_id=getattr(task_config, "provider_id", None),
         account_id=getattr(task_config, "account_id", None),

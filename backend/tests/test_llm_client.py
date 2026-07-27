@@ -9,6 +9,7 @@ import pytest
 from novel_system.settings import get_settings
 from novel_system.services import llm_client
 from novel_system.services.llm_client import (
+    LLM_CONNECT_TIMEOUT_SECONDS,
     LLMClient,
     LLMConfigurationError,
     LLMHTTPError,
@@ -18,6 +19,7 @@ from novel_system.services.llm_client import (
     ProviderRuntimeConfig,
     load_model_routing_config,
     parse_model_routing_config,
+    resolve_request_timeout,
 )
 
 
@@ -555,6 +557,118 @@ def test_llm_client_normalizes_timeout_failures() -> None:
     assert exc_info.value.retryable is True
     assert exc_info.value.details["attempt_count"] == 1
     assert exc_info.value.details["max_retries"] == 0
+
+
+def test_resolve_request_timeout_drops_response_ceiling_but_keeps_connect() -> None:
+    """不限时只豁免 read(等模型出字)。写请求体和取连接不存在「合法的慢」。
+
+    三者全设 None 会把「模型在想」的豁免错发给两个纯传输动作:一次写卡住就永久占着
+    一个同步 worker 线程,作者重试几次线程池就空了。
+    """
+    for unbounded_value in (0, 0.0, None, -1):
+        timeout = resolve_request_timeout(unbounded_value)
+        assert timeout.read is None, unbounded_value
+        # 连不上/写不出去/取不到连接必须快速失败,否则填错 base_url 只会无限转圈。
+        assert timeout.connect == LLM_CONNECT_TIMEOUT_SECONDS, unbounded_value
+        assert timeout.write == LLM_CONNECT_TIMEOUT_SECONDS, unbounded_value
+        assert timeout.pool == LLM_CONNECT_TIMEOUT_SECONDS, unbounded_value
+
+    bounded = resolve_request_timeout(45)
+    assert bounded.read == 45
+    assert bounded.connect == 45
+
+
+def test_the_default_transport_enables_tcp_keepalive() -> None:
+    """read 不限时的代价是半开连接——只有内核探针能把它和「模型在想」区分开。
+
+    中转接了 TCP、随后一个字节都不发、也不回 RST(路由被丢/网关过载):没有 keepalive
+    时 ``client.post`` 会永久阻塞。活着的对端一定回 ACK,所以慢生成完全不受影响。
+    """
+    import socket as _socket
+
+    from novel_system.services.llm_client import _keepalive_socket_options
+
+    options = _keepalive_socket_options()
+    assert (_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1) in options
+    # 平台缺哪个常量跳哪个(Windows 一个都没有),但 SO_KEEPALIVE 必须永远在。
+    if hasattr(_socket, "TCP_KEEPIDLE"):
+        assert any(option == _socket.TCP_KEEPIDLE for _, option, _ in options)
+        assert any(option == _socket.TCP_KEEPCNT for _, option, _ in options)
+
+
+def test_llm_client_sends_no_response_deadline_when_timeout_disabled() -> None:
+    captured_timeout: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_timeout.update(request.extensions["timeout"])
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_slow",
+                "model": "gpt-5",
+                "output_text": '{"ok": true}',
+                "finish_reason": "stop",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=0,
+        transport=httpx.MockTransport(handler),
+    )
+    client.generate(
+        LLMRequest(
+            model="gpt-5",
+            messages=[{"role": "user", "content": "Write a long chapter."}],
+            temperature=0,
+            max_output_tokens=64,
+            response_format="json_object",
+        )
+    )
+
+    # 大任务本来就慢:等模型出字不设上限,只有建连仍然封顶。
+    assert captured_timeout["read"] is None
+    assert captured_timeout["connect"] == LLM_CONNECT_TIMEOUT_SECONDS
+
+
+def test_llm_client_timeout_message_names_the_connect_ceiling_when_unbounded() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("timed out", request=request)
+
+    client = LLMClient(
+        provider="openai_compatible",
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        timeout_seconds=0,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(LLMTimeoutError) as exc_info:
+        client.generate(
+            LLMRequest(
+                model="gpt-5",
+                messages=[{"role": "user", "content": "Return JSON."}],
+                temperature=0,
+                max_output_tokens=64,
+                response_format="json_object",
+            )
+        )
+
+    message = str(exc_info.value)
+    assert "timed out while connecting" in message
+    assert "no response ceiling" in message
+    # 不限时下绝不能谎报成"响应等了 0 秒就超时"。
+    assert "timed out after" not in message
+
+
+def test_llm_settings_default_to_no_response_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NOVEL_SYSTEM_LLM_TIMEOUT_SECONDS", raising=False)
+
+    assert get_settings().llm_timeout_seconds == 0.0
 
 
 def test_llm_client_normalizes_request_failures() -> None:

@@ -353,8 +353,8 @@ def test_task_config_timeout_seconds_parses() -> None:
     assert cfg2.timeout_seconds is None
 
 
-def test_style_ref_helper_applies_timeout_floor(monkeypatch, session) -> None:
-    """style_ref 节点路由未配置超时时按 120s 保底(30s 全局默认吃不下重抽取)。"""
+def test_style_ref_helper_leaves_unrouted_timeout_to_the_client(monkeypatch, session) -> None:
+    """style_ref 节点路由未配置超时时不自造上限——重抽取本来就慢,交给 client 全局设置。"""
     from types import SimpleNamespace
 
     from novel_system.services.style_reference import _llm_helper
@@ -394,7 +394,7 @@ def test_style_ref_helper_applies_timeout_floor(monkeypatch, session) -> None:
             step="timeout_floor",
         ),
     )
-    assert captured["timeout"] == _llm_helper.DEFAULT_TIMEOUT_SECONDS
+    assert captured["timeout"] is None
 
 
 def test_schema_degrade_inlines_schema_into_prompt() -> None:

@@ -53,6 +53,8 @@ class CausalChainValidator:
             .where(
                 SnowflakeScenePlan.project_id == project_id,
                 SnowflakeScenePlan.status != "deleted",
+                # P1-3：作者在场景列表里删掉的场不参与因果链校验
+                SnowflakeScenePlan.removed_at.is_(None),
             )
             .order_by(SnowflakeScenePlan.scene_seq.asc())
         ).scalars().all())

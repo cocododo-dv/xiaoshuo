@@ -43,6 +43,12 @@ class _LLMExecutionRuntime:
 
 _CURRENT_EXECUTION: ContextVar[_LLMExecutionRuntime | None] = ContextVar("llm_execution", default=None)
 
+# 不限时(timeout_seconds <= 0)的调度租约上限。租约只用来防重复执行,没有
+# 超时秒数可乘时不能退回默认 TTL(几分钟)——那样长任务会在调用中途丢租约,
+# 客户端重试会把它当崩溃回收并二次执行(审计 P-8)。取一个与
+# llm_reservation_recovery_ttl_seconds 同量级的平顶,崩溃后最多滞留这么久。
+UNBOUNDED_TIMEOUT_LEASE_SECONDS = 3_600
+
 
 def begin_llm_execution(
     execution_id: str,
@@ -83,6 +89,8 @@ def _execution_owner_lease_seconds(
     default_ttl = owner_lease_ttl_seconds()
     if request_timeout_seconds is None:
         return default_ttl
+    if float(request_timeout_seconds) <= 0:
+        return max(default_ttl, UNBOUNDED_TIMEOUT_LEASE_SECONDS)
     timeout_seconds = max(1, math.ceil(float(request_timeout_seconds)))
     physical_attempts = 1
     backoff_envelope = 0

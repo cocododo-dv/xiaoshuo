@@ -40,6 +40,10 @@ def isolated_database(
         "NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS",
         os.pathsep.join(import_roots),
     )
+    # 场景 token 生命周期预算现在**产品默认关闭**（单作者不预设硬闸门）。整套测试仍以历史
+    # 「武装 5×」为基线运行——绝大多数断言都建立在这道闸门存在之上（5×基线、耗尽码、topup
+    # 审计等）。解除武装本身由 test_scene_token_budget.py 里显式设 0 的专门用例覆盖。
+    monkeypatch.setenv("NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", "5")
     from novel_system.db.session import reset_engine
 
     reset_engine()

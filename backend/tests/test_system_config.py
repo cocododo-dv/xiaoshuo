@@ -558,6 +558,69 @@ llm:
     assert settings.llm_api_key == "super-secret-key"
 
 
+def test_api_config_without_timeout_leaves_generation_unbounded(client, monkeypatch) -> None:
+    """省略 llm.timeout_seconds = 不给生成设上限,而不是偷偷装回 30s。"""
+
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    draft_response = client.post(
+        "/api/v1/system-config/drafts",
+        headers=ADMIN_HEADERS,
+        json={
+            "category": "api",
+            "yaml_raw": """
+llm:
+  enabled: true
+  default_provider_id: slow_local
+  providers:
+    slow_local:
+      provider_type: openai_compatible
+      account_id: local
+      base_url: "https://local-llm.test"
+      enabled: true
+      credential_mode: none
+      api_mode: chat
+      models:
+        - "qwen3:14b"
+""".lstrip(),
+        },
+    )
+    assert draft_response.status_code == 200
+    snapshot_id = draft_response.json()["data"]["snapshot"]["snapshot_id"]
+    assert draft_response.json()["data"]["snapshot"]["parsed"]["llm"]["timeout_seconds"] == 0.0
+
+    activate_response = client.post(
+        f"/api/v1/system-config/{snapshot_id}/activate", headers=ADMIN_HEADERS
+    )
+    assert activate_response.status_code == 200
+    assert get_settings().llm_timeout_seconds == 0.0
+
+
+def test_api_config_rejects_a_negative_timeout(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    draft_response = client.post(
+        "/api/v1/system-config/drafts",
+        headers=ADMIN_HEADERS,
+        json={
+            "category": "api",
+            "yaml_raw": """
+llm:
+  enabled: true
+  provider: openai_compatible
+  base_url: "https://local-llm.test/v1"
+  timeout_seconds: -5
+""".lstrip(),
+        },
+    )
+
+    body = draft_response.text
+    assert draft_response.status_code >= 400 or "negative" in body
+    assert "must not be negative" in body
+
+
 def test_active_model_and_prompt_snapshots_feed_runtime_loaders(client, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")

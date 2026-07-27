@@ -15,6 +15,7 @@ from novel_system.services.llm_providers.openai_common import (
     bearer_generate_headers,
     extract_chat_finish_reason,
     extract_openai_output_text,
+    extract_responses_finish_reason,
     openai_chat_response_format,
     openai_reasoning,
     openai_text_format,
@@ -102,10 +103,7 @@ class OpenAIFamilyAdapter(ProviderAdapter):
     def extract_finish_reason(self, body: dict[str, Any], *, api_mode: str) -> str | None:
         if api_mode == "chat":
             return extract_chat_finish_reason(body)
-        finish_reason = body.get("finish_reason")
-        if isinstance(finish_reason, str):
-            return finish_reason
-        return None
+        return extract_responses_finish_reason(body)
 
     def protocol_hint(
         self,

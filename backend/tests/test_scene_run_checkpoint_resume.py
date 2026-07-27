@@ -50,6 +50,7 @@ from novel_system.services.llm_client import (
 )
 from novel_system.services.llm_accounting import LLMAccountingError
 from novel_system.services.llm_task_runner import (
+    UNBOUNDED_TIMEOUT_LEASE_SECONDS,
     _execution_owner_lease_seconds,
     LLMNodeExecutionError,
     LLMNodeRunner,
@@ -6633,6 +6634,17 @@ def test_owner_lease_envelope_never_shrinks_default_and_covers_all_llm_retries(m
         request_timeout_seconds=70,
         client=client,
     ) >= physical_attempts * 70 + backoff_envelope + 5
+
+
+def test_owner_lease_envelope_survives_an_unbounded_request_timeout(monkeypatch) -> None:
+    """不限时(0)不能退回默认 TTL:长任务会在调用中途丢租约并被二次执行。"""
+
+    monkeypatch.setattr("novel_system.services.idempotency.owner_lease_ttl_seconds", lambda: 30)
+    monkeypatch.setattr("novel_system.services.idempotency.owner_lease_grace_seconds", lambda: 5)
+
+    unbounded = _execution_owner_lease_seconds(request_timeout_seconds=0, client=object())
+    assert unbounded == UNBOUNDED_TIMEOUT_LEASE_SECONDS
+    assert unbounded > 30
 
 
 def test_dispatch_truth_allows_predispatch_retry_but_blocks_unknown_provider_outcome(session, monkeypatch) -> None:

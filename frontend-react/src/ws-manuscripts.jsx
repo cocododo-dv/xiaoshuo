@@ -837,7 +837,7 @@ function ManuWriting({ picked, go, onSubmit, gate, canSubmit, blockReason }) {
                   : "本章由控制塔下发起草——送审前需先通过章级审计（跨场连续性把关）。"}
               </p>
               <div className="flex gap-2">
-                <button className="btn btn-accent btn-sm" onClick={() => go("longform")}><I.ShieldCheck size={13} /> 去控制塔章级审计</button>
+                <button className="btn btn-accent btn-sm" onClick={() => go("author")}><I.ShieldCheck size={13} /> 去章节编排 · 章级审计</button>
                 <button className="btn btn-ghost btn-sm" disabled={!canSubmit} title={!canSubmit ? blockReason : undefined} onClick={onSubmit}>{gate === "armed" ? "仍要送审（带病）" : "跳过审计送审"}</button>
               </div>
             </div>

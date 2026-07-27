@@ -418,4 +418,28 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     expect(mod.SnowSync.syncState("prj-main").phase).toBe("synced");
     expect(client.apiPost.mock.calls.some(([url]) => String(url).endsWith("/steps/book_brief/approve"))).toBe(true);
   });
+
+  it("前序步骤未确认（SNOWFLAKE_PREVIOUS_STEP_REQUIRED）不算同步故障：draft 已上行则保持已同步、不弹红错", async () => {
+    const { mod, client } = await loadSync({ snowflakeWorkspace: { ready_to_materialize: false, current_step_key: "book_brief", steps: [] } });
+    client.apiPatch.mockImplementation(async (url, body) => ({ step: { status: "pending_review", draft: body.draft, health: {}, completeness: {} } }));
+    const cache = {
+      drafts: {},
+      scaffolds: { audience: { genre: "悬疑", reader: "成年读者", pleasure: "追索", source: "旧案", exclude: "不猎奇", emotion: "压迫" } },
+      checks: {}, states: { audience: "active" },
+    };
+    saveCache(cache);
+    await vi.waitFor(() => expect(mod.SnowSync.syncState("prj-main").phase).toBe("synced"), T);
+
+    // approve 被后端以「需要先确认前面的雪花步骤」挡下（重试无用，作者得先去确认上游步骤）。
+    const prevGate = Object.assign(new Error("需要先确认前面的雪花步骤。"), { status: 409, code: "SNOWFLAKE_PREVIOUS_STEP_REQUIRED" });
+    client.apiPost.mockRejectedValue(prevGate);
+    saveCache({ ...cache, states: { audience: "done" } });
+
+    // 先等 approve 真的被尝试过，再断言状态——否则可能断在「保存前的已同步」上，形成伪绿。
+    await vi.waitFor(() => expect(client.apiPost.mock.calls.some(([url]) => String(url).endsWith("/steps/book_brief/approve"))).toBe(true), T);
+    const state = mod.SnowSync.syncState("prj-main");
+    expect(state.phase).toBe("synced"); // draft 已上行；确认待上游，不是「服务器同步失败」
+    expect(state.error).toBeNull();
+    expect(state.failures || []).toHaveLength(0);
+  });
 });

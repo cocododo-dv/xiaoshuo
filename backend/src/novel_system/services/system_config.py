@@ -66,6 +66,8 @@ LLM_PROVIDER_SECRET_PREFIX = "llm_provider"
 LLM_NODE_STATUSES = llm_node_statuses()
 # 探活调用向记账层申报的输出预算(详见 _probe_completion 内注释)
 PROBE_ACCOUNTING_OUTPUT_BUDGET = 1024
+# 「测试连接」的超时:与生成超时无关(生成默认不限时),探测必须有限且短。
+PROVIDER_PROBE_TIMEOUT_SECONDS = 30.0
 
 
 def repo_config_dir() -> Path:
@@ -347,7 +349,7 @@ class SystemConfigService:
             provider_secret = load_secret_value(llm_provider_api_key_secret_id(provider_id)) if provider_id else None
             api_key = provider_payload.get("api_key") or provider_secret or load_secret_value(LLM_API_KEY_SECRET_ID)
         timeout_value = provider_payload.get("timeout_seconds")
-        timeout_seconds = _float_value(10.0 if timeout_value is None else timeout_value, "timeout_seconds")
+        timeout_seconds = _probe_timeout_seconds(timeout_value, default_seconds=10.0)
         requested_model = _requested_probe_model(provider_payload)
         should_check_completion = bool(requested_model) and _bool_value(provider_payload.get("check_completion", False))
         trust_env = _httpx_trust_env_for_base_url(base_url)
@@ -686,7 +688,7 @@ class SystemConfigService:
         llm_payload["providers"] = providers
         llm_payload["default_provider_id"] = llm_payload.get("default_provider_id") or provider_id
         llm_payload["enabled"] = True if provider["enabled"] else _bool_value(llm_payload.get("enabled", True))
-        llm_payload.setdefault("timeout_seconds", 30.0)
+        llm_payload.setdefault("timeout_seconds", 0.0)
         snapshot = self._store_config_snapshot(
             category="api",
             parsed={"llm": llm_payload},
@@ -730,7 +732,7 @@ class SystemConfigService:
         llm_payload["providers"] = providers
         llm_payload["default_provider_id"] = provider_id
         llm_payload["enabled"] = _bool_value(llm_payload.get("enabled", True))
-        llm_payload.setdefault("timeout_seconds", 30.0)
+        llm_payload.setdefault("timeout_seconds", 0.0)
         snapshot = self._store_config_snapshot(
             category="api",
             parsed={"llm": llm_payload},
@@ -761,7 +763,7 @@ class SystemConfigService:
             else:
                 llm_payload["default_provider_id"] = next_default
         llm_payload["enabled"] = _bool_value(llm_payload.get("enabled", True))
-        llm_payload.setdefault("timeout_seconds", 30.0)
+        llm_payload.setdefault("timeout_seconds", 0.0)
         snapshot = self._store_config_snapshot(
             category="api",
             parsed={"llm": llm_payload},
@@ -923,7 +925,9 @@ class SystemConfigService:
         if provider is None:
             raise DomainError("CONFIG_PROVIDER_NOT_FOUND", f"provider {provider_id} was not found", status_code=404)
         probe_payload = dict(provider)
-        probe_payload["timeout_seconds"] = llm_payload.get("timeout_seconds", 30.0)
+        probe_payload["timeout_seconds"] = _probe_timeout_seconds(
+            llm_payload.get("timeout_seconds"), default_seconds=PROVIDER_PROBE_TIMEOUT_SECONDS
+        )
         probe_payload.update(payload or {})
         return self.test_provider(payload=probe_payload)
 
@@ -949,8 +953,8 @@ class SystemConfigService:
         api_key = None
         if credential_mode == "api_key":
             api_key = load_secret_value(llm_provider_api_key_secret_id(provider_id)) or load_secret_value(LLM_API_KEY_SECRET_ID)
-        timeout_value = payload.get("timeout_seconds") or llm_payload.get("timeout_seconds") or 10.0
-        timeout_seconds = _float_value(timeout_value, "timeout_seconds")
+        timeout_value = payload.get("timeout_seconds") or llm_payload.get("timeout_seconds")
+        timeout_seconds = _probe_timeout_seconds(timeout_value, default_seconds=10.0)
         provider_options = dict(provider.get("provider_options") or {})
 
         configured_models = _normalize_provider_model_ids(provider.get("models") or [])
@@ -1377,6 +1381,29 @@ def _parse_yaml_mapping(yaml_raw: str) -> dict[str, Any]:
     return normalized
 
 
+def _api_timeout_seconds(llm: dict[str, Any]) -> float:
+    """解析 llm.timeout_seconds:缺省/0 = 不给生成设上限。
+
+    这里不再默认 30s——那个值从来不是作者选的,却会截断慢模型的长任务。
+    负数仍然拒绝:那是笔误,不是"不限"的写法。
+    """
+    timeout_seconds = _float_value(llm.get("timeout_seconds", 0.0), "llm.timeout_seconds")
+    if timeout_seconds < 0:
+        raise ValueError("llm.timeout_seconds must not be negative (0 = no ceiling)")
+    return timeout_seconds
+
+
+def _probe_timeout_seconds(value: Any, *, default_seconds: float) -> float:
+    """连通性探测始终有限:0(生成不限时)对"测试连接"没有意义,只会让按钮空转。
+
+    探测问的是"这个地址通不通",不是"这个模型写得慢不慢"。
+    """
+    if value is None:
+        return default_seconds
+    timeout_seconds = _float_value(value, "timeout_seconds")
+    return timeout_seconds if timeout_seconds > 0 else default_seconds
+
+
 def _validate_api_config(parsed: dict[str, Any]) -> dict[str, Any]:
     llm = _coerce_api_payload(parsed)
     providers = _provider_payloads_from_llm(llm)
@@ -1385,9 +1412,7 @@ def _validate_api_config(parsed: dict[str, Any]) -> dict[str, Any]:
             provider_id: _normalize_provider_payload({"provider_id": provider_id, **provider_payload})
             for provider_id, provider_payload in providers.items()
         }
-        timeout_seconds = _float_value(llm.get("timeout_seconds", 30.0), "llm.timeout_seconds")
-        if timeout_seconds <= 0:
-            raise ValueError("llm.timeout_seconds must be greater than 0")
+        timeout_seconds = _api_timeout_seconds(llm)
         return {
             "enabled": _bool_value(llm.get("enabled", True)),
             "timeout_seconds": timeout_seconds,
@@ -1403,9 +1428,7 @@ def _validate_api_config(parsed: dict[str, Any]) -> dict[str, Any]:
     if not base_url:
         raise ValueError("llm.base_url is required")
 
-    timeout_seconds = _float_value(llm.get("timeout_seconds", 30.0), "llm.timeout_seconds")
-    if timeout_seconds <= 0:
-        raise ValueError("llm.timeout_seconds must be greater than 0")
+    timeout_seconds = _api_timeout_seconds(llm)
 
     return {
         "provider": provider,
