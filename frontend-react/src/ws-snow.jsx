@@ -661,6 +661,8 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   const [revs, setRevs] = useSS(() => ({ ...Object.fromEntries(S2_STEPS.map(s => [s.key, 0])), ...(saved.revs || {}) }));
   const [confirmRevs, setConfirmRevs] = useSS(() => ({ ...(saved.confirmRevs || {}) }));
   const [history, setHistory] = useSS(() => saved.history || []);
+  const latestRef = useSR();
+  latestRef.current = { drafts, scaffolds, checks, states, revs, confirmRevs, history };
   const sigRef = useSR(null);
   const [savedAt, setSavedAt] = useSS(saved._t || null);
   const snowWorkId = String(myKey || "").split("::")[1] || "";
@@ -729,6 +731,13 @@ function WsSnowflake({ go, initialStep, onOverview }) {
      说「并入 12 章」、实际写 1 章。现在只有一条：预览 → 作者确认 → 一次落库。 */
   const [chapterPlanOpen, setChapterPlanOpen] = useSS(false);
   const openChapterPlan = () => setChapterPlanOpen(true);
+  const goToMaterializationStep = (beKey) => {
+    const pair = S2_BE_STEPS.find(([, candidate]) => candidate === beKey);
+    if (!pair) return;
+    setChapterPlanOpen(false);
+    setActiveKey(pair[0]);
+    setTabFor(pair[0], "edit");
+  };
   const onChapterPlanDone = (result) => {
     setChapterPlanOpen(false);
     const chapters = (result && result.created_chapter_count) || 0;
@@ -1143,9 +1152,26 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     return () => clearTimeout(id);
   }, [drafts, scaffolds, checks, states, revs, confirmRevs, history]);
 
+  /* 下一跳握手：分章预览发来 flush 请求时，不等 450ms 防抖，立即把当前内存态落盘
+     并触发 SnowSync 上行。这样“确认本步 → 立刻整理”不会读取到上一版后端闸门。 */
+  useSE(() => {
+    const onFlushLocal = (event) => {
+      const requestedWorkId = event && event.detail && event.detail.workId;
+      if (requestedWorkId && requestedWorkId !== snowWorkId) return;
+      try {
+        const now = Date.now();
+        localStorage.setItem(myKey, JSON.stringify({ ...latestRef.current, _t: now }));
+        setSavedAt(now);
+        window.dispatchEvent(new CustomEvent("ws:snow-saved", { detail: myKey }));
+      } catch (e) {
+        try { window.SnowSync && window.SnowSync.markLocalFailure && window.SnowSync.markLocalFailure(e, snowWorkId); } catch (ignored) {}
+      }
+    };
+    window.addEventListener("ws:snow-flush-local", onFlushLocal);
+    return () => window.removeEventListener("ws:snow-flush-local", onFlushLocal);
+  }, [myKey, snowWorkId]);
+
   /* flush latest state on unmount (e.g. leaving for 控制塔总览) so the overview reads fresh truth */
-  const latestRef = useSR();
-  latestRef.current = { drafts, scaffolds, checks, states, revs, confirmRevs, history };
   useSE(() => () => {
     try {
       localStorage.setItem(myKey, JSON.stringify({ ...latestRef.current, _t: Date.now() }));
@@ -1510,7 +1536,8 @@ function WsSnowflake({ go, initialStep, onOverview }) {
       )}
 
       {chapterPlanOpen && (
-        <WsChapterPlanPanel onClose={() => setChapterPlanOpen(false)} onDone={onChapterPlanDone} />
+        <WsChapterPlanPanel onClose={() => setChapterPlanOpen(false)} onDone={onChapterPlanDone}
+          onGoToStep={goToMaterializationStep} />
       )}
 
       {toast && (
@@ -2188,6 +2215,11 @@ function S2ChapterOutline({ scaffold, onScaffold, refs }) {
         <WsChapterPlanPanel
           onClose={() => setPlanOpen(false)}
           onDone={(result) => { setPlanOpen(false); setAdopted((result && result.created_chapter_count) || 0); }}
+          onGoToStep={(beKey) => {
+            const pair = S2_BE_STEPS.find(([, candidate]) => candidate === beKey);
+            setPlanOpen(false);
+            if (pair) window.dispatchEvent(new CustomEvent("ws:snow-step", { detail: pair[0] }));
+          }}
         />
       )}
       <div className="sf-scaffold-note">

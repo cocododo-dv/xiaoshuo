@@ -451,6 +451,7 @@ async function snowHydrate(workId, opts) {
   // 全量 re-push。否则新会话 lastPushed 为空 → snowPushKey 全量上行：后端 update_step 对非 pending_review
   // 步走 else 分支新建 pending_review 版本，把「已确认」步静默打回待审，并产生无谓写/approve 噪声。
   // 注意：仅 seed 从后端水合到内容的步骤；本地新增、后端尚无的步骤不 seed，照常上行（不丢失）。
+  let approvalRetryNeeded = false;
   try {
     const mine = lastPushed[workId] || (lastPushed[workId] = {});
     const hydratedKeys = new Set([
@@ -458,15 +459,31 @@ async function snowHydrate(workId, opts) {
     ]);
     hydratedKeys.forEach(feKey => {
       const frag = buildStepFragment(feKey, remote, workId);
-      mine[feKey] = { sig: stepSig(frag), state: frag.fe_state };
+      const approvalPending = frag.fe_state === "done"
+        && ((health[feKey] || {}).beStatus === "pending_review");
+      mine[feKey] = {
+        sig: stepSig(frag),
+        state: frag.fe_state,
+        // 本机的 done 是“作者希望确认”，服务端 pending_review 才是权威未批状态。
+        // 两者签名完全相同时也必须保留待批准账，否则新会话永远不会再发 approve。
+        approvalPending,
+      };
+      approvalRetryNeeded = approvalRetryNeeded || approvalPending;
     });
   } catch (e) {}
   const key = snowCacheKey(workId);
   let local = null;
   try { local = JSON.parse(localStorage.getItem(key)); } catch (e) {}
-  if (local && (local._t || 0) >= remote._t) return; // 本地不旧于服务端：本地为准
+  if (local && (local._t || 0) >= remote._t) {
+    // 水合本身就发现“本机已确认、服务端仍待审”时主动补批，不再依赖视图恰好
+    // 触发一次 autosave 或作者手点重试。尤其是十步草稿预先导入的场景，若只补第 1 步，
+    // UI 会误报“服务器已同步”，真正的物化闸门却仍卡在第 2 步。
+    if (approvalRetryNeeded) schedulePush(key);
+    return; // 本地不旧于服务端：本地为准
+  }
   try { localStorage.setItem(key, JSON.stringify(remote)); } catch (e) {}
   try { window.dispatchEvent(new CustomEvent("ws:snow-hydrated", { detail: workId })); } catch (e) {}
+  if (approvalRetryNeeded) schedulePush(key);
 }
 
 /* ---------- 上行 ---------- */
@@ -503,14 +520,22 @@ async function snowPushKey(cacheKey) {
     if (prev.sig !== sig) {
       try {
         const patched = await apiPatch(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}`, { draft: fragment, force: true });
-        mine[feKey] = { sig, state: fragment.fe_state, approvalPending: false };
+        const patchedStatus = patched && patched.step && patched.step.status;
+        const approvalPending = fragment.fe_state === "done"
+          && patchedStatus !== "approved"
+          && patchedStatus !== "skipped";
+        mine[feKey] = { sig, state: fragment.fe_state, approvalPending };
         if (feKey === "scenes" || feKey === "planning") pushedSceneish = true;
         // update_step 回包带最新 step.health/completeness → 增量刷新后端权威评估（无需再拉全量）
         if (patched && patched.step) {
           // 服务端把 draft 过了模板归一化（可能补齐空模板键）——刷新 canon 镜像并
           // 用新镜像重算 sig 记账，否则下轮 save 会因归一化差异多推一次空转 PATCH
           (snowCanon[workId] || (snowCanon[workId] = {}))[feKey] = stripFe(patched.step.draft || {});
-          mine[feKey] = { sig: stepSig(buildStepFragment(feKey, saved, workId)), state: fragment.fe_state, approvalPending: false };
+          mine[feKey] = {
+            sig: stepSig(buildStepFragment(feKey, saved, workId)),
+            state: fragment.fe_state,
+            approvalPending,
+          };
           (snowHealth[workId] || (snowHealth[workId] = {}))[feKey] = shapeStepHealth(patched.step);
           window.dispatchEvent(new CustomEvent("ws:snow-health", { detail: workId }));
         }
@@ -526,10 +551,12 @@ async function snowPushKey(cacheKey) {
       }
     }
 
-    // 仅在「本会话内已观测到非 done 前态 → done」的真实跃迁时补 approve；
+    // PATCH 回包的服务端状态优先：本机首次载入时已经是 done，也必须把 pending_review
+    // 补批准；不能只依赖“本会话观察到 active → done”，否则离线/刷新后的完成态会永久卡住。
     // 批准失败会写 approvalPending，重试时即使 PATCH 已成功也会再次批准。
+    const currentLedger = mine[feKey] || prev;
     const shouldApprove = fragment.fe_state === "done"
-      && ((prev.state && prev.state !== "done") || prev.approvalPending === true);
+      && (currentLedger.approvalPending === true || (prev.state && prev.state !== "done"));
     if (!shouldApprove) continue;
     try {
       const appr = await apiPost(`/api/v2/projects/${workId}/snowflake-workspace/steps/${beKey}/approve`, {});
@@ -583,6 +610,44 @@ function schedulePush(cacheKey) {
     pendingKeys = new Set();
     keys.forEach(k => { pushChain = pushChain.then(() => snowPushKey(k)).catch(() => {}); });
   }, 700);
+}
+
+/* 分章预览/物化是雪花流程的下一跳，必须先排空 450ms 本机保存 + 700ms 上行防抖。
+   否则作者刚点“确认本步”就点“整理”，预览会抢在 PATCH/approve 前读到旧闸门。 */
+async function flushSnowPush(workId) {
+  const id = workId || activeWork();
+  if (!id) return readSnowSyncState(id);
+  const key = snowCacheKey(id);
+  // 先向仍挂载的雪花视图要一份“此刻内存态”的同步落盘，跨过视图自身 450ms 的
+  // localStorage 防抖。事件是同步分发的；视图写完会立刻发 ws:snow-saved，把 key
+  // 放进下面要排空的队列。作者页直达等没有雪花视图的场景则只排已有队列。
+  try {
+    window.dispatchEvent(new CustomEvent("ws:snow-flush-local", { detail: { workId: id } }));
+  } catch (e) {}
+  if (pendingKeys.has(key)) {
+    pendingKeys.delete(key);
+    if (!pendingKeys.size) {
+      clearTimeout(pushTimer);
+      pushTimer = null;
+    }
+    pushChain = pushChain.catch(() => {}).then(() => snowPushKey(key));
+  }
+  await pushChain.catch(() => {});
+  return readSnowSyncState(id);
+}
+
+async function attachMaterializationGate(result, workId) {
+  try {
+    const workspace = await apiGet(`/api/v2/projects/${workId}/snowflake-workspace`);
+    snowReadyFlags[workId] = !!(workspace && workspace.ready_to_materialize);
+    captureResync(workId, workspace);
+    captureChapterStatus(workId, workspace);
+    return { ...(result || {}), materialization_gate: (workspace && workspace.materialization_gate) || null };
+  } catch (error) {
+    // 预览本身已经成功时，不因第二次只读检查失败而抹掉方案；最终 materialize 仍会
+    // 由后端权威闸门把关，并把最新 details 回给面板。
+    return { ...(result || {}), materialization_gate: null };
+  }
 }
 
 const previousGlobalHandlers = window.__snowSyncGlobalHandlers;
@@ -774,14 +839,18 @@ const SnowSync = {
   /* 分章预览：只读推演，不落库。strategy = spine_anchor（默认，脊柱锚点）/ even / keep_current。 */
   async chapterPreview(strategy, workId) {
     const id = workId || activeWork();
-    return apiPost(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan/preview`, strategy ? { strategy } : {});
+    await flushSnowPush(id);
+    const preview = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan/preview`, strategy ? { strategy } : {});
+    return attachMaterializationGate(preview, id);
   },
   /* 让 AI 给一份分章建议（只读，不落库）。fail-closed：LLM 没配好会 409 上抛，
      调用方如实提示去配置 —— 绝不拿规则算出来的东西冒充 AI 建议。 */
   async chapterSuggest(baseStrategy, workId) {
     const id = workId || activeWork();
-    return apiPost(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan/suggest`,
+    await flushSnowPush(id);
+    const suggestion = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/chapter-plan/suggest`,
       baseStrategy ? { base_strategy: baseStrategy } : {});
+    return attachMaterializationGate(suggestion, id);
   },
   /* 处置孤儿场：action = "discard"（正文一并进回收站）/ "keep"（正文留在目录里）。
      孤儿场 = 作者从 09 删掉、但目录里已经有场景卡（可能已写正文）的那些场。它们是
@@ -808,6 +877,7 @@ const SnowSync = {
      必须两步都走，否则目录为空却谎称「已并入 N 章」。返回真实 created_chapter_count。 */
   async materialize(workId, plan) {
     const id = workId || activeWork();
+    await flushSnowPush(id);
     const data = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/materialize`, plan || {});
     const approved = await apiPost(`/api/v2/projects/${id}/snowflake-workspace/outline/approve`, {});
     try { if (WsCatalog && WsCatalog.reset) WsCatalog.reset(); } catch (e) {}

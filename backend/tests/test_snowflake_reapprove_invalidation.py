@@ -200,3 +200,83 @@ def test_repatch_identical_approved_draft_does_not_revert(client, session):
     ).scalars().first()
     assert latest.status == "approved", f"identical re-PATCH 把已批准步打回了 {latest.status}"
     assert latest.version == approved_version, "identical re-PATCH 不应新建版本"
+
+
+def test_repatch_only_frontend_cache_metadata_keeps_approval_chain(client, session):
+    """雪花原型把跨会话 UI 账本寄存在 ``fe_*`` 字段里。确认任意后续步骤都会更新
+    ``book_brief.fe_meta`` / ``fe_t``；这些缓存元数据不是故事内容，不能让第 1 步重新待审，
+    更不能把已经批准的下游九步全部打成 stale。"""
+    from sqlalchemy import select
+    from novel_system.db.models import SnowflakeStepRun
+
+    project = _create_project(client, "frontend-cache-metadata")
+    pid = project["project_id"]
+    for step_key in ("book_brief", "one_sentence_summary"):
+        _generate(client, pid, step_key)
+        assert _approve(client, pid, step_key).status_code == 200
+
+    first = session.execute(
+        select(SnowflakeStepRun).where(
+            SnowflakeStepRun.project_id == pid,
+            SnowflakeStepRun.step_key == "book_brief",
+            SnowflakeStepRun.status == "approved",
+        )
+    ).scalars().one()
+    approved_version = first.version
+    metadata_only = {
+        **dict(first.draft_json or {}),
+        "fe_t": 1_777_777,
+        "fe_meta": {
+            "revs": {"one_sentence_summary": 1},
+            "confirmRevs": {"one_sentence_summary": 1},
+            "history": [{"t": 1_777_777, "action": "确认", "key": "logline"}],
+        },
+    }
+
+    patched = client.patch(
+        f"/api/v2/projects/{pid}/snowflake-workspace/steps/book_brief",
+        json={"draft": metadata_only},
+    )
+    assert patched.status_code == 200, patched.text
+    # 前端照常补发 approve；元数据 PATCH 若保持原批准态，这个调用应天然幂等。
+    approved = client.post(
+        f"/api/v2/projects/{pid}/snowflake-workspace/steps/book_brief/approve",
+        json={},
+        headers={"X-Idempotency-Key": f"qa3-reappr-fe-meta-approve-{pid}"},
+    )
+    assert approved.status_code == 200, approved.text
+
+    session.expire_all()
+    latest = session.execute(
+        select(SnowflakeStepRun)
+        .where(SnowflakeStepRun.project_id == pid, SnowflakeStepRun.step_key == "book_brief")
+        .order_by(SnowflakeStepRun.version.desc())
+    ).scalars().first()
+    downstream = session.execute(
+        select(SnowflakeStepRun)
+        .where(SnowflakeStepRun.project_id == pid, SnowflakeStepRun.step_key == "one_sentence_summary")
+        .order_by(SnowflakeStepRun.version.desc())
+    ).scalars().first()
+    assert latest.status == "approved"
+    assert latest.version == approved_version, "只改 fe_* 缓存元数据不应制造故事内容新版本"
+    assert latest.draft_json["fe_meta"] == metadata_only["fe_meta"], "跨会话 UI 账本仍需写穿保存"
+    assert downstream.status == "approved", "缓存元数据变化不应让下游故事步骤失效"
+
+
+def test_first_upstream_approval_keeps_existing_downstream_draft_approvable(client):
+    """导入/旧缓存可以先把十步草稿全部存成待审，再由前端按顺序补批准。
+    第一次批准上游并不是内容修订，不应把已有下游待审稿误判成 stale。"""
+    project = _create_project(client, "first-approval-chain")
+    pid = project["project_id"]
+    _generate(client, pid, "book_brief")
+    _generate(client, pid, "one_sentence_summary")
+
+    first = _approve(client, pid, "book_brief")
+    assert first.status_code == 200, first.text
+    workspace = first.json()["data"]["workspace"]
+    downstream = next(step for step in workspace["steps"] if step["step_key"] == "one_sentence_summary")
+    assert downstream["status"] == "pending_review"
+
+    second = _approve(client, pid, "one_sentence_summary")
+    assert second.status_code == 200, second.text
+    assert second.json()["data"]["step"]["status"] == "approved"

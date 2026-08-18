@@ -76,14 +76,25 @@ def _sig(value: Any) -> str:
     return hashlib.sha256(stable_json(value).encode("utf-8")).hexdigest()[:16]
 
 
+def semantic_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """剥掉前端写穿缓存字段，只保留会改变故事含义的步骤内容。
+
+    ``fe_text`` / ``fe_scaffold`` 是规范字段的前端镜像，``fe_state`` / ``fe_t`` /
+    ``fe_meta`` 是本地状态与跨会话 UI 账本。它们需要随草稿保存，但不能制造故事版本、
+    也不能触发下游雪花步骤失效。
+    """
+    data = payload if isinstance(payload, dict) else {}
+    return {key: value for key, value in data.items() if not str(key).startswith("fe_")}
+
+
 def content_sig(payload: dict[str, Any] | None) -> str:
-    """整份 payload 的内容签名（依赖边级判定用）。"""
-    return _sig(payload or {})
+    """故事内容签名（依赖边级判定用；忽略 ``fe_*`` 写穿缓存）。"""
+    return _sig(semantic_payload(payload))
 
 
 def field_sigs(payload: dict[str, Any] | None) -> dict[str, str]:
-    """逐顶层字段的内容签名——支持字段级 diff，又不必存整份旧 payload。"""
-    data = payload if isinstance(payload, dict) else {}
+    """逐顶层故事字段的内容签名——支持字段级 diff，又不必存整份旧 payload。"""
+    data = semantic_payload(payload)
     return {key: _sig(value) for key, value in data.items()}
 
 

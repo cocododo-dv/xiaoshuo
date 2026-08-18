@@ -51,4 +51,12 @@ describe("生产构建业务域分块", () => {
     expect(app).toContain("<ViewReady view={view}>");
     expect(app).not.toMatch(/setTimeout\([^\n]+dispatchEvent/);
   });
+
+  it("雪花与作者路由会同时装配 SnowSync，不能只把同步模块留在源码里", () => {
+    const srcRoot = path.dirname(fileURLToPath(import.meta.url));
+    const app = fs.readFileSync(path.join(srcRoot, "ws-app.jsx"), "utf8");
+    expect(app).toContain('import("./ws-snow-sync.jsx")');
+    expect(app).toMatch(/LazyWsConstruct\s*=\s*lazySnowNamed/);
+    expect(app).toMatch(/LazyWsAuthor\s*=\s*lazySnowNamed/);
+  });
 });

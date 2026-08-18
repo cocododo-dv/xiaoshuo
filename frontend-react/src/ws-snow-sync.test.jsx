@@ -369,6 +369,144 @@ describe("SnowSync（规范字段保真合并 + 结构化采纳接缝）", () =>
     await vi.waitFor(() => expect(mod.SnowSync.resyncStatus("prj-main").pendingCount).toBe(1), T);
   });
 
+  it("本机首次出现时已经是 done：分章预览先完成 PATCH + approve，再读取预览与物化闸门", async () => {
+    const gate = {
+      status: "ready", blockers: [], warnings: [], items: [],
+    };
+    const { mod, client } = await loadSync({
+      snowflakeWorkspace: {
+        ready_to_materialize: true,
+        current_step_key: "book_brief",
+        steps: [],
+        materialization_gate: gate,
+      },
+    });
+    const order = [];
+    client.apiPatch.mockImplementation(async (url, body) => {
+      order.push("patch");
+      return { step: { status: "pending_review", draft: body.draft, health: {}, completeness: {} } };
+    });
+    client.apiPost.mockImplementation(async (url) => {
+      if (String(url).endsWith("/chapter-plan/preview")) {
+        order.push("preview");
+        return { strategy: "spine_anchor", chapters: [], unassigned: [], warnings: [] };
+      }
+      if (String(url).endsWith("/steps/book_brief/approve")) {
+        order.push("approve");
+        return { step: { status: "approved", draft: {}, health: {}, completeness: {} } };
+      }
+      return {};
+    });
+
+    const cache = {
+      drafts: {},
+      scaffolds: { audience: { genre: "悬疑", reader: "成年读者", pleasure: "追索", source: "旧案", exclude: "不猎奇", emotion: "压迫" } },
+      checks: {}, states: { audience: "done" }, revs: {}, confirmRevs: {}, history: [],
+    };
+    const flushLocal = () => saveCache(cache);
+    window.addEventListener("ws:snow-flush-local", flushLocal);
+
+    let preview;
+    try {
+      preview = await mod.SnowSync.chapterPreview("spine_anchor", "prj-main");
+    } finally {
+      window.removeEventListener("ws:snow-flush-local", flushLocal);
+    }
+    const firstPatch = order.indexOf("patch");
+    const approve = order.indexOf("approve");
+    const previewCall = order.indexOf("preview");
+    expect(firstPatch).toBeGreaterThanOrEqual(0);
+    expect(approve).toBeGreaterThan(firstPatch);
+    expect(previewCall).toBeGreaterThan(approve);
+    expect(preview.materialization_gate).toEqual(gate);
+  });
+
+  it("水合发现服务端仍是 pending_review：即使本机签名没有变化也会补 approve", async () => {
+    const scaffold = {
+      genre: "悬疑", reader: "成年读者", pleasure: "追索", source: "旧案", exclude: "不猎奇", emotion: "压迫",
+    };
+    const cache = {
+      drafts: {}, scaffolds: { audience: scaffold }, checks: {}, states: { audience: "done" },
+      revs: {}, confirmRevs: {}, history: [],
+    };
+    window.localStorage.setItem(CACHE_KEY, JSON.stringify({ _t: Date.now() + 10_000, ...cache }));
+    const { mod, client } = await loadSync({
+      snowflakeWorkspace: {
+        ready_to_materialize: false,
+        current_step_key: "book_brief",
+        steps: [{
+          step_key: "book_brief",
+          status: "pending_review",
+          gate_satisfied: false,
+          draft: {
+            category: scaffold.genre,
+            target_reader: scaffold.reader,
+            delight_reason: scaffold.pleasure,
+            story_kind: scaffold.source,
+            genre_promise: scaffold.exclude,
+            expected_reader_emotion: scaffold.emotion,
+            fe_text: "",
+            fe_scaffold: scaffold,
+            fe_checks: [],
+            fe_state: "done",
+            fe_t: 1,
+            fe_meta: { revs: {}, confirmRevs: {}, history: [] },
+          },
+          health: {}, completeness: {},
+        }],
+      },
+    });
+    client.apiPost.mockResolvedValue({ step: { status: "approved", draft: {}, health: {}, completeness: {} } });
+    await vi.waitFor(() => expect((mod.SnowSync.health("prj-main").audience || {}).beStatus).toBe("pending_review"), T);
+
+    saveCache(cache);
+
+    await vi.waitFor(
+      () => expect(client.apiPost.mock.calls.some(([url]) => String(url).endsWith("/steps/book_brief/approve"))).toBe(true),
+      T,
+    );
+  });
+
+  it("十步待审稿都已在本机确认：水合后自动按依赖顺序补齐全部 approve", async () => {
+    const pairs = [
+      ["audience", "book_brief"], ["logline", "one_sentence_summary"], ["paragraph", "one_paragraph_summary"],
+      ["characters", "character_sheets"], ["synopsis", "short_synopsis"], ["backstory", "character_synopses"],
+      ["outline", "long_synopsis"], ["profile", "character_bibles"], ["scenes", "scene_list"], ["planning", "scene_details"],
+    ];
+    const remoteSteps = pairs.map(([, beKey]) => ({
+      step_key: beKey,
+      status: "pending_review",
+      gate_satisfied: false,
+      draft: { fe_state: "done", fe_t: 9_999_999_999_999 },
+      health: {}, completeness: {},
+    }));
+    const { mod, client } = await loadSync({
+      snowflakeWorkspace: {
+        ready_to_materialize: false,
+        current_step_key: "book_brief",
+        steps: remoteSteps,
+      },
+    });
+    client.apiPost.mockImplementation(async (url) => {
+      const beKey = String(url).split("/steps/")[1]?.split("/approve")[0];
+      return beKey ? { step: { step_key: beKey, status: "approved", draft: {}, health: {}, completeness: {} } } : {};
+    });
+    await vi.waitFor(() => expect((mod.SnowSync.health("prj-main").planning || {}).beStatus).toBe("pending_review"), T);
+
+    await vi.waitFor(() => {
+      const count = client.apiPost.mock.calls.filter(([url]) => String(url).endsWith("/approve")).length;
+      expect(count).toBe(10);
+    }, T);
+    const approvals = client.apiPost.mock.calls.map(([url]) => String(url))
+      .filter((url) => url.endsWith("/approve"))
+      .map((url) => url.split("/steps/")[1].split("/approve")[0]);
+    expect(approvals).toEqual(pairs.map(([, beKey]) => beKey));
+    await vi.waitFor(
+      () => expect(mod.SnowSync.syncState("prj-main")).toMatchObject({ phase: "synced", error: null }),
+      T,
+    );
+  });
+
   it("断网导致 PATCH 失败：状态明确停在“仅本机”，重试成功后才标服务器已同步", async () => {
     const { mod, client } = await loadSync({ snowflakeWorkspace: { ready_to_materialize: false, current_step_key: "book_brief", steps: [] } });
     Object.defineProperty(window.navigator, "onLine", { configurable: true, value: false });

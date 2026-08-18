@@ -39,6 +39,7 @@ from novel_system.services.snowflake_planner import (
 from novel_system.services.snowflake_staleness import (
     field_sigs,
     recompute_stale,
+    semantic_payload,
     snapshot_consumed_sigs,
 )
 from novel_system.services.snowflake_steps import (
@@ -314,10 +315,15 @@ class SnowflakeWorkspaceService:
         draft = merge_step_draft(step_key, body.get("draft") or {}, latest_by_step=latest_by_step)
         latest = latest_by_step.get(step_key)
 
-        # 防 BUG-2 静默回退：对已批准/已跳过的步，若 PATCH 进来的草稿与现存完全一致（前端无谓 re-push，
-        # 内容未变），不新建 pending_review 版本——否则会把「已确认」步悄悄打回待审。内容确有变更时
-        # 仍走下面的新建版本分支（编辑已批准内容理应重新审核）。
-        if latest is not None and latest.status in {"approved", "skipped"} and (draft or {}) == (latest.draft_json or {}):
+        # 防静默回退：已批准/已跳过步骤收到无故事含义的 re-PATCH 时保持原状态与版本。
+        # ``fe_*`` 是前端写穿缓存（其中 book_brief.fe_meta 会在确认任何后续步骤时变化）；
+        # 若把它当故事修订，就会把第 1 步重新打回待审，并连锁 staling 全部下游。
+        # 元数据仍原位写入，保证跨会话 UI 账本不丢；规范故事字段确有变化时才新建待审版本。
+        same_semantic_draft = latest is not None and semantic_payload(draft) == semantic_payload(latest.draft_json)
+        if latest is not None and latest.status in {"approved", "skipped"} and same_semantic_draft:
+            if (draft or {}) != (latest.draft_json or {}):
+                latest.draft_json = draft
+                self.session.flush()
             workspace = self.workspace(project.project_id)
             return {
                 "step": self._step_from_workspace(workspace, step_key),
@@ -493,7 +499,21 @@ class SnowflakeWorkspaceService:
             latest_by_step, list(self._input_refs(step_key, latest_by_step).keys())
         )
         self._sync_structured_step_data(project, step_key, run.draft_json or {}, run, approved=True)
-        downstream_impact = self._mark_downstream_stale(run)
+        # 第一次批准只是把同一份待审稿转为 approved，并没有发生上游“修订”。
+        # 导入/旧缓存可能已经把后续十步全部存成 pending_review；此时若按缺快照规则
+        # 全部置 stale，前端就永远无法按依赖顺序补批准。只有存在上一版 approved run
+        #（真正的重新批准）时，才计算并落地下游失效。
+        downstream_impact = (
+            self._mark_downstream_stale(run)
+            if previous_run is not None
+            else {
+                "step_key": step_key,
+                "affected_count": 0,
+                "affected_step_run_ids": [],
+                "affected_scene_plan_ids": [],
+                "summary": "首次批准没有下游失效范围。",
+            }
+        )
         runtime_impact = (
             ProjectRuntimeInvalidationService(self.session).invalidate_for_snowflake_step(
                 project.project_id,

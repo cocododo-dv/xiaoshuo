@@ -132,24 +132,42 @@ export function moveSceneToChapter(draft, from, sceneIndex, to) {
   return next;
 }
 
-export function WsChapterPlanPanel({ onClose, onDone }) {
+export function WsChapterPlanPanel({ onClose, onDone, onGoToStep }) {
   const [busy, setBusy] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState("");
   const [draft, setDraft] = React.useState(null);
+  const [materializationGate, setMaterializationGate] = React.useState(null);
+  const previewRequestRef = React.useRef(null);
 
-  const load = React.useCallback(async (strategy) => {
-    setBusy(true);
-    setError("");
-    try {
-      const preview = await window.SnowSync.chapterPreview(strategy);
-      setDraft(shapeDraft(preview));
-    } catch (e) {
-      setError((e && e.message) || "无法生成分章预览，请稍后重试。");
-      setDraft(null);
-    } finally {
-      setBusy(false);
-    }
+  const load = React.useCallback((strategy) => {
+    const inflight = previewRequestRef.current;
+    if (inflight && inflight.strategy === strategy) return inflight.promise;
+    const promise = (async () => {
+      setBusy(true);
+      setError("");
+      try {
+        if (!window.SnowSync || typeof window.SnowSync.chapterPreview !== "function") {
+          throw new Error("雪花同步模块尚未就绪，请刷新页面后重试。");
+        }
+        const preview = await window.SnowSync.chapterPreview(strategy);
+        setDraft(shapeDraft(preview));
+        setMaterializationGate((preview && preview.materialization_gate) || null);
+      } catch (e) {
+        setError((e && e.message) || "无法生成分章预览，请稍后重试。");
+        setDraft(null);
+        setMaterializationGate(null);
+      } finally {
+        setBusy(false);
+      }
+    })();
+    previewRequestRef.current = { strategy, promise };
+    promise.finally(() => {
+      if (previewRequestRef.current && previewRequestRef.current.promise === promise) {
+        previewRequestRef.current = null;
+      }
+    });
+    return promise;
   }, []);
 
   /* 处置孤儿场（作者从 09 删掉、但目录里已有场景卡的那些场）。处置完必须重拉预览：
@@ -176,7 +194,12 @@ export function WsChapterPlanPanel({ onClose, onDone }) {
     setSuggesting(true);
     setError("");
     try {
-      setDraft(shapeDraft(await window.SnowSync.chapterSuggest(draft ? draft.strategy : "spine_anchor")));
+      if (!window.SnowSync || typeof window.SnowSync.chapterSuggest !== "function") {
+        throw new Error("AI 分章能力尚未就绪，请刷新页面后重试。");
+      }
+      const suggestion = await window.SnowSync.chapterSuggest(draft ? draft.strategy : "spine_anchor");
+      setDraft(shapeDraft(suggestion));
+      setMaterializationGate((suggestion && suggestion.materialization_gate) || null);
     } catch (e) {
       setError((e && e.message) || "AI 分章建议不可用，请检查模型配置后重试。");
     } finally {
@@ -196,17 +219,47 @@ export function WsChapterPlanPanel({ onClose, onDone }) {
   const advisories = ((draft && draft.warnings) || []).filter(w => w.severity !== "blocker");
   const sceneTotal = draft ? draft.chapters.reduce((n, c) => n + c.scenes.length, 0) : 0;
   const chapterTotal = draft ? draft.chapters.filter(c => c.scenes.length).length : 0;
-  const canConfirm = !!draft && !busy && !saving && !blockers.length && !draft.unassigned.length && sceneTotal > 0;
+  const rawGateItems = Array.isArray(materializationGate && materializationGate.items)
+    ? materializationGate.items
+    : [];
+  /* workspace 的当前真相在确认前必然可能含 chapter_plan_required；当前预览已经提供完整
+     chapters + assignments 时，这一项会在 materialize 同一事务先被满足，不能反过来把
+     “确认分章”按钮锁死。其他步骤/分诊阻断仍必须提前展示。 */
+  const gateItems = rawGateItems.filter(item => !(
+    item && item.kind === "chapter_plan_required"
+    && draft && !draft.unassigned.length && chapterTotal > 0 && sceneTotal > 0
+  ));
+  const gateBlockers = gateItems.filter(item => item && item.severity === "blocker");
+  const gateAdvisories = gateItems.filter(item => item && item.severity !== "blocker");
+  const canConfirm = !!draft && !busy && !saving && !blockers.length && !gateBlockers.length
+    && !draft.unassigned.length && sceneTotal > 0;
+
+  const goToGateItem = (item) => {
+    const stepKey = (item && item.step_key)
+      || (item && item.primary_action && item.primary_action.step_key);
+    if (!stepKey || typeof onGoToStep !== "function") return;
+    onGoToStep(stepKey);
+    onClose();
+  };
 
   const confirm = async () => {
     if (!canConfirm) return;
     setSaving(true);
     setError("");
     try {
+      if (!window.SnowSync || typeof window.SnowSync.materialize !== "function") {
+        throw new Error("雪花同步模块尚未就绪，请刷新页面后重试。");
+      }
       const result = await window.SnowSync.materialize(null, buildChapterPlanPayload(draft));
       onDone(result);
     } catch (e) {
-      setError((e && e.message) || "写入章节结构失败，请稍后重试。");
+      const freshGate = e && e.details && e.details.materialization_gate;
+      if (freshGate) {
+        setMaterializationGate(freshGate);
+        setError("还有整理前检查没有通过；请按下面的阻断项处理后重试。");
+      } else {
+        setError((e && e.message) || "写入章节结构失败，请稍后重试。");
+      }
       setSaving(false);
     }
   };
@@ -267,7 +320,7 @@ export function WsChapterPlanPanel({ onClose, onDone }) {
         )}
 
         {busy && <div className="sf-chapterplan-empty">正在推演分章…</div>}
-        {!busy && error && !draft && <div className="sf-chapterplan-empty tone-rose">{error}</div>}
+        {!busy && error && !draft && <div className="sf-chapterplan-empty tone-rose" role="alert">{error}</div>}
 
         {!busy && draft && (
           <>
@@ -339,7 +392,7 @@ export function WsChapterPlanPanel({ onClose, onDone }) {
               )}
             </div>
 
-            {(blockers.length || advisories.length || draft.unassigned.length) ? (
+            {(blockers.length || advisories.length || gateItems.length || draft.unassigned.length) ? (
               <div className="sf-chapterplan-warnings" data-testid="chapter-plan-warnings">
                 {blockers.map((w, i) => (
                   <div key={`b${i}`} className="sf-chapterplan-warn tone-rose">
@@ -370,10 +423,28 @@ export function WsChapterPlanPanel({ onClose, onDone }) {
                     <I.AlertTriangle size={12} /> {w.message}
                   </div>
                 ))}
+                {gateBlockers.map((item, i) => (
+                  <div key={item.id || `gb${i}`} className="sf-chapterplan-warn tone-rose" role="alert"
+                    data-testid="materialization-gate-blocker">
+                    <I.AlertTriangle size={12} /> {item.message}
+                    {typeof onGoToStep === "function" && item.step_key ? (
+                      <span className="sf-chapterplan-warn-actions">
+                        <button className="btn btn-quiet btn-xs" onClick={() => goToGateItem(item)}>
+                          {(item.primary_action && item.primary_action.label) || "去补这一步"}
+                        </button>
+                      </span>
+                    ) : null}
+                  </div>
+                ))}
+                {gateAdvisories.map((item, i) => (
+                  <div key={item.id || `gw${i}`} className="sf-chapterplan-warn tone-gold">
+                    <I.AlertTriangle size={12} /> {item.message}
+                  </div>
+                ))}
               </div>
             ) : null}
 
-            {error && <div className="sf-chapterplan-warn tone-rose">{error}</div>}
+            {error && <div className="sf-chapterplan-warn tone-rose" role="alert">{error}</div>}
 
             <footer className="sf-sd-foot">
               <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={saving}>取消</button>

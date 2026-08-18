@@ -1,6 +1,43 @@
-import { describe, expect, it } from "vitest";
+import React, { act } from "react";
+import { createRoot } from "react-dom/client";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { buildChapterPlanPayload, chapterActRuns, moveSceneToChapter, rhythmSummary } from "./ws-snow-chapters.jsx";
+import { WsChapterPlanPanel, buildChapterPlanPayload, chapterActRuns, moveSceneToChapter, rhythmSummary } from "./ws-snow-chapters.jsx";
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+const mounted = [];
+
+async function renderPanel(props = {}, options = {}) {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  mounted.push({ root, host });
+  const panel = <WsChapterPlanPanel onClose={vi.fn()} onDone={vi.fn()} {...props} />;
+  await act(async () => root.render(options.strict ? <React.StrictMode>{panel}</React.StrictMode> : panel));
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  return host;
+}
+
+afterEach(async () => {
+  while (mounted.length) {
+    const { root, host } = mounted.pop();
+    await act(async () => root.unmount());
+    host.remove();
+  }
+  vi.restoreAllMocks();
+  try { delete window.SnowSync; } catch (e) {}
+});
+
+const panelPreview = (gate = null) => ({
+  strategy: "spine_anchor",
+  chapters: [{
+    row_uid: "c1", chapter_seq: 1, act: 1, title: "雨夜来信", spine: "灾一", chapter_goal: "逼主角回乡",
+    scenes: [{ scene_plan_id: "sp1", title: "旧信抵达", primary_form: "proactive", spine: "灾一", anchored: true, planned: true }],
+  }],
+  unassigned: [], warnings: [],
+  materialization_gate: gate,
+});
 
 /* 分章面板的纯逻辑：本地态编辑 → 提交载荷。
    面板的全部价值在于「按下确认之前就看得见会得到什么」，所以这里守的是
@@ -173,5 +210,93 @@ describe("分章面板 · 幕分段", () => {
   it("空章表不产出任何段", () => {
     expect(chapterActRuns([])).toEqual([]);
     expect(chapterActRuns(null)).toEqual([]);
+  });
+});
+
+describe("分章面板 · 物化闸门衔接", () => {
+  it("StrictMode 重放挂载副作用时复用同一预览请求，不触发幂等在途冲突", async () => {
+    window.SnowSync = {
+      chapterPreview: vi.fn(async () => {
+        await new Promise(resolve => setTimeout(resolve, 20));
+        return panelPreview({ status: "ready", blockers: [], warnings: [], items: [] });
+      }),
+    };
+
+    const host = await renderPanel({}, { strict: true });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+
+    expect(window.SnowSync.chapterPreview).toHaveBeenCalledTimes(1);
+    expect(host.textContent).not.toContain("同一请求");
+    expect(host.querySelector('[data-testid="chapter-plan-confirm"]')).toBeTruthy();
+  });
+
+  it("预览返回必修阻断时禁用确认，并提供回到具体雪花步骤的动作", async () => {
+    const onGoToStep = vi.fn();
+    window.SnowSync = {
+      chapterPreview: vi.fn(async () => panelPreview({
+        status: "blocked",
+        blockers: ["场景细化需要先确认。"],
+        warnings: [],
+        items: [{
+          id: "blocker:unapproved_required_step:scene_details",
+          severity: "blocker",
+          kind: "unapproved_required_step",
+          message: "场景细化需要先确认，才能整理章节结构。",
+          step_key: "scene_details",
+          primary_action: { type: "jump_to_step", label: "去补这一步", step_key: "scene_details" },
+        }],
+      })),
+    };
+
+    const host = await renderPanel({ onGoToStep });
+    const confirm = host.querySelector('[data-testid="chapter-plan-confirm"]');
+    expect(confirm.disabled).toBe(true);
+    expect(host.textContent).toContain("场景细化需要先确认，才能整理章节结构。");
+    const jump = [...host.querySelectorAll("button")].find(button => button.textContent.includes("去补这一步"));
+    expect(jump).toBeTruthy();
+    await act(async () => jump.click());
+    expect(onGoToStep).toHaveBeenCalledWith("scene_details");
+  });
+
+  it("确认时后端返回更新后的闸门详情：保留预览并把具体阻断项转成可操作提示", async () => {
+    const error = Object.assign(new Error("雪花工作台还没有通过整理前的检查。"), {
+      code: "SNOWFLAKE_NOT_READY",
+      details: {
+        materialization_gate: {
+          status: "blocked",
+          blockers: ["场景清单需要先确认。"],
+          warnings: [],
+          items: [{
+            id: "blocker:unapproved_required_step:scene_list",
+            severity: "blocker",
+            kind: "unapproved_required_step",
+            message: "场景清单需要先确认，才能整理章节结构。",
+            step_key: "scene_list",
+            primary_action: { type: "jump_to_step", label: "去补这一步", step_key: "scene_list" },
+          }],
+        },
+      },
+    });
+    window.SnowSync = {
+      chapterPreview: vi.fn(async () => panelPreview({ status: "ready", blockers: [], warnings: [], items: [] })),
+      materialize: vi.fn(async () => { throw error; }),
+    };
+
+    const host = await renderPanel();
+    const confirm = host.querySelector('[data-testid="chapter-plan-confirm"]');
+    expect(confirm.disabled).toBe(false);
+    await act(async () => confirm.click());
+
+    expect(host.textContent).toContain("场景清单需要先确认，才能整理章节结构。");
+    expect(confirm.disabled).toBe(true);
+    expect(host.querySelector('[role="alert"]')).toBeTruthy();
+  });
+
+  it("同步模块意外未装配时显示中文恢复提示，不泄漏原始 TypeError", async () => {
+    window.SnowSync = {};
+    const host = await renderPanel();
+    expect(host.textContent).toContain("雪花同步模块尚未就绪，请刷新页面后重试。");
+    expect(host.textContent).not.toContain("Cannot read properties of undefined");
+    expect(host.querySelector('[role="alert"]')).toBeTruthy();
   });
 });
