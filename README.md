@@ -25,16 +25,36 @@
 
 ## 本地快速启动
 
-依赖：Python 3.12、Node.js/npm。
+依赖：Python 3.12、Node.js/npm。后端的传递依赖已锁定并带下载哈希；不要用仓库根目录安装 npm 包（根目录不是 Node 项目）。
 
 ```powershell
-cd frontend-react
-npm install
+cd backend
+uv sync --locked --extra dev
+cd ..\frontend-react
+npm ci
 cd ..
 .\start-dev.cmd
 ```
 
-启动脚本会先执行 `alembic upgrade head`，随后启动后端与 React 前端；默认也会补齐演示数据。默认地址：
+默认安装使用内存向量后端，不包含 Chroma。需要在 WSL/Linux 中执行真实 Chroma 兼容验证时，显式安装可选能力：
+
+```bash
+cd backend
+UV_PROJECT_ENVIRONMENT=.venv-wsl uv sync --locked --extra dev --extra chroma
+```
+
+项目只支持嵌入式 `PersistentClient` 用法，不应启动或对外暴露 Chroma 自带的 HTTP/FastAPI 服务。
+
+需要主动升级 Python 依赖时，修改 `backend/pyproject.toml` 后使用同一版 uv 重新生成并审查 `uv.lock` 和两份带哈希的导出锁文件：
+
+```powershell
+cd backend
+uv lock --python 3.12
+uv export --locked --extra dev --no-emit-project --format requirements-txt --output-file requirements.lock
+uv export --locked --extra dev --extra chroma --no-emit-project --format requirements-txt --output-file requirements-chroma.lock
+```
+
+启动脚本会先执行 `alembic upgrade head`，随后启动后端与 React 前端；生产启动链路不会注入测试夹具或演示作品。默认地址：
 
 - React：`http://127.0.0.1:5174`
 - 后端：`http://127.0.0.1:8000`
@@ -69,25 +89,28 @@ powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 -IncludeLegacyVue
 
 ## 数据库与迁移
 
-当前代码要求 Alembic head `20260716_0073`。
+当前代码要求唯一 Alembic head `20260805_0081`。`20260802_0077` 合并了曾发布的
+`20260717_0074 -> 20260717_0075` real-only 分支与
+`20260722_0074 -> 20260725_0076` 雪花分章分支；旧分支数据库可直接执行
+`alembic upgrade head`，不要手工修改 `alembic_version`。
 
 ```powershell
 cd backend
-python -m alembic current
-python -m alembic heads
-python -m alembic upgrade head
+.\.venv\Scripts\python.exe -m alembic current
+.\.venv\Scripts\python.exe -m alembic heads
+.\.venv\Scripts\python.exe -m alembic upgrade head
 ```
 
 `0073` 会把历史 LLM 审计中的提示词、草稿、模型输出和供应商错误正文改写为有界指纹；正文仍保留在各自权威业务表中。该脱敏不可逆，升级已有数据库前应先备份。若要先只统计历史审计风险：
 
 ```powershell
-python -m novel_system.tools.llm_audit_scrub --database .\novel_system.db --dry-run
+.\.venv\Scripts\python.exe -m novel_system.tools.llm_audit_scrub --database .\novel_system.db --dry-run
 ```
 
 升级后可做严格预检：
 
 ```powershell
-python -m novel_system.tools.database_preflight .\novel_system.db --expected-revision 20260716_0073
+.\.venv\Scripts\python.exe -m novel_system.tools.database_preflight .\novel_system.db --expected-revision 20260805_0081
 ```
 
 `/live` 只表示进程存活；`/ready` 还会检查数据库连接、迁移版本和必需结构，部署探针应使用两者的不同语义。
@@ -116,12 +139,14 @@ $env:NOVEL_SYSTEM_CORS_ORIGINS = "https://你的前端域名"
 
 浏览器恢复记录不是服务端备份，清理站点数据、换浏览器/设备、无痕模式或存储配额耗尽都可能令其不可用。
 
+数据库备份与恢复必须在服务停止后进行；工具会校验 sidecar 清单、SHA-256、SQLite 完整性与外键。可用 `scripts/db_backup_drill.ps1`（Windows）或 `scripts/db_backup_drill.sh`（Linux）在临时副本上演练，详细命令见[运行安全与资源边界](docs/runtime-safety.md)。
+
 `reset_author_state` 会批量删除作者态项目与运行产物，不属于首次启动步骤。只有在已有数据库备份且确认要清空作者态时才执行：
 
 ```powershell
 cd backend
-python -m novel_system.tools.reset_author_state
-python -m novel_system.tools.reset_author_state --execute --yes
+.\.venv\Scripts\python.exe -m novel_system.tools.reset_author_state
+.\.venv\Scripts\python.exe -m novel_system.tools.reset_author_state --execute --yes
 ```
 
 第一条命令仅做 dry-run。
@@ -136,8 +161,20 @@ npm run build
 
 ```powershell
 cd backend
-python -m pytest -m "not chroma_integration"
+0..3 | ForEach-Object {
+  .\.venv\Scripts\python.exe scripts\pytest_shard.py --shard-index $_ --shard-count 4 -- -q -m "not chroma_integration"
+}
 ```
+
+该循环与 CI、`scripts/verify_windows.ps1` 使用同一分片规则；四片全部通过才等价于后端 non-Chroma 全量通过。
+
+React 主线的浏览器契约验收会使用隔离 SQLite 数据库和中性测试夹具，不会接触日常开发库：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/verify_react_e2e.ps1
+```
+
+Linux/CI 使用等价入口：`bash scripts/verify_react_e2e.sh`。GitHub Actions 会在每次 PR/push 中运行后端测试、React 单测与构建、React 契约 E2E，以及旧 Vue 兼容测试。
 
 关键代码入口：
 

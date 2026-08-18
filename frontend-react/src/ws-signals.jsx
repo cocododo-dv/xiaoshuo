@@ -38,11 +38,12 @@ export function OrchestrationSignals({ sceneId }) {
   /* Wave 6（治理 §5.8/§5.7）：场景成本 + 裁判独立性 */
   const cost = data.cost && data.cost.total_cost != null ? data.cost : null;
   const ji = data.judge_independence || null;
+  const degraded = Array.isArray(data.degraded_signals) ? data.degraded_signals : [];
 
   const hasAny = (
     disp.score != null || crit ||
     (fs && fs.total_open > 0) || budget.length > 0 ||
-    (drift && drift.active) || tok || cost || ji
+    (drift && drift.active) || tok || cost || ji || degraded.length > 0
   );
   if (!hasAny) return null;
 
@@ -119,6 +120,14 @@ export function OrchestrationSignals({ sceneId }) {
           {(drift.drifted_dimensions || []).slice(0, 4).map((d) => (
             <span key={d} className="ws-sig-dim">{d}</span>
           ))}
+        </div>
+      )}
+
+      {degraded.length > 0 && (
+        <div className="ws-sig-line ws-sig-warn"
+             title={degraded.map((item) => `${item.signal}: ${item.error_code}`).join(" · ")}>
+          <I.AlertTriangle size={12} />
+          <span>部分编排信号暂不可用：{degraded.map((item) => item.signal).join("、")}</span>
         </div>
       )}
     </div>

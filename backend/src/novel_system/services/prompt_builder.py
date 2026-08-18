@@ -141,7 +141,7 @@ class PromptBuilder:
 
 def load_prompt_templates(path: str | Path | None = None) -> dict[str, PromptTemplate]:
     if path is None:
-        from novel_system.services.system_config import load_active_config_payload
+        from novel_system.services.config_snapshot_reader import load_active_config_payload
 
         raw_payload = load_active_config_payload("prompts")
         if raw_payload is None:

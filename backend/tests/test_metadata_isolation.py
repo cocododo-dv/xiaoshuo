@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import logging
 from pathlib import Path
 
@@ -7,6 +8,38 @@ import sqlalchemy as sa
 
 from novel_system.db.base import Base
 from novel_system.settings import get_settings
+
+
+def test_revision_files_do_not_import_live_orm_metadata() -> None:
+    """Historical revisions must be deterministic under future model changes."""
+    versions_dir = Path(__file__).resolve().parents[1] / "alembic" / "versions"
+    offenders: list[str] = []
+
+    for migration_path in sorted(versions_dir.glob("*.py")):
+        tree = ast.parse(migration_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "novel_system.db"
+            ):
+                offenders.append(f"{migration_path.name}:{node.lineno}: application DB import")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("novel_system.db"):
+                        offenders.append(
+                            f"{migration_path.name}:{node.lineno}: application DB import"
+                        )
+            elif (
+                isinstance(node, ast.Attribute)
+                and node.attr == "metadata"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "Base"
+            ):
+                offenders.append(f"{migration_path.name}:{node.lineno}: live Base.metadata")
+
+    assert not offenders, (
+        "Alembic revisions must use frozen, explicit DDL instead of importing the live ORM: "
+        + "; ".join(offenders)
+    )
 
 
 def test_settings_disable_auto_create_tables_by_default(monkeypatch) -> None:

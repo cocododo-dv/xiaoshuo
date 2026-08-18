@@ -359,7 +359,10 @@ class TestHardQcReadsFullStateDespitePovProjection:
         assert full_state.get("secret_held_by") == "城主藏了传国玉玺"
 
         # (3) 但**写作提示词**（POV=林远，非秘密持有者）不含该秘密正文。
-        writing_prompt = PovKnowledgeProjection(session).format_state_for_prompt(
+        writing_prompt = PovKnowledgeProjection(
+            session,
+            event_log=NarrativeEventLog(session),
+        ).format_state_for_prompt(
             PROJECT_ID, scene_seq=5,
             pov_character_id="林远", onstage_character_ids=["林远", "沧澜城城主"],
         )

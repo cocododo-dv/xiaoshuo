@@ -12,7 +12,17 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import LibraryEntity, LibraryRelation, StoryCharacter, TimelineEvent
+from novel_system.db.models import (
+    LibraryEntity,
+    LibraryRelation,
+    RelationProfile,
+    SceneCard,
+    SnowflakeCharacterPlan,
+    SnowflakeScenePlan,
+    StoryCharacter,
+    TimelineEvent,
+    VoiceProfile,
+)
 from novel_system.services.errors import DomainError
 from novel_system.services.projects import ProjectService
 
@@ -139,7 +149,10 @@ class LibraryService:
             label=label,
             time_label=str(payload.get("time_label") or "").strip() or None,
             chapter_ref=str(payload.get("chapter_ref") or "").strip() or None,
-            entity_refs_json=list(payload.get("entity_refs") or []),
+            entity_refs_json=self._validate_timeline_refs(
+                project.project_id,
+                payload.get("entity_refs"),
+            ),
             note=str(payload.get("note") or "").strip() or None,
             display_order=int(payload["display_order"]) if payload.get("display_order") is not None else len(rows) + 1,
         )
@@ -166,7 +179,10 @@ class LibraryService:
         if "chapter_ref" in payload:
             event.chapter_ref = str(payload.get("chapter_ref") or "").strip() or None
         if "entity_refs" in payload:
-            event.entity_refs_json = list(payload.get("entity_refs") or [])
+            event.entity_refs_json = self._validate_timeline_refs(
+                project.project_id,
+                payload.get("entity_refs"),
+            )
         if "note" in payload:
             event.note = str(payload.get("note") or "").strip() or None
         if "display_order" in payload and payload.get("display_order") is not None:
@@ -324,6 +340,14 @@ class LibraryService:
             status_code=400,
         )
 
+    def _validate_timeline_refs(self, project_id: str, raw_refs: Any) -> list[str]:
+        refs: list[str] = []
+        for raw_ref in raw_refs or []:
+            ref = self._validate_ref(project_id, str(raw_ref or ""))
+            if ref not in refs:
+                refs.append(ref)
+        return refs
+
     def create_relation(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         project = self._require_project(project_id)
         from_ref = self._validate_ref(project.project_id, str(payload.get("from_ref") or ""))
@@ -363,18 +387,103 @@ class LibraryService:
             ).all()
         )
 
+    def _remove_timeline_ref(self, project_id: str, ref: str) -> int:
+        changed = 0
+        for event in self._timeline_rows(project_id):
+            current = list(event.entity_refs_json or [])
+            filtered = [item for item in current if item != ref]
+            if filtered != current:
+                event.entity_refs_json = filtered
+                changed += len(current) - len(filtered)
+        return changed
+
+    def _character_dependencies(self, project_id: str, character_id: str) -> dict[str, int]:
+        scenes = list(
+            self.session.scalars(
+                select(SceneCard).where(
+                    SceneCard.project_id == project_id,
+                    SceneCard.trashed_flag == 0,
+                )
+            ).all()
+        )
+        scene_plans = list(
+            self.session.scalars(
+                select(SnowflakeScenePlan).where(
+                    SnowflakeScenePlan.project_id == project_id,
+                )
+            ).all()
+        )
+        return {
+            "catalog_scenes": sum(
+                1
+                for scene in scenes
+                if scene.pov_character_id == character_id
+                or character_id in (scene.onstage_chars_json or [])
+            ),
+            "snowflake_scenes": sum(
+                1
+                for scene in scene_plans
+                if scene.pov_character_id == character_id
+                or character_id in (scene.onstage_chars_json or [])
+            ),
+            "snowflake_character_plans": len(
+                self.session.scalars(
+                    select(SnowflakeCharacterPlan).where(
+                        SnowflakeCharacterPlan.project_id == project_id,
+                        SnowflakeCharacterPlan.character_id == character_id,
+                    )
+                ).all()
+            ),
+            "voice_profiles": len(
+                self.session.scalars(
+                    select(VoiceProfile).where(
+                        VoiceProfile.character_id == character_id,
+                    )
+                ).all()
+            ),
+            "relation_profiles": len(
+                self.session.scalars(
+                    select(RelationProfile).where(
+                        (RelationProfile.left_character_id == character_id)
+                        | (RelationProfile.right_character_id == character_id)
+                    )
+                ).all()
+            ),
+        }
+
     def delete_character(self, project_id: str, character_id: str) -> dict[str, Any]:
         project = self._require_project(project_id)
         character = self.session.get(StoryCharacter, character_id)
         if character is None or character.project_id != project.project_id:
             raise DomainError("LIBRARY_CHARACTER_NOT_FOUND", "character not found in project", status_code=404)
+        dependencies = self._character_dependencies(project.project_id, character_id)
+        if any(dependencies.values()):
+            raise DomainError(
+                "LIBRARY_CHARACTER_IN_USE",
+                "character is still referenced by story planning or runtime data",
+                status_code=409,
+                details={
+                    "character_id": character_id,
+                    "dependencies": dependencies,
+                    "next_action": "remove or replace character references before deleting the dossier",
+                },
+            )
         removed = 0
         for relation in self._relations_for_ref(project.project_id, f"character:{character_id}"):
             self.session.delete(relation)
             removed += 1
+        timeline_refs_removed = self._remove_timeline_ref(
+            project.project_id,
+            f"character:{character_id}",
+        )
         self.session.delete(character)
         self.session.flush()
-        return {"character_id": character_id, "deleted": True, "relations_removed": removed}
+        return {
+            "character_id": character_id,
+            "deleted": True,
+            "relations_removed": removed,
+            "timeline_refs_removed": timeline_refs_removed,
+        }
 
     def delete_entity(self, project_id: str, entity_id: str) -> dict[str, Any]:
         project = self._require_project(project_id)
@@ -383,6 +492,15 @@ class LibraryService:
         for relation in self._relations_for_ref(project.project_id, f"entity:{entity_id}"):
             self.session.delete(relation)
             removed += 1
+        timeline_refs_removed = self._remove_timeline_ref(
+            project.project_id,
+            f"entity:{entity_id}",
+        )
         self.session.delete(entity)
         self.session.flush()
-        return {"entity_id": entity_id, "deleted": True, "relations_removed": removed}
+        return {
+            "entity_id": entity_id,
+            "deleted": True,
+            "relations_removed": removed,
+            "timeline_refs_removed": timeline_refs_removed,
+        }

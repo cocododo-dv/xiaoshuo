@@ -2,24 +2,32 @@ from __future__ import annotations
 
 import re
 
-from sqlalchemy import select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     AttemptTracker,
+    ChapterAuditFinding,
+    ChapterContract,
     ChapterGoal,
     ChapterMemory,
     ChapterRollingNote,
+    ChapterRunJob,
     ChapterState,
+    FinalScene,
     HumanReviewEvent,
     InteropArtifact,
+    QcReport,
     ReviewItem,
+    SceneBlueprint,
     SceneBundle,
     SceneCard,
     SceneDraft,
+    SceneExecutionContract,
     SceneMemory,
+    SceneQualityContract,
     SceneRunState,
-    FinalScene,
+    StoryProject,
     StagedBackfill,
     utcnow,
 )
@@ -28,7 +36,8 @@ from novel_system.services.chapter_approval import (
     is_chapter_approved,
 )
 from novel_system.services.errors import DomainError
-from novel_system.services.writer_review import (
+from novel_system.services.vector_store import VectorStore, get_vector_store
+from novel_system.services.writer_briefs import (
     normalize_chapter_writer_brief,
     normalize_scene_writer_brief,
 )
@@ -41,8 +50,14 @@ SCENE_CHAPTER_TRASHED_PURGE_REASON = "该场景随章节一起回收，请在章
 
 
 class AuthorLifecycleService:
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        vector_store: VectorStore | None = None,
+    ) -> None:
         self.session = session
+        self._vector_store = vector_store
 
     def require_active_chapter(self, chapter_id: str) -> ChapterGoal:
         chapter = self.session.get(ChapterGoal, chapter_id)
@@ -50,6 +65,7 @@ class AuthorLifecycleService:
             raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
         if chapter.trashed_flag == 1:
             raise DomainError("CHAPTER_TRASHED", "chapter is currently in author trash")
+        self._require_active_parent_project(chapter.project_id)
         return chapter
 
     def require_active_scene(self, scene_id: str) -> SceneCard:
@@ -61,13 +77,47 @@ class AuthorLifecycleService:
         chapter = self.session.get(ChapterGoal, scene.chapter_id)
         if chapter is not None and chapter.trashed_flag == 1:
             raise DomainError("SCENE_TRASHED", "scene is currently in author trash")
+        if chapter is not None:
+            self._require_active_parent_project(chapter.project_id)
+        elif scene.project_id:
+            self._require_active_parent_project(scene.project_id)
         return scene
 
     def list_active_chapters(self) -> list[dict]:
         chapters = self.session.execute(
-            select(ChapterGoal).where(ChapterGoal.trashed_flag == 0).order_by(ChapterGoal.chapter_id.asc())
+            select(ChapterGoal)
+            .outerjoin(
+                StoryProject,
+                StoryProject.project_id == ChapterGoal.project_id,
+            )
+            .where(
+                ChapterGoal.trashed_flag == 0,
+                or_(
+                    ChapterGoal.project_id.is_(None),
+                    and_(
+                        StoryProject.project_id.is_not(None),
+                        or_(
+                            StoryProject.trashed_flag.is_(None),
+                            StoryProject.trashed_flag == 0,
+                        ),
+                    ),
+                ),
+            )
+            .order_by(ChapterGoal.chapter_id.asc())
         ).scalars().all()
         return [self.serialize_chapter_summary(chapter) for chapter in chapters]
+
+    def _require_active_parent_project(self, project_id: str | None) -> None:
+        # Legacy chapter rows may predate project ownership and remain readable.
+        if not project_id:
+            return
+        project = self.session.get(StoryProject, project_id)
+        if project is None or project.trashed_flag == 1:
+            raise DomainError(
+                "PROJECT_TRASHED",
+                "chapter or scene belongs to an unavailable project",
+                status_code=404,
+            )
 
     def serialize_chapter_summary(self, chapter: ChapterGoal) -> dict:
         chapter_state = self.session.get(ChapterState, chapter.chapter_id)
@@ -245,10 +295,10 @@ class AuthorLifecycleService:
             if approval_block is not None:
                 blocked.append(approval_block)
                 continue
+            self._make_room_for_restored_scene(scene)
             scene.trashed_flag = 0
             scene.trashed_at = None
             scene.trashed_by = None
-            scene.scene_seq = self._next_active_scene_seq(scene.chapter_id)
             scene.is_chapter_last = 0
             self._normalize_active_last_scene(scene.chapter_id)
             processed.append({"scene_id": scene.scene_id})
@@ -297,6 +347,7 @@ class AuthorLifecycleService:
                     }
                 )
                 continue
+            self._delete_scene_vectors([scene])
             run_state = self.session.get(SceneRunState, scene.scene_id)
             if run_state is not None:
                 self.session.delete(run_state)
@@ -369,6 +420,7 @@ class AuthorLifecycleService:
             if approval_block is not None:
                 blocked.append(approval_block)
                 continue
+            self._make_room_for_restored_chapter(chapter)
             chapter.trashed_flag = 0
             chapter.trashed_at = None
             chapter.trashed_by = None
@@ -415,6 +467,12 @@ class AuthorLifecycleService:
                 )
                 continue
             scene_ids = [scene.scene_id for scene in self._chapter_scenes(chapter_id, trashed_flag=1)]
+            scenes = [
+                scene
+                for scene_id in scene_ids
+                if (scene := self.session.get(SceneCard, scene_id)) is not None
+            ]
+            self._delete_scene_vectors(scenes)
             for scene_id in scene_ids:
                 state = self.session.get(SceneRunState, scene_id)
                 if state is not None:
@@ -429,6 +487,13 @@ class AuthorLifecycleService:
             if chapter_state is not None:
                 self.session.delete(chapter_state)
                 self.session.flush()
+            self.session.execute(
+                delete(ChapterAuditFinding).where(ChapterAuditFinding.chapter_id == chapter_id)
+            )
+            self.session.execute(
+                delete(ChapterContract).where(ChapterContract.chapter_id == chapter_id)
+            )
+            self.session.flush()
             self.session.delete(chapter)
             processed.append({"chapter_id": chapter_id, "scene_ids": scene_ids})
         self.session.flush()
@@ -546,9 +611,25 @@ class AuthorLifecycleService:
                 return SCENE_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(SceneBundle.bundle_id).where(SceneBundle.scene_id == scene.scene_id)):
             return SCENE_RUNTIME_ARTIFACTS_REASON
+        if self._has_rows(select(SceneBlueprint.row_id).where(SceneBlueprint.scene_id == scene.scene_id)):
+            return SCENE_RUNTIME_ARTIFACTS_REASON
+        if self._has_rows(
+            select(SceneQualityContract.contract_id).where(
+                SceneQualityContract.scene_id == scene.scene_id
+            )
+        ):
+            return SCENE_RUNTIME_ARTIFACTS_REASON
+        if self._has_rows(
+            select(SceneExecutionContract.contract_id).where(
+                SceneExecutionContract.scene_id == scene.scene_id
+            )
+        ):
+            return SCENE_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(SceneDraft.row_id).where(SceneDraft.scene_id == scene.scene_id)):
             return SCENE_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(FinalScene.row_id).where(FinalScene.scene_id == scene.scene_id)):
+            return SCENE_RUNTIME_ARTIFACTS_REASON
+        if self._has_rows(select(QcReport.qc_report_id).where(QcReport.scene_id == scene.scene_id)):
             return SCENE_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(SceneMemory.row_id).where(SceneMemory.scene_id == scene.scene_id)):
             return SCENE_RUNTIME_ARTIFACTS_REASON
@@ -558,13 +639,68 @@ class AuthorLifecycleService:
             return SCENE_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(HumanReviewEvent.event_id).where(HumanReviewEvent.scene_id == scene.scene_id)):
             return SCENE_RUNTIME_ARTIFACTS_REASON
+        if self._has_rows(select(ChapterRunJob.job_id).where(ChapterRunJob.scene_id == scene.scene_id)):
+            return SCENE_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(StagedBackfill.stage_id).where(StagedBackfill.scene_id == scene.scene_id)):
             return SCENE_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(InteropArtifact.artifact_id).where(InteropArtifact.scene_id == scene.scene_id)):
             return SCENE_RUNTIME_ARTIFACTS_REASON
         return None
 
+    def _delete_scene_vectors(self, scenes: list[SceneCard]) -> None:
+        if not scenes:
+            return
+        by_project: dict[str, list[str]] = {}
+        for scene in scenes:
+            project_id = scene.project_id
+            if not project_id:
+                chapter = self.session.get(ChapterGoal, scene.chapter_id)
+                project_id = chapter.project_id if chapter is not None else None
+            # Pre-project legacy fixtures used opaque chapter IDs such as
+            # ``CH630`` and indexed them under that exact collection suffix.
+            # This cleanup-only compatibility path is safe because it never
+            # infers a prefix from a structured ``*_CH_*`` identifier.
+            if not project_id and "_" not in scene.chapter_id:
+                project_id = scene.chapter_id
+            if not project_id:
+                raise DomainError(
+                    "PROJECT_OWNERSHIP_UNRESOLVED",
+                    "cannot permanently delete scene vectors without authoritative project ownership",
+                    status_code=409,
+                    details={
+                        "scene_id": scene.scene_id,
+                        "chapter_id": scene.chapter_id,
+                    },
+                )
+            by_project.setdefault(project_id, []).append(scene.scene_id)
+
+        store = self._vector_store or get_vector_store()
+        for project_id, scene_ids in by_project.items():
+            collection_name = f"scenes_{project_id}"
+            try:
+                store.delete_documents(collection_name, scene_ids)
+            except DomainError:
+                raise
+            except Exception as exc:
+                raise DomainError(
+                    "SCENE_VECTOR_PURGE_FAILED",
+                    "scene vector documents could not be permanently deleted",
+                    status_code=503,
+                    details={
+                        "project_id": project_id,
+                        "scene_ids": scene_ids,
+                        "collection_name": collection_name,
+                        "retryable": True,
+                    },
+                ) from exc
+
     def chapter_purge_block_reason(self, chapter: ChapterGoal) -> str | None:
+        if self._has_rows(
+            select(ChapterRunJob.job_id).where(
+                ChapterRunJob.chapter_id == chapter.chapter_id
+            )
+        ):
+            return CHAPTER_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(ChapterMemory.row_id).where(ChapterMemory.chapter_id == chapter.chapter_id)):
             return CHAPTER_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(ChapterRollingNote.row_id).where(ChapterRollingNote.chapter_id == chapter.chapter_id)):
@@ -577,6 +713,20 @@ class AuthorLifecycleService:
             return CHAPTER_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(
             select(HumanReviewEvent.event_id).where(HumanReviewEvent.chapter_id == chapter.chapter_id, HumanReviewEvent.scene_id.is_(None))
+        ):
+            return CHAPTER_RUNTIME_ARTIFACTS_REASON
+        if self._has_rows(
+            select(AttemptTracker.attempt_id).where(
+                AttemptTracker.chapter_id == chapter.chapter_id,
+                AttemptTracker.scene_id.is_(None),
+            )
+        ):
+            return CHAPTER_RUNTIME_ARTIFACTS_REASON
+        if self._has_rows(
+            select(QcReport.qc_report_id).where(
+                QcReport.chapter_id == chapter.chapter_id,
+                QcReport.scene_id.is_(None),
+            )
         ):
             return CHAPTER_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(
@@ -610,6 +760,67 @@ class AuthorLifecycleService:
         if not active_scenes:
             return 1
         return max(scene.scene_seq for scene in active_scenes) + 1
+
+    def _make_room_for_restored_scene(self, restored: SceneCard) -> None:
+        """Preserve the scene's original position, shifting active collisions right."""
+
+        desired_seq = max(1, int(restored.scene_seq or 1))
+        active_scenes = [
+            scene
+            for scene in self._chapter_scenes(restored.chapter_id, trashed_flag=0)
+            if scene.scene_id != restored.scene_id and int(scene.scene_seq or 0) >= desired_seq
+        ]
+        final_positions = {
+            scene.scene_id: int(scene.scene_seq or 0) + 1
+            for scene in active_scenes
+        }
+        self._park_scene_orders(active_scenes)
+        for scene in active_scenes:
+            scene.scene_seq = final_positions[scene.scene_id]
+        if active_scenes:
+            self.session.flush()
+        restored.scene_seq = desired_seq
+
+    def _make_room_for_restored_chapter(self, restored: ChapterGoal) -> None:
+        if restored.project_id is None or restored.display_order is None:
+            return
+        desired_order = max(0, int(restored.display_order))
+        active_chapters = list(
+            self.session.execute(
+                select(ChapterGoal)
+                .where(
+                    ChapterGoal.project_id == restored.project_id,
+                    ChapterGoal.trashed_flag == 0,
+                    ChapterGoal.chapter_id != restored.chapter_id,
+                    ChapterGoal.display_order.is_not(None),
+                    ChapterGoal.display_order >= desired_order,
+                )
+                .order_by(ChapterGoal.display_order.asc(), ChapterGoal.chapter_id.asc())
+            ).scalars().all()
+        )
+        final_positions = {
+            chapter.chapter_id: int(chapter.display_order or 0) + 1
+            for chapter in active_chapters
+        }
+        if active_chapters:
+            temporary_start = max(
+                int(chapter.display_order or 0) for chapter in active_chapters
+            ) + 1
+            for offset, chapter in enumerate(active_chapters):
+                chapter.display_order = temporary_start + offset
+            self.session.flush()
+            for chapter in active_chapters:
+                chapter.display_order = final_positions[chapter.chapter_id]
+            self.session.flush()
+        restored.display_order = desired_order
+
+    def _park_scene_orders(self, scenes: list[SceneCard]) -> None:
+        if not scenes:
+            return
+        temporary_start = max(int(scene.scene_seq or 0) for scene in scenes) + 1
+        for offset, scene in enumerate(scenes):
+            scene.scene_seq = temporary_start + offset
+        self.session.flush()
 
     def next_scene_append_seq(self, chapter_id: str) -> int:
         chapter_scenes = self._chapter_scenes(chapter_id)

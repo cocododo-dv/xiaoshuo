@@ -14,7 +14,7 @@ from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_fail_closed import raise_llm_domain_error
 from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief
+from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 
 SCENE_BLUEPRINT_FIELDS: tuple[str, ...] = (

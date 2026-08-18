@@ -16,6 +16,14 @@ const WS_WORKS_LS = "ws_works_created_v1";   // 旧 localStorage 时代的本地
 const WS_ACTIVE_LS = "ws_active_work_v1";    // 当前作品 id（UI 状态，长期保留 localStorage）
 const WS_CACHE_LS = "ws_works_cache_v1";     // 列表启动缓存（API 真相的本地影子，仅为同步 list()）
 const WS_MIGRATED_LS = "ws_migrated_v1";     // 一次性迁移标记
+const WS_RETIRED_DEMO_IDS = new Set(["tide", "salt"]);
+
+function wsIsRetiredDemo(work) {
+  return !!(
+    work
+    && (WS_RETIRED_DEMO_IDS.has(String(work.id || work.project_id || "")) || work.isDemo === true || work.is_demo === true)
+  );
+}
 
 /* —— 问候语：前端按时段生成（契约附录：不必入库）—— */
 function wsGreetNow() {
@@ -116,7 +124,10 @@ function wsAdaptHome(d) {
 function wsLoadCache() {
   try {
     const cached = JSON.parse(localStorage.getItem(WS_CACHE_LS));
-    if (Array.isArray(cached) && cached.length) return cached;
+    if (Array.isArray(cached)) {
+      const current = cached.filter((work) => !wsIsRetiredDemo(work));
+      if (current.length) return current;
+    }
   } catch (e) {}
   return [
     {
@@ -131,11 +142,35 @@ function wsLoadCache() {
   ];
 }
 
+/* 后端已经确认书架为空时使用的只读展示对象。
+   它不进入 list/cache，id 为空可让各业务模块沿用现有的“未选择作品”守卫，
+   同时避免把 __loading__（请求尚未完成）误当成真实空状态。 */
+const WS_EMPTY_WORK = Object.freeze({
+  id: "",
+  title: "还没有作品",
+  genre: "从这里开始",
+  mark: "新",
+  accent: "slate",
+  sub: "",
+  greet: "欢迎回来",
+  wordsTotal: 0,
+  wordsTarget: 100000,
+  chaptersWritten: 0,
+  chaptersTotal: 0,
+  wordsToday: 0,
+  wordsTargetDay: 1000,
+  streak: 0,
+  home: { blank: true },
+});
+
 let WS_WORKS = wsLoadCache();
 let WS_ACTIVE_ID = (() => {
   try {
     const id = localStorage.getItem(WS_ACTIVE_LS);
-    if (id && WS_WORKS.some(w => w.id === id)) return id;
+    // The projects cache is only a disposable rendering shadow. Preserve the
+    // selected id even when that cache was cleared; wsRefresh validates it
+    // against the authoritative backend list and falls back only if needed.
+    if (id && !WS_RETIRED_DEMO_IDS.has(id)) return id;
   } catch (e) {}
   return WS_WORKS[0].id;
 })();
@@ -176,7 +211,8 @@ function wsSetDashboardStatus(id, phase, error = null) {
 function wsSaveCache() {
   try {
     localStorage.setItem(WS_CACHE_LS, JSON.stringify(WS_WORKS));
-    localStorage.setItem(WS_ACTIVE_LS, WS_ACTIVE_ID);
+    if (WS_ACTIVE_ID) localStorage.setItem(WS_ACTIVE_LS, WS_ACTIVE_ID);
+    else localStorage.removeItem(WS_ACTIVE_LS);
   } catch (e) {}
 }
 
@@ -200,7 +236,7 @@ async function wsMigrateLegacy() {
     let failed = 0;
     if (Array.isArray(legacy)) {
       for (const w of legacy) {
-        if (!w || !w.title) continue;
+        if (!w || !w.title || wsIsRetiredDemo(w)) continue;
         try {
           await apiPost("/api/v2/projects", {
             title: w.title,
@@ -243,15 +279,17 @@ async function wsRefresh() {
       const migrated = await wsMigrateLegacy();
       let data = await apiGet("/api/v2/projects");
       if (migrated) data = await apiGet("/api/v2/projects");
-      const items = (data && data.items) || [];
-      if (items.length) {
-        const prevHomes = Object.fromEntries(WS_WORKS.map(w => [w.id, w.home]));
-        WS_WORKS = items.map(item => wsAdaptProject(item, prevHomes[item.project_id]));
+      const items = data && Array.isArray(data.items) ? data.items : [];
+      const prevHomes = Object.fromEntries(WS_WORKS.map(w => [w.id, w.home]));
+      WS_WORKS = items.map(item => wsAdaptProject(item, prevHomes[item.project_id]));
+      if (WS_WORKS.length) {
         if (!WS_WORKS.some(w => w.id === WS_ACTIVE_ID)) WS_ACTIVE_ID = WS_WORKS[0].id;
-        wsSaveCache();
-        wsNotify();
-        wsLoadHome(WS_ACTIVE_ID);
+      } else {
+        WS_ACTIVE_ID = "";
       }
+      wsSaveCache();
+      wsNotify();
+      if (WS_ACTIVE_ID) wsLoadHome(WS_ACTIVE_ID);
       wsSetProjectsStatus("ready");
     } catch (e) {
       console.warn("[WsWorks] 拉取作品列表失败（保留本地缓存影子）:", e);
@@ -288,7 +326,7 @@ async function wsLoadHome(id) {
 
 const WsWorks = {
   list: () => WS_WORKS,
-  active: () => WS_WORKS.find(w => w.id === WS_ACTIVE_ID) || WS_WORKS[0],
+  active: () => WS_WORKS.find(w => w.id === WS_ACTIVE_ID) || WS_WORKS[0] || WS_EMPTY_WORK,
   activeId: () => WS_ACTIVE_ID,
   setActive(id) {
     if (id !== WS_ACTIVE_ID && WS_WORKS.some(w => w.id === id)) {
@@ -336,7 +374,9 @@ const WsWorks = {
       wsNotify();
     }).catch((error) => {
       WS_WORKS = WS_WORKS.filter(w => w.id !== tempId);
-      if (WS_ACTIVE_ID === tempId) WS_ACTIVE_ID = WS_WORKS.some(w => w.id === prevActive) ? prevActive : (WS_WORKS[0] && WS_WORKS[0].id);
+      if (WS_ACTIVE_ID === tempId) {
+        WS_ACTIVE_ID = WS_WORKS.some(w => w.id === prevActive) ? prevActive : ((WS_WORKS[0] && WS_WORKS[0].id) || "");
+      }
       wsSaveCache();
       wsNotify();
       wsToastError(error, "创建作品失败，请检查后端服务。");

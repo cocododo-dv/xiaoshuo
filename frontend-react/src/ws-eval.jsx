@@ -890,10 +890,6 @@ function WsEval() {
   );
 }
 
-Object.assign(window, {
-  WsEval, evStart, evVote, evLoadNext, evLoadReport, evLoadExperiments,
-  evCreateExperiment, evAddPair, evFreeze, evOpenReport, evBackToHub, evSnapshot,
-});
 export {
   WsEval, evStart, evVote, evLoadNext, evLoadReport, evLoadExperiments,
   evCreateExperiment, evAddPair, evFreeze, evOpenReport, evBackToHub, evSnapshot, useEvalState,

@@ -29,7 +29,13 @@ from novel_system.services.character_continuity import (
     detect_mechanical_required_beat_listing,
 )
 from novel_system.services.quality_classifier import classify_issue, classify_issues, has_blocking
+from novel_system.services.qc_constraints import (
+    contains_forbidden_term,
+    issue_mentions_source,
+    source_field_satisfied,
+)
 from novel_system.services.qc_validator import QCValidationError, validate_qc_report
+from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.style_profile import StyleScoreService
 
 
@@ -273,16 +279,6 @@ def _content_hash(content: str) -> str:
     return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
 
 
-def _contains_forbidden_term(forbidden_text: Any, content: str) -> bool:
-    if not isinstance(forbidden_text, str) or not forbidden_text.strip():
-        return False
-    return any(term in content for term in _constraint_terms(forbidden_text))
-
-
-def _constraint_terms(text: str) -> list[str]:
-    return [term.strip() for term in re.split(r"[,，、;；\n]+", text) if len(term.strip()) >= 2]
-
-
 def _scene_card_source_texts(scene: SceneCard) -> list[str]:
     texts = [scene.must_include_text, scene.hook, scene.exit_change, scene.scene_goal, scene.location]
     beats = scene.beats_json if isinstance(scene.beats_json, list) else []
@@ -448,39 +444,6 @@ def _promote_constraint_conflicts_to_human_review(payload: dict[str, Any]) -> di
     }
 
 
-def _source_field_satisfied(source_text: str, content: str) -> bool:
-    source_text = source_text.strip()
-    if source_text in content:
-        return True
-    fragments = _significant_fragments(source_text)
-    if not fragments:
-        return False
-    matched = [fragment for fragment in fragments if fragment in content]
-    return len(matched) >= min(2, len(fragments))
-
-
-def _issue_mentions_source(issue_blob: str, source_text: str) -> bool:
-    source_text = source_text.strip()
-    if source_text and source_text in issue_blob:
-        return True
-    return any(fragment in issue_blob for fragment in _significant_fragments(source_text))
-
-
-def _significant_fragments(text: str) -> list[str]:
-    fragments: list[str] = []
-    fragments.extend(match.lower() for match in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}", text))
-    for sequence in re.findall(r"[\u4e00-\u9fff]{3,}", text):
-        fragments.extend(sequence[index : index + 3] for index in range(0, max(len(sequence) - 2, 0)))
-    seen: set[str] = set()
-    unique: list[str] = []
-    for fragment in fragments:
-        if fragment in seen:
-            continue
-        seen.add(fragment)
-        unique.append(fragment)
-    return unique
-
-
 def _reported_duplicate_appears_once(issue_blob: str, content: str) -> bool:
     quoted = re.findall(r"['‘“\"]([^'’”\"]{3,})['’”\"]", issue_blob)
     return bool(quoted) and all(content.count(fragment) <= 1 for fragment in quoted)
@@ -514,10 +477,7 @@ def _theme_relevance_issues(scene: SceneCard) -> list[dict[str, Any]]:
         from novel_system.db.session import SessionLocal
         session = SessionLocal()
         try:
-            project_id = (
-                scene.project_id
-                or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
-            )
+            project_id = require_scene_project_id(session, scene)
             svc = ThemeAnchorService(session)
             idea = svc.get_controlling_idea(project_id)
             if not idea:
@@ -619,10 +579,7 @@ def _event_log_consistency_issues(scene: SceneCard, content: str) -> list[dict[s
         session = SessionLocal()
         try:
             log = NarrativeEventLog(session)
-            project_id = (
-                scene.project_id
-                or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
-            )
+            project_id = require_scene_project_id(session, scene)
             issues: list[dict[str, Any]] = []
 
             # --- Event log fact consistency (§15: hard facts only) ---
@@ -1134,7 +1091,7 @@ class HardQcEngine:
     ) -> bool:
         issue_key = str(issue.get("issue_key") or "").strip()
         if issue_key == "forbidden_text":
-            return not _contains_forbidden_term(scene.forbidden_text, neutral_content)
+            return not contains_forbidden_term(scene.forbidden_text, neutral_content)
         if (
             issue_key in HARD_QC_STYLE_ONLY_ISSUE_KEYS
             or issue_key in HARD_QC_NON_BLOCKING_LLM_ISSUE_KEYS
@@ -1159,7 +1116,7 @@ class HardQcEngine:
     def _source_field_satisfies_reported_issue(source_text: Any, neutral_content: str, issue_blob: str) -> bool:
         if not isinstance(source_text, str) or not source_text.strip():
             return False
-        return _source_field_satisfied(source_text, neutral_content) and _issue_mentions_source(issue_blob, source_text)
+        return source_field_satisfied(source_text, neutral_content) and issue_mentions_source(issue_blob, source_text)
 
     def _apply_style_validation_gate(
         self, scene: SceneCard, neutral_content: str

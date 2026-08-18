@@ -5,7 +5,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 
-const require = createRequire(path.join(process.cwd(), "package.json"));
+const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
 const BASE = process.argv[2] || "http://127.0.0.1:5174/";
@@ -55,7 +55,8 @@ await check("① 建书建场（最小场景卡）", async () => {
 await check("② scnRun 投递真实管线 → 结构化引导（无假输出）", async () => {
   const r = await page.evaluate(async (s) => {
     try {
-      const res = await window.scnRun({ sid: s, title: "起草场", kind: "主动" }, "", "");
+      const { scnRun } = await import("/src/ws-scene-run.jsx");
+      const res = await scnRun({ sid: s, title: "起草场", kind: "主动" }, "", "");
       return { ok: true, words: res && res.words };
     } catch (e) { return { ok: false, msg: e.message || String(e) }; }
   }, sid);
@@ -69,7 +70,11 @@ await check("② scnRun 投递真实管线 → 结构化引导（无假输出）
 });
 
 await check("③ UI：起草台点「开始起草」→ 明确报错而非假进度", async () => {
-  await page.evaluate((s) => { window.scnQueueSave([s]); location.hash = "#scene"; }, sid);
+  await page.evaluate(async (s) => {
+    const { scnQueueSave } = await import("/src/ws-scene-run.jsx");
+    scnQueueSave([s]);
+    location.hash = "#scene";
+  }, sid);
   await page.waitForTimeout(1500);
   await page.click('button:has-text("开始起草")');
   // 轮询等待错误文案或真实完成（不接受一直停留在假进度）

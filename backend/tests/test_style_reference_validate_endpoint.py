@@ -81,6 +81,45 @@ def test_validate_endpoint_async_returns_polling_url(client: TestClient, monkeyp
     assert data["polling_url"].endswith(data["report_id"])
 
 
+def test_async_validation_dispatches_only_after_idempotency_commit(
+    client: TestClient, monkeypatch
+) -> None:
+    from novel_system.db.models import IdempotencyKey, StyleReferenceValidationReport
+    import novel_system.api.routes.style_reference as sr_routes
+
+    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
+    observations: list[tuple[str | None, str | None]] = []
+
+    def observe_dispatch(**kwargs) -> None:  # noqa: ANN003
+        with SessionLocal() as observer:
+            idem = observer.get(IdempotencyKey, "validate_after_commit")
+            report = observer.get(StyleReferenceValidationReport, kwargs["report_id"])
+            observations.append(
+                (
+                    idem.status if idem is not None else None,
+                    report.status if report is not None else None,
+                )
+            )
+
+    monkeypatch.setattr(
+        sr_routes,
+        "start_style_reference_validation_worker",
+        observe_dispatch,
+    )
+    profile_id = _seed_profile("validate_after_commit")
+    request_kwargs = {
+        "json": {"generated_text": "一段待验证文本", "mode": "async_full"},
+        "headers": {"X-Idempotency-Key": "validate_after_commit"},
+    }
+    first = client.post(f"{PREFIX}/profiles/{profile_id}/validate", **request_kwargs)
+    replay = client.post(f"{PREFIX}/profiles/{profile_id}/validate", **request_kwargs)
+
+    assert first.status_code == 200, first.text
+    assert replay.status_code == 200, replay.text
+    assert replay.headers["X-Idempotency-Status"] == "replayed"
+    assert observations == [("succeeded", "queued"), ("succeeded", "queued")]
+
+
 def test_validate_endpoint_profile_not_found(client: TestClient, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
     resp = client.post(

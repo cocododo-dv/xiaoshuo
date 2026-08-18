@@ -174,6 +174,4 @@ const WsManuStore = {
   },
 };
 
-Object.assign(window, { WsManuStore });
-
 export { WsManuStore, manuscriptChapterEligible, manuscriptDisplayState };

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any, Callable, Literal
 
 from fastapi import APIRouter, Depends, Header, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
+from novel_system.services.idempotency import execute_with_optional_idempotency
 from novel_system.services.system_config import SystemConfigService, require_admin_token
 
 router = APIRouter(tags=["system_config"])
@@ -17,61 +19,106 @@ def _client_host(request: Request) -> str | None:
     return request.client.host if request.client is not None else None
 
 
-class SystemConfigDraftRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+def _actor(request: Request) -> str:
+    return getattr(request.state, "operator_ref", None) or "operator"
 
-    category: str
-    yaml_raw: str
-    secrets: dict[str, str] | None = None
+
+def _mutation_response(
+    request: Request,
+    session: Session,
+    *,
+    method: str,
+    path_template: str,
+    payload: dict[str, Any],
+    action: Callable[[], dict],
+):
+    result, status = execute_with_optional_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method=method,
+        path_template=path_template,
+        payload=payload,
+        action=action,
+        actor_ref=_actor(request),
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(
+        result,
+        req_id=getattr(request.state, "request_id", None),
+        headers=headers,
+    )
+
+
+class SystemConfigDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    category: Literal["api", "models", "prompts", "allowlists", "hash_contract"]
+    yaml_raw: str = Field(min_length=1, max_length=2_000_000)
+    secrets: dict[
+        Annotated[str, Field(min_length=1, max_length=255)],
+        Annotated[str, Field(max_length=16_384)],
+    ] | None = Field(default=None, max_length=64)
 
 
 class ProviderProbeRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    provider: str | None = None
-    base_url: str | None = None
-    api_key: str | None = None
-    timeout_seconds: float | None = None
-    model: str | None = None
+    provider: str | None = Field(default=None, max_length=64)
+    provider_type: str | None = Field(default=None, max_length=64)
+    provider_id: str | None = Field(default=None, max_length=255)
+    base_url: str | None = Field(default=None, max_length=2048)
+    api_key: str | None = Field(default=None, max_length=16_384)
+    credential_mode: str | None = Field(default=None, max_length=64)
+    api_mode: str | None = Field(default=None, max_length=64)
+    provider_options: BoundedJsonObject | None = None
+    timeout_seconds: float | None = Field(default=None, ge=0, le=3_600)
+    model: str | None = Field(default=None, max_length=255)
+    models: list[
+        Annotated[str, Field(min_length=1, max_length=255)]
+    ] | None = Field(default=None, max_length=256)
     check_completion: bool | None = None
 
 
 class LlmProviderConfigRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    provider_id: str
-    provider_type: str
-    account_id: str | None = None
-    base_url: str | None = None
+    provider_id: str = Field(min_length=1, max_length=255)
+    provider_type: str = Field(min_length=1, max_length=64)
+    account_id: str | None = Field(default=None, max_length=255)
+    base_url: str | None = Field(default=None, max_length=2048)
     enabled: bool = True
-    credential_mode: str = "api_key"
-    api_mode: str | None = None
-    models: list[str] | None = None
-    provider_options: dict[str, Any] | None = None
-    api_key: str | None = None
+    credential_mode: str = Field(default="api_key", max_length=64)
+    api_mode: str | None = Field(default=None, max_length=64)
+    models: list[
+        Annotated[str, Field(min_length=1, max_length=255)]
+    ] | None = Field(default=None, max_length=256)
+    provider_options: BoundedJsonObject | None = None
+    api_key: str | None = Field(default=None, max_length=16_384)
 
 
 class LlmNodeRoutesRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    node_routing: dict[str, Any]
-    retry_budget: dict[str, Any] | None = None
-    job_runtime: dict[str, Any] | None = None
+    node_routing: BoundedJsonObject
+    model_profiles: BoundedJsonObject | None = None
+    task_routing: BoundedJsonObject | None = None
+    retry_budget: BoundedJsonObject | None = None
+    job_runtime: BoundedJsonObject | None = None
     activate: bool = False
 
 
 class LlmNodeRouteSyncRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    provider_id: str | None = None
-    model: str | None = None
+    provider_id: str | None = Field(default=None, max_length=255)
+    model: str | None = Field(default=None, max_length=255)
     activate: bool = True
 
 
 class LlmRoleRoutesRequest(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    assignments: dict[str, Any]
+    assignments: BoundedJsonObject
     activate: bool = True
 
 
@@ -88,28 +135,41 @@ def create_system_config_draft(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = SystemConfigService(session).create_draft(
-        category=payload.category,
-        yaml_raw=payload.yaml_raw,
-        secrets=payload.secrets,
-        actor_ref=actor_ref,
+    body = payload.model_dump(mode="json")
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/system-config/drafts",
+        payload=body,
+        action=lambda: SystemConfigService(session, auto_commit=False).create_draft(
+            category=payload.category,
+            yaml_raw=payload.yaml_raw,
+            secrets=payload.secrets,
+            actor_ref=_actor(request),
+        ),
     )
-    return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
 @router.post("/api/v1/system-config/{snapshot_id}/activate")
 def activate_system_config_snapshot(
     snapshot_id: str,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    return ok(
-        SystemConfigService(session).activate(snapshot_id, actor_ref=actor_ref),
-        req_id=getattr(request.state, "request_id", None),
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/system-config/{snapshot_id}/activate",
+        payload={"snapshot_id": snapshot_id},
+        action=lambda: SystemConfigService(session, auto_commit=False).activate(
+            snapshot_id,
+            actor_ref=_actor(request),
+        ),
     )
 
 
@@ -121,7 +181,15 @@ def test_system_config_provider(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    return ok(SystemConfigService(session).test_provider(payload=payload.model_dump()), req_id=None)
+    body = payload.model_dump(mode="json", exclude_none=True)
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/system-config/test-provider",
+        payload=body,
+        action=lambda: SystemConfigService(session, auto_commit=False).test_provider(payload=body),
+    )
 
 
 @router.get("/api/v1/system-config/export/{category}")
@@ -150,10 +218,17 @@ def save_system_config_llm_provider(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    return ok(
-        SystemConfigService(session).save_llm_provider(payload=payload.model_dump(mode="json", exclude_none=True), actor_ref=actor_ref),
-        req_id=getattr(request.state, "request_id", None),
+    body = payload.model_dump(mode="json", exclude_none=True)
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/system-config/llm/providers",
+        payload=body,
+        action=lambda: SystemConfigService(session, auto_commit=False).save_llm_provider(
+            payload=body,
+            actor_ref=_actor(request),
+        ),
     )
 
 
@@ -161,14 +236,21 @@ def save_system_config_llm_provider(
 def delete_system_config_llm_provider(
     provider_id: str,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    return ok(
-        SystemConfigService(session).delete_llm_provider(provider_id=provider_id, actor_ref=actor_ref),
-        req_id=getattr(request.state, "request_id", None),
+    return _mutation_response(
+        request,
+        session,
+        method="DELETE",
+        path_template="/api/v1/system-config/llm/providers/{provider_id}",
+        payload={"provider_id": provider_id},
+        action=lambda: SystemConfigService(session, auto_commit=False).delete_llm_provider(
+            provider_id=provider_id,
+            actor_ref=_actor(request),
+        ),
     )
 
 
@@ -176,14 +258,21 @@ def delete_system_config_llm_provider(
 def set_default_system_config_llm_provider(
     provider_id: str,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    return ok(
-        SystemConfigService(session).set_default_llm_provider(provider_id=provider_id, actor_ref=actor_ref),
-        req_id=getattr(request.state, "request_id", None),
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/system-config/llm/providers/{provider_id}/default",
+        payload={"provider_id": provider_id},
+        action=lambda: SystemConfigService(session, auto_commit=False).set_default_llm_provider(
+            provider_id=provider_id,
+            actor_ref=_actor(request),
+        ),
     )
 
 
@@ -195,10 +284,17 @@ def save_system_config_llm_node_routes(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    return ok(
-        SystemConfigService(session).save_llm_node_routes(payload=payload.model_dump(mode="json", exclude_none=True), actor_ref=actor_ref),
-        req_id=getattr(request.state, "request_id", None),
+    body = payload.model_dump(mode="json", exclude_none=True)
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/system-config/llm/node-routes",
+        payload=body,
+        action=lambda: SystemConfigService(session, auto_commit=False).save_llm_node_routes(
+            payload=body,
+            actor_ref=_actor(request),
+        ),
     )
 
 
@@ -210,13 +306,17 @@ def sync_missing_system_config_llm_node_routes(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    return ok(
-        SystemConfigService(session).sync_missing_llm_node_routes(
-            payload=payload.model_dump(mode="json", exclude_none=True),
-            actor_ref=actor_ref,
+    body = payload.model_dump(mode="json", exclude_none=True)
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/system-config/llm/node-routes/sync-missing",
+        payload=body,
+        action=lambda: SystemConfigService(session, auto_commit=False).sync_missing_llm_node_routes(
+            payload=body,
+            actor_ref=_actor(request),
         ),
-        req_id=getattr(request.state, "request_id", None),
     )
 
 
@@ -229,9 +329,18 @@ def probe_system_config_llm_provider(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    return ok(
-        SystemConfigService(session).probe_llm_provider(provider_id=provider_id, payload=payload.model_dump(mode="json", exclude_none=True) if payload else {}),
-        req_id=None,
+    body = payload.model_dump(mode="json", exclude_none=True) if payload else {}
+    request_payload = {"provider_id": provider_id, **body}
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/system-config/llm/providers/{provider_id}/probe",
+        payload=request_payload,
+        action=lambda: SystemConfigService(session, auto_commit=False).probe_llm_provider(
+            provider_id=provider_id,
+            payload=body,
+        ),
     )
 
 
@@ -265,13 +374,17 @@ def save_system_config_llm_role_routes(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    return ok(
-        SystemConfigService(session).save_llm_role_routes(
-            payload=payload.model_dump(mode="json", exclude_none=True),
-            actor_ref=actor_ref,
+    body = payload.model_dump(mode="json", exclude_none=True)
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/system-config/llm/role-routes",
+        payload=body,
+        action=lambda: SystemConfigService(session, auto_commit=False).save_llm_role_routes(
+            payload=body,
+            actor_ref=_actor(request),
         ),
-        req_id=getattr(request.state, "request_id", None),
     )
 
 
@@ -279,11 +392,11 @@ def save_system_config_llm_role_routes(
 
 
 class ReconciliationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    project_id: str
-    up_to_scene_seq: int | None = None
-    up_to_scene_id: str | None = None
+    project_id: str = Field(min_length=1, max_length=255)
+    up_to_scene_seq: int | None = Field(default=None, ge=1, le=(1 << 63) - 1)
+    up_to_scene_id: str | None = Field(default=None, max_length=255)
     create_review_items: bool = False
 
 
@@ -299,20 +412,27 @@ def run_event_reconciliation(
     require_admin_token(x_admin_token, client_host=_client_host(request))
     from novel_system.services.event_reconciliation import EventReconciliationService
 
-    svc = EventReconciliationService(session)
-    findings = svc.reconcile_project(
-        payload.project_id,
-        up_to_scene_seq=payload.up_to_scene_seq,
-        up_to_scene_id=payload.up_to_scene_id,
-        create_review_items=payload.create_review_items,
-    )
-    session.commit()
-    return ok(
-        {
+    body = payload.model_dump(mode="json", exclude_none=True)
+
+    def reconcile() -> dict:
+        findings = EventReconciliationService(session).reconcile_project(
+            payload.project_id,
+            up_to_scene_seq=payload.up_to_scene_seq,
+            up_to_scene_id=payload.up_to_scene_id,
+            create_review_items=payload.create_review_items,
+        )
+        return {
             "project_id": payload.project_id,
             "drift_count": len(findings),
-            "blocking_count": sum(1 for f in findings if f.severity == "block"),
-            "findings": [f.to_dict() for f in findings],
-        },
-        req_id=getattr(request.state, "request_id", None),
+            "blocking_count": sum(1 for finding in findings if finding.severity == "block"),
+            "findings": [finding.to_dict() for finding in findings],
+        }
+
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/system-config/reconcile",
+        payload=body,
+        action=reconcile,
     )

@@ -33,10 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import NarrativeEvent, SceneCard
-from novel_system.services.narrative_event_log import (
-    INFORMATION_ASYMMETRY_FACT_KEYS,
-    NarrativeEventLog,
-)
+from novel_system.services.narrative_contracts import INFORMATION_ASYMMETRY_FACT_KEYS
 from novel_system.services.narrative_position import NarrativePositionService
 
 # 秘密性质的信息不对称键——这些键的**内容**受 POV 过滤；其余事实为公共。
@@ -57,9 +54,9 @@ class PovProjection:
 class PovKnowledgeProjection:
     """POV 视角的写作提示词投影器。"""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, *, event_log: Any) -> None:
         self.session = session
-        self.log = NarrativeEventLog(session)
+        self.log = event_log
         self.positions = NarrativePositionService(session)
 
     # ------------------------------------------------------------------

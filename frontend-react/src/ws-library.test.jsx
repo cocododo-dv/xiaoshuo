@@ -9,13 +9,27 @@
 // 断言取向（对齐 ws-catalog.test 范式）：断「可观测结果」+「仅失败路径触发的 alert」。
 // 写动词去重不可靠，故失败回滚断 alert + refetch；端点路由断精确 URL+body（可证伪）。
 // installApiRouter 不识别 /library，故本 spec 自带 apiGet 路由。
+import React, { act } from "react";
+import { createRoot } from "react-dom/client";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock("./lib/client.js", () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(),
   apiPatch: vi.fn(),
   apiDelete: vi.fn(),
+}));
+
+vi.mock("./ws-catalog.jsx", () => ({
+  WsTrashStore: {
+    subscribe: () => () => {},
+    list: () => [],
+    restore: vi.fn(),
+    purge: vi.fn(),
+    clear: vi.fn(),
+  },
 }));
 
 const T = { timeout: 5000, interval: 25 };
@@ -48,6 +62,20 @@ function routeApiGet(client, lib) {
   client.apiPost.mockResolvedValue({});
   client.apiPatch.mockResolvedValue({});
   client.apiDelete.mockResolvedValue({});
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+function namedLibrary(id, name) {
+  return {
+    characters: [{ character_id: id, name, role: "主角", summary: "", ref: `character:${id}`, details: {} }],
+    entities: [], timeline: [], relations: [],
+  };
 }
 
 async function loadLib(lib = libResponse()) {
@@ -83,6 +111,73 @@ describe("WsLibrary 数据层（libFetch 关系双向索引）", () => {
     const { data } = await loadLib({ characters: [], entities: [], timeline: [], relations: [] });
     expect(data.LIB_ENTRIES.length).toBe(0);
     expect(window.LIB_relationsRaw()).toEqual([]);
+  });
+
+  it("A→B 快速切换时立即隔离旧快照，且 A 的迟到响应不能覆盖 B", async () => {
+    const client = await import("./lib/client.js");
+    const projectA = deferred();
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v2/projects") return Promise.resolve({ items: [
+        { project_id: "project-a", title: "甲项目" },
+        { project_id: "project-b", title: "乙项目" },
+      ] });
+      if (url === "/api/v2/projects/project-a/library") return projectA.promise;
+      if (url === "/api/v2/projects/project-b/library") return Promise.resolve(namedLibrary("char-b", "乙角色"));
+      return Promise.resolve({});
+    });
+    window.localStorage.setItem("ws_active_work_v1", "project-a");
+
+    const { WsWorks } = await import("./ws-works.jsx");
+    await vi.waitFor(() => expect(WsWorks.list().map(w => w.id)).toEqual(["project-a", "project-b"]), T);
+    const data = await import("./ws-library-data.jsx");
+    expect(data.LIB_ENTRIES).toHaveLength(0);
+
+    WsWorks.setActive("project-b");
+    await vi.waitFor(() => expect(data.LIB_ENTRIES.map(e => e.name)).toEqual(["乙角色"]), T);
+
+    projectA.resolve(namedLibrary("char-a", "甲角色"));
+    await projectA.promise;
+    await Promise.resolve();
+    expect(data.LIB_ENTRIES.map(e => e.name)).toEqual(["乙角色"]);
+    expect(data.LIB_BY_ID["char-a"]).toBeUndefined();
+  });
+});
+
+describe("WsLibrary 视图与异步资料快照连通", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    window.localStorage.clear();
+    vi.spyOn(window, "alert").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("组件先挂载、请求后完成时自动重算并显示服务端条目", async () => {
+    const client = await import("./lib/client.js");
+    const library = deferred();
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v2/projects") return Promise.resolve({ items: [{ project_id: "prj-main", title: "北岸手记" }] });
+      if (url === "/api/v2/projects/prj-main/library") return library.promise;
+      return Promise.resolve({});
+    });
+    window.localStorage.setItem("ws_active_work_v1", "prj-main");
+
+    const { WsWorks } = await import("./ws-works.jsx");
+    await vi.waitFor(() => expect(WsWorks.activeId()).toBe("prj-main"), T);
+    const { WsLibrary } = await import("./ws-library.jsx");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<WsLibrary go={vi.fn()} />));
+      expect(host.textContent).toContain("这部作品的档案库还是空的");
+
+      await act(async () => { library.resolve(libResponse()); await library.promise; });
+      await vi.waitFor(() => expect(host.textContent).toContain("林岑"), T);
+      expect(host.textContent).not.toContain("这部作品的档案库还是空的");
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
   });
 });
 
@@ -164,5 +259,39 @@ describe("WsLibrary 编辑层（LIB_persist diff→PATCH + relations CRUD）", (
       expect.objectContaining({ name: "新人物" })), T);
     const charPosts = client.apiPost.mock.calls.filter(c => /\/library\/characters$/.test(c[0]));
     expect(charPosts.length).toBe(1); // 去重可证伪
+  });
+
+  it("新建请求失败不会污染去重集合；同一条目可重试", async () => {
+    const { client, edit } = await loadLib();
+    client.apiPost.mockClear();
+    client.apiPost.mockRejectedValueOnce(new Error("network down"));
+    const ne = edit.LIB_newEntry("people", "可重试人物");
+
+    expect(await edit.LIB_persistAdds([ne])).toBe(false);
+    expect(window.alert).toHaveBeenCalled();
+    client.apiPost.mockResolvedValueOnce({});
+    expect(await edit.LIB_persistAdds([ne])).toBe(true);
+
+    const posts = client.apiPost.mock.calls.filter(c => /\/library\/characters$/.test(c[0]));
+    expect(posts).toHaveLength(2);
+  });
+
+  it("关系写入失败不会把整次编辑误标成功；相同 patch 可重试", async () => {
+    const { client, edit } = await loadLib();
+    client.apiPost.mockClear();
+    client.apiPatch.mockClear();
+    client.apiPost.mockRejectedValueOnce(new Error("relation unavailable"));
+    const patch = { links: [
+      { id: "zhou", type: "conflict", rel: "宿敌", relationId: "r1" },
+      { id: "arch", type: "ally", rel: "工作于" },
+    ] };
+
+    expect(await edit.LIB_persist({ lin: patch })).toBe(false);
+    expect(window.alert).toHaveBeenCalled();
+    client.apiPost.mockResolvedValueOnce({});
+    expect(await edit.LIB_persist({ lin: patch })).toBe(true);
+
+    const relationPosts = client.apiPost.mock.calls.filter(c => /\/library\/relations$/.test(c[0]));
+    expect(relationPosts).toHaveLength(2);
   });
 });

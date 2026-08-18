@@ -15,13 +15,14 @@ from __future__ import annotations
 import logging
 import uuid
 import json
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
 from novel_system.db.models import ReviewItem, utcnow
 
@@ -38,7 +39,10 @@ from novel_system.services.style_reference.materialization import Materializatio
 from novel_system.services.style_reference.preview import PreviewService
 from novel_system.services.style_reference.profile_synthesizer import ProfileSynthesizer
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.run_orchestrator import RunOrchestrator
+from novel_system.services.style_reference.run_orchestrator import (
+    RunOrchestrator,
+    start_style_reference_run_worker,
+)
 from novel_system.services.style_reference.injection import (
     InjectionService,
     injection_task_defaults,
@@ -54,7 +58,10 @@ from novel_system.services.style_reference.schemas import (
     ValidationMode,
     ValidationTargetKind,
 )
-from novel_system.services.style_reference.validation import ValidationOrchestrator
+from novel_system.services.style_reference.validation import (
+    ValidationOrchestrator,
+    start_style_reference_validation_worker,
+)
 from novel_system.services.system_config import require_admin_token
 
 router = APIRouter(tags=["style_reference"])
@@ -68,18 +75,22 @@ PATH_PREFIX = "/api/v2/style-reference"
 
 
 class ImportPathRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    file_path: str
-    title: str
-    author_label: str | None = None
-    cloud_policy: str
+    model_config = ConfigDict(extra="forbid", strict=True)
+    file_path: str = Field(min_length=1, max_length=2048)
+    title: str = Field(min_length=1, max_length=512)
+    author_label: str | None = Field(default=None, max_length=255)
+    cloud_policy: Literal[
+        "allow_full_cloud", "segments_only", "local_only"
+    ]
     # Wave 7 §5.9 — 导入权属声明 {analysis_rights, send_rights, declared_by}
-    rights_declaration: dict[str, Any] | None = None
+    rights_declaration: BoundedJsonObject | None = None
 
 
 class StartRunRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    layers: list[str] | None = None
+    model_config = ConfigDict(extra="forbid", strict=True)
+    layers: list[
+        Annotated[str, Field(min_length=1, max_length=64)]
+    ] | None = Field(default=None, max_length=4)
     # True 时立即返回 RUNNING + run_id,抽取在后台线程执行;
     # 调用方轮询 GET /runs/{run_id} 读 coverage_json.progress
     background: bool = False
@@ -90,41 +101,44 @@ class StartRunRequest(BaseModel):
 class ApplyConfigMixin(BaseModel):
     """apply 时落入 binding.config_json 的注入配置(MIXED 策略消费)。"""
 
-    model_config = ConfigDict(extra="forbid")
-    intensity: int | None = None          # 0-100,风格强度滑块
-    sub_dimensions: list[str] | None = None  # 维度多选(过滤 forbidden findings)
+    model_config = ConfigDict(extra="forbid", strict=True)
+    intensity: int | None = Field(default=None, ge=0, le=100)
+    sub_dimensions: list[
+        Annotated[str, Field(min_length=1, max_length=128)]
+    ] | None = Field(default=None, max_length=128)
     include_positive: bool | None = None
     include_forbidden: bool | None = None
     include_metric: bool | None = None
 
 
 class FindingReviewRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    decision: str  # approved / rejected / pending
-    comment: str | None = None
+    model_config = ConfigDict(extra="forbid", strict=True)
+    # Domain validation owns the stable STYLE_REFERENCE_REVIEW_DECISION_INVALID.
+    decision: str = Field(min_length=1, max_length=64)
+    comment: str | None = Field(default=None, max_length=4_000)
 
 
 class FindingFeedbackRequest(BaseModel):
     """立项 B — finding 用户反馈(👍/👎)。"""
 
-    model_config = ConfigDict(extra="forbid")
-    vote: str  # up / down
+    model_config = ConfigDict(extra="forbid", strict=True)
+    vote: str = Field(min_length=1, max_length=64)
 
 
 class BannedTermCreateRequest(BaseModel):
     """禁用词登记:generation=生成期红线段填充;extraction=抽取期段落过滤。"""
 
-    model_config = ConfigDict(extra="forbid")
-    term: str
-    replacement_hint: str | None = None
-    scope: str = "generation"
+    model_config = ConfigDict(extra="forbid", strict=True)
+    term: str = Field(min_length=1, max_length=512)
+    replacement_hint: str | None = Field(default=None, max_length=2_000)
+    scope: str = Field(default="generation", min_length=1, max_length=64)
 
 
 class ApplyProfileRequest(ApplyConfigMixin):
-    scope: str
-    scope_ref_id: str | None = None
-    task_type: str = "scene_generation"
-    strategy: str = "A"
+    scope: str = Field(min_length=1, max_length=64)
+    scope_ref_id: str | None = Field(default=None, max_length=255)
+    task_type: str = Field(default="scene_generation", min_length=1, max_length=64)
+    strategy: str = Field(default="A", min_length=1, max_length=64)
 
     def injection_config(self) -> dict[str, Any]:
         """非空注入配置 → binding.config_json(端到端打通 intensity 滑块)。"""
@@ -143,12 +157,13 @@ class ApplyProfileRequest(ApplyConfigMixin):
 class ValidateGeneratedRequest(BaseModel):
     """`POST /profiles/{id}/validate` body(profile_id 在 path,不在 body)。"""
 
-    model_config = ConfigDict(extra="forbid")
-    generated_text: str
-    target_kind: str = "manual"
-    target_ref_id: str | None = None
-    mode: str = "async_full"
-    task_context: dict[str, Any] | None = None
+    model_config = ConfigDict(extra="forbid", strict=True)
+    generated_text: str = Field(min_length=1, max_length=2_000_000)
+    target_kind: str = Field(default="manual", min_length=1, max_length=64)
+    target_ref_id: str | None = Field(default=None, max_length=255)
+    # The route translates invalid values to STYLE_REFERENCE_VALIDATE_PARAM_INVALID.
+    mode: str = Field(default="async_full", min_length=1, max_length=64)
+    task_context: BoundedJsonObject | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +285,7 @@ def _with_idem(
     path_template: str,
     payload: dict[str, Any],
     action,
+    after_commit=None,
 ):
     result, status = execute_with_idempotency(
         session,
@@ -278,6 +294,7 @@ def _with_idem(
         path_template=path_template,
         payload=payload,
         action=action,
+        after_commit=after_commit,
         actor_ref=_actor(request),
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -359,10 +376,10 @@ MAX_UPLOAD_BYTES = MAX_REFERENCE_BOOK_BYTES
 async def import_book_upload(
     request: Request,
     file: UploadFile = File(...),
-    title: str = Form(...),
-    author_label: str | None = Form(default=None),
-    cloud_policy: str = Form(...),
-    rights_declaration: str | None = Form(default=None),
+    title: str = Form(..., min_length=1, max_length=512),
+    author_label: str | None = Form(default=None, max_length=255),
+    cloud_policy: str = Form(..., min_length=1, max_length=64),
+    rights_declaration: str | None = Form(default=None, max_length=20_000),
     session: Session = Depends(get_session),
 ):
     raw_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
@@ -377,9 +394,19 @@ async def import_book_upload(
     if rights_declaration:
         try:
             parsed = json.loads(rights_declaration)
-            rights_obj = parsed if isinstance(parsed, dict) else None
-        except (ValueError, TypeError):
-            rights_obj = None
+        except (ValueError, TypeError) as exc:
+            raise DomainError(
+                "STYLE_REFERENCE_RIGHTS_DECLARATION_INVALID",
+                "rights_declaration must be a JSON object",
+                status_code=400,
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise DomainError(
+                "STYLE_REFERENCE_RIGHTS_DECLARATION_INVALID",
+                "rights_declaration must be a JSON object",
+                status_code=400,
+            )
+        rights_obj = parsed
     payload: dict[str, Any] = {
         "file_name": file.filename,
         "title": title,
@@ -449,6 +476,7 @@ def get_book(
 def delete_book(
     book_id: str,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
     def _do() -> dict[str, Any]:
@@ -481,6 +509,7 @@ def delete_book(
 def reclassify_book(
     book_id: str,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
     """PR-23 — 重跑段落分类器(复用 ingest 的 classify_paragraphs 管线)。
@@ -522,9 +551,10 @@ def start_run(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json")
+    client, enabled = _get_llm_client_and_enabled()
+    background = bool(body.get("background"))
 
     def _do() -> dict[str, Any]:
-        client, enabled = _get_llm_client_and_enabled()
         # PR-23 — 默认值单点:不带 layers 时全 4 层抽取(语 + 叙 + 景 + 题)
         layers_raw = body.get("layers") or ["language", "narrative", "scene", "theme"]
         try:
@@ -539,8 +569,9 @@ def start_run(
         result = orch.start_extract_run(
             book_id,
             layers=layers,
-            background=bool(body.get("background")),
+            background=background,
             force=bool(body.get("force")),
+            defer_dispatch=background,
         )
         return {
             "run_id": result.run_id,
@@ -557,6 +588,22 @@ def start_run(
             ],
         }
 
+    def _dispatch(result: dict[str, Any]) -> None:
+        if not enabled or client is None:
+            # A successful replay can happen after an operator disables the
+            # provider. Leave the durable run queued for normal recovery.
+            logger.warning(
+                "style-reference run %s remains queued because LLM is disabled",
+                result.get("run_id"),
+            )
+            return
+        start_style_reference_run_worker(
+            run_id=str(result["run_id"]),
+            book_id=str(result["book_id"]),
+            layer_values=[str(layer) for layer in result.get("layers") or []],
+            llm_client=client,
+        )
+
     return _with_idem(
         session,
         request,
@@ -564,6 +611,7 @@ def start_run(
         path_template=f"{PATH_PREFIX}/books/{{book_id}}/runs",
         payload={"book_id": book_id, **body},
         action=_do,
+        after_commit=_dispatch if background else None,
     )
 
 
@@ -606,6 +654,7 @@ def get_run(
 def cancel_run(
     run_id: str,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
     def _do() -> dict[str, Any]:
@@ -811,6 +860,7 @@ def user_feedback_finding(
 def synthesize_profile(
     run_id: str,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
     def _do() -> dict[str, Any]:
@@ -910,6 +960,7 @@ def get_profile(
 def preview_profile(
     profile_id: str,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
     def _do() -> dict[str, Any]:
@@ -996,6 +1047,7 @@ def list_bindings(
 def delete_binding(
     binding_id: str,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
     def _do() -> dict[str, Any]:
@@ -1121,6 +1173,7 @@ def create_banned_term(
 def delete_banned_term(
     term_id: str,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
     def _do() -> dict[str, Any]:
@@ -1194,20 +1247,26 @@ REPORT_PENDING_TIMEOUT_MINUTES = 10
 
 
 def _reap_orphan_report(session: Session, report) -> None:
-    if not report.verdict and report.status == "completed":
-        report.status = "queued"
-    if report.status not in {"queued", "running"}:
+    legacy_pending = not report.verdict and report.status == "completed"
+    if report.status == "queued":
+        # A queued report has not acquired a worker yet. Startup recovery owns
+        # detection of a lost queue because this endpoint cannot distinguish it
+        # from valid executor backpressure.
+        return
+    if report.status != "running" and not legacy_pending:
         return
     from datetime import datetime, timedelta, timezone
 
     try:
-        created = datetime.fromisoformat(str(report.created_at).replace("Z", "+00:00"))
+        last_seen = datetime.fromisoformat(
+            str(report.heartbeat_at or report.started_at or report.created_at).replace("Z", "+00:00")
+        )
     except (TypeError, ValueError):
         return
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=timezone.utc)
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=REPORT_PENDING_TIMEOUT_MINUTES)
-    if created < cutoff:
+    if last_seen < cutoff:
         report.verdict = "fail"
         report.status = "failed"
         report.error_code = "STYLE_REFERENCE_VALIDATION_INTERRUPTED"
@@ -1227,29 +1286,39 @@ def validate_profile_generated(
 ):
     """PR-7 §7 — sync_only / async_full 双路径 validation。"""
     body = payload.model_dump(mode="json")
+    try:
+        target_kind = ValidationTargetKind(body.get("target_kind") or "manual")
+        mode = ValidationMode(body.get("mode") or "async_full")
+    except ValueError as exc:
+        raise DomainError(
+            "STYLE_REFERENCE_VALIDATE_PARAM_INVALID",
+            str(exc),
+            status_code=400,
+        ) from exc
+
+    req = ValidateRequest(
+        generated_text=body["generated_text"],
+        target_kind=target_kind,
+        target_ref_id=body.get("target_ref_id"),
+        mode=mode,
+        task_context=body.get("task_context"),
+    )
+    client, enabled = _get_llm_client_and_enabled()
+    background = mode == ValidationMode.ASYNC_FULL
 
     def _do() -> dict[str, Any]:
-        try:
-            target_kind = ValidationTargetKind(body.get("target_kind") or "manual")
-            mode = ValidationMode(body.get("mode") or "async_full")
-        except ValueError as exc:
-            raise DomainError(
-                "STYLE_REFERENCE_VALIDATE_PARAM_INVALID",
-                str(exc),
-                status_code=400,
-            ) from exc
-
-        req = ValidateRequest(
-            generated_text=body["generated_text"],
-            target_kind=target_kind,
-            target_ref_id=body.get("target_ref_id"),
-            mode=mode,
-            task_context=body.get("task_context"),
-        )
-        client, enabled = _get_llm_client_and_enabled()
         orch = ValidationOrchestrator(session, llm_client=client, llm_enabled=enabled)
-        result = orch.validate(profile_id, req)
+        result = orch.validate(profile_id, req, defer_dispatch=background)
         return result.model_dump(mode="json")
+
+    def _dispatch(result: dict[str, Any]) -> None:
+        start_style_reference_validation_worker(
+            report_id=str(result["report_id"]),
+            profile_id=profile_id,
+            generated_text=req.generated_text,
+            llm_client=client,
+            llm_enabled=enabled,
+        )
 
     return _with_idem(
         session,
@@ -1258,6 +1327,7 @@ def validate_profile_generated(
         path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/validate",
         payload={"profile_id": profile_id, **body},
         action=_do,
+        after_commit=_dispatch if background else None,
     )
 
 
@@ -1340,6 +1410,7 @@ def dryrun_injection_preview(
     session: Session = Depends(get_session),
 ):
     """PR-9 §5.1 — dryrun:不写盘,直接按入参 strategy/intensity/sub_dimensions 渲染。"""
+    # idempotency-exempt: deterministic read-only preview; no DB/file/provider side effect.
     repo = StyleReferenceRepository(session)
     profile = repo.get_profile(profile_id)
     if profile is None:

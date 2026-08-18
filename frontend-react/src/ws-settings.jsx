@@ -3,6 +3,7 @@ import { I } from "./icons.jsx";
 import { WsWorks, useActiveWork } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { AISettings } from "./ws-settings-ai.jsx";
+import { Section, Row, Toggle, Segmented, usePref } from "./ws-settings-shared.jsx";
 
 /* global React, I */
 const { useState: useSt6 } = React;
@@ -24,18 +25,6 @@ const S_TABS = [
   { id: "appear",   label: "外观",  icon: "Type" },
   { id: "data",     label: "数据 & 安全", icon: "ShieldCheck" },
 ];
-
-/* ---- 全局偏好持久化（跨作品） ---- */
-const SET_PREFS_LS = "ws_prefs_v1";
-function setPrefsLoad() { try { return JSON.parse(localStorage.getItem(SET_PREFS_LS)) || {}; } catch (e) { return {}; } }
-function usePref(key, def) {
-  const [v, setV] = useSt6(() => { const all = setPrefsLoad(); return all[key] !== undefined ? all[key] : def; });
-  const set = (nv) => {
-    setV(nv);
-    try { const all = setPrefsLoad(); all[key] = nv; localStorage.setItem(SET_PREFS_LS, JSON.stringify(all)); } catch (e) {}
-  };
-  return [v, set];
-}
 
 function WsSettings({ go, t, setTweak }) {
   const [tab, setTab] = useSt6("project");
@@ -75,50 +64,6 @@ function WsSettings({ go, t, setTweak }) {
     </div>
   );
 };
-
-function Section({ title, desc, children }) {
-  return (
-    <section className="set-section">
-      <header className="set-section-head">
-        <h2 className="set-section-title text-serif">{title}</h2>
-        {desc && <p className="set-section-desc">{desc}</p>}
-      </header>
-      <div className="set-section-body">{children}</div>
-    </section>
-  );
-}
-
-function Row({ label, hint, children }) {
-  return (
-    <div className="set-row">
-      <div>
-        <div className="set-row-label">{label}</div>
-        {hint && <div className="set-row-hint">{hint}</div>}
-      </div>
-      <div className="set-row-ctl">{children}</div>
-    </div>
-  );
-}
-
-function Toggle({ on, onChange }) {
-  return (
-    <button className={`toggle ${on ? "is-on" : ""}`} onClick={() => onChange(!on)} aria-label="toggle">
-      <span className="toggle-knob" />
-    </button>
-  );
-}
-
-function Segmented({ options, value, onChange }) {
-  return (
-    <div className="seg">
-      {options.map(o => (
-        <button key={o.value} className={`seg-btn ${value === o.value ? "is-active" : ""}`} onClick={() => onChange(o.value)}>
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 /* ===== 项目 — 读写当前作品（WsWorks），状态来自目录汇总 ===== */
 function ProjectSettings() {
@@ -248,14 +193,13 @@ function AppearSettings({ t, setTweak }) {
 /* ===== 数据 & 安全 — 真实动作 ===== */
 function DataSettings({ go }) {
   const work = WsWorks ? WsWorks.active() : { id: "", title: "—" };
-  const isSeed = WsWorks ? WsWorks.isSeed(work.id) : true;
   const worksN = WsWorks ? WsWorks.list().length : 1;
 
-  const resetWork = () => {
+  const clearLocalCache = () => {
     if (!window.confirm(
-      `重置《${work.title}》？\n清空这部作品在本机的全部编辑（章节、构思、正文、待办、回收站），` +
-      (isSeed ? "回到示例种子状态。" : "变回一部空白作品。") +
-      "\n此操作无法撤销——建议先去「导入导出」导一份数据包。"
+      `清除《${work.title}》的本机缓存？\n` +
+      "不会删除服务端作品、章节或正文；刷新后会重新从服务端读取。" +
+      "\n未同步的本地恢复记录会被删除且无法撤销——请先手工复制仍需保留的内容。"
     )) return;
     try {
       const suffix = "::" + work.id;
@@ -277,21 +221,24 @@ function DataSettings({ go }) {
 
   return (
     <>
-      <Section title="导入 / 导出" desc="全书稿与数据包的导出、备份恢复，都在「导入导出」模块完成。">
-        <Row label="导出全书稿" hint="目录 + 正文编译成 Markdown。">
-          <button className="btn btn-ghost" onClick={() => go && go("interop")}>去导出 <I.ArrowRight size={13} /></button>
+      <Section title="导出与备份" desc="成稿导出、本机缓存快照和服务端数据库备份是三种不同能力。">
+        <Row label="导出服务端成稿" hint="逐章核验服务端权威正文，可导出 Markdown、TXT 或 Word。">
+          <button className="btn btn-ghost" onClick={() => go && go("manuscripts")}>去成稿中心 <I.ArrowRight size={13} /></button>
         </Row>
-        <Row label="备份数据包" hint="当前作品的全部状态，可迁移可恢复。">
-          <button className="btn btn-ghost" onClick={() => go && go("interop")}>去备份 <I.ArrowRight size={13} /></button>
+        <Row label="浏览器缓存快照" hint="仅供诊断或人工取证；不含服务端数据库，不能迁移或恢复项目。">
+          <button className="btn btn-ghost" onClick={() => go && go("interop")}>查看互操作 <I.ArrowRight size={13} /></button>
+        </Row>
+        <Row label="完整数据库备份" hint="由运维执行带完整性、外键和 SHA-256 校验的停机恢复演练。">
+          <span className="text-muted text-xs">不在浏览器内执行</span>
         </Row>
       </Section>
-      <Section title="危险区" desc="谨慎操作。删除可从回收站找回；重置不可撤销。">
-        <Row label="重置本作品" hint={isSeed ? "清空本机编辑，回到示例种子状态。" : "清空全部内容，变回一部空白作品。"}>
-          <button className="btn btn-ghost" style={{ borderColor: "var(--rose)", color: "var(--rose)" }} onClick={resetWork}>重置…</button>
+      <Section title="危险区" desc="谨慎操作。清缓存不改服务端数据；删除可从回收站恢复。">
+        <Row label="清除本机缓存" hint="删除当前作品的浏览器缓存与未同步恢复记录，随后从服务端重载。">
+          <button className="btn btn-ghost" style={{ borderColor: "var(--rose)", color: "var(--rose)" }} onClick={clearLocalCache}>清除…</button>
         </Row>
-        <Row label="删除本作品" hint={isSeed ? "示例作品是演示基底，不可删除。" : worksN <= 1 ? "至少保留一部作品。" : "整部进入回收站，可恢复。"}>
-          <button className="btn btn-ghost" disabled={isSeed || worksN <= 1}
-            style={{ borderColor: "var(--rose)", color: "var(--rose)", opacity: (isSeed || worksN <= 1) ? 0.45 : 1 }}
+        <Row label="删除本作品" hint={worksN <= 1 ? "至少保留一部作品。" : "整部进入回收站，可恢复。"}>
+          <button className="btn btn-ghost" disabled={worksN <= 1}
+            style={{ borderColor: "var(--rose)", color: "var(--rose)", opacity: worksN <= 1 ? 0.45 : 1 }}
             onClick={deleteWork}>删除…</button>
         </Row>
       </Section>
@@ -299,8 +246,5 @@ function DataSettings({ go }) {
   );
 }
 
-Object.assign(window, { WsSettings });
-
-/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留）。
-   Section/Row/Toggle/Segmented/usePref 供 ws-settings-ai.jsx 复用。 */
-export { WsSettings, Section, Row, Toggle, Segmented, usePref };
+/* Section/Row/Toggle/Segmented/usePref 供 ws-settings-ai.jsx 复用。 */
+export { WsSettings, DataSettings, Section, Row, Toggle, Segmented, usePref };

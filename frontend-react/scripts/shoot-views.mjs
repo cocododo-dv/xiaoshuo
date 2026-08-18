@@ -1,11 +1,11 @@
 // Phase 1 验收辅助：对 React 工程逐视图截图 + 捕获 console/page 错误。
 // 运行：cd frontend && node ../frontend-react/scripts/shoot-views.mjs <BASE> <OUTDIR>
-// （从 frontend/ 运行以复用其 node_modules 里的 playwright）
+// （Playwright 由 frontend-react 自己锁定，可从任意工作目录启动）
 import path from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 
-const require = createRequire(path.join(process.cwd(), "package.json"));
+const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
 const BASE = process.argv[2] || "http://127.0.0.1:5174/";

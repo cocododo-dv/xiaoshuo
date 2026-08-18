@@ -677,7 +677,4 @@ function WsCost() {
   );
 }
 
-Object.assign(window, { WsCost, costLoad, costBack, csSnapshot });
-
-/* ESM 导出（window.* 赋值过渡期保留） */
 export { WsCost, costLoad, costBack, csSnapshot, useCostState, PHASE_LABEL, QuotaSection, quotaArmed };

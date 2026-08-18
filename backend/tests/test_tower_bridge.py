@@ -103,6 +103,74 @@ def test_finding_id_idempotent_and_card_deduped(client):
     assert sum(1 for i in items if i.get("dedupe_key") == "canon:c-once") == 1
 
 
+def test_longform_chapter_resources_are_project_scoped(client):
+    owner_id = _create_project(client)
+    foreign_id = _create_project(client)
+    chapter_id = _chapter(client, owner_id)
+
+    contract = client.get(
+        f"/api/v2/projects/{foreign_id}/longform/chapters/{chapter_id}/contract"
+    )
+    audit = client.get(
+        f"/api/v2/projects/{foreign_id}/longform/chapters/{chapter_id}/audit"
+    )
+    create = client.post(
+        f"/api/v2/projects/{foreign_id}/longform/chapters/{chapter_id}/audit",
+        json={"text": "must stay isolated"},
+        headers={"X-Idempotency-Key": "tower-cross-project-finding"},
+    )
+
+    for response in (contract, audit, create):
+        assert response.status_code == 404, response.text
+        assert response.json()["error"]["code"] == "CHAPTER_NOT_FOUND"
+
+
+def test_contract_scene_must_belong_to_the_same_chapter(client):
+    pid = _create_project(client)
+    contract_chapter_id = _chapter(client, pid)
+    other_chapter_id = _chapter(client, pid)
+    other_scene = _post(
+        client,
+        f"/api/v2/projects/{pid}/catalog/chapters/{other_chapter_id}/scenes",
+        {"title": "Other chapter scene"},
+    )["scene"]
+
+    response = client.put(
+        f"/api/v2/projects/{pid}/longform/chapters/{contract_chapter_id}/contract",
+        json={
+            "constraints": [
+                {"text": "wrong chapter target", "scene_id": other_scene["scene_id"]}
+            ]
+        },
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "TOWER_CONTRACT_SCENE_NOT_FOUND"
+
+
+def test_finding_id_collision_cannot_disclose_another_project(client):
+    owner_id = _create_project(client)
+    owner_chapter_id = _chapter(client, owner_id)
+    foreign_id = _create_project(client)
+    foreign_chapter_id = _chapter(client, foreign_id)
+    finding_id = "globally-colliding-finding"
+    _post(
+        client,
+        f"/api/v2/projects/{owner_id}/longform/chapters/{owner_chapter_id}/audit",
+        {"finding_id": finding_id, "text": "owner-only evidence"},
+    )
+
+    response = client.post(
+        f"/api/v2/projects/{foreign_id}/longform/chapters/{foreign_chapter_id}/audit",
+        json={"finding_id": finding_id, "text": "foreign text"},
+        headers={"X-Idempotency-Key": "tower-finding-id-collision"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["code"] == "TOWER_AUDIT_FINDING_ID_CONFLICT"
+    assert "owner-only evidence" not in response.text
+
+
 def test_archive_transition_writes_back_chapter_state_and_derive(client, session):
     pid = _create_project(client)
     cid = _chapter(client, pid)

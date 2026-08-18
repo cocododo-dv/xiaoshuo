@@ -169,12 +169,13 @@ def _add_timeline_event(session: Session, project_id: str, payload: dict[str, An
 
 def _rule_canon(session: Session, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     """P7 链路①：设定裁决 —— 与塔的 adjudicate 同一服务函数（同源单一状态）。"""
-    from novel_system.services.longform_tower import LongformTowerService
+    from novel_system.services.longform_adjudication import adjudicate_finding
 
     finding_id = str(payload.get("finding_id") or "").strip()
     if not finding_id:
         raise DomainError("REVIEW_EFFECT_INVALID", "rule_canon requires finding_id", status_code=400)
-    return LongformTowerService(session).adjudicate_finding(
+    return adjudicate_finding(
+        session,
         project_id,
         finding_id,
         {

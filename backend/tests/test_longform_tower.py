@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import uuid
 
+from novel_system.db.models import ChapterContract
+
 
 def _idem() -> dict:
     return {"X-Idempotency-Key": f"twr-test-{uuid.uuid4().hex[:10]}"}
@@ -23,6 +25,26 @@ def _create_project(client) -> dict:
     )
     assert response.status_code == 200, response.text
     return response.json()["data"]["project"]
+
+
+def _create_chapter(client, project_id: str, title: str = "Tower chapter") -> dict:
+    response = client.post(
+        f"/api/v2/projects/{project_id}/catalog/chapters",
+        json={"title": title, "with_scene": False},
+        headers=_idem(),
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]["chapter"]
+
+
+def _create_scene(client, project_id: str, chapter_id: str) -> dict:
+    response = client.post(
+        f"/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/scenes",
+        json={"title": "Tower contract scene"},
+        headers=_idem(),
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]["scene"]
 
 
 def test_anchor_crud_and_fade(client) -> None:
@@ -50,7 +72,9 @@ def test_anchor_crud_and_fade(client) -> None:
 
 def test_contract_gates_and_transitions(client) -> None:
     project = _create_project(client)
-    base = f"/api/v2/projects/{project['project_id']}/longform/chapters/CH09/contract"
+    chapter = _create_chapter(client, project["project_id"])
+    scene = _create_scene(client, project["project_id"], chapter["chapter_id"])
+    base = f"/api/v2/projects/{project['project_id']}/longform/chapters/{chapter['chapter_id']}/contract"
 
     fetched = client.get(base)
     assert fetched.status_code == 200, fetched.text
@@ -73,7 +97,7 @@ def test_contract_gates_and_transitions(client) -> None:
         base,
         json={
             "constraints": [
-                {"text": "回收第 6 章的脚印线索", "scene_id": "CH09_SC03"},
+                {"text": "回收第 6 章的脚印线索", "scene_id": scene["scene_id"]},
                 {"text": "档案室位置保持地下", "anchor_id": anchor["anchor_id"]},
             ]
         },
@@ -109,11 +133,45 @@ def test_contract_gates_and_transitions(client) -> None:
     assert archived.json()["data"]["archived_at"]
 
 
+def test_contract_get_is_read_only_and_put_is_replayable(client, session) -> None:
+    project = _create_project(client)
+    project_id = project["project_id"]
+    chapter = _create_chapter(client, project_id)
+    chapter_id = chapter["chapter_id"]
+    base = f"/api/v2/projects/{project_id}/longform/chapters/{chapter_id}/contract"
+
+    fetched = client.get(base)
+    assert fetched.status_code == 200
+    assert fetched.json()["data"]["status"] == "drafting"
+    assert (
+        session.query(ChapterContract)
+        .filter_by(project_id=project_id, chapter_id=chapter_id)
+        .count()
+        == 0
+    )
+
+    headers = {"X-Idempotency-Key": "tower-contract-put-1"}
+    payload = {"constraints": [{"text": "Preserve the sealed-room location"}]}
+    first = client.put(base, json=payload, headers=headers)
+    replayed = client.put(base, json=payload, headers=headers)
+
+    assert first.status_code == replayed.status_code == 200
+    assert replayed.headers["X-Idempotency-Status"] == "replayed"
+    assert replayed.json()["data"] == first.json()["data"]
+    assert (
+        session.query(ChapterContract)
+        .filter_by(project_id=project_id, chapter_id=chapter_id)
+        .count()
+        == 1
+    )
+
+
 def test_audit_findings_gate_archive(client) -> None:
     project = _create_project(client)
     pid = project["project_id"]
-    contract_base = f"/api/v2/projects/{pid}/longform/chapters/CH09/contract"
-    audit_base = f"/api/v2/projects/{pid}/longform/chapters/CH09/audit"
+    chapter = _create_chapter(client, pid)
+    contract_base = f"/api/v2/projects/{pid}/longform/chapters/{chapter['chapter_id']}/contract"
+    audit_base = f"/api/v2/projects/{pid}/longform/chapters/{chapter['chapter_id']}/audit"
 
     # 契约推进到 dispatched
     client.get(contract_base)
@@ -156,8 +214,9 @@ def test_audit_findings_gate_archive(client) -> None:
 def test_audit_force_archive_with_open_findings(client) -> None:
     project = _create_project(client)
     pid = project["project_id"]
-    contract_base = f"/api/v2/projects/{pid}/longform/chapters/CH10/contract"
-    audit_base = f"/api/v2/projects/{pid}/longform/chapters/CH10/audit"
+    chapter = _create_chapter(client, pid)
+    contract_base = f"/api/v2/projects/{pid}/longform/chapters/{chapter['chapter_id']}/contract"
+    audit_base = f"/api/v2/projects/{pid}/longform/chapters/{chapter['chapter_id']}/audit"
 
     client.get(contract_base)
     client.put(contract_base, json={"constraints": [{"text": "x"}]})

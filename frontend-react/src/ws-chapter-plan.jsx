@@ -247,7 +247,4 @@ export const WsChapterPlan = {
   },
 };
 
-Object.assign(window, { WsChapterPlan });
-
-/* ESM 导出（与 window.* 赋值过渡期并存） */
 export default WsChapterPlan;

@@ -14,6 +14,8 @@ from novel_system.db.models import (
     AutoRewriteRun,
     BannedRuleCluster,
     CalibrationLine,
+    ChapterAuditFinding,
+    ChapterContract,
     ChapterGoal,
     ChapterMemory,
     ChapterRollingNote,
@@ -29,15 +31,18 @@ from novel_system.db.models import (
     LlmCallAttempt,
     LongformDiagnosticCard,
     LongformStructureGuidance,
+    NarrativeEvent,
     NarrativePattern,
     OperationLog,
     OutlinePlan,
     PassagePatchCandidate,
     ProjectBacktrackItem,
+    ProjectWritingStats,
     QcReport,
     ReconcileFault,
     ReindexJob,
     RelationProfile,
+    ReviewDerivedSnooze,
     ReviewItem,
     RevisionCandidate,
     SceneBlueprint,
@@ -49,6 +54,7 @@ from novel_system.db.models import (
     SceneQualityContract,
     SceneRunState,
     SnowflakeArtifact,
+    SnowflakeChapterPlan,
     SnowflakeCharacterPlan,
     SnowflakeRevisionLink,
     SnowflakeScenePlan,
@@ -65,6 +71,7 @@ from novel_system.db.models import (
     VerifyJob,
     VersionRegistry,
     VoiceProfile,
+    VolumeSummary,
     WorkProfile,
     WorldRule,
     WriterEvaluation,
@@ -181,6 +188,38 @@ def _seed_author_state(session) -> None:
     session.flush()
     session.add_all(
         [
+            ProjectWritingStats(project_id="PRJ_RESET_SNOW", words_total=1200),
+            SnowflakeChapterPlan(
+                chapter_plan_id="chapter_plan_reset",
+                project_id="PRJ_RESET_SNOW",
+                row_uid="CHAPTER-RESET-1",
+                chapter_seq=1,
+            ),
+            NarrativeEvent(
+                event_id="narrative_event_reset",
+                project_id="PRJ_RESET_SNOW",
+                scene_id="SC_RESET_SNOW_01",
+                chapter_id="CH_RESET_SNOW",
+                event_type="character_state",
+                entity_type="character",
+                entity_id="CHAR_RESET",
+                fact_key="resolve",
+                fact_value="hardens",
+            ),
+            VolumeSummary(
+                row_id="volume_summary_reset",
+                project_id="PRJ_RESET_SNOW",
+                volume_seq=1,
+            ),
+            ReviewDerivedSnooze(
+                project_id="PRJ_RESET_SNOW",
+                fingerprint="review-snooze-reset",
+            ),
+        ]
+    )
+    session.flush()
+    session.add_all(
+        [
             OutlinePlan(
                 plan_id="plan_reset_outline",
                 project_id="PRJ_RESET_OUTLINE",
@@ -234,7 +273,9 @@ def _seed_author_state(session) -> None:
             SnowflakeScenePlan(
                 scene_plan_id="scene_plan_reset",
                 project_id="PRJ_RESET_SNOW",
+                row_uid="SCENE-RESET-1",
                 scene_id="SC_RESET_SNOW_01",
+                chapter_plan_id="chapter_plan_reset",
                 chapter_id="CH_RESET_SNOW",
                 chapter_title="Reset Chapter",
                 chapter_goal="push the investigation forward",
@@ -317,6 +358,17 @@ def _seed_author_state(session) -> None:
     session.flush()
     session.add_all(
         [
+            ChapterContract(
+                contract_id="contract_reset_snow",
+                project_id="PRJ_RESET_SNOW",
+                chapter_id="CH_RESET_SNOW",
+            ),
+            ChapterAuditFinding(
+                finding_id="finding_reset_snow",
+                project_id="PRJ_RESET_SNOW",
+                chapter_id="CH_RESET_SNOW",
+                text="cross-scene drift",
+            ),
             ChapterState(
                 chapter_id="CH_RESET_SNOW",
                 current_phase="drafting",
@@ -971,6 +1023,11 @@ def test_collect_reset_summary_is_dry_run_and_preserves_reference_audit_traces(s
     assert summary["planned_counts"]["review_items"] == 2
     assert summary["planned_counts"]["llm_calls"] == 1
     assert summary["planned_counts"]["llm_call_attempts"] == 1
+    assert summary["planned_counts"]["project_writing_stats"] == 1
+    assert summary["planned_counts"]["snowflake_chapter_plans"] == 1
+    assert summary["planned_counts"]["narrative_events"] == 1
+    assert summary["planned_counts"]["volume_summaries"] == 1
+    assert summary["planned_counts"]["review_derived_snoozes"] == 1
     assert "reference_books" not in summary["planned_counts"]
     assert summary["preserved_domains"] == [
         "ReviewItem / LlmCall 中的历史 reference 审计痕迹",
@@ -1001,10 +1058,17 @@ def test_execute_reset_clears_author_state_and_preserves_reference_audit_traces(
         SnowflakeArtifact,
         SnowflakeStepRun,
         SnowflakeCharacterPlan,
+        SnowflakeChapterPlan,
         SnowflakeScenePlan,
         SnowflakeSceneTriageItem,
         SnowflakeRevisionLink,
         StoryCharacter,
+        ProjectWritingStats,
+        NarrativeEvent,
+        VolumeSummary,
+        ReviewDerivedSnooze,
+        ChapterAuditFinding,
+        ChapterContract,
         ChapterGoal,
         ChapterState,
         SceneCard,

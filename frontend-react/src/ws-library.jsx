@@ -1,16 +1,23 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsTrashStore } from "./ws-catalog.jsx";
-import { LIB_BY_ID, LIB_CATS, LIB_ENTRIES } from "./ws-library-data.jsx";
+import { LIB_BY_ID, LIB_CATS, LIB_ENTRIES, libSnapshot, libSubscribe } from "./ws-library-data.jsx";
 import { LIB_REL_TYPES, LIB_SORTS, LIB_buildBacklinks, LIB_connections, LIB_degree, LIB_groupConnections, LIB_health, LIB_isCited, LIB_nextAction, LIB_sortWithPin } from "./ws-library-derive.jsx";
 import { LibGraph } from "./ws-library-graph.jsx";
 import { LibTimeline } from "./ws-library-timeline.jsx";
 import { LibOverview } from "./ws-library-overview.jsx";
 import { DossierCreate, DossierEdit, LIB_applyEdit, LIB_deleteEntry, LIB_loadAdds, LIB_loadEdits, LIB_newEntry, LIB_persist, LIB_persistAdds, LIB_seedOn } from "./ws-library-edit.jsx";
 import { WsWorks } from "./ws-works.jsx";
+import { navigateWithViewIntent, setViewIntentTargetReady } from "./ws-view-intents.js";
 
 /* global React, I, LIB_CATS, LIB_ENTRIES, LIB_BY_ID, LibGraph, LibTimeline, LibOverview, LIB_loadEdits, LIB_persist, LIB_applyEdit, DossierEdit, DossierCreate, LIB_loadAdds, LIB_persistAdds, LIB_newEntry, LIB_buildBacklinks, LIB_connections, LIB_degree, LIB_health, LIB_SORTS, LIB_sortWithPin, LIB_isCited, LIB_nextAction, LIB_groupConnections, LIB_REL_TYPES */
-const { useState: useLb, useMemo: useLbMemo, useRef: useLbRef, useEffect: useLbEffect } = React;
+const {
+  useState: useLb,
+  useMemo: useLbMemo,
+  useRef: useLbRef,
+  useEffect: useLbEffect,
+  useSyncExternalStore: useLbExternalStore,
+} = React;
 
 /* ==========================================================
    Library — 档案库 (master-detail codex)
@@ -31,9 +38,13 @@ function WsLibrary({ go }) {
   const [creating, setCreating] = useLb(false);
   const searchRef = useLbRef(null);
   const pendingEdit = useLbRef(null);   /* 新建后自动进入编辑态的目标 id */
+  const libraryRevision = useLbExternalStore(libSubscribe, libSnapshot, libSnapshot);
 
   /* single source of truth — (种子按作品门控 + 用户新建) 再叠加编辑覆盖层 */
-  const rawEntries = useLbMemo(() => [...(LIB_seedOn && !LIB_seedOn() ? [] : LIB_ENTRIES), ...adds], [adds]);
+  const rawEntries = useLbMemo(
+    () => [...(LIB_seedOn && !LIB_seedOn() ? [] : LIB_ENTRIES), ...adds],
+    [adds, libraryRevision]
+  );
   const entries    = useLbMemo(() => rawEntries.map(e => LIB_applyEdit(e, edits)), [rawEntries, edits]);
   const byId       = useLbMemo(() => entries.reduce((m, e) => { m[e.id] = e; return m; }, {}), [entries]);
   const backlinks  = useLbMemo(() => LIB_buildBacklinks(entries), [entries]);
@@ -143,10 +154,13 @@ function WsLibrary({ go }) {
   /* 外部跳转：从正文写作点击实体 → 打开对应档案 */
   useLbEffect(() => {
     const open = (id) => { if (!id) return; setVmode("files"); setCreating(false); setQuery(""); setCat("all"); setSelId(id); };
-    if (window.__libTarget) { const id = window.__libTarget; window.__libTarget = null; open(id); }
     const h = (e) => open(e.detail);
     window.addEventListener("ws:lib-open", h);
-    return () => window.removeEventListener("ws:lib-open", h);
+    setViewIntentTargetReady("library");
+    return () => {
+      setViewIntentTargetReady("library", false);
+      window.removeEventListener("ws:lib-open", h);
+    };
   }, []);
 
   /* keyboard: ↑/↓ moves through the visible list */
@@ -526,7 +540,7 @@ function Dossier({ entry: e, conns, byId, onNav, go, onEdit, onDelete, onAction,
           <button className="btn btn-quiet btn-sm dossier-del" onClick={() => { if (confirm("删除这份档案？此操作不可撤销。")) onDelete(); }}><I.Trash size={13} /> 删除</button>
         )}
         {realChaps.some(c => /CH\d/.test(c)) && (
-          <button className="btn btn-ghost btn-sm" onClick={() => { window.__writerEntityTarget = e.id; if (go) go("writer"); else window.dispatchEvent(new CustomEvent("ws:writer-locate", { detail: e.id })); }}><I.Pen size={13} /> 在正文中定位</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => navigateWithViewIntent("writer", "ws:writer-locate", e.id)}><I.Pen size={13} /> 在正文中定位</button>
         )}
       </footer>
     </div>
@@ -626,7 +640,6 @@ function WsTrash() {
   );
 }
 
-Object.assign(window, { WsLibrary, WsTrash });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { WsLibrary, WsTrash };

@@ -183,7 +183,10 @@ def test_cost_requirement_advisory_for_legacy_scenes(client):
         },
         headers={"X-Idempotency-Key": "bp-leg-sc"},
     )
-    resp = client.get("/api/v1/scenes/BP_LEG01_SC01/execution-contract")
+    resp = client.post(
+        "/api/v1/scenes/BP_LEG01_SC01/execution-contract",
+        headers={"X-Idempotency-Key": "bp-legacy-execution-contract"},
+    )
     assert resp.status_code == 200
     contract = resp.json()["data"]["contract"]
     # Legacy scene — cost_requirement is advisory, check it's not a blocking field

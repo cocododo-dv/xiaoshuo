@@ -31,7 +31,7 @@ from novel_system.services.llm_task_runner import (
     current_llm_run_job_id,
 )
 from novel_system.services.prompt_builder import PromptBuilder
-from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief
+from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 
 NEAR_FINAL_RUBRIC_ID = "near_final_acceptance_v1"

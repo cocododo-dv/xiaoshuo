@@ -423,6 +423,16 @@ def cleanup_fixture_works(session: Session) -> None:
         session.execute(
             delete(ChapterState).where(ChapterState.chapter_id.in_(chapter_ids))
         )
+        # These rows now carry real chapter foreign keys.  They must be
+        # removed before the fixture catalog can replace its ChapterGoal rows.
+        session.execute(
+            delete(ChapterAuditFinding).where(
+                ChapterAuditFinding.chapter_id.in_(chapter_ids)
+            )
+        )
+        session.execute(
+            delete(ChapterContract).where(ChapterContract.chapter_id.in_(chapter_ids))
+        )
 
     session.execute(delete(SceneCard).where(SceneCard.project_id.in_(FIXTURE_WORK_IDS)))
     session.execute(delete(ChapterGoal).where(ChapterGoal.project_id.in_(FIXTURE_WORK_IDS)))
@@ -434,8 +444,6 @@ def cleanup_fixture_works(session: Session) -> None:
         SnowflakeAssistantTurn,
         SnowflakeStepRun,
         SnowflakeArtifact,
-        ChapterAuditFinding,
-        ChapterContract,
         LibraryRelation,
         LibraryEntity,
         TimelineEvent,
@@ -536,7 +544,6 @@ def _seed_work(
         target_word_count=target_word_count,
         target_chapter_count=target_chapter_count,
         words_target_daily=words_target_daily,
-        is_demo=0,
         outline_text=synopsis_line,
         planning_mode="snowflake",
         snowflake_workflow_mode="explore",

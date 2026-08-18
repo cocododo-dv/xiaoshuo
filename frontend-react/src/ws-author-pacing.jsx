@@ -138,7 +138,5 @@ function ArrPacingLens({ chapters, numOf, onOpen }) {
   );
 }
 
-Object.assign(window, { arrPovMap, ArrPacingLens });
-
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { arrPovMap, ArrPacingLens };

@@ -9,11 +9,23 @@ import sys
 from pathlib import Path
 
 import pytest
+from sqlalchemy import create_engine
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateIndex
 
 from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
-from novel_system.db.models import ChapterRunJob, FinalScene, LlmCall, QcReport, SceneDraft
+from novel_system.db.base import Base
+from novel_system.db.models import (
+    ChapterGoal,
+    ChapterRunJob,
+    FinalScene,
+    LlmCall,
+    QcReport,
+    SceneCard,
+    SceneDraft,
+    StoryProject,
+)
 
 
 def _alembic_head() -> str:
@@ -221,6 +233,57 @@ def _prepare_style_reference_backup_root(tmp_path: Path) -> Path:
     return repo_root
 
 
+def _materialize_legacy_dynamic_checkout(db_path: Path, revision: str) -> None:
+    """Reproduce databases created when 0001 still called live Base.metadata.
+
+    Those checkouts materialized the then-current ORM schema first and only recorded
+    an older Alembic revision. New migrations are frozen, so this compatibility
+    fixture constructs that already-published database shape explicitly.
+    """
+
+    engine = create_engine(f"sqlite:///{db_path.as_posix()}")
+    try:
+        Base.metadata.create_all(bind=engine)
+        with Session(engine) as session:
+            session.add(
+                StoryProject(
+                    project_id="PRJ_DEMO",
+                    title="Historical generation fixture",
+                    outline_text="Compatibility parent rows",
+                )
+            )
+            session.add(
+                ChapterGoal(
+                    chapter_id="CH001",
+                    project_id="PRJ_DEMO",
+                    chapter_goal="Preserve historical generation rows",
+                    display_order=1,
+                )
+            )
+            session.add(
+                SceneCard(
+                    scene_id="CH001_SC01",
+                    chapter_id="CH001",
+                    project_id="PRJ_DEMO",
+                    scene_seq=1,
+                    scene_goal="Historical scene",
+                    onstage_chars_json=[],
+                    beats_json=[],
+                )
+            )
+            session.commit()
+    finally:
+        engine.dispose()
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY)"
+        )
+        connection.execute(
+            "INSERT INTO alembic_version (version_num) VALUES (?)",
+            (revision,),
+        )
+
+
 def test_generation_persistence_migration_is_frozen_with_explicit_ddl() -> None:
     migration_path = (
         Path(__file__).resolve().parents[1]
@@ -320,6 +383,33 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
 
 
 def test_generation_persistence_orm_round_trip(session) -> None:
+    session.add(
+        StoryProject(
+            project_id="PRJ_DEMO",
+            title="Generation persistence",
+            outline_text="Round-trip parent rows",
+        )
+    )
+    session.add(
+        ChapterGoal(
+            chapter_id="CH001",
+            project_id="PRJ_DEMO",
+            chapter_goal="Persist generation artifacts",
+            display_order=1,
+        )
+    )
+    session.add(
+        SceneCard(
+            scene_id="CH001_SC01",
+            chapter_id="CH001",
+            project_id="PRJ_DEMO",
+            scene_seq=1,
+            scene_goal="Round-trip scene",
+            onstage_chars_json=[],
+            beats_json=[],
+        )
+    )
+    session.flush()
 
     llm_call = LlmCall(
         llm_call_id="llm_call_scene_CH001_SC01_style",
@@ -525,7 +615,7 @@ def test_generation_persistence_downgrade_is_non_destructive_on_dynamic_checkout
     db_path = tmp_path / "generation-persistence-downgrade.sqlite"
     backup_root = _prepare_style_reference_backup_root(tmp_path)
 
-    _run_alembic(repo_root, db_path, "head", backup_root=backup_root)
+    _materialize_legacy_dynamic_checkout(db_path, "20260414_0007")
     _run_alembic_downgrade(repo_root, db_path, "20260413_0006", backup_root=backup_root)
 
     connection = sqlite3.connect(db_path)
@@ -552,7 +642,7 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     db_path = tmp_path / "generation-persistence-idempotent.sqlite"
     backup_root = _prepare_style_reference_backup_root(tmp_path)
 
-    _run_alembic(repo_root, db_path, "20260413_0006")
+    _materialize_legacy_dynamic_checkout(db_path, "20260413_0006")
     _seed_dynamic_0006_materialized_generation_rows(db_path)
     _run_alembic(repo_root, db_path, "head", backup_root=backup_root)
 
@@ -1064,41 +1154,45 @@ def _pragma_columns_by_name(connection: sqlite3.Connection, table_name: str) -> 
 
 
 def _build_true_pre_0007_database(db_path: Path) -> None:
+    backend_dir = Path(__file__).resolve().parents[1]
+    _run_alembic(backend_dir, db_path, "20260413_0006")
+
     connection = sqlite3.connect(db_path)
     try:
         connection.execute(
             """
-            CREATE TABLE alembic_version (
-                version_num VARCHAR(32) NOT NULL PRIMARY KEY
-            )
-            """
-        )
-        connection.execute("INSERT INTO alembic_version (version_num) VALUES ('20260413_0006')")
-        connection.execute(
-            """
-            CREATE TABLE scene_drafts (
-                row_id VARCHAR NOT NULL PRIMARY KEY,
-                scene_id VARCHAR NOT NULL,
-                chapter_id VARCHAR NOT NULL,
-                stage VARCHAR NOT NULL,
-                content TEXT NOT NULL,
-                source_bundle_id VARCHAR NOT NULL,
-                source_bundle_hash VARCHAR NOT NULL,
-                created_at VARCHAR NOT NULL
+            INSERT INTO chapter_goals (
+                chapter_id,
+                planned_scene_count,
+                mid_aggregate_enabled,
+                chapter_goal,
+                created_at,
+                updated_at,
+                trashed_flag
+            ) VALUES (
+                'CH001', 1, 0, 'Historical generation chapter',
+                '2026-04-13T00:00:00+00:00',
+                '2026-04-13T00:00:00+00:00', 0
             )
             """
         )
         connection.execute(
             """
-            CREATE TABLE final_scenes (
-                row_id VARCHAR NOT NULL PRIMARY KEY,
-                scene_id VARCHAR NOT NULL,
-                chapter_id VARCHAR NOT NULL,
-                content TEXT NOT NULL,
-                status VARCHAR NOT NULL,
-                source_bundle_id VARCHAR NOT NULL,
-                source_bundle_hash VARCHAR NOT NULL,
-                created_at VARCHAR NOT NULL
+            INSERT INTO scene_cards (
+                scene_id,
+                chapter_id,
+                scene_seq,
+                onstage_chars_json,
+                scene_goal,
+                beats_json,
+                is_chapter_last,
+                created_at,
+                updated_at,
+                trashed_flag
+            ) VALUES (
+                'CH001_SC01', 'CH001', 1, '[]', 'Historical scene', '[]', 1,
+                '2026-04-13T00:00:00+00:00',
+                '2026-04-13T00:00:00+00:00', 0
             )
             """
         )

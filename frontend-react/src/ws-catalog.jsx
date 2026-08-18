@@ -195,16 +195,23 @@ function catSceneCreateBody(s, at) {
 }
 
 /* ---- 缓存与装载 ---- */
+const CAT_EMPTY = Object.freeze([]);
 const catCache = {};       // workId → view chapters
 const catReadyMap = {};    // workId → API 已返回
 const catErrorMap = {};    // workId → 最近一次装载错误；区分“真空目录”和“请求失败”
 const catSubs = new Set();
 const catPendingCreates = {}; // slug/sid → 创建中的 Promise（后端 id 待回填）
 
-function catNotify() { catSubs.forEach(fn => { try { fn(); } catch (e) {} }); }
+function catNotify() {
+  catSubs.forEach(fn => { try { fn(); } catch (e) {} });
+  try { window.dispatchEvent(new CustomEvent("ws:catalog-changed")); } catch (e) {}
+}
 const catApiBase = (id) => `/api/v2/projects/${id}/catalog`;
 
-function catLoad(workId) { return catCache[workId] || []; }
+/* React 订阅者会把返回值放进 effect 依赖。未装载时若每次都创建新 []，
+   任何“收到目录后同步本地视图”的 effect 都会 setState → render → 新 [] →
+   再 setState，最终触发 Maximum update depth。空快照必须保持引用稳定。 */
+function catLoad(workId) { return catCache[workId] || CAT_EMPTY; }
 
 const catFetching = {};
 function catFetch(workId, options) {
@@ -650,12 +657,19 @@ function useCatalogChapters() {
 }
 
 /* 启动 & 切换作品：装载目录 + 同步统计（进度同源） */
+if (window.__wsCatalogGlobalHandlers) {
+  const old = window.__wsCatalogGlobalHandlers;
+  window.removeEventListener("ws:work-changed", old.catalogWorkChanged);
+  window.removeEventListener("ws:work-changed", old.trashWorkChanged);
+  window.removeEventListener("ws:trash-changed", old.trashChanged);
+}
 try { catFetch(catActiveId()); } catch (e) {}
 try { catPushTotals(); } catch (e) {}
-window.addEventListener("ws:work-changed", () => {
+const catOnWorkChanged = () => {
   try { catFetch(catActiveId()); } catch (e) {}
   try { catPushTotals(); } catch (e) {}
-});
+};
+window.addEventListener("ws:work-changed", catOnWorkChanged);
 
 
 /* ==========================================================
@@ -724,21 +738,43 @@ const WsTrashStore = {
       trashFetch();
     });
   },
-  clear() {
-    (async () => {
-      for (const it of trashCache.slice()) {
-        try { await apiDelete(`/api/v2/trash/${encodeURIComponent(it.id)}`); } catch (e) {}
+  async clear() {
+    const failures = [];
+    // 子项先删、作品最后删，避免清除作品时级联删除子项后，后续请求误报 404。
+    const rank = { scene: 0, chapter: 1, work: 2 };
+    const items = trashCache.slice().sort((a, b) => (
+      (rank[a.payload && a.payload.type] ?? 3) - (rank[b.payload && b.payload.type] ?? 3)
+    ));
+    for (const it of items) {
+      try {
+        await apiDelete(`/api/v2/trash/${encodeURIComponent(it.id)}`);
+      } catch (e) {
+        failures.push({ item: it, error: e });
       }
-      trashFetch();
-    })();
+    }
+    await trashFetch();
+    if (failures.length) {
+      const first = failures[0].error;
+      const reason = first && first.message ? `：${first.message}` : "";
+      try { window.alert(`回收站未能完全清空，${failures.length} 条仍需重试${reason}`); } catch (e) {}
+      return false;
+    }
+    return true;
   },
   subscribe(fn) { trashSubs.add(fn); return () => trashSubs.delete(fn); },
 };
 
 try { trashFetch(); } catch (e) {}
-window.addEventListener("ws:work-changed", () => { try { trashFetch(); } catch (e) {} });
+const trashOnWorkChanged = () => { try { trashFetch(); } catch (e) {} };
+window.addEventListener("ws:work-changed", trashOnWorkChanged);
 /* 软删端点完成后的精确刷新信号（WsWorks.remove / 目录删除成功时 dispatch） */
-window.addEventListener("ws:trash-changed", () => { try { trashFetch(); } catch (e) {} });
+const trashOnChanged = () => { try { trashFetch(); } catch (e) {} };
+window.addEventListener("ws:trash-changed", trashOnChanged);
+window.__wsCatalogGlobalHandlers = {
+  catalogWorkChanged: catOnWorkChanged,
+  trashWorkChanged: trashOnWorkChanged,
+  trashChanged: trashOnChanged,
+};
 
 Object.assign(window, { WsCatalog, useCatalogChapters, WsTrashStore });
 

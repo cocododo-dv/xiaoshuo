@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from itertools import count
 
 from sqlalchemy import select
 
@@ -21,6 +22,15 @@ from novel_system.db.models import (
 )
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
+
+
+_INTENT_SEQUENCE = count()
+
+
+def _intent_key(prefix: str) -> str:
+    """Each helper call represents a new user intent, not a transport retry."""
+
+    return f"{prefix}-{next(_INTENT_SEQUENCE)}"
 
 
 import pytest as _pytest_sk
@@ -109,7 +119,7 @@ def _generate_step(client, project_id: str, step_key: str, payload: dict | None 
     response = client.post(
         f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate",
         json=payload or {},
-        headers={"X-Idempotency-Key": f"generate-v2-{project_id}-{step_key}"},
+        headers={"X-Idempotency-Key": _intent_key(f"generate-v2-{project_id}-{step_key}")},
     )
     assert response.status_code == 200, response.text
     return response.json()["data"]
@@ -119,7 +129,7 @@ def _approve_step(client, project_id: str, step_key: str) -> dict:
     response = client.post(
         f"/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
         json={},
-        headers={"X-Idempotency-Key": f"approve-v2-{project_id}-{step_key}"},
+        headers={"X-Idempotency-Key": _intent_key(f"approve-v2-{project_id}-{step_key}")},
     )
     assert response.status_code == 200, response.text
     return response.json()["data"]

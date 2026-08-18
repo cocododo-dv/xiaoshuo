@@ -8,7 +8,7 @@ const outcomeGateLib = require("./lib/qa-outcome-gate.cjs");
 
 let chromium;
 try {
-  ({ chromium } = require("../frontend/node_modules/playwright"));
+  ({ chromium } = require("../frontend-react/node_modules/playwright"));
 } catch {
   ({ chromium } = require("playwright"));
 }

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import math
+import logging
+import threading
 import uuid
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -39,9 +42,11 @@ class _LLMExecutionRuntime:
     execution_id: str
     run_job_id: str | None
     lease_renewer: Callable[..., Any] | None
+    detached_lease_renewer: Callable[..., Any] | None
 
 
 _CURRENT_EXECUTION: ContextVar[_LLMExecutionRuntime | None] = ContextVar("llm_execution", default=None)
+logger = logging.getLogger(__name__)
 
 # 不限时(timeout_seconds <= 0)的调度租约上限。租约只用来防重复执行,没有
 # 超时秒数可乘时不能退回默认 TTL(几分钟)——那样长任务会在调用中途丢租约,
@@ -56,13 +61,28 @@ def begin_llm_execution(
     run_job_id: str | None = None,
     lease_renewer: Callable[..., Any] | None = None,
 ) -> Token[_LLMExecutionRuntime | None]:
+    detached_lease_renewer = _resolve_detached_lease_renewer(lease_renewer)
     return _CURRENT_EXECUTION.set(
         _LLMExecutionRuntime(
             execution_id=execution_id,
             run_job_id=run_job_id,
             lease_renewer=lease_renewer,
+            detached_lease_renewer=detached_lease_renewer,
         )
     )
+
+
+def _resolve_detached_lease_renewer(
+    lease_renewer: Callable[..., Any] | None,
+) -> Callable[..., Any] | None:
+    if lease_renewer is None:
+        return None
+    detached = getattr(lease_renewer, "renew_detached", None)
+    if callable(detached):
+        return detached
+    owner = getattr(lease_renewer, "__self__", None)
+    detached = getattr(owner, "renew_detached", None)
+    return detached if callable(detached) else None
 
 
 def end_llm_execution(token: Token[_LLMExecutionRuntime | None]) -> None:
@@ -129,6 +149,62 @@ def _renew_execution_owner(
     )
     runtime.lease_renewer(lease_seconds=lease_seconds)
     return True
+
+
+@contextmanager
+def _execution_owner_heartbeat(
+    *,
+    lease_seconds: int,
+    interval_seconds: float | None = None,
+):
+    """Keep an execution fence alive during blocking provider I/O.
+
+    The callback must use its own database session. SQLAlchemy sessions are not
+    shared with this daemon thread, so accounting work on the caller remains
+    single-threaded.
+    """
+
+    runtime = _CURRENT_EXECUTION.get()
+    renewer = runtime.detached_lease_renewer if runtime is not None else None
+    if renewer is None:
+        yield
+        return
+
+    if interval_seconds is None:
+        from novel_system.services.idempotency import owner_lease_grace_seconds
+
+        interval_seconds = min(
+            float(owner_lease_grace_seconds()),
+            max(1.0, float(lease_seconds) / 3.0),
+        )
+    interval_seconds = max(0.01, float(interval_seconds))
+    stop = threading.Event()
+    owner_lost: list[Exception] = []
+
+    def _heartbeat() -> None:
+        while not stop.wait(interval_seconds):
+            try:
+                renewer(lease_seconds=lease_seconds)
+            except Exception as exc:  # pragma: no cover - exact timing is integration-tested
+                if getattr(exc, "code", None) == "RUN_OWNER_LEASE_LOST":
+                    owner_lost.append(exc)
+                    stop.set()
+                    return
+                logger.warning("execution owner heartbeat failed; retrying", exc_info=True)
+
+    thread = threading.Thread(
+        target=_heartbeat,
+        name=f"llm-owner-heartbeat:{runtime.execution_id}",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=min(10.0, max(1.0, interval_seconds)))
+        if owner_lost:
+            raise owner_lost[0]
 
 # Prompt/draft/output prose lives in its authoritative domain rows. LLM audit
 # rows retain bounded hashes, sizes, roles and structural fields only.
@@ -376,22 +452,28 @@ class LLMNodeRunner:
                 )
 
             client = self._client()
+            request_timeout_seconds = request.timeout_seconds or self.settings.llm_timeout_seconds
+            lease_seconds = _execution_owner_lease_seconds(
+                request_timeout_seconds=request_timeout_seconds,
+                client=client,
+            )
             _renew_execution_owner(
-                request_timeout_seconds=request.timeout_seconds or self.settings.llm_timeout_seconds,
+                request_timeout_seconds=request_timeout_seconds,
                 client=client,
             )
             # Provider I/O must never hold an open database transaction. The owner
             # renewal above is fenced and committed before dispatch.
             self.session.commit()
             try:
-                response = execute_accounted_call(
-                    self.session,
-                    client,
-                    request,
-                    accounted_context,
-                    llm_call_id=llm_call_id,
-                    _lifecycle_observer=self._accounting_lifecycle_observer,
-                )
+                with _execution_owner_heartbeat(lease_seconds=lease_seconds):
+                    response = execute_accounted_call(
+                        self.session,
+                        client,
+                        request,
+                        accounted_context,
+                        llm_call_id=llm_call_id,
+                        _lifecycle_observer=self._accounting_lifecycle_observer,
+                    )
             finally:
                 _renew_execution_owner()
                 self.session.commit()
@@ -502,21 +584,27 @@ class LLMNodeRunner:
 
         client = self._client()
         llm_call_id = f"llm_task_{uuid.uuid4().hex}"
+        request_timeout_seconds = request.timeout_seconds or self.settings.llm_timeout_seconds
+        lease_seconds = _execution_owner_lease_seconds(
+            request_timeout_seconds=request_timeout_seconds,
+            client=client,
+        )
         _renew_execution_owner(
-            request_timeout_seconds=request.timeout_seconds or self.settings.llm_timeout_seconds,
+            request_timeout_seconds=request_timeout_seconds,
             client=client,
         )
         self.session.commit()
         try:
             try:
-                return execute_accounted_call(
-                    self.session,
-                    client,
-                    request,
-                    context,
-                    llm_call_id=llm_call_id,
-                    _lifecycle_observer=self._accounting_lifecycle_observer,
-                )
+                with _execution_owner_heartbeat(lease_seconds=lease_seconds):
+                    return execute_accounted_call(
+                        self.session,
+                        client,
+                        request,
+                        context,
+                        llm_call_id=llm_call_id,
+                        _lifecycle_observer=self._accounting_lifecycle_observer,
+                    )
             except Exception as exc:
                 details = getattr(exc, "details", None)
                 if isinstance(details, dict) and details.get("llm_call_id"):

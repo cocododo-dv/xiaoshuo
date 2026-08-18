@@ -56,6 +56,25 @@ function routeRunStates(client, responder) {
 async function loadSceneRun(opts) {
   const client = await import("./lib/client.js");
   installApiRouter(client, opts);
+  // 场景采用依赖真实 author-draft 元数据；默认模拟器也应返回 draft/revision，
+  // 避免测试继续走已经删除的“没有服务端作者稿也照样归档”旧路径。
+  const basePost = client.apiPost.getMockImplementation();
+  client.apiPost.mockImplementation((url, body, options) => {
+    if (/\/api\/v1\/author-drafts\/scene\/s1\/ensure$/.test(url)) {
+      return Promise.resolve({
+        draft: {
+          draft_id: "author_draft_scene_s1",
+          revision_no: 1,
+          content: "",
+          last_promoted_revision_no: null,
+          last_promoted_final_scene_row_id: null,
+          canonical_dirty: true,
+        },
+        runtime_final_ref: null,
+      });
+    }
+    return basePost(url, body, options);
+  });
   const mod = await import("./ws-scene-run.jsx");
   await settleActive((opts && opts.projects && opts.projects[0] && opts.projects[0].project_id) || "prj-main");
   return { mod, client };
@@ -98,6 +117,11 @@ function deferred() {
   let reject;
   const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; });
   return { promise, resolve, reject };
+}
+
+async function queueSceneIntent(detail) {
+  const { queueViewIntent } = await import("./ws-view-intents.js");
+  queueViewIntent("scene", "ws:scene-enqueue", detail);
 }
 
 describe("scene run cancellation client", () => {
@@ -159,7 +183,9 @@ describe("scene run cancellation client", () => {
     controller.abort();
 
     await expect(pending).rejects.toMatchObject({ code: "REQUEST_ABORTED", retryable: true });
-    expect(fetchSignal).toBe(controller.signal);
+    expect(fetchSignal).not.toBe(controller.signal);
+    expect(controller.signal.aborted).toBe(true);
+    expect(fetchSignal.aborted).toBe(true);
     expect(fetchSignal.aborted).toBe(true);
   });
 });
@@ -831,7 +857,7 @@ describe("SceneRunJobControl", () => {
 
   it("restores latest running state and cancel control in the real scene page", async () => {
     const { client } = await loadSceneRun();
-    window.__scnEnqueue = { sid: "ch01s1" };
+    await queueSceneIntent({ sid: "ch01s1" });
     client.getLatestSceneRunJob.mockResolvedValue({
       job_id: "job-page-refresh",
       scene_id: "s1",
@@ -855,7 +881,7 @@ describe("SceneRunJobControl", () => {
 
   it("keeps authoritative queued distinct from running and suppresses a duplicate start", async () => {
     const { client } = await loadSceneRun();
-    window.__scnEnqueue = { sid: "ch01s1" };
+    await queueSceneIntent({ sid: "ch01s1" });
     client.getLatestSceneRunJob.mockResolvedValue({
       job_id: "job-page-queued",
       scene_id: "s1",
@@ -920,7 +946,7 @@ describe("SceneRunJobControl", () => {
       cost: [],
       log: [],
     });
-    window.__scnEnqueue = { sids: ["ch01s1", "ch01s2"] };
+    await queueSceneIntent({ sids: ["ch01s1", "ch01s2"] });
     const notFound = Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" });
     let aReads = 0;
     client.getLatestSceneRunJob.mockImplementation((sceneId) => {
@@ -970,7 +996,7 @@ describe("SceneRunJobControl", () => {
   it("restores a fresh-browser no-content budget block and resumes with the original author instruction", async () => {
     const { mod, client } = await loadSceneRun({ projects: [NON_DEMO_PROJECT] });
     const authorNote = "保留此前完整的作者指令，不要重置叙事视角。".repeat(12);
-    window.__scnEnqueue = { sid: "ch01s1" };
+    await queueSceneIntent({ sid: "ch01s1" });
     client.getLatestSceneRunJob.mockResolvedValue({
       job_id: "job-fresh-budget",
       scene_id: "s1",
@@ -1050,7 +1076,7 @@ describe("SceneRunJobControl", () => {
       cost: [],
       log: [],
     });
-    window.__scnEnqueue = { sid: "ch01s1" };
+    await queueSceneIntent({ sid: "ch01s1" });
     client.getLatestSceneRunJob.mockResolvedValue({
       job_id: "job-completed-pending-workbench",
       scene_id: "s1",
@@ -1096,7 +1122,7 @@ describe("SceneRunJobControl", () => {
       log: [],
     };
     mod.scnRunSave("ch01s1", cached);
-    window.__scnEnqueue = { sid: "ch01s1" };
+    await queueSceneIntent({ sid: "ch01s1" });
     client.getLatestSceneRunJob.mockResolvedValue({
       job_id: `job-cached-${cachedState}`,
       scene_id: "s1",
@@ -1127,7 +1153,7 @@ describe("SceneRunJobControl", () => {
       state: "ready", progress: 1, attempt: 1, attempts: [], cost: [], log: [],
     };
     mod.scnRunSave("ch01s1", cached);
-    window.__scnEnqueue = { sid: "ch01s1" };
+    await queueSceneIntent({ sid: "ch01s1" });
     window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>作者亲写的开场。</p>");
     client.getLatestSceneRunJob.mockRejectedValue(Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }));
     const page = await import("./ws-scene.jsx");
@@ -1159,7 +1185,7 @@ describe("SceneRunJobControl", () => {
       state: "ready", progress: 1, attempt: 1, attempts: [], cost: [], log: [],
     };
     mod.scnRunSave("ch01s1", cached);
-    window.__scnEnqueue = { sid: "ch01s1" };
+    await queueSceneIntent({ sid: "ch01s1" });
     client.getLatestSceneRunJob.mockRejectedValue(
       Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
     );
@@ -1191,7 +1217,19 @@ describe("SceneRunJobControl", () => {
       }
       adoptBodies.push(body);
       return body.accepted_warning_codes.length
-        ? Promise.resolve({ scene_status: "archived" })
+        ? Promise.resolve({
+            scene_status: "archived",
+            final_scene_row_id: "final_s1_v1",
+            draft_id: body.exact_author_draft.draft_id,
+            draft_revision_no: 2,
+            author_draft: {
+              ...body.exact_author_draft,
+              revision_no: 2,
+              last_promoted_revision_no: 2,
+              last_promoted_final_scene_row_id: "final_s1_v1",
+              canonical_dirty: false,
+            },
+          })
         : Promise.reject(reviewError);
     });
     const page = await import("./ws-scene.jsx");
@@ -1211,8 +1249,14 @@ describe("SceneRunJobControl", () => {
 
     await vi.waitFor(() => expect(document.body.querySelector(".wr-safety-dialog")).toBeNull(), T);
     expect(adoptBodies).toEqual([
-      { accepted_warning_codes: [] },
-      { accepted_warning_codes: ["sexual_content_with_minor_indicators"] },
+      expect.objectContaining({
+        accepted_warning_codes: [],
+        exact_author_draft: expect.objectContaining({ draft_id: "author_draft_scene_s1", base_revision_no: 1 }),
+      }),
+      expect.objectContaining({
+        accepted_warning_codes: ["sexual_content_with_minor_indicators"],
+        exact_author_draft: expect.objectContaining({ draft_id: "author_draft_scene_s1", base_revision_no: 1 }),
+      }),
     ]);
     expect(view.host.textContent).toContain("已归档并写入正文文档");
   });
@@ -1242,7 +1286,7 @@ describe("SceneRunJobControl", () => {
       state: "ready", progress: 1, attempt: 1, attempts: [], cost: [], log: [],
     };
     mod.scnRunSave("ch01s1", cached);
-    window.__scnEnqueue = { sid: "ch01s1" };
+    await queueSceneIntent({ sid: "ch01s1" });
     client.getLatestSceneRunJob.mockRejectedValue(
       Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
     );
@@ -1275,7 +1319,7 @@ describe("SceneRunJobControl", () => {
       state: "queued", progress: 0, draft: [], metrics: [], alignment: [], cost: [], log: [], attempts: [],
       error: "缺少 POV 声线卡", needsCards: true,
     }));
-    window.__scnEnqueue = { sids: ["ch01s1", "ch01s2"] };
+    await queueSceneIntent({ sids: ["ch01s1", "ch01s2"] });
     client.getLatestSceneRunJob.mockRejectedValue(
       Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
     );
@@ -1317,7 +1361,7 @@ describe("SceneRunJobControl", () => {
         topup: { extra_tokens: 6400 },
       },
     });
-    window.__scnEnqueue = { sids: ["ch01s1", "ch01s2"] };
+    await queueSceneIntent({ sids: ["ch01s1", "ch01s2"] });
     client.getLatestSceneRunJob.mockRejectedValue(
       Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
     );
@@ -1358,7 +1402,7 @@ describe("SceneRunJobControl", () => {
     });
     mod.scnRunSave("ch01s1", ready("第一场 AI 稿。"));
     mod.scnRunSave("ch01s2", ready("第二场 AI 稿。"));
-    window.__scnEnqueue = { sids: ["ch01s1", "ch01s2"] };
+    await queueSceneIntent({ sids: ["ch01s1", "ch01s2"] });
     window.localStorage.setItem(window.wsKey("wr-doc:ch01s1"), "<p>第一场作者稿。</p>");
     client.getLatestSceneRunJob.mockRejectedValue(
       Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
@@ -1401,7 +1445,7 @@ describe("SceneRunJobControl", () => {
         { n: 1, time: "昨日", result: "质检阻断", tone: "rose", note: "视角泄漏", cmp: { verdict: "第 1 次尝试存在视角泄漏。" } },
       ],
     });
-    window.__scnEnqueue = { sid: "ch01s1" };
+    await queueSceneIntent({ sid: "ch01s1" });
     client.getLatestSceneRunJob.mockRejectedValue(
       Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
     );
@@ -1434,7 +1478,7 @@ describe("SceneRunJobControl", () => {
 
   it("stops the real page progress timer and scnRun polling after unmount", async () => {
     const { client } = await loadSceneRun();
-    window.__scnEnqueue = { sid: "ch01s1" };
+    await queueSceneIntent({ sid: "ch01s1" });
     client.getLatestSceneRunJob.mockRejectedValue(
       Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
     );
@@ -1472,7 +1516,7 @@ describe("SceneRunJobControl", () => {
 
   it("aborts a pending create-job POST when the real page unmounts", async () => {
     const { client } = await loadSceneRun();
-    window.__scnEnqueue = { sid: "ch01s1" };
+    await queueSceneIntent({ sid: "ch01s1" });
     client.getLatestSceneRunJob.mockRejectedValue(
       Object.assign(new Error("not found"), { status: 404, code: "RUN_JOB_NOT_FOUND" }),
     );
@@ -1562,13 +1606,11 @@ describe("scnBackendQueueSids（队列成员的后端派生）", () => {
 });
 
 /* ==========================================================
-   Wave 1（结果闭环治理 §5.2）：采纳归档必须先打后端单入口。
-   旧实现 scnAdoptToDoc 只写 wr-doc 缓存 + 目录置 done——前端「完成」
-   与后端归档态可以分裂（G-02）。新契约：
-   · 成功路径 = POST /scenes/{id}/adopt-current 成功 → 才写缓存/置 done
-   · 后端拒绝（无稿/来源安全）→ 不置 done、不写缓存，faithful 返回失败
+   采纳归档必须把浏览器当前正文、作者稿修订和 FinalScene 绑定为一次事务。
+   · 成功路径 = POST exact_author_draft 保存+归档成功 → 吸收服务端修订并置 done
+   · 后端拒绝（冲突/来源安全）→ 不置 done、不把待采用稿写成当前正文
    ========================================================== */
-describe("scnAdoptToDoc（归档单入口：先后端、后本地）", () => {
+describe("scnAdoptToDoc（精确作者稿修订的原子归档）", () => {
   beforeEach(() => {
     vi.resetModules();
     window.localStorage.clear();
@@ -1582,22 +1624,75 @@ describe("scnAdoptToDoc（归档单入口：先后端、后本地）", () => {
     const { mod, client } = await loadSceneRun(opts);
     const cat = await import("./ws-catalog.jsx");
     await vi.waitFor(() => expect(cat.WsCatalog.get().length).toBeGreaterThan(0), T);
+    let revision = 1;
+    let content = "";
+    const basePost = client.apiPost.getMockImplementation();
+    const basePatch = client.apiPatch.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, options) => {
+      if (/\/api\/v1\/author-drafts\/scene\/s1\/ensure$/.test(url)) {
+        return Promise.resolve({
+          draft: {
+            draft_id: "author_draft_scene_s1",
+            revision_no: revision,
+            content,
+            last_promoted_revision_no: null,
+            last_promoted_final_scene_row_id: null,
+            canonical_dirty: true,
+          },
+          runtime_final_ref: null,
+        });
+      }
+      return basePost(url, body, options);
+    });
+    client.apiPatch.mockImplementation((url, body, options) => {
+      if (/\/api\/v1\/author-drafts\/author_draft_scene_s1$/.test(url)) {
+        revision += 1;
+        content = body.content;
+        return Promise.resolve({ draft: { draft_id: "author_draft_scene_s1", revision_no: revision, content } });
+      }
+      return basePatch(url, body, options);
+    });
     return { mod, client, cat };
   }
 
-  it("成功：POST adopt-current 后才置 done + 写正文缓存", async () => {
+  it("成功：把确切正文和 base revision 原子提交，回包后才置 done + 同步缓存", async () => {
     const { mod, client, cat } = await loadWithCatalog();
-    client.apiPost.mockImplementation((url) => {
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, options) => {
       if (/\/api\/v1\/scenes\/s1\/adopt-current$/.test(url)) {
-        return Promise.resolve({ scene_id: "s1", scene_status: "archived", final_scene_row_id: "final_s1_v1" });
+        return Promise.resolve({
+          scene_id: "s1",
+          scene_status: "archived",
+          final_scene_row_id: "final_s1_v1",
+          draft_id: body.exact_author_draft.draft_id,
+          draft_revision_no: 2,
+          content_hash: "hash-exact",
+          author_draft: {
+            draft_id: body.exact_author_draft.draft_id,
+            revision_no: 2,
+            content: body.exact_author_draft.content,
+            last_promoted_revision_no: 2,
+            last_promoted_final_scene_row_id: "final_s1_v1",
+            canonical_dirty: false,
+          },
+        });
       }
-      return Promise.resolve({});
+      return basePost(url, body, options);
     });
 
     const result = await mod.scnAdoptToDoc("ch01s1", DRAFT);
 
     expect(result.ok).toBe(true);
-    expect(client.apiPost).toHaveBeenCalledWith("/api/v1/scenes/s1/adopt-current", expect.anything());
+    expect(client.apiPost).toHaveBeenCalledWith("/api/v1/scenes/s1/adopt-current", {
+      accepted_warning_codes: [],
+      exact_author_draft: {
+        draft_id: "author_draft_scene_s1",
+        base_revision_no: 1,
+        expected_current_final_scene_row_id: null,
+        content: "<p>潮水退去，她看清了闸门上的名字。</p>",
+      },
+    });
+    expect(client.apiPatch.mock.calls.filter(([url]) => /\/author-drafts\//.test(url))).toEqual([]);
     // done 只由服务端 archived 响应映射，且写穿到目录 PATCH（mock 后端重拉
     // 会把乐观缓存收敛回 mock 值，故断言写穿动作而非最终缓存态）
     await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledWith(
@@ -1613,9 +1708,10 @@ describe("scnAdoptToDoc（归档单入口：先后端、后本地）", () => {
   it("后端拒绝（409 无稿/来源安全）：不置 done、不写缓存、faithful 返回失败", async () => {
     const { mod, client, cat } = await loadWithCatalog();
     const blocked = Object.assign(new Error("blocked"), { code: "SOURCE_SAFETY_BLOCKED" });
-    client.apiPost.mockImplementation((url) => {
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, options) => {
       if (/\/adopt-current$/.test(url)) return Promise.reject(blocked);
-      return Promise.resolve({});
+      return basePost(url, body, options);
     });
 
     const result = await mod.scnAdoptToDoc("ch01s1", DRAFT);
@@ -1647,10 +1743,17 @@ describe("scnAdoptToDoc（归档单入口：先后端、后本地）", () => {
         },
       },
     });
-    client.apiPost.mockImplementation((url, body) => {
-      if (!/\/adopt-current$/.test(url)) return Promise.resolve({});
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, options) => {
+      if (!/\/adopt-current$/.test(url)) return basePost(url, body, options);
       if (!body.accepted_warning_codes.length) return Promise.reject(reviewError);
-      return Promise.resolve({ scene_status: "archived" });
+      return Promise.resolve({
+        scene_status: "archived",
+        final_scene_row_id: "final_s1_v1",
+        draft_id: body.exact_author_draft.draft_id,
+        draft_revision_no: 2,
+        author_draft: { ...body.exact_author_draft, revision_no: 2, canonical_dirty: false },
+      });
     });
 
     const blocked = await mod.scnAdoptToDoc("ch01s1", DRAFT);
@@ -1658,7 +1761,13 @@ describe("scnAdoptToDoc（归档单入口：先后端、后本地）", () => {
     expect(client.apiPost).toHaveBeenNthCalledWith(
       client.apiPost.mock.calls.findIndex(([url]) => /\/adopt-current$/.test(url)) + 1,
       "/api/v1/scenes/s1/adopt-current",
-      { accepted_warning_codes: [] },
+      expect.objectContaining({
+        accepted_warning_codes: [],
+        exact_author_draft: expect.objectContaining({
+          draft_id: "author_draft_scene_s1",
+          base_revision_no: 1,
+        }),
+      }),
     );
 
     const accepted = await mod.scnAdoptToDoc("ch01s1", DRAFT, null, {
@@ -1667,7 +1776,10 @@ describe("scnAdoptToDoc（归档单入口：先后端、后本地）", () => {
     expect(accepted.ok).toBe(true);
     expect(client.apiPost).toHaveBeenCalledWith(
       "/api/v1/scenes/s1/adopt-current",
-      { accepted_warning_codes: ["sexual_content_with_minor_indicators"] },
+      expect.objectContaining({
+        accepted_warning_codes: ["sexual_content_with_minor_indicators"],
+        exact_author_draft: expect.objectContaining({ draft_id: "author_draft_scene_s1" }),
+      }),
     );
   });
 
@@ -1680,10 +1792,17 @@ describe("scnAdoptToDoc（归档单入口：先后端、后本地）", () => {
       status: 409,
       details: { final_text_gate: { content_safety: { findings: [] } } },
     });
-    client.apiPost.mockImplementation((url, body) => {
-      if (!/\/adopt-current$/.test(url)) return Promise.resolve({});
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, options) => {
+      if (!/\/adopt-current$/.test(url)) return basePost(url, body, options);
       return body.accepted_warning_codes.length
-        ? Promise.resolve({ scene_status: "archived" })
+        ? Promise.resolve({
+            scene_status: "archived",
+            final_scene_row_id: "final_s1_v1",
+            draft_id: body.exact_author_draft.draft_id,
+            draft_revision_no: 2,
+            author_draft: { ...body.exact_author_draft, revision_no: 2, canonical_dirty: false },
+          })
         : Promise.reject(reviewError);
     });
 
@@ -1763,9 +1882,16 @@ describe("scnAdoptToDoc（归档单入口：先后端、后本地）", () => {
     const { mod, client } = await loadWithCatalog();
     const key = window.wsKey("wr-doc:ch01s1");
     window.localStorage.setItem(key, "<p>作者亲写的正文。</p>");
-    client.apiPost.mockImplementation((url) => {
-      if (/\/adopt-current$/.test(url)) return Promise.resolve({ scene_status: "archived" });
-      return Promise.resolve({});
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, options) => {
+      if (/\/adopt-current$/.test(url)) return Promise.resolve({
+        scene_status: "archived",
+        final_scene_row_id: "final_s1_v1",
+        draft_id: body.exact_author_draft.draft_id,
+        draft_revision_no: 2,
+        author_draft: { ...body.exact_author_draft, revision_no: 2, canonical_dirty: false },
+      });
+      return basePost(url, body, options);
     });
 
     const result = await mod.scnAdoptToDoc("ch01s1", DRAFT, null, { mode: "overwrite", confirmed: true });
@@ -1923,11 +2049,25 @@ describe("作者状态门（Wave 2：无法继续 vs 有稿建议修改）", () 
     const { mod, client } = await loadSceneRun();
     const cat = await import("./ws-catalog.jsx");
     await vi.waitFor(() => expect(cat.WsCatalog.get().length).toBeGreaterThan(0), T);
-    client.apiPost.mockImplementation((url) => {
+    const basePost = client.apiPost.getMockImplementation();
+    client.apiPost.mockImplementation((url, body, options) => {
       if (/adopt-current$/.test(url)) {
-        return Promise.resolve({ scene_id: "s1", scene_status: "archived", final_scene_row_id: "final_s1_v1" });
+        return Promise.resolve({
+          scene_id: "s1",
+          scene_status: "archived",
+          final_scene_row_id: "final_s1_v1",
+          draft_id: body.exact_author_draft.draft_id,
+          draft_revision_no: 2,
+          author_draft: {
+            ...body.exact_author_draft,
+            revision_no: 2,
+            last_promoted_revision_no: 2,
+            last_promoted_final_scene_row_id: "final_s1_v1",
+            canonical_dirty: false,
+          },
+        });
       }
-      return Promise.resolve({});
+      return basePost(url, body, options);
     });
     const gate = mod.scnGateFrom({ author_state: QUALITY_WARNING_PROJECTION });
 

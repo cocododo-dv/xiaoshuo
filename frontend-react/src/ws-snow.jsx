@@ -4,6 +4,8 @@ import { WsCatalog } from "./ws-catalog.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
 import { onRovingTabKeyDown } from "./a11y-tabs.js";
 import { WsChapterPlanPanel } from "./ws-snow-chapters.jsx";
+import { apiGet, apiPost } from "./lib/client.js";
+import { navigateWithViewIntent, setViewIntentTargetReady } from "./ws-view-intents.js";
 
 /* global React, I */
 /* ==========================================================
@@ -468,7 +470,6 @@ const S2_BE_KEY = Object.fromEntries(S2_BE_STEPS);
    config/prompts.yaml）；上下文/草稿折叠文本随请求带入（原型脚手架形状只在
    前端）。LLM 不可用 → 抛引导（默认展示的本地启发式候选不受影响）。 */
 async function s2GenerateCands(active, data, drafts, scaffolds) {
-  const { apiPost } = await import("./lib/client.js");
   let workId = null;
   try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
   const beKey = S2_BE_KEY[active.key];
@@ -635,8 +636,8 @@ function s2NormalizeState(saved) {
   };
 }
 
-/* 导出用：把当前作品的雪花状态完整物化（含种子合并结果）。
-   数据包里带上这份，导入为新作品后不再依赖种子门控也能完整还原。 */
+/* 场景运行提示词等只读消费者使用：把当前作品的雪花状态物化为独立快照。
+   该快照不是项目备份，也不承担跨作品恢复。 */
 function s2ExportState() {
   try {
     return s2NormalizeState(s2Load());
@@ -846,7 +847,6 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     setStructBusyMap(prev => ({ ...prev, [key]: true }));
     pushHist(histAction, `${step.num} ${step.name}${histNote ? " · " + histNote : ""} · 生成前留底`, "我", snapNow(key));
     try {
-      const { apiPost } = await import("./lib/client.js");
       let workId = null;
       try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
       const beKey = S2_BE_KEY[key];
@@ -962,7 +962,6 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     if (triageBusy) return;
     setTriageBusy(true);
     try {
-      const { apiPost } = await import("./lib/client.js");
       let workId = null;
       try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
       if (!workId) throw new Error("作品尚未就绪");
@@ -1062,7 +1061,6 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     if (tab !== "coach" || coachHist.length) return;
     (async () => {
       try {
-        const { apiGet } = await import("./lib/client.js");
         const workId = WsWorks && WsWorks.activeId();
         if (!workId) return;
         const ws = await apiGet(`/api/v2/projects/${workId}/snowflake-workspace`);
@@ -1076,7 +1074,6 @@ function WsSnowflake({ go, initialStep, onOverview }) {
     setCoachBusy(true);
     const key = activeKey, step = active;
     try {
-      const { apiPost } = await import("./lib/client.js");
       let workId = null;
       try { workId = WsWorks && WsWorks.activeId(); } catch (e) {}
       const beKey = S2_BE_KEY[key];
@@ -2178,7 +2175,10 @@ function S2ChapterOutline({ scaffold, onScaffold, refs }) {
       (WsCatalog ? WsCatalog.get() : []).forEach(c => (c.scenes || []).forEach(s => {
         if (s.sid && s.state !== "done" && (s.goal || "").trim() && !(s.goal || "").includes("待规划")) sids.push(s.sid);
       }));
-      if (sids.length) window.__scnEnqueue = { sids: sids.slice(0, 40) };
+      if (sids.length) {
+        navigateWithViewIntent("scene", "ws:scene-enqueue", { sids: sids.slice(0, 40) });
+        return;
+      }
     } catch (e) {}
     location.hash = "#scene";
   };
@@ -3801,7 +3801,11 @@ function WsConstruct({ go }) {
     if (window.__snowStepTarget) { const k = window.__snowStepTarget; window.__snowStepTarget = null; apply(k); }
     const onStep = (e) => apply(e.detail);
     window.addEventListener("ws:snow-step", onStep);
-    return () => window.removeEventListener("ws:snow-step", onStep);
+    setViewIntentTargetReady("snowflake");
+    return () => {
+      setViewIntentTargetReady("snowflake", false);
+      window.removeEventListener("ws:snow-step", onStep);
+    };
   }, []);
   if (mode === "overview") {
     return <SnowOverviewEmpty go={go} onSteps={() => setMode("steps")} />;

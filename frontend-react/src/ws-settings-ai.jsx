@@ -1,7 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { WsAiProviders, useAiProviders } from "./ws-ai-providers.jsx";
-import { Section, Row, Toggle, Segmented, usePref } from "./ws-settings.jsx";
+import { Section, Row, Toggle, Segmented, usePref } from "./ws-settings-shared.jsx";
 
 /* ==========================================================
    AISettings — 设置 → AI 模型(真实模型接入)
@@ -582,7 +582,4 @@ function AISettings() {
   );
 }
 
-Object.assign(window, { AISettings });
-
-/* ESM 导出(window.* 赋值过渡期保留) */
 export { AISettings };

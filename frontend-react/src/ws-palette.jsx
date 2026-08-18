@@ -39,7 +39,13 @@ function WsPalette({ open, onClose, run, theme }) {
   const inputRef = usePR(null);
   const listRef = usePR(null);
 
-  usePE(() => { if (open) { setQ(""); setSel(0); setTimeout(() => inputRef.current && inputRef.current.focus(), 30); } }, [open]);
+  usePE(() => {
+    if (!open) return undefined;
+    setQ("");
+    setSel(0);
+    const timer = window.setTimeout(() => inputRef.current?.focus(), 30);
+    return () => window.clearTimeout(timer);
+  }, [open]);
 
   /* build command set */
   const all = usePM(() => {
@@ -72,7 +78,7 @@ function WsPalette({ open, onClose, run, theme }) {
     // 保留此别名，让仍按旧名搜索的作者能找到去处；目标改指 author，不再是已废的 longform 死视图。
     cmds.push({ g: "导航 · 生产", icon: "Radar", label: "长篇控制塔 · 已并入章节编排", hint: "高级", kw: "longform changpian kongzhita 长篇控制塔 zhangjie bianpai quanshu huxian jiezou xiansuo", run: () => run({ type: "go", view: "author" }) });
     cmds.push({ g: "导航 · 运维", icon: "UploadCloud", label: "发布索引", hint: "高级", kw: "index fabu suoyin", run: () => run({ type: "go", view: "index" }) });
-    cmds.push({ g: "导航 · 运维", icon: "FileInput", label: "导入导出", hint: "高级", kw: "interop daoru daochu", run: () => run({ type: "go", view: "interop" }) });
+    cmds.push({ g: "导航 · 运维", icon: "FileInput", label: "互操作与导出", hint: "高级", kw: "interop hucaozuo daoru daochu", run: () => run({ type: "go", view: "interop" }) });
     cmds.push({ g: "导航 · 系统", icon: "Settings", label: "系统设置", hint: "设置", kw: "settings shezhi", run: () => run({ type: "go", view: "settings" }) });
     cmds.push({ g: "导航 · 系统", icon: "Trash", label: "回收站", hint: "系统", kw: "trash huishouzhan", run: () => run({ type: "go", view: "trash" }) });
 
@@ -194,7 +200,4 @@ function WsPalette({ open, onClose, run, theme }) {
   );
 }
 
-Object.assign(window, { WsPalette });
-
-/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { WsPalette };

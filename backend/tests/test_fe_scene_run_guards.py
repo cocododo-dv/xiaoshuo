@@ -1,7 +1,7 @@
 """FE 目录建的场景（无 SceneRunState 行）走 run 管线的守卫（FE-ALIGN F6）。
 
 起草台把 scnRun 接到 scenes run 管线后，FE 目录直接建的最小场景卡必须：
-- workbench 可读（自动补建运行态行，而不是 AttributeError 500）；
+- workbench 可读（返回只读默认投影，不因 GET 补建运行态行）；
 - run/full 给结构化 409（执行契约缺字段），而不是 500；
 - run/jobs 能建任务（blocked/queued 均可，不 500）。
 """
@@ -10,7 +10,14 @@ from __future__ import annotations
 
 import pytest
 
-from novel_system.db.models import ChapterGoal, SceneCard, SceneDraft, SceneRunState, StoryProject
+from novel_system.db.models import (
+    ChapterGoal,
+    SceneCard,
+    SceneDraft,
+    SceneExecutionContract,
+    SceneRunState,
+    StoryProject,
+)
 from novel_system.services.errors import DomainError
 
 
@@ -48,7 +55,8 @@ def test_workbench_tolerates_missing_run_state(client, session) -> None:
     assert response.status_code == 200, response.text
     data = response.json()["data"]
     assert data["scene_run_state"]["scene_status"] == "ready"
-    assert session.get(SceneRunState, scene_id) is not None  # 已按约定补建
+    assert session.get(SceneRunState, scene_id) is None
+    assert session.query(SceneExecutionContract).filter_by(scene_id=scene_id).count() == 0
 
 
 def test_run_full_returns_structured_409_not_500(client, session) -> None:

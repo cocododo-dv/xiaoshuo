@@ -21,7 +21,9 @@ from novel_system.services.literary_quality import (
     get_dimension_weights,
 )
 from novel_system.services.quality_classifier import blocking_issues, classify_issues
+from novel_system.services.qc_constraints import contains_forbidden_term, source_field_satisfied
 from novel_system.services.reference_safety import ReferenceSafetyService
+from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.source_safety import source_profile_ids_from_snapshot
 
 
@@ -260,13 +262,6 @@ class FinalTextGateService:
         *,
         allow_author_waiver: bool,
     ) -> dict[str, Any]:
-        # Import the tiny deterministic constraint helpers lazily. This keeps the
-        # final gate aligned with QC without instantiating either QC engine.
-        from novel_system.services.qc_engine import (
-            _contains_forbidden_term,
-            _source_field_satisfied,
-        )
-
         if scene is None:
             warning = {
                 "issue_key": "continuity_validation_unavailable",
@@ -283,7 +278,7 @@ class FinalTextGateService:
 
         issues: list[dict[str, Any]] = []
         if isinstance(scene.must_include_text, str) and scene.must_include_text.strip():
-            if not _source_field_satisfied(scene.must_include_text, content):
+            if not source_field_satisfied(scene.must_include_text, content):
                 issues.append(
                     {
                         "issue_key": "missing_required_text",
@@ -292,7 +287,7 @@ class FinalTextGateService:
                         "authority_ref": f"scene_card:{scene.scene_id}.must_include_text",
                     }
                 )
-        if _contains_forbidden_term(scene.forbidden_text, content):
+        if contains_forbidden_term(scene.forbidden_text, content):
             issues.append(
                 {
                     "issue_key": "forbidden_text",
@@ -320,9 +315,7 @@ class FinalTextGateService:
         try:
             from novel_system.services.narrative_event_log import NarrativeEventLog
 
-            project_id = scene.project_id or (
-                scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id
-            )
+            project_id = require_scene_project_id(self.session, scene)
             report = NarrativeEventLog(self.session).check_consistency(
                 content,
                 project_id,

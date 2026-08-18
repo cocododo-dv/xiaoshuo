@@ -22,7 +22,7 @@ from novel_system.db.models import (
     VoiceProfile,
     WriterEvaluation,
 )
-from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief
+from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 
 class LongformControlService:

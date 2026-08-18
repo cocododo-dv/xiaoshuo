@@ -16,6 +16,13 @@ vi.mock("./lib/client.js", () => ({
 
 const T = { timeout: 5000, interval: 25 };
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; });
+  return { promise, resolve, reject };
+}
+
 const SALT_PROJECT = { project_id: "prj-second", title: "盐镇旧志", genre: "悬疑", is_demo: true, stats: { words_total: 0 } };
 
 // ensure → draft d1/rev1；save PATCH(d1) → rev2 + words_rollup。
@@ -75,6 +82,70 @@ describe("WrDocs.save（ensure + PATCH 带 base_revision_no）", () => {
     await mod.WrDocs.save("ch01s1", "<p>x</p>");
     await vi.waitFor(() => expect(spy).toHaveBeenCalledWith(
       "ch01s1", { chapter_words: 120, scene_words: 120 }), T);
+  });
+
+  it("同场景连续保存串行执行，旧请求完成时仍保持 dirty，直到最新版本成功", async () => {
+    const { mod, client } = await loadDocs();
+    const firstPatch = deferred();
+    client.apiPatch
+      .mockImplementationOnce(() => firstPatch.promise)
+      .mockResolvedValueOnce({ draft: { draft_id: "d1", revision_no: 3 } });
+
+    const firstSave = mod.WrDocs.save("ch01s1", "<p>第一版</p>");
+    await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledTimes(1), T);
+    const secondSave = mod.WrDocs.save("ch01s1", "<p>第二版</p>");
+    expect(mod.WrDocs.state("ch01s1").dirty).toBe(true);
+
+    firstPatch.resolve({ draft: { draft_id: "d1", revision_no: 2 } });
+    await firstSave;
+    expect(mod.WrDocs.state("ch01s1").dirty).toBe(true);
+    await secondSave;
+
+    expect(mod.WrDocs.state("ch01s1").dirty).toBe(false);
+    expect(mod.WrDocs.load("ch01s1")).toBe("<p>第二版</p>");
+    expect(client.apiPatch).toHaveBeenNthCalledWith(2, "/api/v1/author-drafts/d1", {
+      content: "<p>第二版</p>",
+      base_revision_no: 2,
+    });
+  });
+
+  it("旧请求发生 409 时保留队列中的较新正文，刷新 revision 后继续保存", async () => {
+    const { mod, client } = await loadDocs();
+    let ensureCount = 0;
+    client.apiPost.mockImplementation((url) => {
+      if (/\/author-drafts\/scene\/.+\/ensure$/.test(url)) {
+        ensureCount += 1;
+        return Promise.resolve({
+          draft: {
+            draft_id: "d1",
+            revision_no: ensureCount === 1 ? 1 : 5,
+            content: ensureCount === 1 ? "" : "<p>服务端并发版本</p>",
+          },
+        });
+      }
+      return Promise.resolve({});
+    });
+    const firstPatch = deferred();
+    client.apiPatch
+      .mockImplementationOnce(() => firstPatch.promise)
+      .mockResolvedValueOnce({ draft: { draft_id: "d1", revision_no: 6 } });
+    const conflict = Object.assign(new Error("conflict"), { code: "AUTHOR_DRAFT_CONFLICT" });
+
+    const firstSave = mod.WrDocs.save("ch01s1", "<p>已被后续编辑取代</p>");
+    const firstRejected = expect(firstSave).rejects.toBe(conflict);
+    await vi.waitFor(() => expect(client.apiPatch).toHaveBeenCalledTimes(1), T);
+    const secondSave = mod.WrDocs.save("ch01s1", "<p>不能丢的最新正文</p>");
+    firstPatch.reject(conflict);
+
+    await firstRejected;
+    await secondSave;
+    expect(mod.WrDocs.load("ch01s1")).toBe("<p>不能丢的最新正文</p>");
+    expect(mod.WrRecovery.list()).toEqual([]);
+    expect(window.alert).not.toHaveBeenCalled();
+    expect(client.apiPatch).toHaveBeenNthCalledWith(2, "/api/v1/author-drafts/d1", {
+      content: "<p>不能丢的最新正文</p>",
+      base_revision_no: 5,
+    });
   });
 });
 

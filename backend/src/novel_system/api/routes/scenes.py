@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, Request
@@ -8,7 +9,8 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
-from novel_system.api.request_types import WriterBriefJsonInput
+from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.request_types import EmptyRequest, WriterBriefJsonInput
 from novel_system.api.response import ok
 from novel_system.db.models import (
     AttemptTracker,
@@ -27,6 +29,7 @@ from novel_system.db.models import (
     WriterEvaluation,
 )
 from novel_system.services.archiver import Archiver
+from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.author_instructions import normalize_author_note
 from novel_system.services.author_state import compute_author_state
@@ -35,16 +38,19 @@ from novel_system.services.chapter_approval import (
     require_chapter_mutation_allowed,
 )
 from novel_system.services.chapter_runtime import ChapterRuntimeService, clean_backfill_markers
+from novel_system.services.canonical_manuscripts import CanonicalSceneService
 from novel_system.services.errors import DomainError
-from novel_system.services.idempotency import execute_with_idempotency
+from novel_system.services.idempotency import execute_with_idempotency, execute_with_optional_idempotency
 from novel_system.services.literary_quality import LiteraryQualityService
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.near_final import NEAR_FINAL_REWRITE_TYPE, NEAR_FINAL_RUBRIC_ID
-from novel_system.services.pagination import paginate_items, resolve_pagination_request
+from novel_system.services.pagination import paginate_select, resolve_pagination_request
 from novel_system.services.projects import ProjectService
 from novel_system.services.reference_safety import ReferenceSafetyService
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_execution import SceneExecutionContractService, SceneTriageService
+from novel_system.services.scene_notes import SceneNotesService
+from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.scene_quality import SceneAutoRewriteService, SceneQualityService
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 from novel_system.services.scene_run_jobs import (
@@ -56,9 +62,11 @@ from novel_system.services.scene_run_preflight import SceneRunPreflightService
 from novel_system.services.source_safety import source_profile_ids_from_snapshot
 from novel_system.services.style_profile import StyleScoreService
 from novel_system.services.text_validation import validate_user_text_payload
-from novel_system.services.writer_review import WriterReviewService, normalize_scene_writer_brief
+from novel_system.services.writer_briefs import normalize_scene_writer_brief
+from novel_system.services.writer_review import WriterReviewService
 
 router = APIRouter(tags=["scenes"])
+_LOGGER = logging.getLogger(__name__)
 INT64_MAX = (1 << 63) - 1
 
 
@@ -68,32 +76,48 @@ class SceneUpsertRequest(BaseModel):
     Run state, trash state, word rollups, and timestamps remain server-owned.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     scene_id: str = Field(min_length=1, max_length=255)
     chapter_id: str = Field(min_length=1, max_length=255)
-    scene_goal: str
-    project_id: str | None = None
-    outline_plan_id: str | None = None
-    scene_seq: int | None = Field(default=None, ge=1)
-    pov_character_id: str | None = None
-    onstage_chars_json: list[str] = Field(default_factory=list)
-    resolved_relation_id: str | None = None
-    location: str | None = None
-    beats_json: list[str] = Field(default_factory=list)
-    must_include_text: str | None = None
-    forbidden_text: str | None = None
-    exit_change: str | None = None
-    hook: str | None = None
+    scene_goal: str = Field(max_length=100_000)
+    project_id: str | None = Field(default=None, max_length=255)
+    outline_plan_id: str | None = Field(default=None, max_length=255)
+    scene_seq: int | None = Field(default=None, ge=1, le=INT64_MAX)
+    pov_character_id: str | None = Field(default=None, max_length=255)
+    onstage_chars_json: list[
+        Annotated[str, Field(min_length=1, max_length=255)]
+    ] = Field(default_factory=list, max_length=256)
+    resolved_relation_id: str | None = Field(default=None, max_length=255)
+    location: str | None = Field(default=None, max_length=10_000)
+    beats_json: list[
+        Annotated[str, Field(max_length=20_000)]
+    ] = Field(default_factory=list, max_length=256)
+    must_include_text: str | None = Field(default=None, max_length=100_000)
+    forbidden_text: str | None = Field(default=None, max_length=100_000)
+    exit_change: str | None = Field(default=None, max_length=20_000)
+    hook: str | None = Field(default=None, max_length=20_000)
     # Keep the established domain-error contract for malformed writer briefs:
     # normalize_scene_writer_brief() validates the JSON shape and returns the
     # stable WRITER_BRIEF_INVALID / HTTP 400 response used by API clients.
     writer_brief_json: WriterBriefJsonInput = None
-    target_length_band: str | None = None
-    scene_type: str | None = None
+    target_length_band: str | None = Field(default=None, max_length=64)
+    scene_type: str | None = Field(default=None, max_length=64)
     is_chapter_last: int = Field(default=0, ge=0, le=1)
-    state: str = "todo"
+    state: str = Field(default="todo", min_length=1, max_length=64)
     constraint_intensity: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class ExactAuthorDraftAdoptionRequest(BaseModel):
+    """One exact browser manuscript revision to save and publish atomically."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    draft_id: str = Field(min_length=1, max_length=255)
+    base_revision_no: int = Field(ge=1, le=INT64_MAX)
+    # Required but nullable: null is the CAS value when no canonical scene exists.
+    expected_current_final_scene_row_id: str | None = Field(max_length=255)
+    content: str = Field(max_length=2_000_000)
 
 
 class AdoptCurrentRequest(BaseModel):
@@ -104,18 +128,118 @@ class AdoptCurrentRequest(BaseModel):
     accepted_warning_codes: list[
         Annotated[str, Field(min_length=1, max_length=128)]
     ] = Field(default_factory=list, max_length=64)
+    exact_author_draft: ExactAuthorDraftAdoptionRequest | None = None
+
+
+BoundedIdentifier = Annotated[str, Field(min_length=1, max_length=255)]
+
+
+class SceneIdsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    scene_ids: list[BoundedIdentifier] = Field(max_length=10_000)
+
+
+class SceneRunCommandRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    # These values retain their domain validators and stable error codes.
+    author_note: Any | None = None
+    run_policy: Any | None = None
+    from_step: Any | None = None
+    resume: Any | None = None
+
+
+class SceneRunJobRequest(SceneRunCommandRequest):
+    resume_budget: bool | None = None
+
+
+class SceneAutoRewriteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    mode: str | None = Field(default=None, max_length=64)
+
+
+class SceneRunCancelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    reason: Any | None = None
+
+
+class StyleCandidateSelectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    no_clear_difference: bool | None = None
+    duration_ms: int | None = Field(default=None, ge=0, le=INT64_MAX)
+
+
+class StyleCandidateReopenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    reason: str | None = Field(default=None, max_length=300)
+
+
+class SceneBudgetTopupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    # The endpoint deliberately reports all invalid dimensions together through
+    # INVALID_BUDGET_TOPUP, so retain raw scalar types for that domain check.
+    extra_tokens: Any = 0
+    extra_attempts: Any = 0
+    extra_provider_attempts: Any = 0
+    reason: str | None = Field(default=None, max_length=300)
+
+
+class SceneAuthorNotesSaveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    notes: str = Field(max_length=100_000)
+    base_revision_no: int = Field(ge=0, le=INT64_MAX)
+
+
+@router.get("/api/v1/scenes/{scene_id}/author-notes")
+def get_scene_author_notes(
+    scene_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    result = SceneNotesService(session).get(scene_id)
+    return ok(result, req_id=getattr(request.state, "request_id", None))
+
+
+@router.patch("/api/v1/scenes/{scene_id}/author-notes")
+def save_scene_author_notes(
+    scene_id: str,
+    payload: SceneAuthorNotesSaveRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    body = payload.model_dump(mode="json")
+    return optional_idempotent_response(
+        request,
+        session,
+        method="PATCH",
+        path_template="/api/v1/scenes/{scene_id}/author-notes",
+        payload={"scene_id": scene_id, "body": body},
+        action=lambda: SceneNotesService(session).save(
+            scene_id,
+            body["notes"],
+            base_revision_no=body["base_revision_no"],
+        ),
+    )
 
 
 @router.post("/api/v1/scenes/trash")
-def trash_scenes(payload: dict, request: Request, session: Session = Depends(get_session)):
+def trash_scenes(payload: SceneIdsRequest, request: Request, session: Session = Depends(get_session)):
+    body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/trash",
-        payload=payload,
-        action=lambda: AuthorLifecycleService(session).trash_scenes(payload.get("scene_ids") or [], actor_ref),
+        payload=body,
+        action=lambda: AuthorLifecycleService(session).trash_scenes(body["scene_ids"], actor_ref),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -123,15 +247,16 @@ def trash_scenes(payload: dict, request: Request, session: Session = Depends(get
 
 
 @router.post("/api/v1/scenes/restore")
-def restore_scenes(payload: dict, request: Request, session: Session = Depends(get_session)):
+def restore_scenes(payload: SceneIdsRequest, request: Request, session: Session = Depends(get_session)):
+    body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/restore",
-        payload=payload,
-        action=lambda: AuthorLifecycleService(session).restore_scenes(payload.get("scene_ids") or []),
+        payload=body,
+        action=lambda: AuthorLifecycleService(session).restore_scenes(body["scene_ids"]),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -139,15 +264,16 @@ def restore_scenes(payload: dict, request: Request, session: Session = Depends(g
 
 
 @router.post("/api/v1/scenes/purge")
-def purge_scenes(payload: dict, request: Request, session: Session = Depends(get_session)):
+def purge_scenes(payload: SceneIdsRequest, request: Request, session: Session = Depends(get_session)):
+    body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/purge",
-        payload=payload,
-        action=lambda: AuthorLifecycleService(session).purge_scenes(payload.get("scene_ids") or []),
+        payload=body,
+        action=lambda: AuthorLifecycleService(session).purge_scenes(body["scene_ids"]),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -195,6 +321,17 @@ def _create_scene(session: Session, payload: dict) -> dict:
 
     scene = session.get(SceneCard, payload["scene_id"])
     created = scene is None
+    effective_scene_seq = (
+        payload.get("scene_seq")
+        if payload.get("scene_seq") is not None
+        else (scene.scene_seq if scene is not None else _next_scene_seq(session, chapter_id))
+    )
+    _assert_scene_seq_available(
+        session,
+        scene_id=payload["scene_id"],
+        chapter_id=chapter_id,
+        scene_seq=int(effective_scene_seq),
+    )
     if scene is None:
         require_chapter_mutation_allowed(
             session,
@@ -278,6 +415,34 @@ def _create_scene(session: Session, payload: dict) -> dict:
     return {"scene_id": scene.scene_id, "changed": changed}
 
 
+def _assert_scene_seq_available(
+    session: Session,
+    *,
+    scene_id: str,
+    chapter_id: str,
+    scene_seq: int,
+) -> None:
+    conflict = session.execute(
+        select(SceneCard.scene_id).where(
+            SceneCard.chapter_id == chapter_id,
+            SceneCard.scene_seq == scene_seq,
+            SceneCard.trashed_flag == 0,
+            SceneCard.scene_id != scene_id,
+        )
+    ).scalar_one_or_none()
+    if conflict is not None:
+        raise DomainError(
+            "SCENE_SEQUENCE_CONFLICT",
+            "another active scene already uses this scene_seq",
+            status_code=409,
+            details={
+                "chapter_id": chapter_id,
+                "scene_seq": scene_seq,
+                "conflicting_scene_id": conflict,
+            },
+        )
+
+
 def _parse_run_policy(payload: dict | None) -> str:
     run_policy = str((payload or {}).get("run_policy") or "reliable").strip() or "reliable"
     if run_policy not in {"reliable", "strict", "auto"}:
@@ -302,14 +467,15 @@ def _reject_manual_checkpoint_controls(payload: dict | None) -> None:
 
 
 @router.post("/api/v1/scenes/{scene_id}/run/full")
-def run_scene(scene_id: str, request: Request, session: Session = Depends(get_session), payload: dict | None = Body(default=None)):
+def run_scene(scene_id: str, request: Request, session: Session = Depends(get_session), payload: SceneRunCommandRequest | None = Body(default=None)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     AuthorLifecycleService(session).require_active_scene(scene_id)
-    _reject_manual_checkpoint_controls(payload)
+    _reject_manual_checkpoint_controls(body)
     # FE-ALIGN G3：作者改写指令随请求下发（注入风格生成提示词；幂等键随 note 变化）
-    author_note = normalize_author_note((payload or {}).get("author_note"))
+    author_note = normalize_author_note(body.get("author_note"))
     # Wave 2（治理 §6.3）：run_policy 请求级参数（reliable|strict|auto；列属 Wave 3）
-    run_policy = _parse_run_policy(payload)
+    run_policy = _parse_run_policy(body)
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
@@ -335,10 +501,8 @@ def run_scene(scene_id: str, request: Request, session: Session = Depends(get_se
 
 @router.get("/api/v1/scenes/{scene_id}/execution-contract")
 def get_scene_execution_contract(scene_id: str, request: Request, session: Session = Depends(get_session)):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
-    contract = SceneExecutionContractService(session).get_or_create(scene_id, actor_ref=actor_ref)
-    session.commit()
+    contract = SceneExecutionContractService(session).latest(scene_id)
     return ok(
         {"contract": SceneExecutionContractService(session).serialize(contract)},
         req_id=getattr(request.state, "request_id", None),
@@ -346,20 +510,38 @@ def get_scene_execution_contract(scene_id: str, request: Request, session: Sessi
 
 
 @router.post("/api/v1/scenes/{scene_id}/preflight/create-cards")
-def create_scene_preflight_cards(scene_id: str, request: Request, session: Session = Depends(get_session)):
+def create_scene_preflight_cards(
+    scene_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     """确定性建出当前场景缺失的最小 voice/relation 卡(active)，解阻 run 预检。
 
     这是 create_minimal_voice_card / create_minimal_relation_card 预检动作的真实执行落点
     （此前该动作只是提示、无可执行端点，是死胡同）。幂等：已有 active 卡则跳过。
     """
-    scene = AuthorLifecycleService(session).require_active_scene(scene_id)
-    result = SceneRunPreflightService(session).create_missing_cards(scene)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    def create_cards() -> dict:
+        scene = AuthorLifecycleService(session).require_active_scene(scene_id)
+        return SceneRunPreflightService(session).create_missing_cards(scene)
+
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/scenes/{scene_id}/preflight/create-cards",
+        payload={"scene_id": scene_id},
+        action=create_cards,
+    )
 
 
 @router.post("/api/v1/scenes/{scene_id}/execution-contract")
-def generate_scene_execution_contract(scene_id: str, request: Request, session: Session = Depends(get_session)):
+def generate_scene_execution_contract(
+    scene_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
     result, status = execute_with_idempotency(
@@ -380,7 +562,12 @@ def generate_scene_execution_contract(scene_id: str, request: Request, session: 
 
 
 @router.post("/api/v1/scenes/{scene_id}/triage")
-def triage_scene(scene_id: str, request: Request, session: Session = Depends(get_session)):
+def triage_scene(
+    scene_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
     result, status = execute_with_idempotency(
@@ -397,7 +584,12 @@ def triage_scene(scene_id: str, request: Request, session: Session = Depends(get
 
 
 @router.post("/api/v1/scenes/{scene_id}/literary-blueprint")
-def generate_scene_literary_blueprint(scene_id: str, request: Request, session: Session = Depends(get_session)):
+def generate_scene_literary_blueprint(
+    scene_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
     result, status = execute_with_idempotency(
@@ -416,7 +608,12 @@ def generate_scene_literary_blueprint(scene_id: str, request: Request, session: 
 
 
 @router.post("/api/v1/scenes/{scene_id}/quality-contract")
-def generate_scene_quality_contract(scene_id: str, request: Request, session: Session = Depends(get_session)):
+def generate_scene_quality_contract(
+    scene_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
     result, status = execute_with_idempotency(
@@ -442,9 +639,9 @@ def get_scene_quality_state(scene_id: str, request: Request, session: Session = 
 
 
 @router.post("/api/v1/scenes/{scene_id}/auto-rewrite")
-def run_scene_auto_rewrite(scene_id: str, request: Request, payload: dict | None = None, session: Session = Depends(get_session)):
+def run_scene_auto_rewrite(scene_id: str, request: Request, payload: SceneAutoRewriteRequest | None = None, session: Session = Depends(get_session)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    request_payload = payload or {}
+    request_payload = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     AuthorLifecycleService(session).require_active_scene(scene_id)
     result, status = execute_with_idempotency(
         session,
@@ -464,7 +661,12 @@ def run_scene_auto_rewrite(scene_id: str, request: Request, payload: dict | None
 
 
 @router.post("/api/v1/auto-rewrite-runs/{run_id}/promote")
-def promote_auto_rewrite_run(run_id: str, request: Request, session: Session = Depends(get_session)):
+def promote_auto_rewrite_run(
+    run_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
@@ -480,7 +682,12 @@ def promote_auto_rewrite_run(run_id: str, request: Request, session: Session = D
 
 
 @router.post("/api/v1/auto-rewrite-runs/{run_id}/rollback")
-def rollback_auto_rewrite_run(run_id: str, request: Request, session: Session = Depends(get_session)):
+def rollback_auto_rewrite_run(
+    run_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
@@ -496,27 +703,44 @@ def rollback_auto_rewrite_run(run_id: str, request: Request, session: Session = 
 
 
 @router.post("/api/v1/scenes/{scene_id}/run/jobs")
-def create_scene_run_job(scene_id: str, request: Request, start: bool = True, session: Session = Depends(get_session), payload: dict | None = Body(default=None)):
+def create_scene_run_job(scene_id: str, request: Request, start: bool = True, session: Session = Depends(get_session), payload: SceneRunJobRequest | None = Body(default=None)):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    _reject_manual_checkpoint_controls(payload)
-    service = SceneRunJobService(session)
-    budget_resume_parent_execution_id = (
-        service.resolve_budget_resume_execution_id(scene_id)
-        if (payload or {}).get("resume_budget") is True
-        else None
-    )
-    job = service.create_job(
-        scene_id,
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    _reject_manual_checkpoint_controls(body)
+    job_to_start: str | None = None
+
+    def create_job() -> dict:
+        nonlocal job_to_start
+        service = SceneRunJobService(session)
+        budget_resume_parent_execution_id = (
+            service.resolve_budget_resume_execution_id(scene_id)
+            if body.get("resume_budget") is True
+            else None
+        )
+        job = service.create_job(
+            scene_id,
+            actor_ref=actor_ref,
+            author_note=body.get("author_note"),
+            run_policy=_parse_run_policy(body),
+            budget_resume_parent_execution_id=budget_resume_parent_execution_id,
+        )
+        if start and job.status == "queued":
+            job_to_start = job.job_id
+        return service.serialize_job(job)
+
+    result, status = execute_with_optional_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/scenes/{scene_id}/run/jobs",
+        payload={"scene_id": scene_id, "start": start, "body": body},
+        action=create_job,
         actor_ref=actor_ref,
-        author_note=(payload or {}).get("author_note"),
-        run_policy=_parse_run_policy(payload),
-        budget_resume_parent_execution_id=budget_resume_parent_execution_id,
     )
-    payload = service.serialize_job(job)
-    session.commit()
-    if start and job.status == "queued":
-        start_scene_run_job_worker(job.job_id)
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    if job_to_start is not None:
+        start_scene_run_job_worker(job_to_start)
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.get("/api/v1/run-jobs/{job_id}")
@@ -531,19 +755,28 @@ def cancel_run_job(
     job_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    payload: dict | None = Body(default=None),
+    payload: SceneRunCancelRequest | None = Body(default=None),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    service = SceneRunJobService(session)
-    job = service.request_cancel(
-        job_id,
-        actor_ref=actor_ref,
-        reason=(payload or {}).get("reason"),
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+
+    def cancel() -> dict:
+        service = SceneRunJobService(session)
+        job = service.request_cancel(job_id, actor_ref=actor_ref, reason=body.get("reason"))
+        return service.serialize_job(job)
+
+    response = optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/run-jobs/{job_id}/cancel",
+        payload={"job_id": job_id, "body": body},
+        action=cancel,
     )
-    data = service.serialize_job(job)
-    session.commit()
+    # Reasserting the process-local signal is safe and is useful after a replay
+    # served by a process that did not execute the original cancellation.
     remember_committed_cancellation(job_id)
-    return ok(data, req_id=getattr(request.state, "request_id", None))
+    return response
 
 
 @router.get("/api/v1/scenes/{scene_id}/run/jobs/latest")
@@ -596,8 +829,8 @@ def scene_status(scene_id: str, request: Request, session: Session = Depends(get
     AuthorLifecycleService(session).require_active_scene(scene_id)
     state = session.get(SceneRunState, scene_id)
     if state is None:
-        # 经目录新建、从未 run/未打开 workbench 的有效场景没有运行态行——
-        # 返回与「刚物化、ready」一致的空态，而非对 None 取属性抛 500（对齐 workbench 自动补建语义）。
+        # 经目录新建、从未 run 的有效场景没有运行态行——返回 ready 空态投影，
+        # 与只读 workbench 一致；GET 不为查看动作补建持久行。
         return ok(
             {
                 "scene_status": "ready",
@@ -641,12 +874,11 @@ def scene_attempts(
     limit: int | None = None,
 ):
     AuthorLifecycleService(session).require_active_scene(scene_id)
-    items = session.execute(
-        select(AttemptTracker).where(AttemptTracker.scene_id == scene_id).order_by(AttemptTracker.attempt_id.desc())
-    ).scalars().all()
-    page_items, pagination = paginate_items(
-        items,
+    page_items, pagination = paginate_select(
+        session,
+        select(AttemptTracker).where(AttemptTracker.scene_id == scene_id),
         request=resolve_pagination_request(page=page, page_size=page_size, cursor=cursor, limit=limit),
+        order_columns=((AttemptTracker.attempt_id, "desc"),),
         cursor_values=lambda item: [item.attempt_id],
     )
     return ok(
@@ -661,11 +893,16 @@ def scene_generation_history(scene_id: str, request: Request, session: Session =
     attempts = session.execute(
         select(AttemptTracker).where(AttemptTracker.scene_id == scene_id).order_by(AttemptTracker.attempt_id.asc())
     ).scalars().all()
+    lookups = _load_generation_history_lookups(session, attempts)
     return ok(
         {
             "scene_id": scene_id,
             "items": [
-                _serialize_generation_history_item(session, item, attempt_order=index + 1)
+                _serialize_generation_history_item(
+                    item,
+                    attempt_order=index + 1,
+                    lookups=lookups,
+                )
                 for index, item in enumerate(attempts)
             ],
         },
@@ -802,10 +1039,7 @@ def get_scene_orchestration_signals(scene_id: str, request: Request, session: Se
     if scene is None:
         return ok({"scene_id": scene_id, "available": False}, req_id=getattr(request.state, "request_id", None))
 
-    project_id = (
-        scene.project_id
-        or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
-    )
+    project_id = require_scene_project_id(session, scene)
     state = session.get(SceneRunState, scene_id)
 
     # §6 dispersion + criticality
@@ -837,7 +1071,28 @@ def get_scene_orchestration_signals(scene_id: str, request: Request, session: Se
             }
             if state is not None else None
         ),
+        "degraded_signals": [],
     }
+
+    def degrade_signal(signal_name: str, exc: Exception) -> None:
+        error_code = (
+            exc.code
+            if isinstance(exc, DomainError)
+            else "SCENE_SIGNAL_COMPUTATION_FAILED"
+        )
+        signals[signal_name] = None
+        signals["degraded_signals"].append({
+            "signal": signal_name,
+            "error_code": error_code,
+        })
+        _LOGGER.warning(
+            "orchestration signal degraded signal=%s scene_id=%s request_id=%s error_code=%s",
+            signal_name,
+            scene_id,
+            getattr(request.state, "request_id", None),
+            error_code,
+            exc_info=True,
+        )
 
     # 审计 P-11：最近一次 bundle 的降级注入槽（辅助注入失效不再沉默）
     try:
@@ -851,8 +1106,8 @@ def get_scene_orchestration_signals(scene_id: str, request: Request, session: Se
             (latest_bundle.frozen_snapshot_json or {}).get("degraded_slots") or []
             if latest_bundle is not None else []
         )
-    except Exception:
-        signals["degraded_slots"] = None
+    except Exception as exc:
+        degrade_signal("degraded_slots", exc)
 
     # Wave 6（§5.8/§10）：场景成本——总成本 / 各阶段占比 / 是否超预算（编排信号一读可解释）
     try:
@@ -872,16 +1127,16 @@ def get_scene_orchestration_signals(scene_id: str, request: Request, session: Se
             "usage_ratio": sc["budget"]["usage_ratio"],
             "extra_cost": sc["extra_cost"],
         }
-    except Exception:
-        signals["cost"] = None
+    except Exception as exc:
+        degrade_signal("cost", exc)
 
     # Wave 6（§5.7）：裁判独立性——critic 是否与 writer 同源（correlated_judge）
     try:
         from novel_system.services.model_independence import judge_independence, observed_correlated_judge
         observed = observed_correlated_judge(session, scene_id)
         signals["judge_independence"] = observed if observed is not None else judge_independence(session)
-    except Exception:
-        signals["judge_independence"] = None
+    except Exception as exc:
+        degrade_signal("judge_independence", exc)
 
     # §5 foreshadow debt health (best-effort — never fail the whole panel)
     try:
@@ -896,15 +1151,15 @@ def get_scene_orchestration_signals(scene_id: str, request: Request, session: Se
             "unresolved_plant_count": len(health.unresolved_plants),
             "unresolved_plants": health.unresolved_plants,
         }
-    except Exception:
-        signals["foreshadow_health"] = None
+    except Exception as exc:
+        degrade_signal("foreshadow_health", exc)
 
     # §12 theme expression budget
     try:
         from novel_system.services.theme_anchor import ThemeAnchorService
         signals["theme_budget"] = ThemeAnchorService(session).check_expression_budget(project_id)
-    except Exception:
-        signals["theme_budget"] = None
+    except Exception as exc:
+        degrade_signal("theme_budget", exc)
 
     # §9 active style-drift correction for this chapter
     try:
@@ -927,8 +1182,8 @@ def get_scene_orchestration_signals(scene_id: str, request: Request, session: Se
             "active": bool(drift_rows),
             "drifted_dimensions": drift_dims,
         }
-    except Exception:
-        signals["style_drift"] = None
+    except Exception as exc:
+        degrade_signal("style_drift", exc)
 
     return ok(signals, req_id=getattr(request.state, "request_id", None))
 
@@ -939,7 +1194,7 @@ def select_style_candidate(
     row_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    payload: dict | None = Body(default=None),
+    payload: StyleCandidateSelectRequest | None = Body(default=None),
 ):
     """Wave 3（治理 §5.5/§6.3）：作者终选——一次写入 + 锁定。
 
@@ -948,7 +1203,7 @@ def select_style_candidate(
     选择耗时/无明显差异标记（§5.5 记录选择、放弃、无明显差异和选择耗时）。
     """
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    body = payload or {}
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
 
     def _select(session: Session) -> dict[str, Any]:
         from novel_system.services.versioning.shared import now_iso
@@ -1057,7 +1312,7 @@ def select_style_candidate(
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/style-candidates/{row_id}/select",
-        payload={"scene_id": scene_id, "row_id": row_id, **({k: body[k] for k in ("no_clear_difference",) if k in body})},
+        payload={"scene_id": scene_id, "row_id": row_id, **body},
         action=lambda: _select(session),
         actor_ref=actor_ref,
     )
@@ -1070,11 +1325,12 @@ def reopen_style_candidate_selection(
     scene_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    payload: dict | None = Body(default=None),
+    payload: StyleCandidateReopenRequest | None = Body(default=None),
 ):
     """Wave 3（§6.3）：显式重开终选——唯一允许变更选择的动作，留审计。"""
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    reason = str((payload or {}).get("reason") or "").strip()[:300]
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    reason = str(body.get("reason") or "").strip()
 
     def _reopen(session: Session) -> dict[str, Any]:
         from novel_system.services.versioning.shared import now_iso
@@ -1128,6 +1384,7 @@ def reopen_style_candidate_selection(
 def resume_after_selection(
     scene_id: str,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
     """Wave 3（§5.5/§6.3）：作者终选后从批判修订/QC 续跑到归档。"""
@@ -1155,11 +1412,11 @@ def topup_scene_budget(
     scene_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    payload: dict | None = Body(default=None),
+    payload: SceneBudgetTopupRequest | None = Body(default=None),
 ):
     """作者显式追加 token/业务尝试/provider 尝试预算；唯一扩容入口，留审计。"""
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    body = payload or {}
+    body = payload.model_dump(mode="json") if payload else {}
     raw_extras = {
         "extra_tokens": body.get("extra_tokens", 0),
         "extra_attempts": body.get("extra_attempts", 0),
@@ -1353,9 +1610,10 @@ def adopt_current_scene(
 ):
     """治理 §5.2：作者采纳归档的单一服务入口。
 
-    前端「归档/置 done」动作必须打到这里——FinalScene 只由服务端归档事务
-    创建或提升（复用 Archiver，不建第二实现）。内容源优先级：未归档的
-    current_final_scene → 管线草稿（latest_valid > style > neutral）→
+    前端「归档/置 done」动作必须打到这里——携带 exact_author_draft 时，
+    作者稿 CAS 保存与 CanonicalScene 提升在同一个幂等事务中完成，浏览器正文
+    不再与 FinalScene 分裂。兼容调用未携带 exact_author_draft 时，内容源优先级
+    仍为未归档 current_final_scene → 管线草稿（latest_valid > style > neutral）→
     author-draft 人工稿兜底。守卫：无任何有效稿 409 NO_VALID_DRAFT；
     确定性来源安全扫描命中 409 SOURCE_SAFETY_BLOCKED（草稿保留可重试，
     设计红线 8：来源安全未通过可保存草稿但不能标记为已安全归档）。
@@ -1363,6 +1621,7 @@ def adopt_current_scene(
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     body = payload.model_dump(mode="json") if payload is not None else {}
     accepted_warning_codes = body.get("accepted_warning_codes") or []
+    exact_author_draft = body.get("exact_author_draft")
 
     def _adopt(session: Session) -> dict[str, Any]:
         from uuid import uuid4
@@ -1374,9 +1633,10 @@ def adopt_current_scene(
             session.add(state)
             session.flush()
 
-        # 已归档：幂等返回现状，不重复归档；顺带收敛修复前遗留的运行残留
+        # 兼容旧调用的已归档幂等返回。精确作者稿可能是在已归档版本之上的
+        # 新修订，必须继续走 revision + FinalScene 双 CAS，不能在这里吞掉。
         # （如 C2 真实库中 failed@soft_qc_ready 的历史残留，作者重点一次即自愈）
-        if state.scene_status == "archived" and state.current_final_scene_row_id:
+        if exact_author_draft is None and state.scene_status == "archived" and state.current_final_scene_row_id:
             current_final = session.get(FinalScene, state.current_final_scene_row_id)
             if current_final is None or current_final.scene_id != scene_id:
                 raise DomainError(
@@ -1442,6 +1702,71 @@ def adopt_current_scene(
                 status_code=409,
                 details={"scene_id": scene_id},
             )
+
+        # 浏览器精确稿路径：先以 base_revision_no 保存请求中的确定正文，再把
+        # 保存后的同一修订提升为 FinalScene。两个动作共享当前数据库事务；保存、
+        # 安全门、聚合或归档任一步失败都会整体回滚。
+        if exact_author_draft is not None:
+            draft_id = exact_author_draft["draft_id"]
+            draft = session.get(AuthorDraft, draft_id)
+            if draft is None:
+                raise DomainError(
+                    "AUTHOR_DRAFT_NOT_FOUND",
+                    "author draft not found",
+                    status_code=404,
+                    details={"draft_id": draft_id},
+                )
+            if draft.object_type != "scene" or draft.object_id != scene_id:
+                raise DomainError(
+                    "AUTHOR_DRAFT_SCENE_MISMATCH",
+                    "author draft does not belong to the scene being adopted",
+                    status_code=409,
+                    details={
+                        "draft_id": draft_id,
+                        "draft_object_type": draft.object_type,
+                        "draft_object_id": draft.object_id,
+                        "scene_id": scene_id,
+                    },
+                )
+            saved = AuthorDraftService(session).save(
+                draft_id,
+                {
+                    "content": exact_author_draft["content"],
+                    "base_revision_no": exact_author_draft["base_revision_no"],
+                    "note": "atomic scene adoption",
+                },
+                actor_ref=actor_ref,
+            )
+            saved_draft = saved.get("draft") or {}
+            saved_revision_no = saved_draft.get("revision_no")
+            if not isinstance(saved_revision_no, int):
+                raise DomainError(
+                    "AUTHOR_DRAFT_SAVE_INCOMPLETE",
+                    "saved author draft did not return a revision number",
+                    status_code=500,
+                    details={"draft_id": draft_id},
+                )
+            promoted = CanonicalSceneService(session).promote_author_draft(
+                draft_id,
+                {
+                    "base_revision_no": saved_revision_no,
+                    "expected_current_final_scene_row_id": exact_author_draft[
+                        "expected_current_final_scene_row_id"
+                    ],
+                    "narrative_effect": "facts_unchanged",
+                    "accepted_warning_codes": accepted_warning_codes,
+                },
+                actor_ref=actor_ref,
+            )
+            session.flush()
+            session.refresh(draft)
+            promoted["author_draft"] = AuthorDraftService.serialize_draft(
+                draft,
+                current_final_scene_row_id=promoted["final_scene_row_id"],
+            )
+            promoted["exact_author_draft"] = True
+            promoted["author_state"] = compute_author_state(session, scene_id, state)
+            return promoted
 
         # 1) 内容源解析
         final: FinalScene | None = None
@@ -1583,18 +1908,25 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
     scene = AuthorLifecycleService(session).require_active_scene(scene_id)
     chapter = session.get(ChapterGoal, scene.chapter_id)
     state = session.get(SceneRunState, scene_id)
-    if state is None:
-        # FE 目录直接建的场景没有运行时状态行：按 scenes POST 的约定补建
-        state = SceneRunState(scene_id=scene_id, scene_status="ready")
-        session.add(state)
-        session.flush()
     runtime_service = ChapterRuntimeService(session)
-    chapter_state = runtime_service.chapter_state_payload(scene.chapter_id)
+    chapter_state = runtime_service.chapter_state_snapshot(scene.chapter_id)
     run_preflight = SceneRunPreflightService(session).build(scene, chapter_state)
-    bundle = session.get(SceneBundle, state.current_bundle_id) if state.current_bundle_id else None
-    neutral = session.get(SceneDraft, state.current_neutral_draft_row_id) if state.current_neutral_draft_row_id else None
-    style = session.get(SceneDraft, state.current_style_draft_row_id) if state.current_style_draft_row_id else None
-    final = session.get(FinalScene, state.current_final_scene_row_id) if state.current_final_scene_row_id else None
+    bundle = session.get(SceneBundle, state.current_bundle_id) if state is not None and state.current_bundle_id else None
+    neutral = (
+        session.get(SceneDraft, state.current_neutral_draft_row_id)
+        if state is not None and state.current_neutral_draft_row_id
+        else None
+    )
+    style = (
+        session.get(SceneDraft, state.current_style_draft_row_id)
+        if state is not None and state.current_style_draft_row_id
+        else None
+    )
+    final = (
+        session.get(FinalScene, state.current_final_scene_row_id)
+        if state is not None and state.current_final_scene_row_id
+        else None
+    )
     source_safety_scan = ReferenceSafetyService(session).scan_runtime_text(
         final.content if final else "",
         source_profile_ids=source_profile_ids_from_snapshot(bundle.frozen_snapshot_json if bundle else None),
@@ -1625,11 +1957,11 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
                 "location": scene.location,
             },
             "scene_run_state": {
-                "scene_status": state.scene_status,
-                "current_bundle_id": state.current_bundle_id,
-                "current_bundle_hash": state.current_bundle_hash,
-                "current_final_scene_row_id": state.current_final_scene_row_id,
-                "lifecycle_budget": _scene_lifecycle_budget_payload(state),
+                "scene_status": state.scene_status if state is not None else "ready",
+                "current_bundle_id": state.current_bundle_id if state is not None else None,
+                "current_bundle_hash": state.current_bundle_hash if state is not None else None,
+                "current_final_scene_row_id": state.current_final_scene_row_id if state is not None else None,
+                "lifecycle_budget": _scene_lifecycle_budget_payload(state) if state is not None else None,
             },
             # 治理 §5.3：作者可见状态投影块（完整契约字段）
             "author_state": compute_author_state(session, scene_id, state),
@@ -1648,25 +1980,36 @@ def scene_workbench(scene_id: str, request: Request, session: Session = Depends(
             "literary_blueprint": blueprint_service.latest_payload(scene_id),
             "execution_contract": contract_service.serialize(execution_contract),
             "scene_memory": {"row_id": memory.row_id, "content": memory.content} if memory else None,
-            "generation_summary": _serialize_generation_summary(session, scene_id, state),
+            "generation_summary": _serialize_generation_summary(session, scene_id, state) if state is not None else None,
             "near_final_summary": _serialize_near_final_summary(session, scene_id),
-            "hard_qc_summary": _serialize_qc_summary(_latest_qc_report(session, scene_id, state, "hard_qc")),
-            "soft_qc_summary": _serialize_qc_summary(_latest_qc_report(session, scene_id, state, "soft_qc")),
+            "hard_qc_summary": (
+                _serialize_qc_summary(_latest_qc_report(session, scene_id, state, "hard_qc"))
+                if state is not None
+                else None
+            ),
+            "soft_qc_summary": (
+                _serialize_qc_summary(_latest_qc_report(session, scene_id, state, "soft_qc"))
+                if state is not None
+                else None
+            ),
             "triage_preview": SceneTriageService(session).evaluate(scene_id, actor_ref="preview", mutate=False),
             "rewrite_counters": {
-                "hard_partial_rewrite_count": state.hard_partial_rewrite_count,
-                "hard_full_rewrite_count": state.hard_full_rewrite_count,
-                "soft_patch_count": state.soft_patch_count,
-                "repeat_issue_key": state.repeat_issue_key,
-                "repeat_issue_count": state.repeat_issue_count,
+                "hard_partial_rewrite_count": state.hard_partial_rewrite_count if state is not None else 0,
+                "hard_full_rewrite_count": state.hard_full_rewrite_count if state is not None else 0,
+                "soft_patch_count": state.soft_patch_count if state is not None else 0,
+                "repeat_issue_key": state.repeat_issue_key if state is not None else None,
+                "repeat_issue_count": state.repeat_issue_count if state is not None else 0,
             },
-            "human_review_summary": _serialize_human_review_summary(_resolve_human_review_event(session, scene_id, state)),
+            "human_review_summary": (
+                _serialize_human_review_summary(_resolve_human_review_event(session, scene_id, state))
+                if state is not None
+                else None
+            ),
             "writer_review_summary": WriterReviewService(session).scene_summary(scene_id),
             "attempts": [_serialize_attempt(item) for item in attempts],
         },
         req_id=getattr(request.state, "request_id", None),
     )
-    session.commit()
     return response
 
 
@@ -2013,12 +2356,84 @@ def _serialize_human_review_summary(event: HumanReviewEvent | None) -> dict | No
     }
 
 
-def _serialize_generation_history_item(session: Session, item: AttemptTracker, *, attempt_order: int) -> dict:
+def _load_generation_history_lookups(
+    session: Session,
+    attempts: list[AttemptTracker],
+) -> dict[str, dict[str, Any]]:
+    details_list = [dict(item.details_json or {}) for item in attempts]
+    draft_ids = {
+        value
+        for details in details_list
+        for key in ("row_id", "source_draft_row_id", "source_style_draft_row_id")
+        if (value := _detail_str(details, key)) is not None
+    }
+    final_scene_ids = {
+        value
+        for details in details_list
+        if (value := _detail_str(details, "final_scene_row_id")) is not None
+    }
+    qc_report_ids = {
+        value
+        for details in details_list
+        for key in ("qc_report_id", "source_qc_report_id")
+        if (value := _detail_str(details, key)) is not None
+    }
+    event_ids = {
+        value
+        for details in details_list
+        if (value := _detail_str(details, "human_review_event_id")) is not None
+    }
+    direct_llm_call_ids = {
+        value
+        for details in details_list
+        for key in ("llm_call_id", "final_generation_llm_call_id")
+        if (value := _detail_str(details, key)) is not None
+    }
+
+    def _load(model, key_column, ids: set[str]) -> dict[str, Any]:
+        if not ids:
+            return {}
+        rows = session.execute(select(model).where(key_column.in_(ids))).scalars().all()
+        return {str(getattr(row, key_column.key)): row for row in rows}
+
+    drafts = _load(SceneDraft, SceneDraft.row_id, draft_ids)
+    final_scenes = _load(FinalScene, FinalScene.row_id, final_scene_ids)
+    qc_reports = _load(QcReport, QcReport.qc_report_id, qc_report_ids)
+    review_events = _load(HumanReviewEvent, HumanReviewEvent.event_id, event_ids)
+    linked_llm_call_ids = {
+        str(row.generation_llm_call_id)
+        for row in [*drafts.values(), *final_scenes.values()]
+        if row.generation_llm_call_id
+    }
+    llm_calls = _load(
+        LlmCall,
+        LlmCall.llm_call_id,
+        direct_llm_call_ids | linked_llm_call_ids,
+    )
+    return {
+        "drafts": drafts,
+        "final_scenes": final_scenes,
+        "qc_reports": qc_reports,
+        "review_events": review_events,
+        "llm_calls": llm_calls,
+    }
+
+
+def _serialize_generation_history_item(
+    item: AttemptTracker,
+    *,
+    attempt_order: int,
+    lookups: dict[str, dict[str, Any]],
+) -> dict:
     details = dict(item.details_json or {})
-    llm_call = _resolve_attempt_llm_call(session, item, details)
-    qc_report = _resolve_attempt_qc_report(session, item, details)
-    source_qc_report = _resolve_scene_scoped_qc_report(session, item.scene_id, _detail_str(details, "source_qc_report_id"))
-    human_review_event = _resolve_attempt_human_review_event(session, item, details)
+    llm_call = _resolve_attempt_llm_call(item, details, lookups)
+    qc_report = _resolve_attempt_qc_report(item, details, lookups)
+    source_qc_report = _resolve_scene_scoped_qc_report(
+        lookups["qc_reports"],
+        item.scene_id,
+        _detail_str(details, "source_qc_report_id"),
+    )
+    human_review_event = _resolve_attempt_human_review_event(item, details, lookups)
     return {
         "attempt_order": attempt_order,
         "attempt": _serialize_attempt(item),
@@ -2047,11 +2462,16 @@ def _detail_str(details: dict, key: str) -> str | None:
     return None
 
 
-def _resolve_attempt_llm_call(session: Session, item: AttemptTracker, details: dict) -> LlmCall | None:
+def _resolve_attempt_llm_call(
+    item: AttemptTracker,
+    details: dict,
+    lookups: dict[str, dict[str, Any]],
+) -> LlmCall | None:
+    llm_calls = lookups["llm_calls"]
     for llm_call_id in (_detail_str(details, "llm_call_id"), _detail_str(details, "final_generation_llm_call_id")):
         if not llm_call_id:
             continue
-        llm_call = session.get(LlmCall, llm_call_id)
+        llm_call = llm_calls.get(llm_call_id)
         if llm_call is not None and (item.scene_id is None or llm_call.scene_id == item.scene_id):
             return llm_call
 
@@ -2059,30 +2479,34 @@ def _resolve_attempt_llm_call(session: Session, item: AttemptTracker, details: d
         row_id = _detail_str(details, row_key)
         if not row_id:
             continue
-        draft = session.get(SceneDraft, row_id)
+        draft = lookups["drafts"].get(row_id)
         if draft is None or (item.scene_id is not None and draft.scene_id != item.scene_id):
             continue
         if draft.generation_llm_call_id:
-            llm_call = session.get(LlmCall, draft.generation_llm_call_id)
+            llm_call = llm_calls.get(draft.generation_llm_call_id)
             if llm_call is not None:
                 return llm_call
 
     final_scene_row_id = _detail_str(details, "final_scene_row_id")
     if final_scene_row_id:
-        final_scene = session.get(FinalScene, final_scene_row_id)
+        final_scene = lookups["final_scenes"].get(final_scene_row_id)
         if final_scene is not None and (item.scene_id is None or final_scene.scene_id == item.scene_id):
             if final_scene.generation_llm_call_id:
-                llm_call = session.get(LlmCall, final_scene.generation_llm_call_id)
+                llm_call = llm_calls.get(final_scene.generation_llm_call_id)
                 if llm_call is not None:
                     return llm_call
 
     return None
 
 
-def _resolve_scene_scoped_qc_report(session: Session, scene_id: str | None, qc_report_id: str | None) -> QcReport | None:
+def _resolve_scene_scoped_qc_report(
+    qc_reports: dict[str, Any],
+    scene_id: str | None,
+    qc_report_id: str | None,
+) -> QcReport | None:
     if not qc_report_id:
         return None
-    qc_report = session.get(QcReport, qc_report_id)
+    qc_report = qc_reports.get(qc_report_id)
     if qc_report is None:
         return None
     if scene_id is not None and qc_report.scene_id != scene_id:
@@ -2090,19 +2514,31 @@ def _resolve_scene_scoped_qc_report(session: Session, scene_id: str | None, qc_r
     return qc_report
 
 
-def _resolve_attempt_qc_report(session: Session, item: AttemptTracker, details: dict) -> QcReport | None:
+def _resolve_attempt_qc_report(
+    item: AttemptTracker,
+    details: dict,
+    lookups: dict[str, dict[str, Any]],
+) -> QcReport | None:
     for qc_report_id in (_detail_str(details, "qc_report_id"), _detail_str(details, "source_qc_report_id")):
-        qc_report = _resolve_scene_scoped_qc_report(session, item.scene_id, qc_report_id)
+        qc_report = _resolve_scene_scoped_qc_report(
+            lookups["qc_reports"],
+            item.scene_id,
+            qc_report_id,
+        )
         if qc_report is not None:
             return qc_report
     return None
 
 
-def _resolve_attempt_human_review_event(session: Session, item: AttemptTracker, details: dict) -> HumanReviewEvent | None:
+def _resolve_attempt_human_review_event(
+    item: AttemptTracker,
+    details: dict,
+    lookups: dict[str, dict[str, Any]],
+) -> HumanReviewEvent | None:
     event_id = _detail_str(details, "human_review_event_id")
     if not event_id:
         return None
-    event = session.get(HumanReviewEvent, event_id)
+    event = lookups["review_events"].get(event_id)
     if event is None:
         return None
     if item.scene_id is not None and event.scene_id != item.scene_id:

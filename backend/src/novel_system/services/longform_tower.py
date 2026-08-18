@@ -18,12 +18,17 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import (
     ChapterAuditFinding,
     ChapterContract,
+    ChapterGoal,
     LongformAnchor,
-    ReviewItem,
+    SceneCard,
     utcnow,
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.llm_accounting import LLMCallContext
+from novel_system.services.longform_adjudication import (
+    adjudicate_finding as adjudicate_audit_finding,
+    finding_payload as _finding_payload,
+)
 from novel_system.services.projects import ProjectService
 from novel_system.settings import get_settings
 
@@ -34,7 +39,6 @@ logger = logging.getLogger(__name__)
 ANCHOR_KINDS = {"fact", "trait", "setting", "timeline", "promise", "thread", "arc"}
 AUDIT_KINDS = {"drift", "overdue", "unplanted_reveal", "causal_break", "unfair_clue", "stall", "deflation", "arc"}
 AUDIT_SEVERITIES = {"warn", "block"}
-AUDIT_DECISIONS = {"accept_fix", "defer", "dismiss"}
 ANCHOR_STATUSES = {"pinned", "faded"}
 # FE-ALIGN P2(D13)：章级「违约级判定」LLM 节点。确定性回执只声明检出/未检出，
 # 这个节点把「草稿违反交接契约第 N 条」这一步接真；LLM 关闭时诚实降级（不机器判违约）。
@@ -99,22 +103,6 @@ def _anchor_payload(anchor: LongformAnchor) -> dict[str, Any]:
     }
 
 
-def _finding_payload(finding: ChapterAuditFinding) -> dict[str, Any]:
-    return {
-        "finding_id": finding.finding_id,
-        "project_id": finding.project_id,
-        "chapter_id": finding.chapter_id,
-        "kind": finding.kind,
-        "severity": finding.severity,
-        "text": finding.text,
-        "evidence": finding.evidence or "",
-        "status": finding.status,
-        "decision": finding.decision or "",
-        "decision_note": finding.decision_note or "",
-        "updated_at": finding.updated_at,
-    }
-
-
 def _contract_payload(contract: ChapterContract) -> dict[str, Any]:
     return {
         "contract_id": contract.contract_id,
@@ -134,6 +122,40 @@ class LongformTowerService:
 
     def _require_project(self, project_id: str):
         return ProjectService(self.session).require_project(project_id)
+
+    def _require_chapter(self, project_id: str, chapter_id: str) -> ChapterGoal:
+        chapter = self.session.get(ChapterGoal, chapter_id)
+        if (
+            chapter is None
+            or chapter.trashed_flag == 1
+            or chapter.project_id != project_id
+        ):
+            raise DomainError(
+                "CHAPTER_NOT_FOUND",
+                "chapter not found in project",
+                status_code=404,
+            )
+        return chapter
+
+    def _require_contract_scene(
+        self,
+        project_id: str,
+        chapter_id: str,
+        scene_id: str,
+    ) -> SceneCard:
+        scene = self.session.get(SceneCard, scene_id)
+        if (
+            scene is None
+            or scene.trashed_flag == 1
+            or scene.chapter_id != chapter_id
+            or (scene.project_id and scene.project_id != project_id)
+        ):
+            raise DomainError(
+                "TOWER_CONTRACT_SCENE_NOT_FOUND",
+                "contract scene not found in chapter",
+                status_code=404,
+            )
+        return scene
 
     # ---------------- 锚点 ----------------
     def list_anchors(self, project_id: str) -> dict[str, Any]:
@@ -201,8 +223,33 @@ class LongformTowerService:
         return _anchor_payload(anchor)
 
     # ---------------- 交接契约 ----------------
+    def get_contract(self, project_id: str, chapter_id: str) -> dict[str, Any]:
+        """Read a contract without making GET/audit calls mutate the database."""
+
+        project = self._require_project(project_id)
+        self._require_chapter(project.project_id, chapter_id)
+        contract = self.session.scalars(
+            select(ChapterContract).where(
+                ChapterContract.project_id == project.project_id,
+                ChapterContract.chapter_id == chapter_id,
+            )
+        ).first()
+        if contract is None:
+            return {
+                "contract_id": None,
+                "project_id": project.project_id,
+                "chapter_id": chapter_id,
+                "status": "drafting",
+                "constraints": [],
+                "dispatched_at": None,
+                "archived_at": None,
+                "updated_at": None,
+            }
+        return _contract_payload(contract)
+
     def get_or_create_contract(self, project_id: str, chapter_id: str) -> dict[str, Any]:
         project = self._require_project(project_id)
+        self._require_chapter(project.project_id, chapter_id)
         contract = self.session.scalars(
             select(ChapterContract).where(
                 ChapterContract.project_id == project.project_id,
@@ -268,6 +315,13 @@ class LongformTowerService:
             anchor_id = str(item.get("anchor_id") or "").strip()
             if anchor_id:
                 self._require_anchor(project.project_id, anchor_id)
+            scene_id = str(item.get("scene_id") or "").strip()
+            if scene_id:
+                self._require_contract_scene(
+                    project.project_id,
+                    chapter_id,
+                    scene_id,
+                )
             enforcement = str(item.get("enforcement") or "advisory").strip().lower()
             if enforcement not in {"advisory", "blocking"}:
                 raise DomainError(
@@ -336,7 +390,7 @@ class LongformTowerService:
                 "constraint_id": constraint_id,
                 "text": text,
                 "anchor_id": anchor_id or None,
-                "scene_id": str(item.get("scene_id") or "").strip() or None,
+                "scene_id": scene_id or None,
                 "kind": str(item.get("kind") or "constraint").strip() or "constraint",
                 "enforcement": enforcement,
                 "check_terms": check_terms,
@@ -369,6 +423,7 @@ class LongformTowerService:
     # ---------------- 章级审计 ----------------
     def list_findings(self, project_id: str, chapter_id: str) -> dict[str, Any]:
         project = self._require_project(project_id)
+        self._require_chapter(project.project_id, chapter_id)
         findings = self.session.scalars(
             select(ChapterAuditFinding)
             .where(
@@ -400,6 +455,7 @@ class LongformTowerService:
 
     def create_finding(self, project_id: str, chapter_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         project = self._require_project(project_id)
+        self._require_chapter(project.project_id, chapter_id)
         text = str(payload.get("text") or "").strip()
         if not text:
             raise DomainError("TOWER_AUDIT_TEXT_REQUIRED", "finding text is required", status_code=400)
@@ -414,7 +470,16 @@ class LongformTowerService:
         finding_id = str(payload.get("finding_id") or "").strip() or f"AUD_{uuid.uuid4().hex[:10].upper()}"
         existing = self.session.get(ChapterAuditFinding, finding_id)
         if existing is not None:
-            return _finding_payload(existing)
+            if (
+                existing.project_id == project.project_id
+                and existing.chapter_id == chapter_id
+            ):
+                return _finding_payload(existing)
+            raise DomainError(
+                "TOWER_AUDIT_FINDING_ID_CONFLICT",
+                "audit finding id is already in use",
+                status_code=409,
+            )
         meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else None
         evidence = str(payload.get("evidence") or "").strip() or None
         if meta is not None and not evidence:
@@ -484,40 +549,19 @@ class LongformTowerService:
         )
 
     def adjudicate_finding(self, project_id: str, finding_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        project = self._require_project(project_id)
-        finding = self.session.get(ChapterAuditFinding, finding_id)
-        if finding is None or finding.project_id != project.project_id:
-            raise DomainError("TOWER_AUDIT_NOT_FOUND", "audit finding not found", status_code=404)
-        decision = str(payload.get("decision") or "").strip()
-        if decision not in AUDIT_DECISIONS:
-            raise DomainError("TOWER_AUDIT_DECISION_INVALID", f"decision must be one of {sorted(AUDIT_DECISIONS)}", status_code=400)
-        finding.decision = decision
-        finding.decision_note = str(payload.get("note") or "").strip() or None
-        finding.status = "adjudicated"
+        return adjudicate_audit_finding(self.session, project_id, finding_id, payload)
         # 链路①反向：直接走塔的 adjudicate 时，同事务把对应待办卡置 resolved
         # （effect rule_canon 路径里该卡正被 resolve 流程处理，这里幂等置位即可）
-        card = self.session.scalars(
-            select(ReviewItem).where(
-                ReviewItem.project_id == project.project_id,
-                ReviewItem.dedupe_key == f"canon:{finding.finding_id}",
-            )
-        ).first()
-        if card is not None and (card.state or "open") == "open":
-            card.state = "resolved"
-        self.session.flush()
-        return _finding_payload(finding)
 
     # ---------------- 章级审计回执（FE-ALIGN H2，纯确定性） ----------------
     # 诚实口径：扫描只声明「检出（带真实引用句）/未检出（待人工核对）」，
     # 不机器判定「违约」——违约判定属 LLM 审计节点（D13）。
     def audit_receipt(self, project_id: str, chapter_id: str) -> dict[str, Any]:
-        from novel_system.db.models import AuthorDraft, ChapterGoal, SceneCard
+        from novel_system.db.models import AuthorDraft
 
         project = self._require_project(project_id)
-        chapter = self.session.get(ChapterGoal, chapter_id)
-        if chapter is None or (chapter.project_id and chapter.project_id != project.project_id):
-            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
-        contract = self.get_or_create_contract(project_id, chapter_id)
+        chapter = self._require_chapter(project.project_id, chapter_id)
+        contract = self.get_contract(project_id, chapter_id)
 
         scenes = self.session.scalars(
             select(SceneCard)

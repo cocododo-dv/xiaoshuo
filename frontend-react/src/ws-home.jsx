@@ -24,6 +24,7 @@ function WsHome({ go }) {
   const chapters = useCatalogChapters ? useCatalogChapters() : [];
   const isBlank = chapters.length === 0;
 
+  if (!work.id && remote.projects.phase === "ready") return <WsHomeNoWorks remote={remote} />;
   if (isBlank) return <WsHomeBlank work={work} go={go} remote={remote} />;
   return <WsHomeFull work={work} go={go} chapters={chapters} remote={remote} />;
 }
@@ -52,7 +53,7 @@ function WsHomeDataNotice({ remote, workId }) {
 /* ===== full home — a work with momentum =====
    结构性数据（章节 / 当前场景 / GMC / 进度）全部派生自 WsCatalog；
    雪花进度读构思工作台的持久化状态；待办读收件箱 store。
-   只有「上次写到这里」的正文引文仍来自作品种子（演示文案）。 */
+   「上次写到这里」来自服务端 dashboard 缓存，浏览器正文只在更新时覆盖它。 */
 function WsHomeFull({ work: p, go, chapters, remote }) {
   const home = p.home || {};
 
@@ -82,8 +83,8 @@ function WsHomeFull({ work: p, go, chapters, remote }) {
   const snowNow = snowLive ? snowLive.now : (home.snowNow || "—");
   const snowDone = snow.filter(s => s.s === "done").length;
 
-  const seedResume = home.resume || {};
-  /* —— 「上次写到这里」：优先读写作器落盘的真实正文（取末两段），种子引文只作兜底 —— */
+  const dashboardResume = home.resume || {};
+  /* —— 「上次写到这里」：优先读写作器落盘的真实正文（取末两段），服务端 dashboard 作兜底 —— */
   const liveLines = (() => {
     try {
       if (!curScene || !curScene.sid) return null;
@@ -97,10 +98,10 @@ function WsHomeFull({ work: p, go, chapters, remote }) {
     } catch (e) { return null; }
   })();
   const resume = {
-    ch: cur ? cur.n : (seedResume.ch || "01"),
-    lines: liveLines || seedResume.lines || [],
-    sceneWords: curScene && typeof curScene.words === "number" ? curScene.words : (seedResume.sceneWords || 0),
-    pausedAgo: liveLines ? "" : (seedResume.pausedAgo || ""),
+    ch: cur ? cur.n : (dashboardResume.ch || "01"),
+    lines: liveLines || dashboardResume.lines || [],
+    sceneWords: curScene && typeof curScene.words === "number" ? curScene.words : (dashboardResume.sceneWords || 0),
+    pausedAgo: liveLines ? "" : (dashboardResume.pausedAgo || ""),
   };
 
   const chaps = chapters.slice(-5).map(c => ({
@@ -113,7 +114,7 @@ function WsHomeFull({ work: p, go, chapters, remote }) {
   // 在这里「标记处理」会真实落盘，徽标与收件箱同步消失。
   const RK = RV_KINDS || {};
   const [todos, setTodos] = React.useState(() =>
-    (rvOpenItems ? rvOpenItems() : (window.RV_SEED || []))
+    (rvOpenItems ? rvOpenItems() : [])
       .slice().sort((a, b) => a.priority - b.priority).slice(0, 3)
       .map(it => ({ id: it.id, kind: it.kind, title: it.title, where: it.where }))
   );
@@ -208,7 +209,7 @@ function WsHomeFull({ work: p, go, chapters, remote }) {
         <div className="home-card is-static">
           <div className="home-card-head">
             <div className="home-card-title"><span className="ic"><I.Inbox size={17} /></span> 待办收件箱</div>
-            <span className="home-card-go home-card-go-btn" onClick={() => go("review")}>全部 <I.ArrowRight size={13} /></span>
+            <button type="button" className="home-card-go home-card-go-btn" onClick={() => go("review")}>全部 <I.ArrowRight size={13} /></button>
           </div>
           <div className="home-todo-list">
             {todos.length === 0 && (
@@ -266,6 +267,25 @@ const HOME_START_STEPS = [
   { icon: "Library", view: "library", title: "建立资料库", desc: "登记人物、地点与设定，随写随查。", cta: "打开资料" },
   { icon: "Beaker", view: "styleref", title: "设定风格基调", desc: "给这部作品定一个叙述声音与语感。", cta: "去设定" },
 ];
+
+function WsHomeNoWorks({ remote }) {
+  const openNewWork = () => window.dispatchEvent(new CustomEvent("ws:new-work"));
+  return (
+    <div className="ws-page ws-view hm" data-screen-label="主页 · 空书架">
+      <WsHomeDataNotice remote={remote} workId="" />
+      <section className="hm-empty">
+        <div className="hm-empty-mark" data-accent="slate">新</div>
+        <h1 className="hm-empty-title">书架还是空的</h1>
+        <p className="hm-empty-sub">先创建第一部作品，构思、资料、章节和正文才会有清晰且彼此隔离的归属。</p>
+        <div className="hm-empty-actions">
+          <button className="btn btn-accent btn-lg" data-testid="empty-create-work" onClick={openNewWork}>
+            <I.Plus size={16} /> 创建第一部作品
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
 
 function WsHomeBlank({ work: p, go, remote }) {
   return (
@@ -339,7 +359,4 @@ function HomeRing({ pct, size = 132 }) {
   );
 }
 
-Object.assign(window, { WsHome });
-
-/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { WsHome };

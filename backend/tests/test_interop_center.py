@@ -287,7 +287,7 @@ def test_import_reuses_existing_bundle_for_same_hash_and_conflicts_for_different
     assert conflict.json()["error"]["code"] == "INTEROP_BUNDLE_CONFLICT"
 
 
-def test_export_and_replay_return_complete_envelopes_with_artifacts_and_diffs(client, session) -> None:
+def test_export_and_replay_are_read_only_and_return_complete_envelopes_with_diffs(client, session) -> None:
     seed_story(client, session=session)
     _seed_active_style_rule(session)
 
@@ -305,8 +305,7 @@ def test_export_and_replay_return_complete_envelopes_with_artifacts_and_diffs(cl
     assert export_data["envelope"]["bundle_id"] == bundle_id
     assert export_data["envelope"]["hash_contract_version"] == "BSHASH_v1"
     assert export_data["envelope"]["hash_alg"] == "sha256"
-    assert export_data["artifact_receipt"]["artifact_kind"] == "bundle_worksheet_export"
-    assert export_data["artifact_receipt"]["direction"] == "export"
+    assert export_data["artifact_receipt"] is None
     assert export_data["source_ref_comparisons"]
     scene_card_comparison = next(
         item for item in export_data["source_ref_comparisons"] if item["object_type"] == "scene_card"
@@ -318,5 +317,23 @@ def test_export_and_replay_return_complete_envelopes_with_artifacts_and_diffs(cl
     assert replay_response.status_code == 200
     replay_data = replay_response.json()["data"]
     assert replay_data["envelope"]["bundle_id"] == bundle_id
-    assert replay_data["artifact_receipt"]["artifact_kind"] == "scene_replay_export"
+    assert replay_data["artifact_receipt"] is None
     assert any(item["object_type"] == "style_rule" for item in replay_data["source_ref_comparisons"])
+
+    repeat_export = client.get(f"/api/v1/interop/export/bundle-worksheet/{bundle_id}")
+    repeat_replay = client.get(f"/api/v1/replay/final-scene/{final_scene_row_id}")
+    assert repeat_export.status_code == 200
+    assert repeat_replay.status_code == 200
+
+    artifact_count = session.execute(
+        text(
+            """
+            SELECT COUNT(*)
+            FROM interop_artifacts
+            WHERE source_bundle_id = :bundle_id
+              AND direction = 'export'
+            """
+        ),
+        {"bundle_id": bundle_id},
+    ).scalar_one()
+    assert artifact_count == 0

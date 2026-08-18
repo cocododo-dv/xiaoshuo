@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
 from novel_system.services.reference_safety import ReferenceSafetyService
 
@@ -12,11 +16,13 @@ router = APIRouter(tags=["reference-safety"])
 
 
 class SourceSafetyScanRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    text: str
-    source_profile_ids: list[str] | None = None
-    object_ref: str | None = None
+    text: str = Field(max_length=2_000_000)
+    source_profile_ids: list[
+        Annotated[str, Field(min_length=1, max_length=255)]
+    ] | None = Field(default=None, max_length=256)
+    object_ref: str | None = Field(default=None, max_length=512)
 
 
 @router.get("/api/v1/reference-safety/overview")
@@ -28,13 +34,30 @@ def get_reference_safety_overview(request: Request, session: Session = Depends(g
 
 
 @router.post("/api/v2/style-reference/books/{book_id}/safety-profile/extract")
-def extract_reference_safety_profile(book_id: str, request: Request, session: Session = Depends(get_session)):
-    payload = ReferenceSafetyService(session).extract_profile(book_id)
-    session.commit()
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+def extract_reference_safety_profile(
+    book_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/style-reference/books/{book_id}/safety-profile/extract",
+        payload={"book_id": book_id},
+        action=lambda: ReferenceSafetyService(session).extract_profile(book_id),
+    )
 
 
 @router.post("/api/v1/source-safety/scan")
 def scan_source_safety(payload: SourceSafetyScanRequest, request: Request, session: Session = Depends(get_session)):
-    result = ReferenceSafetyService(session).scan_text(**payload.model_dump(mode="json"))
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json")
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/source-safety/scan",
+        payload=body,
+        action=lambda: ReferenceSafetyService(session).scan_text(**body),
+    )

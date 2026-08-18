@@ -7,7 +7,14 @@
 - `NOVEL_SYSTEM_LOCAL_ONLY=true`：默认值，只允许 `127.0.0.1`、`::1`、`localhost`；`/live` 与 `/ready` 仍可用于健康探测。
 - `NOVEL_SYSTEM_LOCAL_ONLY=false`：显式开启远程访问，同时必须设置 `NOVEL_SYSTEM_REMOTE_ACCESS_TOKEN`，所有非健康请求都要携带 `X-Novel-Access-Token`。
 - 第一方 React 前端可在构建时设置 `VITE_NOVEL_SYSTEM_ACCESS_TOKEN`。该值会进入浏览器资产，只适合可信作者使用的受限网络；它不能替代账号、权限和租户隔离。
+- 远程模式的共享 token 不是用户身份系统，因此服务端会忽略客户端 `X-Operator-Ref`，审计主体统一记为 `remote-access-token`；需要区分真实用户时必须在可信代理之后接入正式认证/RBAC。
 - 远程模式下同时收紧 `NOVEL_SYSTEM_CORS_ORIGINS`，并在主机防火墙或可信反向代理处限制来源。
+
+## 向量后端与 Chroma 隔离
+
+- 默认 `NOVEL_SYSTEM_VECTOR_BACKEND=memory`，默认哈希锁安装不包含 Chroma。
+- Chroma 仅作为 WSL/Linux 中的显式可选依赖：`cd backend && UV_PROJECT_ENVIRONMENT=.venv-wsl uv sync --locked --extra dev --extra chroma`，随后再设置 `NOVEL_SYSTEM_VECTOR_BACKEND=chroma`。
+- 当前集成只允许进程内 `PersistentClient`。不要运行或暴露 Chroma 自带的 HTTP/FastAPI 服务；当前锁定版本仍受 `CVE-2026-45829` 的服务端代码注入问题影响，上游发布修复版前必须保持这一网络隔离。
 
 ## LLM 硬额度
 
@@ -47,6 +54,23 @@
 启动恢复还会对超过 `NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS` 的 legacy LLM 预留做保守对账：仅处理没有 `scene_id`、没有 `run_job_id` 且不是 scene scope 的调用；未派发预留会释放，已派发但没有持久化结果的预留会标记失败并按估算用量落账。场景与任务所有权链路由各自的 lease/checkpoint 恢复负责，不进入这项扫描。
 
 当前执行器仍是进程内线程池，不是外部持久队列。需要多主机、高可用或不可信多用户访问时，应另行引入身份授权、租户隔离、外部任务队列、密钥托管和集中审计；现有远程开关不代表这些能力已经具备。
+
+## SQLite 备份与恢复
+
+备份使用 SQLite 在线备份 API，可包含仍在 WAL 中但已经提交的写入。新快照只有在完整性、外键、页信息和 SHA-256 清单全部通过后才会替换同名旧备份；恢复拒绝没有 `.meta.json` 清单、被篡改、外键损坏或 WAL 正忙的来源/目标。
+
+恢复仍然是停机操作。工具可以发现活动事务，却不能证明另一个空闲进程不会在检查后重新写入；先用 `stop-dev.cmd` 或对应 Linux 停止脚本停掉服务，再备份/恢复。不要把浏览器恢复记录或回收站当成数据库备份。
+
+```powershell
+cd backend
+python -m novel_system.tools.db_backup --backup .\novel_system.db .\backups\novel-system.db
+python -m novel_system.tools.db_backup --verify .\backups\novel-system.db
+python -m novel_system.tools.db_backup --restore .\backups\novel-system.db .\novel_system.db
+cd ..
+powershell -ExecutionPolicy Bypass -File scripts\db_backup_drill.ps1
+```
+
+Linux 恢复演练入口为 `bash scripts/db_backup_drill.sh`。两个演练脚本都只破坏系统临时目录中的副本，不改动传入的真实源库。
 
 ## 历史 LLM 审计载荷脱敏
 

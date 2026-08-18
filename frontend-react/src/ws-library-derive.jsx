@@ -236,13 +236,5 @@ function LIB_nextAction(e) {
   return (t && t[e.state.label]) || null;
 }
 
-Object.assign(window, {
-  LIB_buildBacklinks, LIB_connections, LIB_degree,
-  LIB_chapOf, LIB_isCited, LIB_health, libBucket, libRecency,
-  LIB_SORTS, LIB_sortWithPin, LIB_QUEUE_CTA,
-  LIB_TRANSITIONS, LIB_nextAction,
-  LIB_REL_TYPES, LIB_REL_TYPE_BY_ID, LIB_relType, LIB_groupConnections,
-});
-
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { LIB_buildBacklinks, LIB_connections, LIB_degree, LIB_chapOf, LIB_isCited, LIB_health, libBucket, libRecency, LIB_SORTS, LIB_sortWithPin, LIB_QUEUE_CTA, LIB_TRANSITIONS, LIB_nextAction, LIB_REL_TYPES, LIB_REL_TYPE_BY_ID, LIB_relType, LIB_groupConnections };

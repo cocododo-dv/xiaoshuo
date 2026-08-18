@@ -13,11 +13,15 @@ from novel_system.db.models import (
 )
 from novel_system.services.llm_accounting import LLMAccountingError
 from novel_system.services.style_reference import segmentation
-from novel_system.services.style_reference import validation
 from novel_system.services.style_reference._llm_helper import LLMNodeError
 from novel_system.services.style_reference.segmentation import llm as segmentation_llm
 from novel_system.services.style_reference.validation import runner
+from novel_system.services.style_reference.validation import core as validation_core
 from novel_system.services.style_reference.validation import forbidden_local
+from novel_system.services.style_reference.validation import forbidden_semantic
+from novel_system.services.style_reference.validation import plagiarism
+from novel_system.services.style_reference.validation import quantitative
+from novel_system.services.style_reference.validation import semantic as validation_semantic
 from novel_system.services.style_reference import policy
 
 
@@ -167,20 +171,20 @@ def test_validation_worker_persists_control_plane_failure_at_every_boundary(
     report_id = _seed_durable_validation_report(session, seed)
     profile_id = f"sr_profile_cp_{seed}"
     monkeypatch.setattr(
-        validation,
+        validation_core,
         "_load_plagiarism_corpus",
         corpus if corpus is not None else (lambda *_args: []),
     )
     monkeypatch.setattr(
-        validation,
+        plagiarism,
         "check_plagiarism",
         lambda *_args: SimpleNamespace(passed=True, model_dump=lambda: {"passed": True}),
     )
-    monkeypatch.setattr(validation, "check_quantitative", lambda *_args: [])
-    monkeypatch.setattr(validation, "check_semantic", semantic)
-    monkeypatch.setattr(validation, "check_forbidden_semantic", forbidden)
+    monkeypatch.setattr(quantitative, "check_quantitative", lambda *_args: [])
+    monkeypatch.setattr(validation_semantic, "check_semantic", semantic)
+    monkeypatch.setattr(forbidden_semantic, "check_forbidden_semantic", forbidden)
     monkeypatch.setattr(
-        validation,
+        validation_core,
         "_compute_full_verdict",
         lambda **_kwargs: (_ for _ in ()).throw(
             AssertionError("control-plane failure must not be degraded")
@@ -223,16 +227,16 @@ def test_validation_worker_still_degrades_explicit_provider_failure(
 
     report_id = _seed_durable_validation_report(session, "provider_failure")
     profile_id = "sr_profile_cp_provider_failure"
-    monkeypatch.setattr(validation, "_load_plagiarism_corpus", lambda *_args: [])
+    monkeypatch.setattr(validation_core, "_load_plagiarism_corpus", lambda *_args: [])
     monkeypatch.setattr(
-        validation,
+        plagiarism,
         "check_plagiarism",
         lambda *_args: SimpleNamespace(passed=True, model_dump=lambda: {"passed": True}),
     )
-    monkeypatch.setattr(validation, "check_quantitative", lambda *_args: [])
-    monkeypatch.setattr(validation, "check_semantic", provider_failure)
-    monkeypatch.setattr(validation, "check_forbidden_semantic", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(validation, "_compute_full_verdict", compute_verdict)
+    monkeypatch.setattr(quantitative, "check_quantitative", lambda *_args: [])
+    monkeypatch.setattr(validation_semantic, "check_semantic", provider_failure)
+    monkeypatch.setattr(forbidden_semantic, "check_forbidden_semantic", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(validation_core, "_compute_full_verdict", compute_verdict)
     monkeypatch.setattr(forbidden_local, "check_forbidden_local", lambda *_args: [])
     monkeypatch.setattr(policy, "cloud_llm_allowed", lambda _book: True)
 

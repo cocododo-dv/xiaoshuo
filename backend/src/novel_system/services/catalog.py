@@ -121,9 +121,7 @@ class CatalogService:
         if pending and not any(
             is_chapter_approved(self.session, chapter) for chapter, _ in pending
         ):
-            for chapter, index in pending:
-                chapter.display_order = index
-            self.session.flush()
+            self._assign_chapter_orders(pending)
         return rows
 
     def scene_rows(self, chapter_id: str) -> list[SceneCard]:
@@ -334,6 +332,10 @@ class CatalogService:
             if state not in SCENE_STATES:
                 raise DomainError("CATALOG_STATE_INVALID", f"scene state must be one of {SCENE_STATES}", status_code=400)
             updates["state"] = state
+        if "exit_change" in body:
+            updates["exit_change"] = str(body.get("exit_change") or "")
+        if "hook" in body:
+            updates["hook"] = str(body.get("hook") or "")
         for key in (*SCENE_BRIEF_GCS, *SCENE_BRIEF_RDD):
             if key in body:
                 brief[key] = str(body[key] or "")
@@ -447,6 +449,29 @@ class CatalogService:
             state=state,
             brief=brief,
         )
+        if "exit_change" in body:
+            scene.exit_change = str(body.get("exit_change") or "")
+        if "hook" in body:
+            scene.hook = str(body.get("hook") or "")
+        if "pov_character_id" in body or "pov_character_name" in body:
+            pov_id = str(body.get("pov_character_id") or "").strip()
+            pov_name = str(body.get("pov_character_name") or "").strip()
+            if pov_id:
+                character = self.session.get(StoryCharacter, pov_id)
+                if character is None or character.project_id != project_id:
+                    raise DomainError(
+                        "CATALOG_POV_CHARACTER_NOT_FOUND",
+                        "pov character not found in project",
+                        status_code=400,
+                    )
+                scene.pov_character_id = pov_id
+            elif pov_name:
+                scene.pov_character_id = self._find_or_create_character(
+                    project_id,
+                    pov_name,
+                ).character_id
+            else:
+                scene.pov_character_id = None
         self.session.flush()
         return {"scene": self._scene_payload_with_slug(scene), "changed": True}
 
@@ -454,7 +479,7 @@ class CatalogService:
         scene = self._require_scene(project_id, scene_id)
         chapter = self._require_chapter(project_id, scene.chapter_id)
         body = payload or {}
-        if "to" not in body:
+        if body.get("to") is None:
             raise DomainError("CATALOG_MOVE_INVALID", "target position 'to' is required", status_code=400)
         scenes = self.scene_rows(scene.chapter_id)
         ids = [s.scene_id for s in scenes]
@@ -593,10 +618,13 @@ class CatalogService:
                 },
             )
 
-        for position, chapter_id in enumerate(requested, start=1):
-            if chapter_id not in approved_ids:
-                by_id[chapter_id].display_order = position
-        self.session.flush()
+        self._assign_chapter_orders(
+            [
+                (by_id[chapter_id], position)
+                for position, chapter_id in enumerate(requested, start=1)
+                if chapter_id not in approved_ids
+            ]
+        )
         return {
             "project_id": project.project_id,
             "chapter_ids": requested,
@@ -823,8 +851,55 @@ class CatalogService:
             ).scalars().all()
         )
 
-    @staticmethod
-    def _renumber(ordered: list[SceneCard]) -> None:
+    def _renumber(self, ordered: list[SceneCard]) -> None:
+        if not ordered:
+            return
+        temporary_start = max(int(scene.scene_seq or 0) for scene in ordered) + 1
+        for offset, scene in enumerate(ordered):
+            scene.scene_seq = temporary_start + offset
+        self.session.flush()
         for index, scene in enumerate(ordered, start=1):
             scene.scene_seq = index
             scene.is_chapter_last = 1 if index == len(ordered) else 0
+        self.session.flush()
+
+    def _assign_chapter_orders(
+        self,
+        assignments: list[tuple[ChapterGoal, int]],
+    ) -> None:
+        changed = [
+            (chapter, int(display_order))
+            for chapter, display_order in assignments
+            if chapter.display_order != int(display_order)
+        ]
+        if not changed:
+            return
+        project_ids = {chapter.project_id for chapter, _ in changed}
+        active_rows = list(
+            self.session.execute(
+                select(ChapterGoal).where(
+                    ChapterGoal.project_id.in_(project_ids),
+                    ChapterGoal.trashed_flag == 0,
+                )
+            ).scalars().all()
+        )
+        next_temporary_by_project = {
+            project_id: max(
+                (
+                    int(chapter.display_order or 0)
+                    for chapter in active_rows
+                    if chapter.project_id == project_id
+                ),
+                default=0,
+            )
+            + 1
+            for project_id in project_ids
+        }
+        for chapter, _display_order in changed:
+            project_id = chapter.project_id
+            chapter.display_order = next_temporary_by_project[project_id]
+            next_temporary_by_project[project_id] += 1
+        self.session.flush()
+        for chapter, display_order in changed:
+            chapter.display_order = display_order
+        self.session.flush()

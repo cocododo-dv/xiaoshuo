@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION
 from novel_system.tools.orphan_quarantine import (
     EvidenceValidationError,
     assess_evidence,
@@ -44,6 +45,15 @@ QUALITY_EVIDENCE_REVISION = "20260715_0070"
 BACKGROUND_RECOVERY_REVISION = "20260716_0071"
 AUTHOR_PREFERENCE_CONSTRAINT_REVISION = "20260716_0072"
 LLM_AUDIT_PRIVACY_REVISION = "20260716_0073"
+REAL_ONLY_RUNTIME_REVISION = "20260717_0074"
+REAL_ONLY_EVIDENCE_REVISION = "20260717_0075"
+LLM_TIMEOUT_REVISION = "20260722_0074"
+SNOWFLAKE_SCENE_IDENTITY_REVISION = "20260725_0075"
+SNOWFLAKE_CHAPTER_REVISION = "20260725_0076"
+MERGED_HISTORY_REVISION = "20260802_0077"
+CORE_INTEGRITY_REVISION = "20260802_0078"
+SCENE_AUTHOR_NOTES_REVISION = "20260802_0079"
+SCENE_DEEP_REVIEW_REVISION = "20260802_0080"
 REVISION_ALIASES = {
     "0064": LEGACY_REVISION,
     LEGACY_REVISION: LEGACY_REVISION,
@@ -65,7 +75,25 @@ REVISION_ALIASES = {
     AUTHOR_PREFERENCE_CONSTRAINT_REVISION: AUTHOR_PREFERENCE_CONSTRAINT_REVISION,
     "0073": LLM_AUDIT_PRIVACY_REVISION,
     LLM_AUDIT_PRIVACY_REVISION: LLM_AUDIT_PRIVACY_REVISION,
+    REAL_ONLY_RUNTIME_REVISION: REAL_ONLY_RUNTIME_REVISION,
+    REAL_ONLY_EVIDENCE_REVISION: REAL_ONLY_EVIDENCE_REVISION,
+    LLM_TIMEOUT_REVISION: LLM_TIMEOUT_REVISION,
+    SNOWFLAKE_SCENE_IDENTITY_REVISION: SNOWFLAKE_SCENE_IDENTITY_REVISION,
+    "0076": SNOWFLAKE_CHAPTER_REVISION,
+    SNOWFLAKE_CHAPTER_REVISION: SNOWFLAKE_CHAPTER_REVISION,
+    "0077": MERGED_HISTORY_REVISION,
+    MERGED_HISTORY_REVISION: MERGED_HISTORY_REVISION,
+    "0078": CORE_INTEGRITY_REVISION,
+    CORE_INTEGRITY_REVISION: CORE_INTEGRITY_REVISION,
+    "0079": SCENE_AUTHOR_NOTES_REVISION,
+    SCENE_AUTHOR_NOTES_REVISION: SCENE_AUTHOR_NOTES_REVISION,
+    "0080": SCENE_DEEP_REVIEW_REVISION,
+    SCENE_DEEP_REVIEW_REVISION: SCENE_DEEP_REVIEW_REVISION,
+    "0081": CURRENT_SCHEMA_REVISION,
+    CURRENT_SCHEMA_REVISION: CURRENT_SCHEMA_REVISION,
 }
+# 0074 and 0075 each exist on two restored branches.  Their short ordinals are
+# deliberately not accepted as aliases because choosing either would be unsafe.
 REVISION_SEQUENCE = (
     LEGACY_REVISION,
     C1B_REVISION,
@@ -77,9 +105,58 @@ REVISION_SEQUENCE = (
     BACKGROUND_RECOVERY_REVISION,
     AUTHOR_PREFERENCE_CONSTRAINT_REVISION,
     LLM_AUDIT_PRIVACY_REVISION,
+    REAL_ONLY_RUNTIME_REVISION,
+    REAL_ONLY_EVIDENCE_REVISION,
+    LLM_TIMEOUT_REVISION,
+    SNOWFLAKE_SCENE_IDENTITY_REVISION,
+    SNOWFLAKE_CHAPTER_REVISION,
+    MERGED_HISTORY_REVISION,
+    CORE_INTEGRITY_REVISION,
+    SCENE_AUTHOR_NOTES_REVISION,
+    SCENE_DEEP_REVIEW_REVISION,
+    CURRENT_SCHEMA_REVISION,
 )
-REVISION_RANK = {
-    revision: index for index, revision in enumerate(REVISION_SEQUENCE)
+REVISION_PARENTS: dict[str, tuple[str, ...]] = {
+    LEGACY_REVISION: (),
+    C1B_REVISION: (LEGACY_REVISION,),
+    EVIDENCE_GATE_REVISION: (C1B_REVISION,),
+    PAIR_GENRE_REVISION: (EVIDENCE_GATE_REVISION,),
+    NARRATIVE_POSITION_REVISION: (PAIR_GENRE_REVISION,),
+    AUTHOR_CANONICAL_REVISION: (NARRATIVE_POSITION_REVISION,),
+    QUALITY_EVIDENCE_REVISION: (AUTHOR_CANONICAL_REVISION,),
+    BACKGROUND_RECOVERY_REVISION: (QUALITY_EVIDENCE_REVISION,),
+    AUTHOR_PREFERENCE_CONSTRAINT_REVISION: (BACKGROUND_RECOVERY_REVISION,),
+    LLM_AUDIT_PRIVACY_REVISION: (AUTHOR_PREFERENCE_CONSTRAINT_REVISION,),
+    REAL_ONLY_RUNTIME_REVISION: (LLM_AUDIT_PRIVACY_REVISION,),
+    REAL_ONLY_EVIDENCE_REVISION: (REAL_ONLY_RUNTIME_REVISION,),
+    LLM_TIMEOUT_REVISION: (LLM_AUDIT_PRIVACY_REVISION,),
+    SNOWFLAKE_SCENE_IDENTITY_REVISION: (LLM_TIMEOUT_REVISION,),
+    SNOWFLAKE_CHAPTER_REVISION: (SNOWFLAKE_SCENE_IDENTITY_REVISION,),
+    MERGED_HISTORY_REVISION: (
+        REAL_ONLY_EVIDENCE_REVISION,
+        SNOWFLAKE_CHAPTER_REVISION,
+    ),
+    CORE_INTEGRITY_REVISION: (MERGED_HISTORY_REVISION,),
+    SCENE_AUTHOR_NOTES_REVISION: (CORE_INTEGRITY_REVISION,),
+    SCENE_DEEP_REVIEW_REVISION: (SCENE_AUTHOR_NOTES_REVISION,),
+    CURRENT_SCHEMA_REVISION: (SCENE_DEEP_REVIEW_REVISION,),
+}
+
+
+def _revision_ancestors(revision: str) -> frozenset[str]:
+    ancestors = {revision}
+    pending = list(REVISION_PARENTS.get(revision, ()))
+    while pending:
+        parent = pending.pop()
+        if parent in ancestors:
+            continue
+        ancestors.add(parent)
+        pending.extend(REVISION_PARENTS.get(parent, ()))
+    return frozenset(ancestors)
+
+
+REVISION_ANCESTORS = {
+    revision: _revision_ancestors(revision) for revision in REVISION_SEQUENCE
 }
 
 
@@ -369,6 +446,72 @@ AUTHOR_PREFERENCE_REQUIRED_COLUMNS = {
     ),
 }
 
+SNOWFLAKE_SCENE_IDENTITY_REQUIRED_TABLES = AUTHOR_PREFERENCE_REQUIRED_TABLES + (
+    "snowflake_scene_plans",
+)
+SNOWFLAKE_SCENE_IDENTITY_REQUIRED_COLUMNS = {
+    **AUTHOR_PREFERENCE_REQUIRED_COLUMNS,
+    "snowflake_scene_plans": (
+        "scene_plan_id",
+        "project_id",
+        "row_uid",
+        "scene_id",
+        "removed_at",
+        "removed_by",
+        "orphaned_flag",
+    ),
+}
+
+SNOWFLAKE_CHAPTER_REQUIRED_TABLES = SNOWFLAKE_SCENE_IDENTITY_REQUIRED_TABLES + (
+    "snowflake_chapter_plans",
+)
+SNOWFLAKE_CHAPTER_REQUIRED_COLUMNS = {
+    **SNOWFLAKE_SCENE_IDENTITY_REQUIRED_COLUMNS,
+    "snowflake_scene_plans": SNOWFLAKE_SCENE_IDENTITY_REQUIRED_COLUMNS[
+        "snowflake_scene_plans"
+    ]
+    + (
+        "chapter_plan_id",
+        "spine",
+    ),
+    "snowflake_chapter_plans": (
+        "chapter_plan_id",
+        "project_id",
+        "row_uid",
+        "chapter_seq",
+        "act",
+        "title",
+        "summary",
+        "spine",
+        "chapter_goal",
+        "status",
+        "source_step_run_id",
+        "removed_at",
+        "removed_by",
+        "created_at",
+        "updated_at",
+    ),
+}
+
+SCENE_AUTHOR_NOTES_REQUIRED_COLUMNS = {
+    **SNOWFLAKE_CHAPTER_REQUIRED_COLUMNS,
+    "scene_cards": SNOWFLAKE_CHAPTER_REQUIRED_COLUMNS["scene_cards"]
+    + (
+        "author_notes",
+        "author_notes_revision_no",
+    ),
+}
+
+SCENE_DEEP_REVIEW_PREFERENCES_REQUIRED_COLUMNS = {
+    **SCENE_AUTHOR_NOTES_REQUIRED_COLUMNS,
+    "scene_cards": SCENE_AUTHOR_NOTES_REQUIRED_COLUMNS["scene_cards"]
+    + (
+        "deep_review_decision_log_json",
+        "deep_review_ignored_keys_json",
+        "deep_review_preferences_revision_no",
+    ),
+}
+
 SCHEMA_PROFILES = {
     LEGACY_REVISION: (LEGACY_REQUIRED_TABLES, LEGACY_REQUIRED_COLUMNS),
     C1B_REVISION: (C1B_REQUIRED_TABLES, C1B_REQUIRED_COLUMNS),
@@ -402,6 +545,49 @@ SCHEMA_PROFILES = {
         AUTHOR_PREFERENCE_REQUIRED_TABLES,
         AUTHOR_PREFERENCE_REQUIRED_COLUMNS,
     ),
+    # The restored real-only branch and 0074 timeout cleanup are structural
+    # equivalents of 0073 for the table/column profile.  Their stricter
+    # constraints are validated separately below.
+    REAL_ONLY_RUNTIME_REVISION: (
+        AUTHOR_PREFERENCE_REQUIRED_TABLES,
+        AUTHOR_PREFERENCE_REQUIRED_COLUMNS,
+    ),
+    REAL_ONLY_EVIDENCE_REVISION: (
+        AUTHOR_PREFERENCE_REQUIRED_TABLES,
+        AUTHOR_PREFERENCE_REQUIRED_COLUMNS,
+    ),
+    LLM_TIMEOUT_REVISION: (
+        AUTHOR_PREFERENCE_REQUIRED_TABLES,
+        AUTHOR_PREFERENCE_REQUIRED_COLUMNS,
+    ),
+    SNOWFLAKE_SCENE_IDENTITY_REVISION: (
+        SNOWFLAKE_SCENE_IDENTITY_REQUIRED_TABLES,
+        SNOWFLAKE_SCENE_IDENTITY_REQUIRED_COLUMNS,
+    ),
+    SNOWFLAKE_CHAPTER_REVISION: (
+        SNOWFLAKE_CHAPTER_REQUIRED_TABLES,
+        SNOWFLAKE_CHAPTER_REQUIRED_COLUMNS,
+    ),
+    MERGED_HISTORY_REVISION: (
+        SNOWFLAKE_CHAPTER_REQUIRED_TABLES,
+        SNOWFLAKE_CHAPTER_REQUIRED_COLUMNS,
+    ),
+    CORE_INTEGRITY_REVISION: (
+        SNOWFLAKE_CHAPTER_REQUIRED_TABLES,
+        SNOWFLAKE_CHAPTER_REQUIRED_COLUMNS,
+    ),
+    SCENE_AUTHOR_NOTES_REVISION: (
+        SNOWFLAKE_CHAPTER_REQUIRED_TABLES,
+        SCENE_AUTHOR_NOTES_REQUIRED_COLUMNS,
+    ),
+    SCENE_DEEP_REVIEW_REVISION: (
+        SNOWFLAKE_CHAPTER_REQUIRED_TABLES,
+        SCENE_DEEP_REVIEW_PREFERENCES_REQUIRED_COLUMNS,
+    ),
+    CURRENT_SCHEMA_REVISION: (
+        SNOWFLAKE_CHAPTER_REQUIRED_TABLES,
+        SCENE_DEEP_REVIEW_PREFERENCES_REQUIRED_COLUMNS,
+    ),
 }
 
 AUTHOR_PREFERENCE_CHECK_CONTRACTS = {
@@ -413,6 +599,141 @@ AUTHOR_PREFERENCE_CHECK_CONTRACTS = {
             "runtime_eligible IN (0,1)"
         ),
     },
+}
+
+REAL_ONLY_COLUMN_CONTRACTS = {
+    "evaluation_experiments": {
+        "evidence_provenance": {"not_null": True, "default": "human"},
+    },
+}
+REAL_ONLY_CHECK_CONTRACTS = {
+    "evaluation_experiments": {
+        "ck_evaluation_experiments_human_provenance": (
+            "evidence_provenance = 'human'"
+        ),
+    },
+}
+REAL_ONLY_FOREIGN_KEY_CONTRACTS = {
+    "evaluation_pairs": (
+        ("experiment_id", "evaluation_experiments", "experiment_id"),
+    ),
+    "evaluation_votes": (
+        ("pair_id", "evaluation_pairs", "pair_id"),
+    ),
+}
+
+SNOWFLAKE_CHAPTER_FOREIGN_KEY_CONTRACTS = {
+    "snowflake_chapter_plans": (
+        ("project_id", "story_projects", "project_id"),
+    ),
+    "snowflake_scene_plans": (
+        ("chapter_plan_id", "snowflake_chapter_plans", "chapter_plan_id"),
+        ("project_id", "story_projects", "project_id"),
+    ),
+}
+SNOWFLAKE_CHAPTER_INDEX_CONTRACTS = {
+    "ix_snowflake_chapter_plans_row_uid": (
+        "snowflake_chapter_plans",
+        ("project_id", "row_uid"),
+        True,
+    ),
+    "ix_snowflake_chapter_plans_seq": (
+        "snowflake_chapter_plans",
+        ("project_id", "chapter_seq"),
+        False,
+    ),
+    "ix_snowflake_scene_plans_scene_id": (
+        "snowflake_scene_plans",
+        ("project_id", "scene_id"),
+        True,
+    ),
+    "ix_snowflake_scene_plans_row_uid": (
+        "snowflake_scene_plans",
+        ("project_id", "row_uid"),
+        True,
+    ),
+    "ix_snowflake_scene_plans_chapter_plan_id": (
+        "snowflake_scene_plans",
+        ("chapter_plan_id",),
+        False,
+    ),
+}
+
+CORE_INTEGRITY_FOREIGN_KEY_CONTRACTS = {
+    "chapter_goals": (
+        ("project_id", "story_projects", "project_id"),
+        ("outline_plan_id", "outline_plans", "plan_id"),
+    ),
+    "scene_cards": (
+        ("chapter_id", "chapter_goals", "chapter_id"),
+        ("project_id", "story_projects", "project_id"),
+        ("outline_plan_id", "outline_plans", "plan_id"),
+    ),
+    "scene_bundles": (
+        ("scene_id", "scene_cards", "scene_id"),
+        ("chapter_id", "chapter_goals", "chapter_id"),
+    ),
+    "scene_blueprints": (
+        ("scene_id", "scene_cards", "scene_id"),
+        ("chapter_id", "chapter_goals", "chapter_id"),
+    ),
+    "scene_quality_contracts": (
+        ("scene_id", "scene_cards", "scene_id"),
+        ("chapter_id", "chapter_goals", "chapter_id"),
+    ),
+    "scene_execution_contracts": (
+        ("scene_id", "scene_cards", "scene_id"),
+        ("chapter_id", "chapter_goals", "chapter_id"),
+        ("project_id", "story_projects", "project_id"),
+    ),
+    "scene_drafts": (
+        ("scene_id", "scene_cards", "scene_id"),
+        ("chapter_id", "chapter_goals", "chapter_id"),
+    ),
+    "qc_reports": (
+        ("scene_id", "scene_cards", "scene_id"),
+        ("chapter_id", "chapter_goals", "chapter_id"),
+    ),
+    "final_scenes": (
+        ("scene_id", "scene_cards", "scene_id"),
+        ("chapter_id", "chapter_goals", "chapter_id"),
+    ),
+    "attempt_tracker": (
+        ("scene_id", "scene_cards", "scene_id"),
+        ("chapter_id", "chapter_goals", "chapter_id"),
+    ),
+    "chapter_run_jobs": (
+        ("scene_id", "scene_cards", "scene_id"),
+        ("chapter_id", "chapter_goals", "chapter_id"),
+    ),
+    "human_review_events": (
+        ("scene_id", "scene_cards", "scene_id"),
+        ("chapter_id", "chapter_goals", "chapter_id"),
+    ),
+}
+CORE_ORDER_CHECK_CONTRACTS = {
+    "chapter_goals": {
+        "ck_chapter_goals_display_order_nonnegative": (
+            "display_order IS NULL OR display_order >= 0"
+        ),
+    },
+    "scene_cards": {
+        "ck_scene_cards_scene_seq_positive": "scene_seq >= 1",
+    },
+}
+CORE_ORDER_INDEX_CONTRACTS = {
+    "ux_chapter_goals_active_project_display_order": (
+        "chapter_goals",
+        ("project_id", "display_order"),
+        True,
+        True,
+    ),
+    "ux_scene_cards_active_chapter_scene_seq": (
+        "scene_cards",
+        ("chapter_id", "scene_seq"),
+        True,
+        True,
+    ),
 }
 
 C1B_COLUMN_CONTRACTS = {
@@ -1024,9 +1345,9 @@ def _revision_at_least(
     canonical_revision: str | None,
     minimum_revision: str,
 ) -> bool:
-    if canonical_revision not in REVISION_RANK:
+    if canonical_revision not in REVISION_ANCESTORS:
         return False
-    return REVISION_RANK[canonical_revision] >= REVISION_RANK[minimum_revision]
+    return minimum_revision in REVISION_ANCESTORS[canonical_revision]
 
 
 def _inspect_column_contracts(
@@ -1251,11 +1572,17 @@ def _inspect_unique_contracts(
 def _inspect_explicit_index_contracts(
     connection: sqlite3.Connection,
     tables: set[str],
-    contracts: dict[str, tuple[str, tuple[str, ...], bool]],
+    contracts: dict[
+        str,
+        tuple[str, tuple[str, ...], bool]
+        | tuple[str, tuple[str, ...], bool, bool],
+    ],
 ) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     index_cache: dict[str, dict[str, dict[str, Any]]] = {}
-    for name, (table_name, expected_columns, unique) in contracts.items():
+    for name, contract in contracts.items():
+        table_name, expected_columns, unique = contract[:3]
+        partial = bool(contract[3]) if len(contract) == 4 else False
         if table_name not in tables:
             continue
         if table_name not in index_cache:
@@ -1265,7 +1592,7 @@ def _inspect_explicit_index_contracts(
             "columns": list(expected_columns),
             "unique": unique,
             "origin": "c",
-            "partial": False,
+            "partial": partial,
         }
         if actual != expected:
             errors.append(
@@ -1491,6 +1818,65 @@ def _inspect_revision_schema(
                 connection,
                 tables,
                 AUTHOR_PREFERENCE_CHECK_CONTRACTS,
+            )
+        )
+    if _revision_at_least(canonical_revision, REAL_ONLY_EVIDENCE_REVISION):
+        errors.extend(
+            _inspect_column_contracts(
+                connection,
+                tables,
+                REAL_ONLY_COLUMN_CONTRACTS,
+            )
+        )
+        errors.extend(
+            _inspect_check_contracts(
+                connection,
+                tables,
+                REAL_ONLY_CHECK_CONTRACTS,
+            )
+        )
+        errors.extend(
+            _inspect_foreign_key_contracts(
+                connection,
+                tables,
+                REAL_ONLY_FOREIGN_KEY_CONTRACTS,
+            )
+        )
+    if _revision_at_least(canonical_revision, MERGED_HISTORY_REVISION):
+        errors.extend(
+            _inspect_foreign_key_contracts(
+                connection,
+                tables,
+                SNOWFLAKE_CHAPTER_FOREIGN_KEY_CONTRACTS,
+            )
+        )
+        errors.extend(
+            _inspect_explicit_index_contracts(
+                connection,
+                tables,
+                SNOWFLAKE_CHAPTER_INDEX_CONTRACTS,
+            )
+        )
+    if _revision_at_least(canonical_revision, CURRENT_SCHEMA_REVISION):
+        errors.extend(
+            _inspect_foreign_key_contracts(
+                connection,
+                tables,
+                CORE_INTEGRITY_FOREIGN_KEY_CONTRACTS,
+            )
+        )
+        errors.extend(
+            _inspect_check_contracts(
+                connection,
+                tables,
+                CORE_ORDER_CHECK_CONTRACTS,
+            )
+        )
+        errors.extend(
+            _inspect_explicit_index_contracts(
+                connection,
+                tables,
+                CORE_ORDER_INDEX_CONTRACTS,
             )
         )
     return errors
@@ -1750,8 +2136,16 @@ def _write_json_atomic(path: str | os.PathLike[str], payload: str) -> None:
 
 def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="检查 SQLite 数据库是否已可供运行")
-    parser.add_argument("path")
-    parser.add_argument("--expected-revision", required=True)
+    parser.add_argument(
+        "path",
+        nargs="?",
+        help="SQLite 数据库路径；省略时从 NOVEL_SYSTEM_DATABASE_URL 解析",
+    )
+    parser.add_argument(
+        "--expected-revision",
+        default=CURRENT_SCHEMA_REVISION,
+        help="预期 schema 版本；默认使用当前应用版本",
+    )
     parser.add_argument(
         "--orphan-evidence",
         help="可选：验证 orphan_quarantine 导出的 JSONL 证据及其处置状态",
@@ -1759,8 +2153,18 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output")
     args = parser.parse_args(argv)
 
+    database_path = args.path
+    if database_path is None:
+        from novel_system.tools.db_backup import resolve_sqlite_path
+
+        database_url = os.environ.get(
+            "NOVEL_SYSTEM_DATABASE_URL",
+            "sqlite:///./novel_system.db",
+        )
+        database_path = os.path.abspath(resolve_sqlite_path(database_url))
+
     result = inspect_database(
-        args.path,
+        database_path,
         args.expected_revision,
         orphan_evidence_path=args.orphan_evidence,
     )

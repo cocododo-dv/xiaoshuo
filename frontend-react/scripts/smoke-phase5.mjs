@@ -4,7 +4,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 
-const require = createRequire(path.join(process.cwd(), "package.json"));
+const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
 const BASE = process.argv[2] || "http://127.0.0.1:5174/";
@@ -28,11 +28,11 @@ const api = async (p) => (await page.evaluate(async (u) => (await fetch(u)).json
 async function waitForCatalog(predicate, timeoutMs = 10_000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    const catalog = await api("/api/v2/projects/tide/catalog");
+    const catalog = await api("/api/v2/projects/work-a/catalog");
     if (predicate(catalog)) return catalog;
     await page.waitForTimeout(200);
   }
-  return api("/api/v2/projects/tide/catalog");
+  return api("/api/v2/projects/work-a/catalog");
 }
 
 await page.goto(BASE);
@@ -55,7 +55,7 @@ await check("收件箱来自后端（含 demo 卡 + 派生卡）", async () => {
 });
 
 await check("QC 卡「采纳·插入反应场」→ 目录真的多一个反应场（后端事务）", async () => {
-  const before = (await api("/api/v2/projects/tide/catalog")).chapters[7].scenes.length;
+  const before = (await api("/api/v2/projects/work-a/catalog")).chapters[7].scenes.length;
   // 展开当前第 8 章 QC 卡并点采纳（历史前缀章已批准并锁定）。
   const card = page.locator('.rv-item:has-text("第 8 章节奏过快")');
   await card.click();
@@ -79,7 +79,7 @@ await check("决策卡选项 → rename effect 落库", async () => {
 });
 
 await check("badge = priority 1 的 open 数（处理后减少）", async () => {
-  const badge = await api("/api/v1/review-items/badge?project_id=tide");
+  const badge = await api("/api/v1/review-items/badge?project_id=work-a");
   const fromStore = await page.evaluate(() => window.rvOpenItems().filter(i => i.priority === 1).length);
   if (badge.count !== fromStore) throw new Error(`badge ${badge.count} != store ${fromStore}`);
 });
@@ -87,14 +87,14 @@ await check("badge = priority 1 的 open 数（处理后减少）", async () => 
 await check("派生卡：不可划掉 / snooze 按指纹 / 修好自动消失", async () => {
   // 制造空章 → 派生卡浮现
   const created = await page.evaluate(async (apiBase) => {
-    const res = await fetch(`${apiBase}/api/v2/projects/tide/catalog/chapters`, {
+    const res = await fetch(`${apiBase}/api/v2/projects/work-a/catalog/chapters`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Idempotency-Key": "p5-empty-" + Date.now() },
       body: JSON.stringify({ title: "P5空章", current: false, with_scene: false }),
     }).then(r => r.json());
     return res.data.chapter.chapter_id;
   }, API);
-  let items = (await api("/api/v1/review-items?state=open&project_id=tide")).items;
+  let items = (await api("/api/v1/review-items?state=open&project_id=work-a")).items;
   const empty = items.find(i => String(i.id).startsWith(`derived:catalog:empty:${created}`));
   if (!empty) throw new Error("empty-chapter derived card missing");
   // 不可 resolve
@@ -109,11 +109,11 @@ await check("派生卡：不可划掉 / snooze 按指纹 / 修好自动消失", 
   if (blocked !== 409) throw new Error(`resolve should be 409, got ${blocked}`);
   // 修好（删空章）→ 自动消失
   await page.evaluate(async (args) => {
-    await fetch(`${args.api}/api/v2/projects/tide/catalog/chapters/${args.cid}`, {
+    await fetch(`${args.api}/api/v2/projects/work-a/catalog/chapters/${args.cid}`, {
       method: "DELETE", headers: { "X-Idempotency-Key": "p5-fix-" + Date.now() },
     });
   }, { api: API, cid: created });
-  items = (await api("/api/v1/review-items?state=open&project_id=tide")).items;
+  items = (await api("/api/v1/review-items?state=open&project_id=work-a")).items;
   if (items.some(i => String(i.id).startsWith(`derived:catalog:empty:${created}`))) throw new Error("derived card did not vanish");
 });
 
@@ -129,7 +129,7 @@ await check("同一 dedupe_key 投两次只有一张卡", async () => {
   await mk();
   const second = await mk();
   if (second.deduped !== true) throw new Error("second post not deduped");
-  const items = (await api("/api/v1/review-items?state=open&project_id=tide")).items;
+  const items = (await api("/api/v1/review-items?state=open&project_id=work-a")).items;
   if (items.filter(i => i.title === "P5 dedupe 冒烟").length !== 1) throw new Error("duplicate cards");
 });
 

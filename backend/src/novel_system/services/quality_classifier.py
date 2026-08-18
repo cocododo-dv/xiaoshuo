@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from novel_system.db.models import SceneCard
+from novel_system.services.qc_constraints import constraint_terms, contains_forbidden_term, source_field_satisfied
 
 Q0 = "Q0"
 Q1 = "Q1"
@@ -107,14 +108,10 @@ def _verify_source_leak(scene: SceneCard | None, content: str, issue: dict[str, 
 
 
 def _verify_required_text(scene: SceneCard | None, content: str, issue: dict[str, Any]) -> dict[str, Any] | None:
-    # 循环依赖说明：qc_engine 顶层 import 本模块，本模块只在调用期取 qc_engine 的
-    # 确定性小函数——加载序上安全。
-    from novel_system.services.qc_engine import _source_field_satisfied
-
     must_include = getattr(scene, "must_include_text", None) if scene is not None else None
     if not isinstance(must_include, str) or not must_include.strip():
         return None
-    if _source_field_satisfied(must_include, content or ""):
+    if source_field_satisfied(must_include, content or ""):
         return None
     return {
         "verified_by": "scene_card_required_text",
@@ -124,12 +121,10 @@ def _verify_required_text(scene: SceneCard | None, content: str, issue: dict[str
 
 
 def _verify_forbidden_term(scene: SceneCard | None, content: str, issue: dict[str, Any]) -> dict[str, Any] | None:
-    from novel_system.services.qc_engine import _constraint_terms, _contains_forbidden_term
-
     forbidden = getattr(scene, "forbidden_text", None) if scene is not None else None
-    if not _contains_forbidden_term(forbidden, content or ""):
+    if not contains_forbidden_term(forbidden, content or ""):
         return None
-    matched = [term for term in _constraint_terms(forbidden or "") if term in (content or "")]
+    matched = [term for term in constraint_terms(forbidden or "") if term in (content or "")]
     return {
         "verified_by": "scene_card_forbidden_term",
         "authority_ref": f"scene_card:{getattr(scene, 'scene_id', '')}.forbidden_text",

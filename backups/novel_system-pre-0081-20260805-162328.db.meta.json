@@ -1,0 +1,13 @@
+{
+  "alembic_revisions": [
+    "20260802_0080"
+  ],
+  "checksum": "131fae9471afc1b62a2ad8d8d69b847f89104dddaee42e744e2a49a97b1a8d59",
+  "created_at": "2026-08-05T08:23:28Z",
+  "foreign_key_violations": 0,
+  "integrity": "ok",
+  "page_count": 528,
+  "page_size": 4096,
+  "source": "E:\\codex\\xiaoshuo\\codex\\backend\\novel_system.db",
+  "tool": "db_backup.v2"
+}

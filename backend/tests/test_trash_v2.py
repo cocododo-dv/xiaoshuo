@@ -51,6 +51,40 @@ def test_project_soft_delete_restore_roundtrip(client):
     assert tree["chapters"][0]["title"] == "第一章"
 
 
+def test_project_trash_hides_children_from_legacy_author_routes(client):
+    project = _create_project(client)
+    project_id = project["project_id"]
+    chapter = _post(
+        client,
+        f"/api/v2/projects/{project_id}/catalog/chapters",
+        {"title": "父项目回收后不可见"},
+    )["chapter"]
+    chapter_id = chapter["chapter_id"]
+
+    before = client.get("/api/v1/chapters")
+    assert before.status_code == 200
+    assert chapter_id in {
+        item["chapter_id"] for item in before.json()["data"]["items"]
+    }
+
+    deleted = client.delete(f"/api/v2/projects/{project_id}")
+    assert deleted.status_code == 200, deleted.text
+
+    after = client.get("/api/v1/chapters")
+    assert after.status_code == 200
+    assert chapter_id not in {
+        item["chapter_id"] for item in after.json()["data"]["items"]
+    }
+    workspace = client.get(f"/api/v1/chapters/{chapter_id}/author-workspace")
+    assert workspace.status_code == 404
+    assert workspace.json()["error"]["code"] == "PROJECT_TRASHED"
+
+    restored = _post(client, f"/api/v2/projects/{project_id}/restore")
+    assert restored["trashed"] is False
+    visible_again = client.get(f"/api/v1/chapters/{chapter_id}/author-workspace")
+    assert visible_again.status_code == 200
+
+
 def test_unified_trash_lists_three_levels(client, session):
     seed_fixture_works(session)
     session.commit()
@@ -122,8 +156,13 @@ def test_purge_project_leaves_no_residue(client, session):
     assert premature.status_code == 409
 
     client.delete(f"/api/v2/projects/{pid}")
-    purged = client.delete(f"/api/v2/trash/work:{pid}")
+    headers = {"X-Idempotency-Key": "purge-project-replay"}
+    purged = client.delete(f"/api/v2/trash/work:{pid}", headers=headers)
     assert purged.status_code == 200, purged.text
+    replayed = client.delete(f"/api/v2/trash/work:{pid}", headers=headers)
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.headers["X-Idempotency-Status"] == "replayed"
+    assert replayed.json()["data"] == purged.json()["data"]
 
     assert session.query(StoryProject).filter_by(project_id=pid).count() == 0
     assert session.query(ChapterGoal).filter_by(project_id=pid).count() == 0

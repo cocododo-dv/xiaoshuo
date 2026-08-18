@@ -77,7 +77,7 @@ def _upgrade(tmp_path, monkeypatch, seed) -> dict[str, tuple[dict, dict | None]]
         backend_dir = Path(__file__).resolve().parents[1]
         cfg = Config(str(backend_dir / "alembic.ini"))
         cfg.set_main_option("script_location", str(backend_dir / "alembic"))
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "20260722_0074")
 
         with engine.begin() as conn:
             result = {}

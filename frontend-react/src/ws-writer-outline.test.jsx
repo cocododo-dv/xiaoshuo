@@ -167,3 +167,36 @@ describe("写作台 · 章节大纲的删除与批量删除", () => {
     expect(outline(host).querySelector(".wr-sc-check input")).toHaveProperty("disabled", true);
   });
 });
+
+describe("写作台 · AI 续写三候选", () => {
+  it("用一次 generate-set 请求取得三份独立续写，不再并发三个同签名 mutation", async () => {
+    const { wrContinueMulti, client } = await loadWriter();
+    vi.spyOn(window.WrDocs, "draftId").mockResolvedValue("draft-s1");
+    client.apiPost.mockResolvedValue({
+      mode: "continuation_variants",
+      proposals: [
+        { proposal_id: "p-action", proposal_type: "continuation", content: "她推门追了出去。", rationale: "动作推进" },
+        { proposal_id: "p-relation", proposal_type: "continuation", content: "他没有回头，却放慢了脚步。", rationale: "关系压力" },
+        { proposal_id: "p-suspense", proposal_type: "continuation", content: "门外只剩一枚还在发热的钥匙。", rationale: "悬念信息" },
+      ],
+    });
+    client.apiPost.mockClear();
+
+    const candidates = await wrContinueMulti("自然承接下一拍");
+
+    expect(client.apiPost).toHaveBeenCalledTimes(1);
+    expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v1/author-drafts/draft-s1/proposals/generate-set",
+      {
+        mode: "continuation_variants",
+        instruction: "自然承接下一拍",
+      },
+    );
+    expect(candidates.map((item) => item.id)).toEqual(["p-action", "p-relation", "p-suspense"]);
+    expect(candidates.map((item) => item.html)).toEqual([
+      "她推门追了出去。",
+      "他没有回头，却放慢了脚步。",
+      "门外只剩一枚还在发热的钥匙。",
+    ]);
+  });
+});

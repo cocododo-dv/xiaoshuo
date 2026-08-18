@@ -387,17 +387,39 @@ class SceneGenerationService:
         _project_weights = get_dimension_weights(
             scene.project_id, self.session,
         ) if scene and scene.project_id else None
+        quality_strategy_audit: dict[str, Any] = {
+            "status": "project_or_builtin_weights",
+            "matched_policy_id": None,
+        }
         if scene is not None:
             try:
                 from novel_system.services.quality_strategy import QualityStrategyResolver
 
                 resolved_strategy = QualityStrategyResolver(self.session).resolve_for_scene(scene)
+                quality_strategy_audit = {
+                    "status": "resolved",
+                    "matched_policy_id": resolved_strategy.matched_policy_id,
+                    "fallback_level": getattr(resolved_strategy, "fallback_level", None),
+                    "blockers": list(getattr(resolved_strategy, "blockers", ()) or ()),
+                }
                 if resolved_strategy.matched_policy_id is not None:
                     _project_weights = resolved_strategy.weights
-            except Exception:
+            except DomainError as exc:
                 # Ranking is fail-soft for the single-candidate path.  The N>1
                 # authorization itself fails closed in Orchestrator.
-                pass
+                quality_strategy_audit = {
+                    "status": "degraded",
+                    "matched_policy_id": None,
+                    "error_code": exc.code,
+                    "fallback": "project_or_builtin_weights",
+                }
+                _LOGGER.warning(
+                    "quality strategy ranking degraded scene_id=%s code=%s; "
+                    "using project/default weights",
+                    scene_id,
+                    exc.code,
+                    exc_info=True,
+                )
 
         try:
             task_config = self._llm_runner.task_config("style_draft")
@@ -458,6 +480,7 @@ class SceneGenerationService:
                         "candidate_index": idx,
                         "temperature_override": temp,
                         "n_candidates": n_candidates,
+                        "quality_strategy": quality_strategy_audit,
                     },
                     product_slot_key=slot_key,
                     product_slot_order=idx,
@@ -557,6 +580,7 @@ class SceneGenerationService:
                             "max_candidates": candidate_cap,
                             "diversification_strategy": strategy,
                             "progressive_top_up": True,
+                            "quality_strategy": quality_strategy_audit,
                         },
                         product_slot_key=slot_key,
                         product_slot_order=n_candidates + top_up_index - 1,

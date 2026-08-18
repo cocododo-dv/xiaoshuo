@@ -4,7 +4,7 @@ import { wsKey, WsWorks } from "./ws-works.jsx";
 import { s2ExportState } from "./ws-snow.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WrDocVersions, WrRecovery } from "./wr-doc-store.jsx";
-import { cancelRunJob, getLatestSceneRunJob } from "./lib/client.js";
+import { apiGet, apiPost, cancelRunJob, getLatestSceneRunJob } from "./lib/client.js";
 
 /* global React, I */
 /* ==========================================================
@@ -445,8 +445,14 @@ function scnSentencesOf(text) {
   return text.split(/(?<=[。！？；…])/).map(s => s.trim()).filter(s => s.length > 1);
 }
 /* ---- 质检阈值：从 Tweaks 面板读，改动对已生成稿实时重算 ---- */
+let scnQcThresholds = {};
+
+function scnSetQcThresholds(value) {
+  scnQcThresholds = { ...(value || {}) };
+}
+
 function scnQcTh() {
-  const t = window.__scnQcTh || {};
+  const t = scnQcThresholds;
   return { short: t.short || 55, repeat: t.repeat || 30, long: t.long || 64 };
 }
 
@@ -570,7 +576,6 @@ function scnFriendly(e) {
 /* Fix C：一键补齐当前场景缺失的最小 voice/relation 卡(active)，解阻 run 预检。
    返回 { created, run_preflight }。这是 create_minimal_voice_card 预检动作的真实执行入口。 */
 async function scnCreateCards(sid) { // eslint-disable-line no-unused-vars
-  const { apiPost } = await import("./lib/client.js");
   const sceneId = WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;
   if (!sceneId) throw new Error("这一场还没同步到后端目录——稍候片刻或刷新后重试。");
   return apiPost(`/api/v1/scenes/${sceneId}/preflight/create-cards`, {});
@@ -623,7 +628,6 @@ function scnBudgetBlock(job, workbench) {
 }
 
 async function scnTopupBudget(sid, budgetBlock) { // eslint-disable-line no-unused-vars
-  const { apiPost } = await import("./lib/client.js");
   const sceneId = WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;
   if (!sceneId) throw new Error("这一场还没同步到后端目录——稍候片刻或刷新后重试。");
   const raw = budgetBlock && budgetBlock.topup && typeof budgetBlock.topup === "object"
@@ -665,7 +669,6 @@ function scnPollDelay(delayMs, signal) {
 }
 
 async function scnRun(item, note, prevText, lifecycle = {}) { // eslint-disable-line no-unused-vars
-  const { apiGet, apiPost } = await import("./lib/client.js");
   const signal = lifecycle && lifecycle.signal;
   const trackedGet = (path) => signal ? apiGet(path, { signal }) : apiGet(path);
   const trackedPost = (path, body) => signal ? apiPost(path, body, { signal }) : apiPost(path, body);
@@ -777,7 +780,6 @@ async function scnRun(item, note, prevText, lifecycle = {}) { // eslint-disable-
    队列/运行记录此前只活在 localStorage，后端 SceneRunState 才是管线真相——
    这是「起草台各自为战」的补缝。目录场景卡已 done 的按已归档呈现。 ---- */
 async function scnHydrateFromBackend(sid, { signal, terminalJob } = {}) {
-  const { apiGet } = await import("./lib/client.js");
   scnThrowIfAborted(signal);
   const sceneId = WsCatalog && WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null;
   scnThrowIfAborted(signal);
@@ -880,7 +882,6 @@ async function scnHydrateFromBackend(sid, { signal, terminalJob } = {}) {
    队列的 localStorage 从此退化为这份管线真相的读缓存——换浏览器时
    队列成员可恢复，各场产出再经 scnHydrateFromBackend 逐场取回。 ---- */
 async function scnBackendQueueSids() {
-  const { apiGet } = await import("./lib/client.js");
   const workId = WsWorks ? WsWorks.activeId() : null;
   if (!workId || workId === "__loading__") return [];
   let data = null;
@@ -908,24 +909,22 @@ async function scnBackendIdOf(sid) {
   return sceneId;
 }
 async function scnCandidates(sid) {
-  const { apiGet } = await import("./lib/client.js");
   const sceneId = await scnBackendIdOf(sid);
   return apiGet(`/api/v1/scenes/${sceneId}/style-candidates`);
 }
 async function scnSelectCandidate(sid, rowId, opts) {
-  const { apiPost } = await import("./lib/client.js");
   const sceneId = await scnBackendIdOf(sid);
   return apiPost(`/api/v1/scenes/${sceneId}/style-candidates/${encodeURIComponent(rowId)}/select`, opts || {});
 }
 async function scnResumeAfterSelection(sid) {
-  const { apiPost } = await import("./lib/client.js");
   const sceneId = await scnBackendIdOf(sid);
   return apiPost(`/api/v1/scenes/${sceneId}/resume-after-selection`, {});
 }
 
-/* ---- 归档（Wave 1 · 治理 §5.2 归档单入口）----
-   「完成」的真值在后端：先 POST adopt-current（服务端归档事务建/提升
-   FinalScene 并置权威 archived 态），成功响应后才写写作器缓存、回写字数、
+/* ---- 归档（治理 §5.2 归档单入口）----
+   「完成」的真值在后端：POST adopt-current 携带浏览器当前正文和作者稿
+   base revision，服务端在同一事务内保存并提升精确修订。成功响应后只吸收
+   权威修订到写作器缓存、回写字数、
    目录卡置 done——done 只由服务端 archived 响应映射，不再先本地置位。
    后端拒绝（无稿 NO_VALID_DRAFT / 来源安全 SOURCE_SAFETY_BLOCKED）时
    不动本地任何状态，faithful 返回失败原因。 ---- */
@@ -1025,30 +1024,42 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
       return { ok: false, reason: (error && error.message) || "作者稿备份失败，已停止覆盖", backupFailed: true };
     }
   }
-  // 1) 后端归档单入口（先于一切本地写入）
+  // 1) 后端归档单入口：确切 HTML + 作者稿 revision + 当前 FinalScene 指针
+  // 在一个事务中完成保存与提升，不再让服务端自行猜测浏览器选中了哪份稿。
   let sceneId = null;
   try { sceneId = WsCatalog.__backendSceneId ? await WsCatalog.__backendSceneId(sid) : null; } catch (e) {}
   if (!sceneId) return { ok: false, reason: "这一场还没同步到后端目录——稍候片刻或刷新后重试" };
+  const docs = window.WrDocs;
+  const docState = docs && docs.state ? docs.state(sid) : null;
+  if (!docs || !docs.acceptCanonical || !docState || !docState.draftId || !Number.isInteger(docState.revision) || docState.revision < 1) {
+    return { ok: false, reason: "无法取得服务器作者稿修订，已停止归档以避免正文错位" };
+  }
+  let adoption = null;
   try {
-    const { apiPost } = await import("./lib/client.js");
-    await apiPost(`/api/v1/scenes/${sceneId}/adopt-current`, {
+    adoption = await apiPost(`/api/v1/scenes/${sceneId}/adopt-current`, {
       accepted_warning_codes: Array.isArray(options.acceptedWarningCodes)
         ? options.acceptedWarningCodes
         : [],
+      exact_author_draft: {
+        draft_id: docState.draftId,
+        base_revision_no: docState.revision,
+        expected_current_final_scene_row_id: docState.currentFinalSceneRowId || null,
+        content: html,
+      },
     });
   } catch (e) {
     const code = (e && e.code) || "";
     const msg = (e && e.message) || String(e || "");
     return { ok: false, reason: `后端归档未通过（${code || "网络错误"}）：${msg}`, error: e, authorBackup };
   }
-  // 2) 归档成功 → 正文写穿 author-drafts 主路径（WrDocs 缓存+PATCH）
+  // 2) 服务端已经保存并归档同一修订；这里只吸收回包，不再 PATCH 新修订。
+  let cacheWarning = null;
   try {
-    if (window.WrDocs) {
-      const authorDraftId = window.WrDocs.draftId ? await window.WrDocs.draftId(sid) : null;
-      if (authorDraftId) await window.WrDocs.save(sid, html);
-      else localStorage.setItem(key, html); // 兼容尚未启用 author-drafts 的旧项目
-    } else localStorage.setItem(key, html);
-  } catch (e) { return { ok: false, reason: "写入失败" }; }
+    const synced = docs.acceptCanonical(sid, html, adoption);
+    if (synced && synced.localDurable === false) cacheWarning = "正文已安全归档到服务器，但浏览器缓存写入失败；刷新后可从服务器恢复";
+  } catch (e) {
+    cacheWarning = "正文已安全归档到服务器，但本地状态同步失败；请刷新页面从服务器恢复";
+  }
   const hit = WsCatalog.sceneById(sid);
   const prev = hit && typeof hit.scene.words === "number" ? hit.scene.words : 0;
   const count = text.replace(/\s/g, "").length;
@@ -1060,11 +1071,10 @@ async function scnAdoptToDoc(sid, draft, gate, options = {}) {
   } catch (e) {}
   // 3) 治理设计项 4：归档后重新拉服务端状态（起草台运行记录与管线真相收敛）
   try {
-    const { apiGet } = await import("./lib/client.js");
     const status = await apiGet(`/api/v1/scenes/${sceneId}/status`);
-    return { ok: true, archived: true, words: count, authorBackup, serverStatus: (status && status.scene_status) || "archived", authorState: status && status.author_state };
+    return { ok: true, archived: true, words: count, authorBackup, cacheWarning, contentHash: adoption && adoption.content_hash, serverStatus: (status && status.scene_status) || "archived", authorState: status && status.author_state };
   } catch (e) {
-    return { ok: true, archived: true, words: count, authorBackup, serverStatus: "archived" };
+    return { ok: true, archived: true, words: count, authorBackup, cacheWarning, contentHash: adoption && adoption.content_hash, serverStatus: "archived" };
   }
 }
 
@@ -1093,7 +1103,5 @@ function scnPickList(queuedSids) {
   } catch (e) { return []; }
 }
 
-Object.assign(window, { scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection });
-
-/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { SceneRunJobControl, scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnQC, scnReQC, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };
+/* 场景工作台只通过显式 ESM 导出连接，不再写入 window 全局命名空间。 */
+export { SceneRunJobControl, scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnQC, scnReQC, scnSetQcThresholds, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };

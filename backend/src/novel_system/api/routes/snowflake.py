@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
+from novel_system.api.snowflake_requests import (
+    LegacySnowflakeArtifactUpdateRequest,
+    LegacySnowflakeStepGenerateRequest,
+)
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.snowflake_planner import SnowflakePlannerService
 
@@ -22,11 +26,11 @@ def snowflake_state(project_id: str, request: Request, session: Session = Depend
 def generate_snowflake_step(
     project_id: str,
     step_key: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: LegacySnowflakeStepGenerateRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload or {}
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
@@ -45,15 +49,18 @@ def generate_snowflake_step(
 def update_snowflake_artifact(
     project_id: str,
     artifact_id: str,
-    payload: dict[str, Any],
+    payload: LegacySnowflakeArtifactUpdateRequest,
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = SnowflakePlannerService(session).update_artifact(project_id, artifact_id, payload)
-    session.commit()
-    return ok(
-        result,
-        req_id=getattr(request.state, "request_id", None),
+    body = payload.model_dump(mode="json", exclude_unset=True)
+    return optional_idempotent_response(
+        request,
+        session,
+        method="PATCH",
+        path_template="/api/v1/projects/{project_id}/snowflake/artifacts/{artifact_id}",
+        payload={"project_id": project_id, "artifact_id": artifact_id, "body": body},
+        action=lambda: SnowflakePlannerService(session).update_artifact(project_id, artifact_id, body),
     )
 
 
@@ -61,11 +68,11 @@ def update_snowflake_artifact(
 def approve_snowflake_artifact(
     project_id: str,
     artifact_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload or {}
+    body = payload.model_dump(mode="json") if payload else {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
@@ -83,11 +90,11 @@ def approve_snowflake_artifact(
 @router.post("/api/v1/projects/{project_id}/snowflake/materialize-outline-plan")
 def materialize_snowflake_outline_plan(
     project_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload or {}
+    body = payload.model_dump(mode="json") if payload else {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,

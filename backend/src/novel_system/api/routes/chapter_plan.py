@@ -2,9 +2,9 @@
 
 设计文档：docs/chapter-arrangement-llm-design-2026-07-16.md §5。
 - 蓝图三端点：GET/PUT architecture + POST architecture/generate（幂等）
-- 三通道：POST plan/candidates | plan/fill | plan/review（单次结构化咨询调用，
-  与雪花 generate/fe-candidates 同级别，不套幂等——重生成是合法诉求；
-  计量/审计由 execute_accounted_call 承担）
+- 三通道：POST plan/candidates | plan/fill | plan/review（单次结构化咨询调用；
+  每次主动重生成会获得新键，同一网络请求重试则重放，避免重复计费；
+  计量/审计仍由 execute_accounted_call 承担）
 - POST plan/apply（幂等）：补丁经服务端 sanitize 后单事务原子回写目录。
 """
 from __future__ import annotations
@@ -14,7 +14,14 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
+from novel_system.api.chapter_plan_requests import (
+    ChapterPlanApplyRequest,
+    ChapterPlanCandidatesRequest,
+    ChapterPlanFillRequest,
+)
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
 from novel_system.services.chapter_plan_llm import ChapterPlanService
 from novel_system.services.idempotency import execute_with_idempotency
@@ -45,33 +52,41 @@ def get_chapter_architecture(
 def put_chapter_architecture(
     project_id: str,
     chapter_id: str,
-    payload: dict[str, Any],
+    payload: BoundedJsonObject,
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = ChapterPlanService(session).put_architecture(
-        project_id,
-        chapter_id,
-        payload or {},
-        actor_ref=_operator(request),
+    body = payload or {}
+    return optional_idempotent_response(
+        request,
+        session,
+        method="PUT",
+        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/architecture",
+        payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
+        action=lambda: ChapterPlanService(session).put_architecture(
+            project_id,
+            chapter_id,
+            body,
+            actor_ref=_operator(request),
+        ),
     )
-    return ok(result, req_id=_req_id(request))
 
 
 @router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/architecture/generate")
 def generate_chapter_architecture(
     project_id: str,
     chapter_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
+    body = payload.model_dump(mode="json") if payload else {}
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
-        path_template=f"/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/architecture/generate",
-        payload=payload or {},
+        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/architecture/generate",
+        payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=lambda: ChapterPlanService(session).generate_architecture(
             project_id,
             chapter_id,
@@ -87,24 +102,38 @@ def generate_chapter_architecture(
 def chapter_plan_candidates(
     project_id: str,
     chapter_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: ChapterPlanCandidatesRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    result = ChapterPlanService(session).candidates(project_id, chapter_id, payload or {})
-    return ok(result, req_id=_req_id(request))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/candidates",
+        payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
+        action=lambda: ChapterPlanService(session).candidates(project_id, chapter_id, body),
+    )
 
 
 @router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/fill")
 def chapter_plan_fill(
     project_id: str,
     chapter_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: ChapterPlanFillRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    result = ChapterPlanService(session).fill(project_id, chapter_id, payload or {})
-    return ok(result, req_id=_req_id(request))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/fill",
+        payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
+        action=lambda: ChapterPlanService(session).fill(project_id, chapter_id, body),
+    )
 
 
 @router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/review")
@@ -112,30 +141,39 @@ def chapter_plan_review(
     project_id: str,
     chapter_id: str,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    result = ChapterPlanService(session).review(project_id, chapter_id)
-    return ok(result, req_id=_req_id(request))
+    body = payload.model_dump(mode="json") if payload else {}
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/review",
+        payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
+        action=lambda: ChapterPlanService(session).review(project_id, chapter_id),
+    )
 
 
 @router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/apply")
 def chapter_plan_apply(
     project_id: str,
     chapter_id: str,
-    payload: dict[str, Any],
     request: Request,
+    payload: ChapterPlanApplyRequest,
     session: Session = Depends(get_session),
 ):
+    body = payload.model_dump(mode="json", exclude_unset=True)
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
-        path_template=f"/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/apply",
-        payload=payload or {},
+        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/apply",
+        payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=lambda: ChapterPlanService(session).apply(
             project_id,
             chapter_id,
-            payload or {},
+            body,
             actor_ref=_operator(request),
         ),
         actor_ref=_operator(request),

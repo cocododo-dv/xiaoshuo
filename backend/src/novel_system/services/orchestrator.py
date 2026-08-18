@@ -67,6 +67,7 @@ from novel_system.services.scene_generation import (
     versioned_scene_artifact_id,
 )
 from novel_system.services.scene_run_checkpoint import RUN_CHECKPOINT_ORDER, SceneRunCheckpointService
+from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.version_manager import VersionManager
 
 if TYPE_CHECKING:
@@ -245,7 +246,6 @@ class Orchestrator:
         # reliable（默认）：Q2/Q3 警告随稿归档；strict：存在 Q2 时停在可归档的
         # quality_warning，由作者经 adopt-current 显式接受；auto 保留（按
         # criticality 决策），当前按 reliable 处理。Q0/Q1 阻断与模式无关。
-        self.version_manager.recover_stuck_jobs()
         scene = self.session.get(SceneCard, scene_id)
         if scene is None:
             raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
@@ -4707,7 +4707,7 @@ class Orchestrator:
         except LLMAccountingError as exc:
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
-                f"{prefix} checkpoint generation attempt ledger is invalid",
+                f"{result_type} checkpoint generation attempt ledger is invalid",
                 status_code=409,
                 details={"llm_call_id": llm_call_id, "error_code": exc.code},
             ) from exc
@@ -7251,12 +7251,16 @@ class Orchestrator:
             from novel_system.services.pov_knowledge_projection import (
                 PovKnowledgeProjection,
             )
+            from novel_system.services.narrative_event_log import NarrativeEventLog
             payload = getattr(contract, "payload_json", None) or {}
             pov = scene.pov_character_id or payload.get("pov_character_id")
             if not pov:
                 return brief
             project_id = self._resolve_scene_project_id(scene, contract)
-            return PovKnowledgeProjection(self.session).redact_brief(
+            return PovKnowledgeProjection(
+                self.session,
+                event_log=NarrativeEventLog(self.session),
+            ).redact_brief(
                 brief,
                 project_id,
                 None,
@@ -7504,22 +7508,19 @@ class Orchestrator:
             return []
 
     def _resolve_scene_project_id(self, scene: SceneCard, contract=None) -> str:
-        """Resolve project ownership from catalog parents before legacy ID guesses."""
-        chapter = self.session.get(ChapterGoal, scene.chapter_id)
+        """Resolve project ownership exclusively from relational authority."""
         payload = getattr(contract, "payload_json", None) or {}
         if not isinstance(payload, dict):
             payload = {}
-        for candidate in (
-            scene.project_id,
-            chapter.project_id if chapter is not None else None,
-            payload.get("project_id"),
-        ):
-            if isinstance(candidate, str) and candidate.strip():
-                return candidate.strip()
-        return (
-            scene.chapter_id.rsplit("_", 1)[0]
-            if "_" in scene.chapter_id
-            else scene.chapter_id
+        explicit_project_id = payload.get("project_id")
+        return require_scene_project_id(
+            self.session,
+            scene,
+            explicit_project_id=(
+                explicit_project_id
+                if isinstance(explicit_project_id, str)
+                else None
+            ),
         )
 
     def _archive_event_base(self, scene: SceneCard, contract) -> dict[str, str]:
@@ -7719,11 +7720,25 @@ class Orchestrator:
 
         backend = get_settings().vector_backend.lower()
         validation_scope = "process_local" if backend == "memory" else "persistent"
-        resolved_project_id = project_id or scene.project_id or (
-            scene.chapter_id.rsplit("_", 1)[0]
-            if "_" in scene.chapter_id
-            else scene.chapter_id
-        )
+        resolved_project_id = project_id or scene.project_id
+        if not resolved_project_id:
+            raise DomainError(
+                "PROJECT_OWNERSHIP_UNRESOLVED",
+                "scene vector indexing requires authoritative project ownership",
+                status_code=409,
+                details={"scene_id": scene.scene_id, "chapter_id": scene.chapter_id},
+            )
+        if project_id and scene.project_id and project_id != scene.project_id:
+            raise DomainError(
+                "PROJECT_OWNERSHIP_CONFLICT",
+                "scene vector indexing project disagrees with scene ownership",
+                status_code=409,
+                details={
+                    "scene_id": scene.scene_id,
+                    "scene_project_id": scene.project_id,
+                    "explicit_project_id": project_id,
+                },
+            )
         collection_name = f"scenes_{resolved_project_id}"
         expected_text = (content or "")[:600]
         text_hash = Orchestrator._text_hash(expected_text)

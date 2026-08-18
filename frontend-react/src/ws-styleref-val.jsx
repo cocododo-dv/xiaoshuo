@@ -1,5 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { apiGet, apiPost } from "./lib/client.js";
 
 /* global React, I */
 const { useState: useStSRV } = React;
@@ -96,17 +97,17 @@ function srvVerdictMeta(v) {
   }
 }
 
-window.SrValidation = function SrValidation({ book, go }) {
+export function SrValidation({ book, go, deepFor, loadDeep }) {
   const isReal = !!(book && book.real);
-  const [deep, setDeep] = useStSRV(() => (isReal && window.srDeepFor ? window.srDeepFor(book.id) : null));
+  const [deep, setDeep] = useStSRV(() => (isReal && deepFor ? deepFor(book.id) : null));
   React.useEffect(() => {
     if (!isReal) { setDeep(null); return; }
-    const sync = () => setDeep(window.srDeepFor ? window.srDeepFor(book.id) : null);
+    const sync = () => setDeep(deepFor ? deepFor(book.id) : null);
     sync();
-    if (window.srLoadDeep) window.srLoadDeep(book.id);
+    if (loadDeep) loadDeep(book.id);
     window.addEventListener("sr:deep-changed", sync);
     return () => window.removeEventListener("sr:deep-changed", sync);
-  }, [isReal, book && book.id]);
+  }, [isReal, book && book.id, deepFor, loadDeep]);
   const profileId = deep && deep.profileId;
   const realMode = !!profileId;
 
@@ -117,7 +118,15 @@ window.SrValidation = function SrValidation({ book, go }) {
   const [done, setDone] = useStSRV(false);
   const [err, setErr] = useStSRV(null);
   const pollRef = React.useRef(null);
-  React.useEffect(() => () => clearTimeout(pollRef.current), []);
+  const pollGeneration = React.useRef(0);
+  React.useEffect(() => {
+    pollGeneration.current += 1;
+    clearTimeout(pollRef.current);
+    return () => {
+      pollGeneration.current += 1;
+      clearTimeout(pollRef.current);
+    };
+  }, [profileId]);
 
   const showReport = done && !!report;
 
@@ -125,11 +134,12 @@ window.SrValidation = function SrValidation({ book, go }) {
     if (running) return;
     setRunning(true); setDone(false); setErr(null); setReport(null);
     clearTimeout(pollRef.current);
+    const generation = ++pollGeneration.current;
     try {
-      const { apiPost, apiGet } = await import("./lib/client.js");
       const resp = await apiPost(`/api/v2/style-reference/profiles/${profileId}/validate`, {
         generated_text: text, target_kind: "manual", mode,
       });
+      if (generation !== pollGeneration.current) return;
       if (resp && resp.sync_result) {
         setReport(srvNormalize(resp.sync_result)); setRunning(false); setDone(true); return;
       }
@@ -137,14 +147,17 @@ window.SrValidation = function SrValidation({ book, go }) {
       if (!rid) throw new Error("校验未返回 report_id");
       const startedAt = Date.now();
       const poll = async () => {
+        if (generation !== pollGeneration.current) return;
         if (Date.now() - startedAt > 60000) { setRunning(false); setErr("校验超时，请重试。"); return; }
         let rep = null;
         try { rep = ((await apiGet(`/api/v2/style-reference/reports/${rid}`)) || {}).report || null; } catch (e) { /* 抖动下一轮 */ }
+        if (generation !== pollGeneration.current) return;
         if (rep && rep.verdict) { setReport(srvNormalize(rep)); setRunning(false); setDone(true); return; }
         pollRef.current = setTimeout(poll, 1200);
       };
       pollRef.current = setTimeout(poll, 800);
     } catch (e) {
+      if (generation !== pollGeneration.current) return;
       setRunning(false);
       setErr(e && (e.code === "STYLE_REFERENCE_LLM_REQUIRED" || e.code === "STYLE_REFERENCE_CLOUD_POLICY_BLOCKED")
         ? "全量三路的语义评分需启用 LLM；可改用「同步快路径」（量化 + 抄袭，无需 LLM）。"
@@ -229,7 +242,7 @@ window.SrValidation = function SrValidation({ book, go }) {
             <div className="text-muted text-sm mt-2">粘贴生成文本后点「运行回测」，对该画像做{mode === "sync_only" ? "量化 + 抄袭" : "四路"}校验。</div>
           </div>
         )}
-        {showReport && !running && <window.ValidationReportCard report={report} mode={mode} />}
+        {showReport && !running && <ValidationReportCard report={report} mode={mode} />}
       </div>
 
       {/* Side: verdict + summary + rewrite */}
@@ -281,10 +294,10 @@ window.SrValidation = function SrValidation({ book, go }) {
       <style dangerouslySetInnerHTML={{ __html: srvCss }} />
     </div>
   );
-};
+}
 
 /* ============ ValidationReportCard ============ */
-window.ValidationReportCard = function ValidationReportCard({ report, mode }) {
+export function ValidationReportCard({ report, mode }) {
   if (!report) return null;
   const quant = report.quant;
   const quantPass = quant.filter(quantItemPass).length;
@@ -410,7 +423,7 @@ window.ValidationReportCard = function ValidationReportCard({ report, mode }) {
       </div>
     </div>
   );
-};
+}
 
 /* ---- helpers（量化通过判定）---- */
 function tol(m) { return m.tolerance != null ? m.tolerance : Math.max(m.std * 1.25, 0.1); }

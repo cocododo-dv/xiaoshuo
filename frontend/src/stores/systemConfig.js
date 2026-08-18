@@ -110,18 +110,31 @@ function browserStorage() {
   return typeof window !== "undefined" && window.localStorage ? window.localStorage : null;
 }
 
+function browserSessionStorage() {
+  return typeof window !== "undefined" && window.sessionStorage ? window.sessionStorage : null;
+}
+
 function storedAdminToken() {
-  const storage = browserStorage();
+  const storage = browserSessionStorage();
   if (!storage) {
     return "";
   }
-  return storage.getItem(ADMIN_TOKEN_KEY) || "";
+  const legacyStorage = browserStorage();
+  const current = storage.getItem(ADMIN_TOKEN_KEY) || "";
+  const legacy = legacyStorage?.getItem(ADMIN_TOKEN_KEY) || "";
+  legacyStorage?.removeItem(ADMIN_TOKEN_KEY);
+  if (!current && legacy) {
+    storage.setItem(ADMIN_TOKEN_KEY, legacy);
+  }
+  return current || legacy;
 }
 
 function persistAdminToken(value) {
-  const storage = browserStorage();
+  const storage = browserSessionStorage();
+  browserStorage()?.removeItem(ADMIN_TOKEN_KEY);
   if (storage) {
-    storage.setItem(ADMIN_TOKEN_KEY, value);
+    if (value) storage.setItem(ADMIN_TOKEN_KEY, value);
+    else storage.removeItem(ADMIN_TOKEN_KEY);
   }
 }
 

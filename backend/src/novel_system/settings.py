@@ -4,6 +4,20 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from novel_system.core_runtime import load_core_runtime
+from novel_system.database_runtime import DEFAULT_DATABASE_PATH, load_database_runtime
+from novel_system.llm_accounting_runtime import load_llm_accounting_runtime
+from novel_system.runtime_defaults import DEFAULT_LLM_TIMEOUT_SECONDS
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+REPOSITORY_ROOT = BACKEND_ROOT.parent
+DEFAULT_VECTOR_STORE_DIR = BACKEND_ROOT / ".vector_store"
+DEFAULT_LITERARY_EVAL_REPORT_PATH = (
+    BACKEND_ROOT / ".codex-run" / "literary_eval_latest.json"
+)
+DEFAULT_LITERARY_EVAL_SUITE_ROOT = REPOSITORY_ROOT / "config" / "evals"
+
 
 @dataclass(slots=True)
 class Settings:
@@ -18,12 +32,10 @@ class Settings:
     llm_provider: str = "openai_compatible"
     llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str | None = None
-    # Per-call LLM wall-clock ceiling. ``0`` = no ceiling (the default): a long
-    # extraction/synthesis on a slow model is normal authoring work, not a fault,
-    # and a fixed 30s cut it off mid-generation. Connection setup keeps its own
-    # finite timeout (``llm_client.LLM_CONNECT_TIMEOUT_SECONDS``) so an
-    # unreachable endpoint still fails fast. Set a positive value to re-arm.
-    llm_timeout_seconds: float = 0.0
+    # Per-call LLM wall-clock ceiling. The 15-minute default allows slow local
+    # generation while preventing a live-but-silent upstream from holding a
+    # worker indefinitely. ``0`` remains an explicit operator opt-out.
+    llm_timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
     llm_enabled: bool = False
     # §8 opt-in: layer an independent LLM "editor" critic on top of the rule-based pass.
     llm_auto_critique_enabled: bool = False
@@ -82,12 +94,25 @@ class Settings:
     # deployment mode and must be protected by a shared access token.
     local_only: bool = True
     remote_access_token: str | None = None
+    # The application reads request bodies in memory.  Keep one global ceiling
+    # above the 10 MiB reference-book limit so JSON and multipart parsing can
+    # never allocate an attacker-controlled, unbounded buffer.
+    max_request_body_bytes: int = 16 * 1024 * 1024
     # Server-side path imports are disabled unless one or more roots are listed.
     # Browser uploads remain available and are the preferred import path.
     style_reference_import_roots: tuple[Path, ...] = ()
+    # The bundled eval suite is always available. Additional server-side suite
+    # paths must live under one of these explicitly configured roots.
+    literary_eval_suite_roots: tuple[Path, ...] = (
+        DEFAULT_LITERARY_EVAL_SUITE_ROOT,
+    )
+    literary_eval_report_path: Path = DEFAULT_LITERARY_EVAL_REPORT_PATH
     # ``review`` prevents unattended archive for high-risk heuristic matches;
     # ``audit`` records the same findings without blocking publication.
     content_safety_mode: str = "review"
+    # Test/acceptance fixture import is a write-capable maintenance boundary.
+    # It is absent from OpenAPI and disabled unless an operator opts in.
+    fixture_import_enabled: bool = False
 
 
 def _get_bool_env(name: str, default: bool) -> bool:
@@ -107,19 +132,6 @@ def _get_strict_bool_env(name: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{name} must be a boolean (1/0, true/false, yes/no, on/off)")
-
-
-def _get_float_env(name: str, default: float) -> float:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    try:
-        value = float(raw_value)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a valid number") from exc
-    if value < 0:
-        raise ValueError(f"{name} must be non-negative")
-    return value
 
 
 def _get_positive_int_env(name: str, default: int) -> int:
@@ -158,71 +170,62 @@ def _get_list_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return items or default
 
 
-def _get_path_list_env(name: str) -> tuple[Path, ...]:
+def _resolve_runtime_path(value: str | Path) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else BACKEND_ROOT / path
+
+
+def _get_path_list_env(
+    name: str,
+    default: tuple[Path, ...] = (),
+) -> tuple[Path, ...]:
     raw_value = os.environ.get(name, "")
     if not raw_value.strip():
-        return ()
+        return default
     return tuple(
-        Path(item.strip()).expanduser()
+        _resolve_runtime_path(item.strip())
         for item in raw_value.split(os.pathsep)
         if item.strip()
     )
 
 
 def get_settings(*, include_runtime_config: bool = True) -> Settings:
-    database_url = os.environ.get(
-        "NOVEL_SYSTEM_DATABASE_URL",
-        "sqlite:///./novel_system.db",
-    )
-    sqlite_foreign_keys_enabled = _get_strict_bool_env(
-        "NOVEL_SYSTEM_SQLITE_FOREIGN_KEYS_ENABLED",
-        True,
-    )
-    vector_backend = os.environ.get("NOVEL_SYSTEM_VECTOR_BACKEND", "chroma")
-    vector_store_dir = Path(
-        os.environ.get("NOVEL_SYSTEM_CHROMA_DIR", "./.vector_store")
+    database_runtime = load_database_runtime()
+    database_url = database_runtime.database_url
+    sqlite_foreign_keys_enabled = database_runtime.sqlite_foreign_keys_enabled
+    vector_backend = os.environ.get("NOVEL_SYSTEM_VECTOR_BACKEND", "memory")
+    vector_store_dir = _resolve_runtime_path(
+        os.environ.get("NOVEL_SYSTEM_CHROMA_DIR", DEFAULT_VECTOR_STORE_DIR)
     )
     chroma_collection_prefix = os.environ.get("NOVEL_SYSTEM_CHROMA_COLLECTION_PREFIX", "novel_system")
-    llm_provider = os.environ.get("NOVEL_SYSTEM_LLM_PROVIDER", "openai_compatible")
-    llm_base_url = os.environ.get("NOVEL_SYSTEM_LLM_BASE_URL", "https://api.openai.com/v1")
-    llm_api_key = os.environ.get("NOVEL_SYSTEM_LLM_API_KEY")
-    llm_timeout_seconds = _get_float_env("NOVEL_SYSTEM_LLM_TIMEOUT_SECONDS", 0.0)
-    llm_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_ENABLED", False)
+    core_runtime = load_core_runtime()
+    llm_provider = core_runtime.llm_provider
+    llm_base_url = core_runtime.llm_base_url
+    llm_api_key = core_runtime.llm_api_key
+    llm_timeout_seconds = core_runtime.llm_timeout_seconds
+    llm_enabled = core_runtime.llm_enabled
     llm_auto_critique_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_AUTO_CRITIQUE_ENABLED", False)
     llm_event_extraction_enabled = _get_bool_env("NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED", False)
-    llm_daily_token_limit = _get_quota_int_env("NOVEL_SYSTEM_LLM_DAILY_TOKEN_LIMIT", 0)
-    llm_monthly_token_limit = _get_quota_int_env("NOVEL_SYSTEM_LLM_MONTHLY_TOKEN_LIMIT", 0)
-    llm_project_daily_token_limit = _get_quota_int_env(
-        "NOVEL_SYSTEM_LLM_PROJECT_DAILY_TOKEN_LIMIT", 0
+    accounting_runtime = load_llm_accounting_runtime()
+    llm_daily_token_limit = accounting_runtime.daily_token_limit
+    llm_monthly_token_limit = accounting_runtime.monthly_token_limit
+    llm_project_daily_token_limit = accounting_runtime.project_daily_token_limit
+    llm_daily_request_limit = accounting_runtime.daily_request_limit
+    llm_max_concurrent_requests = accounting_runtime.max_concurrent_requests
+    llm_reservation_recovery_ttl_seconds = (
+        accounting_runtime.reservation_recovery_ttl_seconds
     )
-    llm_daily_request_limit = _get_quota_int_env("NOVEL_SYSTEM_LLM_DAILY_REQUEST_LIMIT", 0)
-    llm_max_concurrent_requests = _get_quota_int_env("NOVEL_SYSTEM_LLM_MAX_CONCURRENT_REQUESTS", 0)
-    llm_reservation_recovery_ttl_seconds = _get_positive_int_env(
-        "NOVEL_SYSTEM_LLM_RESERVATION_RECOVERY_TTL_SECONDS",
-        3_600,
-    )
-    llm_daily_cost_limit_usd = _get_float_env("NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD", 0.0)
-    llm_input_cost_per_million_usd = _get_float_env(
-        "NOVEL_SYSTEM_LLM_INPUT_COST_PER_MILLION_USD", 0.0
-    )
-    llm_output_cost_per_million_usd = _get_float_env(
-        "NOVEL_SYSTEM_LLM_OUTPUT_COST_PER_MILLION_USD", 0.0
-    )
+    llm_daily_cost_limit_usd = accounting_runtime.daily_cost_limit_usd
+    llm_input_cost_per_million_usd = accounting_runtime.input_cost_per_million_usd
+    llm_output_cost_per_million_usd = accounting_runtime.output_cost_per_million_usd
     scene_token_budget_multiplier = _get_quota_int_env(
         "NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", 0
     )
     snowflake_input_token_budget = _get_quota_int_env(
         "NOVEL_SYSTEM_SNOWFLAKE_INPUT_TOKEN_BUDGET", 0
     )
-    if llm_daily_cost_limit_usd > 0 and max(
-        llm_input_cost_per_million_usd,
-        llm_output_cost_per_million_usd,
-    ) <= 0:
-        raise ValueError(
-            "NOVEL_SYSTEM_LLM_DAILY_COST_LIMIT_USD requires at least one configured token price"
-        )
-    admin_token = os.environ.get("NOVEL_SYSTEM_ADMIN_TOKEN")
-    config_secret = os.environ.get("NOVEL_SYSTEM_CONFIG_SECRET")
+    admin_token = core_runtime.admin_token
+    config_secret = core_runtime.config_secret
     auto_create_tables = _get_bool_env("NOVEL_SYSTEM_AUTO_CREATE_TABLES", False)
     cors_origins = _get_list_env(
         "NOVEL_SYSTEM_CORS_ORIGINS",
@@ -242,8 +245,22 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     expose_error_detail = _get_bool_env("NOVEL_SYSTEM_EXPOSE_ERROR_DETAIL", False)
     local_only = _get_strict_bool_env("NOVEL_SYSTEM_LOCAL_ONLY", True)
     remote_access_token = os.environ.get("NOVEL_SYSTEM_REMOTE_ACCESS_TOKEN") or None
+    max_request_body_bytes = _get_positive_int_env(
+        "NOVEL_SYSTEM_MAX_REQUEST_BODY_BYTES",
+        16 * 1024 * 1024,
+    )
     style_reference_import_roots = _get_path_list_env(
         "NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS"
+    )
+    literary_eval_suite_roots = _get_path_list_env(
+        "NOVEL_SYSTEM_LITERARY_EVAL_SUITE_ROOTS",
+        (DEFAULT_LITERARY_EVAL_SUITE_ROOT,),
+    )
+    literary_eval_report_path = _resolve_runtime_path(
+        os.environ.get(
+            "NOVEL_SYSTEM_LITERARY_EVAL_REPORT_PATH",
+            DEFAULT_LITERARY_EVAL_REPORT_PATH,
+        )
     )
     content_safety_mode = os.environ.get("NOVEL_SYSTEM_CONTENT_SAFETY_MODE", "review").strip().lower()
     if content_safety_mode not in {"review", "audit"}:
@@ -280,8 +297,12 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         expose_error_detail=expose_error_detail,
         local_only=local_only,
         remote_access_token=remote_access_token,
+        max_request_body_bytes=max_request_body_bytes,
         style_reference_import_roots=style_reference_import_roots,
+        literary_eval_suite_roots=literary_eval_suite_roots,
+        literary_eval_report_path=literary_eval_report_path,
         content_safety_mode=content_safety_mode,
+        fixture_import_enabled=_get_strict_bool_env("NOVEL_SYSTEM_ENABLE_FIXTURE_IMPORT", False),
     )
     if not include_runtime_config:
         return settings

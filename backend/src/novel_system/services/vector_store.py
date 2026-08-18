@@ -67,6 +67,8 @@ class VectorStore(Protocol):
 
     def delete_collection(self, collection_name: str) -> None: ...
 
+    def delete_documents(self, collection_name: str, document_ids: list[str]) -> None: ...
+
 
 class InMemoryVectorStore:
     def __init__(self) -> None:
@@ -87,6 +89,15 @@ class InMemoryVectorStore:
 
     def delete_collection(self, collection_name: str) -> None:
         self._collections.pop(collection_name, None)
+
+    def delete_documents(self, collection_name: str, document_ids: list[str]) -> None:
+        if not document_ids or collection_name not in self._collections:
+            return
+        targets = set(document_ids)
+        self._collections[collection_name] = [
+            item for item in self._collections[collection_name]
+            if str(item.get("id")) not in targets
+        ]
 
 
 class _DeterministicEmbeddingFunction:
@@ -126,15 +137,21 @@ class ChromaVectorStore:
         persist_directory.mkdir(parents=True, exist_ok=True)
         try:
             import chromadb
+            from chromadb.errors import NotFoundError
         except ImportError as exc:
             raise DomainError(
                 "CHROMA_DEPENDENCY_MISSING",
-                "chromadb dependency is required for the Chroma vector store",
+                "Chroma is an optional vector backend. Install the 'chroma' extra before selecting it.",
                 status_code=503,
+                details={
+                    "backend": "chroma",
+                    "install_command": "uv sync --locked --extra dev --extra chroma",
+                },
             ) from exc
 
         self._client = chromadb.PersistentClient(path=str(persist_directory))
         self._embedding_function = _DeterministicEmbeddingFunction()
+        self._not_found_error = NotFoundError
 
     def _reset_collection(self, collection_name: str):
         self.delete_collection(collection_name)
@@ -169,7 +186,7 @@ class ChromaVectorStore:
     def collection_exists(self, collection_name: str) -> bool:
         try:
             self._get_collection(collection_name)
-        except Exception:
+        except self._not_found_error:
             return False
         return True
 
@@ -217,8 +234,26 @@ class ChromaVectorStore:
     def delete_collection(self, collection_name: str) -> None:
         try:
             self._client.delete_collection(name=collection_name)
-        except Exception:
+        except self._not_found_error:
             return
+        if self.collection_exists(collection_name):
+            raise RuntimeError(
+                f"vector collection still exists after deletion: {collection_name}"
+            )
+
+    def delete_documents(self, collection_name: str, document_ids: list[str]) -> None:
+        if not document_ids or not self.collection_exists(collection_name):
+            return
+        collection = self._get_collection(collection_name)
+        collection.delete(ids=[str(document_id) for document_id in document_ids])
+        remaining_ids = {
+            str(item.get("id")) for item in self.load_collection(collection_name)
+        }
+        leaked = sorted(set(map(str, document_ids)) & remaining_ids)
+        if leaked:
+            raise RuntimeError(
+                f"vector documents still exist after deletion: {collection_name}: {leaked}"
+            )
 
 
 class FileVectorStore(InMemoryVectorStore):

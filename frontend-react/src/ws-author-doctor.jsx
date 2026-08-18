@@ -129,7 +129,5 @@ function ArrDoctor({ chapters, numOf, onOpen, onLens }) {
   );
 }
 
-Object.assign(window, { arrDeriveIssues, ArrDoctor });
-
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { arrDeriveIssues, ArrDoctor };

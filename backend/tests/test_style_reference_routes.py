@@ -64,6 +64,25 @@ def _import_book(client: TestClient) -> str:
     return resp.json()["data"]["book"]["book_id"]
 
 
+def test_import_upload_rejects_malformed_rights_json(client: TestClient) -> None:
+    response = client.post(
+        f"{PREFIX}/books/import-upload",
+        files={"file": ("sample.txt", io.BytesIO(SAMPLE_TXT), "text/plain")},
+        data={
+            "title": "invalid rights",
+            "cloud_policy": "local_only",
+            "rights_declaration": "{not-json}",
+        },
+        headers={"X-Idempotency-Key": "invalid-rights-json"},
+    )
+
+    assert response.status_code == 400
+    assert (
+        response.json()["error"]["code"]
+        == "STYLE_REFERENCE_RIGHTS_DECLARATION_INVALID"
+    )
+
+
 def _seed_full_chain(book_id: str) -> tuple[str, str, str]:
     """直接用 service 层快速建 run + finding(含 2 evidence)+ profile,绕过 LLM 调用。"""
     with SessionLocal() as session:
@@ -456,6 +475,42 @@ def test_start_run_defaults_to_all_four_layers(
     data = resp.json()["data"]
     assert data["layers"] == ["language", "narrative", "scene", "theme"]
     assert len(data["sub_dim_results"]) == 16
+
+
+def test_background_run_dispatches_only_after_idempotency_commit(
+    client: TestClient, monkeypatch, fake_extractor_llm
+) -> None:
+    from novel_system.db.models import IdempotencyKey, StyleReferenceRun
+    import novel_system.api.routes.style_reference as sr_routes
+
+    fake = fake_extractor_llm("default")
+    monkeypatch.setattr(sr_routes, "_get_llm_client_and_enabled", lambda: (fake, True))
+    observations: list[tuple[str | None, str | None]] = []
+
+    def observe_dispatch(**kwargs) -> None:  # noqa: ANN003
+        with SessionLocal() as observer:
+            idem = observer.get(IdempotencyKey, "run_after_commit")
+            run = observer.get(StyleReferenceRun, kwargs["run_id"])
+            observations.append(
+                (
+                    idem.status if idem is not None else None,
+                    run.dispatch_state if run is not None else None,
+                )
+            )
+
+    monkeypatch.setattr(sr_routes, "start_style_reference_run_worker", observe_dispatch)
+    book_id = _import_book(client)
+    request_kwargs = {
+        "json": {"background": True, "force": True},
+        "headers": {"X-Idempotency-Key": "run_after_commit"},
+    }
+    first = client.post(f"{PREFIX}/books/{book_id}/runs", **request_kwargs)
+    replay = client.post(f"{PREFIX}/books/{book_id}/runs", **request_kwargs)
+
+    assert first.status_code == 200, first.text
+    assert replay.status_code == 200, replay.text
+    assert replay.headers["X-Idempotency-Status"] == "replayed"
+    assert observations == [("succeeded", "queued"), ("succeeded", "queued")]
 
 
 def test_list_run_findings_include_evidence(client: TestClient) -> None:

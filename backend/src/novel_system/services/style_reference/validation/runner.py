@@ -8,6 +8,7 @@ async_full:落 pending report(verdict 空)+ ThreadPoolExecutor 起后台 thread
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -23,6 +24,7 @@ from novel_system.services.llm_accounting import (
 )
 from novel_system.services.errors import DomainError
 from novel_system.services.style_reference._llm_helper import LLMNodeError
+from novel_system.services.style_reference.background_heartbeat import periodic_heartbeat
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import (
     ValidateRequest,
@@ -35,8 +37,10 @@ from novel_system.services.style_reference.schemas import (
 logger = logging.getLogger(__name__)
 
 
-# 模块级单 worker;PR-7 简化(SQLite 写并发本就受限)
-_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sr_validate")
+# SQLite 写并发受限；执行器按需创建并由 FastAPI lifespan 关闭。
+VALIDATION_HEARTBEAT_INTERVAL_SECONDS = 30
+_EXECUTOR: ThreadPoolExecutor | None = None
+_EXECUTOR_LOCK = threading.Lock()
 
 
 class ValidationOrchestrator:
@@ -58,7 +62,13 @@ class ValidationOrchestrator:
             llm_enabled = bool(get_settings().llm_enabled)
         self._llm_enabled = llm_enabled
 
-    def validate(self, profile_id: str, req: ValidateRequest) -> ValidateResponse:
+    def validate(
+        self,
+        profile_id: str,
+        req: ValidateRequest,
+        *,
+        defer_dispatch: bool = False,
+    ) -> ValidateResponse:
         import time as _time
 
         from novel_system.services.style_reference.metrics_recorder import MetricsRecorder
@@ -75,7 +85,12 @@ class ValidationOrchestrator:
         if req.mode == ValidationMode.SYNC_ONLY:
             response = self._run_sync_only(profile_id, profile, req)
         else:
-            response = self._run_async_full(profile_id, profile, req)
+            response = self._run_async_full(
+                profile_id,
+                profile,
+                req,
+                defer_dispatch=defer_dispatch,
+            )
         latency_ms = int((_time.perf_counter() - started_at) * 1000)
 
         # PR-10 §13 — sync_only 知道 verdict;async_full 此时只立返 polling_url,
@@ -98,7 +113,7 @@ class ValidationOrchestrator:
     # ---------------------------------------------------------- sync_only
 
     def _run_sync_only(self, profile_id: str, profile, req: ValidateRequest) -> ValidateResponse:
-        from novel_system.services.style_reference.validation import run_sync_validate
+        from novel_system.services.style_reference.validation.core import run_sync_validate
 
         report = run_sync_validate(req.generated_text, profile, self.session)
         report_id = self._persist_report(
@@ -120,7 +135,14 @@ class ValidationOrchestrator:
 
     # --------------------------------------------------------- async_full
 
-    def _run_async_full(self, profile_id: str, profile, req: ValidateRequest) -> ValidateResponse:
+    def _run_async_full(
+        self,
+        profile_id: str,
+        profile,
+        req: ValidateRequest,
+        *,
+        defer_dispatch: bool,
+    ) -> ValidateResponse:
         # 先落 pending report(verdict="" 表示 pending)
         report_id = self._persist_report(
             profile_id=profile_id,
@@ -133,17 +155,18 @@ class ValidationOrchestrator:
             forbidden_hits_json=[],
         )
         # 释放主 session 缓存,确保后台 thread 看到最新行
-        self.session.commit()
+        if not defer_dispatch:
+            self.session.commit()
 
         # 起后台 thread;捕获参数 by value(不能传 session)
-        _EXECUTOR.submit(
-            _async_worker,
-            report_id=report_id,
-            profile_id=profile_id,
-            generated_text=req.generated_text,
-            llm_client=self._llm_client,
-            llm_enabled=self._llm_enabled,
-        )
+        if not defer_dispatch:
+            start_style_reference_validation_worker(
+                report_id=report_id,
+                profile_id=profile_id,
+                generated_text=req.generated_text,
+                llm_client=self._llm_client,
+                llm_enabled=self._llm_enabled,
+            )
 
         return ValidateResponse(
             report_id=report_id,
@@ -192,6 +215,41 @@ class ValidationOrchestrator:
         return report_id
 
 
+def start_style_reference_validation_worker(
+    *,
+    report_id: str,
+    profile_id: str,
+    generated_text: str,
+    llm_client: Any | None,
+    llm_enabled: bool,
+) -> None:
+    """Submit a validation worker; its queued->running CAS makes replay safe."""
+
+    global _EXECUTOR
+    with _EXECUTOR_LOCK:
+        if _EXECUTOR is None:
+            _EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="sr_validate")
+        _EXECUTOR.submit(
+            _async_worker,
+            report_id=report_id,
+            profile_id=profile_id,
+            generated_text=generated_text,
+            llm_client=llm_client,
+            llm_enabled=llm_enabled,
+        )
+
+
+def shutdown_style_reference_validation_executor(*, wait: bool = False) -> None:
+    """Stop accepting validation work and let already submitted work drain."""
+
+    global _EXECUTOR
+    with _EXECUTOR_LOCK:
+        executor = _EXECUTOR
+        _EXECUTOR = None
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=False)
+
+
 def _async_worker(
     *,
     report_id: str,
@@ -203,17 +261,19 @@ def _async_worker(
     """Run async validation after winning the durable queued->running CAS."""
 
     from novel_system.services.style_reference.policy import cloud_llm_allowed
-    from novel_system.services.style_reference.validation import (
+    from novel_system.services.style_reference.validation.core import (
         _compute_full_verdict,
         _load_plagiarism_corpus,
-        check_forbidden_semantic,
-        check_plagiarism,
-        check_quantitative,
-        check_semantic,
     )
     from novel_system.services.style_reference.validation.forbidden_local import (
         check_forbidden_local,
     )
+    from novel_system.services.style_reference.validation.forbidden_semantic import (
+        check_forbidden_semantic,
+    )
+    from novel_system.services.style_reference.validation.plagiarism import check_plagiarism
+    from novel_system.services.style_reference.validation.quantitative import check_quantitative
+    from novel_system.services.style_reference.validation.semantic import check_semantic
 
     try:
         with SessionLocal() as bg_session:
@@ -241,68 +301,73 @@ def _async_worker(
                 return
             bg_session.commit()
 
-            bg_repo = StyleReferenceRepository(bg_session)
-            profile = bg_repo.get_profile(profile_id)
-            if profile is None:
-                raise DomainError(
-                    "STYLE_REFERENCE_PROFILE_NOT_FOUND",
-                    "style reference profile disappeared before validation started",
-                    status_code=404,
+            with periodic_heartbeat(
+                lambda: _renew_validation_heartbeat(report_id),
+                interval_seconds=VALIDATION_HEARTBEAT_INTERVAL_SECONDS,
+                thread_name=f"sr_validate_heartbeat:{report_id}",
+            ):
+                bg_repo = StyleReferenceRepository(bg_session)
+                profile = bg_repo.get_profile(profile_id)
+                if profile is None:
+                    raise DomainError(
+                        "STYLE_REFERENCE_PROFILE_NOT_FOUND",
+                        "style reference profile disappeared before validation started",
+                        status_code=404,
+                    )
+
+                corpus = _load_plagiarism_corpus(bg_repo, profile.book_id)
+                plag = check_plagiarism(generated_text, corpus)
+                forbid_local = check_forbidden_local(generated_text, profile_id, bg_session)
+                quant = check_quantitative(generated_text, profile)
+                _heartbeat_report(bg_session, report_id)
+
+                book = bg_repo.get_book(profile.book_id)
+                policy_allows_llm = cloud_llm_allowed(book) if book is not None else True
+                semantic: list = []
+                forbid_sem: list = []
+                semantic_degraded = False
+                if llm_enabled and llm_client is not None and policy_allows_llm:
+                    try:
+                        semantic = check_semantic(
+                            generated_text,
+                            profile,
+                            bg_session,
+                            llm_client,
+                            report_id=report_id,
+                        )
+                    except Exception as exc:  # pylint: disable=broad-except
+                        if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
+                            raise
+                        if not isinstance(exc, LLMNodeError):
+                            raise
+                        semantic_degraded = True
+                        logger.warning("async_worker semantic failed: %s", exc)
+                    _heartbeat_report(bg_session, report_id)
+                    try:
+                        forbid_sem = check_forbidden_semantic(
+                            generated_text,
+                            profile,
+                            bg_session,
+                            llm_client,
+                            report_id=report_id,
+                        )
+                    except Exception as exc:  # pylint: disable=broad-except
+                        if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
+                            raise
+                        if not isinstance(exc, LLMNodeError):
+                            raise
+                        semantic_degraded = True
+                        logger.warning("async_worker forbidden_semantic failed: %s", exc)
+                    _heartbeat_report(bg_session, report_id)
+
+                all_forbid = list(forbid_local) + list(forbid_sem)
+                verdict = _compute_full_verdict(
+                    quant=quant,
+                    semantic=semantic,
+                    plag=plag,
+                    forbid=all_forbid,
+                    semantic_degraded=semantic_degraded,
                 )
-
-            corpus = _load_plagiarism_corpus(bg_repo, profile.book_id)
-            plag = check_plagiarism(generated_text, corpus)
-            forbid_local = check_forbidden_local(generated_text, profile_id, bg_session)
-            quant = check_quantitative(generated_text, profile)
-            _heartbeat_report(bg_session, report_id)
-
-            book = bg_repo.get_book(profile.book_id)
-            policy_allows_llm = cloud_llm_allowed(book) if book is not None else True
-            semantic: list = []
-            forbid_sem: list = []
-            semantic_degraded = False
-            if llm_enabled and llm_client is not None and policy_allows_llm:
-                try:
-                    semantic = check_semantic(
-                        generated_text,
-                        profile,
-                        bg_session,
-                        llm_client,
-                        report_id=report_id,
-                    )
-                except Exception as exc:  # pylint: disable=broad-except
-                    if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
-                        raise
-                    if not isinstance(exc, LLMNodeError):
-                        raise
-                    semantic_degraded = True
-                    logger.warning("async_worker semantic failed: %s", exc)
-                _heartbeat_report(bg_session, report_id)
-                try:
-                    forbid_sem = check_forbidden_semantic(
-                        generated_text,
-                        profile,
-                        bg_session,
-                        llm_client,
-                        report_id=report_id,
-                    )
-                except Exception as exc:  # pylint: disable=broad-except
-                    if isinstance(exc, LLMAccountingError) or is_llm_control_plane_failure(exc):
-                        raise
-                    if not isinstance(exc, LLMNodeError):
-                        raise
-                    semantic_degraded = True
-                    logger.warning("async_worker forbidden_semantic failed: %s", exc)
-                _heartbeat_report(bg_session, report_id)
-
-            all_forbid = list(forbid_local) + list(forbid_sem)
-            verdict = _compute_full_verdict(
-                quant=quant,
-                semantic=semantic,
-                plag=plag,
-                forbid=all_forbid,
-                semantic_degraded=semantic_degraded,
-            )
             finished_at = utcnow()
             completed = bg_session.execute(
                 update(StyleReferenceValidationReport)
@@ -355,6 +420,25 @@ def _heartbeat_report(session: Session, report_id: str) -> None:
             status_code=409,
         )
     session.commit()
+
+
+def _renew_validation_heartbeat(report_id: str) -> None:
+    """Renew a running validation lease in an independent transaction."""
+
+    with SessionLocal() as session:
+        touched = session.execute(
+            update(StyleReferenceValidationReport)
+            .where(
+                StyleReferenceValidationReport.report_id == report_id,
+                StyleReferenceValidationReport.status == "running",
+            )
+            .values(heartbeat_at=utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        if touched.rowcount == 1:
+            session.commit()
+        else:
+            session.rollback()
 
 
 def _mark_validation_failed(report_id: str, exc: Exception) -> None:

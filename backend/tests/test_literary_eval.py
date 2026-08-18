@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from novel_system.api.app import create_app
 from novel_system.db.models import LlmCall, LlmCallAttempt
 from novel_system.services.literary_eval import (
     BaselineLiteraryCaseGenerator,
@@ -798,6 +799,59 @@ def test_literary_eval_run_api_writes_latest_baseline_report(
     assert latest_response.status_code == 200
     assert latest_response.json()["data"]["report"]["suite_id"] == "literary_small_v1"
     assert latest_response.json()["data"]["report"]["summary"]["passed_count"] == report["summary"]["case_count"]
+
+
+def test_literary_eval_api_rejects_relative_custom_suite_path(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-secret")
+    response = client.post(
+        "/api/v1/literary-eval/run",
+        json={"mode": "baseline", "suite_path": "../../outside.yaml"},
+        headers={"X-Admin-Token": "admin-secret"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "LITERARY_EVAL_SUITE_PATH_INVALID"
+
+
+def test_literary_eval_api_rejects_suite_outside_configured_roots(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suite_path = tmp_path / "outside.yaml"
+    suite_path.write_text("suite_id: outside\n", encoding="utf-8")
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-secret")
+
+    response = client.post(
+        "/api/v1/literary-eval/run",
+        json={"mode": "baseline", "suite_path": str(suite_path)},
+        headers={"X-Admin-Token": "admin-secret"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "LITERARY_EVAL_SUITE_PATH_FORBIDDEN"
+
+
+def test_literary_eval_custom_suite_requires_admin_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    suite_path = tmp_path / "suite.yaml"
+    suite_path.write_text("suite_id: protected\n", encoding="utf-8")
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-secret")
+    monkeypatch.setenv("NOVEL_SYSTEM_LITERARY_EVAL_SUITE_ROOTS", str(tmp_path))
+
+    with TestClient(create_app()) as protected_client:
+        response = protected_client.post(
+            "/api/v1/literary-eval/run",
+            json={"mode": "baseline", "suite_path": str(suite_path)},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "ADMIN_TOKEN_REQUIRED"
 
 
 def test_literary_eval_run_api_allows_live_local_provider_without_api_key(

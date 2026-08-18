@@ -15,11 +15,11 @@ import httpx
 import yaml
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import func, select
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import LlmCall, OperationLog, SystemConfigSnapshot, SystemSecret, utcnow
 from novel_system.db.session import SessionLocal
+from novel_system.runtime_defaults import DEFAULT_LLM_TIMEOUT_SECONDS
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
 from novel_system.services.llm_client import (
@@ -66,7 +66,7 @@ LLM_PROVIDER_SECRET_PREFIX = "llm_provider"
 LLM_NODE_STATUSES = llm_node_statuses()
 # 探活调用向记账层申报的输出预算(详见 _probe_completion 内注释)
 PROBE_ACCOUNTING_OUTPUT_BUDGET = 1024
-# 「测试连接」的超时:与生成超时无关(生成默认不限时),探测必须有限且短。
+# 「测试连接」的超时与长文本生成上限无关，探测必须有限且短。
 PROVIDER_PROBE_TIMEOUT_SECONDS = 30.0
 
 
@@ -74,45 +74,22 @@ def repo_config_dir() -> Path:
     return Path(__file__).resolve().parents[4] / "config"
 
 
-_TRANSIENT_DB_RETRY_DELAYS = (0.05, 0.15)
-
-
 def _read_with_transient_retry(reader):
-    """运行时配置读取对 sqlite 瞬时锁重试两次再放弃。
+    from novel_system.services.config_snapshot_reader import read_with_transient_retry
 
-    这里吞错返回 None 意味着「视为未配置」——LLM 会被误判为未启用,缺路由
-    分支也会走错;一次写入高峰期的 database-is-locked 不该有这种副作用。
-    """
-    last_error: SQLAlchemyError | None = None
-    for delay in (*_TRANSIENT_DB_RETRY_DELAYS, None):
-        try:
-            return reader()
-        except SQLAlchemyError as exc:
-            last_error = exc
-            if delay is not None:
-                time.sleep(delay)
-    del last_error
-    return None
+    return read_with_transient_retry(reader, sleep=time.sleep)
 
 
 def load_active_config_payload(category: str) -> dict[str, Any] | None:
-    def _read():
-        with SessionLocal() as session:
-            snapshot = _active_snapshot(session, category)
-            if snapshot is None:
-                return None
-            return dict(snapshot.parsed_json or {})
+    from novel_system.services.config_snapshot_reader import load_active_config_payload as read_payload
 
-    return _read_with_transient_retry(_read)
+    return read_payload(category, session_factory=SessionLocal, sleep=time.sleep)
 
 
 def load_active_config_yaml(category: str) -> str | None:
-    def _read():
-        with SessionLocal() as session:
-            snapshot = _active_snapshot(session, category)
-            return snapshot.yaml_raw if snapshot is not None else None
+    from novel_system.services.config_snapshot_reader import load_active_config_yaml as read_yaml
 
-    return _read_with_transient_retry(_read)
+    return read_yaml(category, session_factory=SessionLocal, sleep=time.sleep)
 
 
 def apply_active_api_config(settings):
@@ -174,9 +151,9 @@ def load_llm_provider_runtime_configs() -> dict[str, ProviderRuntimeConfig]:
     llm_payload = _coerce_api_payload(payload) if payload else {}
     providers = _provider_payloads_from_llm(llm_payload)
     if not providers:
-        from novel_system.settings import get_settings
+        from novel_system.core_runtime import load_core_runtime
 
-        settings = get_settings(include_runtime_config=False)
+        settings = load_core_runtime()
         provider_id = settings.llm_provider
         providers = {
             provider_id: {
@@ -216,8 +193,17 @@ def load_llm_provider_runtime_configs() -> dict[str, ProviderRuntimeConfig]:
 
 
 class SystemConfigService:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, *, auto_commit: bool = True) -> None:
         self.session = session
+        self.auto_commit = auto_commit
+
+    def _finish_mutation(self) -> None:
+        """Commit direct calls, or only flush when an API wrapper owns commit."""
+
+        if self.auto_commit:
+            self.session.commit()
+        else:
+            self.session.flush()
 
     def overview(self) -> dict[str, Any]:
         categories = {}
@@ -272,7 +258,7 @@ class SystemConfigService:
         )
         self.session.add(snapshot)
         secret_payload = self._save_secrets(category=category, secrets=secrets or {}, actor_ref=actor_ref)
-        self.session.commit()
+        self._finish_mutation()
         return {
             "snapshot": _serialize_snapshot(snapshot),
             "secrets": secret_payload,
@@ -313,7 +299,7 @@ class SystemConfigService:
                 },
             )
         )
-        self.session.commit()
+        self._finish_mutation()
         return {"snapshot": _serialize_snapshot(snapshot)}
 
     def export_category(self, category: str) -> dict[str, Any]:
@@ -688,7 +674,7 @@ class SystemConfigService:
         llm_payload["providers"] = providers
         llm_payload["default_provider_id"] = llm_payload.get("default_provider_id") or provider_id
         llm_payload["enabled"] = True if provider["enabled"] else _bool_value(llm_payload.get("enabled", True))
-        llm_payload.setdefault("timeout_seconds", 0.0)
+        llm_payload.setdefault("timeout_seconds", DEFAULT_LLM_TIMEOUT_SECONDS)
         snapshot = self._store_config_snapshot(
             category="api",
             parsed={"llm": llm_payload},
@@ -717,7 +703,7 @@ class SystemConfigService:
             )
         provider_view = self._serialize_provider(provider_id, provider)
         provider_view["secret"] = secret_status
-        self.session.commit()
+        self._finish_mutation()
         return {
             "provider": provider_view,
             "snapshot": _serialize_snapshot(snapshot),
@@ -732,7 +718,7 @@ class SystemConfigService:
         llm_payload["providers"] = providers
         llm_payload["default_provider_id"] = provider_id
         llm_payload["enabled"] = _bool_value(llm_payload.get("enabled", True))
-        llm_payload.setdefault("timeout_seconds", 0.0)
+        llm_payload.setdefault("timeout_seconds", DEFAULT_LLM_TIMEOUT_SECONDS)
         snapshot = self._store_config_snapshot(
             category="api",
             parsed={"llm": llm_payload},
@@ -741,7 +727,7 @@ class SystemConfigService:
             active=True,
             actor_ref=actor_ref,
         )
-        self.session.commit()
+        self._finish_mutation()
         return {
             "default_provider_id": provider_id,
             "provider": self._serialize_provider(provider_id, providers[provider_id]),
@@ -763,7 +749,7 @@ class SystemConfigService:
             else:
                 llm_payload["default_provider_id"] = next_default
         llm_payload["enabled"] = _bool_value(llm_payload.get("enabled", True))
-        llm_payload.setdefault("timeout_seconds", 0.0)
+        llm_payload.setdefault("timeout_seconds", DEFAULT_LLM_TIMEOUT_SECONDS)
         snapshot = self._store_config_snapshot(
             category="api",
             parsed={"llm": llm_payload},
@@ -796,7 +782,7 @@ class SystemConfigService:
                 },
             )
         )
-        self.session.commit()
+        self._finish_mutation()
         return {
             "deleted_provider_id": provider_id,
             "default_provider_id": llm_payload.get("default_provider_id"),
@@ -826,7 +812,7 @@ class SystemConfigService:
             active=_bool_value(payload.get("activate", False)),
             actor_ref=actor_ref,
         )
-        self.session.commit()
+        self._finish_mutation()
         return {"snapshot": _serialize_snapshot(snapshot)}
 
     def sync_missing_llm_node_routes(self, *, payload: dict[str, Any], actor_ref: str) -> dict[str, Any]:
@@ -912,7 +898,7 @@ class SystemConfigService:
             active=activate,
             actor_ref=actor_ref,
         )
-        self.session.commit()
+        self._finish_mutation()
         return {
             "snapshot": _serialize_snapshot(snapshot),
             "synced_node_ids": synced_node_ids,
@@ -1103,7 +1089,7 @@ class SystemConfigService:
             active=activate,
             actor_ref=actor_ref,
         )
-        self.session.commit()
+        self._finish_mutation()
         return {
             "snapshot": _serialize_snapshot(snapshot),
             "applied": applied,
@@ -1290,9 +1276,9 @@ def validate_config(category: str, yaml_raw: str) -> tuple[dict[str, Any], dict[
 def default_config_payload(category: str) -> tuple[str, dict[str, Any], dict[str, Any], str]:
     _ensure_category(category)
     if category == "api":
-        from novel_system.settings import get_settings
+        from novel_system.core_runtime import load_core_runtime
 
-        settings = get_settings(include_runtime_config=False)
+        settings = load_core_runtime()
         parsed = {
             "llm": {
                 "provider": settings.llm_provider,
@@ -1382,26 +1368,36 @@ def _parse_yaml_mapping(yaml_raw: str) -> dict[str, Any]:
 
 
 def _api_timeout_seconds(llm: dict[str, Any]) -> float:
-    """解析 llm.timeout_seconds:缺省/0 = 不给生成设上限。
+    """解析 llm.timeout_seconds：缺省使用安全上限，显式 0 表示不限时。
 
-    这里不再默认 30s——那个值从来不是作者选的,却会截断慢模型的长任务。
-    负数仍然拒绝:那是笔误,不是"不限"的写法。
+    15 分钟不会重引入历史上的 30 秒误杀，同时避免静默上游永久占用 worker。
+    负数仍然拒绝：那是笔误，不是“不限”的写法。
     """
-    timeout_seconds = _float_value(llm.get("timeout_seconds", 0.0), "llm.timeout_seconds")
+    timeout_seconds = _float_value(
+        llm.get("timeout_seconds", DEFAULT_LLM_TIMEOUT_SECONDS),
+        "llm.timeout_seconds",
+    )
     if timeout_seconds < 0:
         raise ValueError("llm.timeout_seconds must not be negative (0 = no ceiling)")
     return timeout_seconds
 
 
-def _probe_timeout_seconds(value: Any, *, default_seconds: float) -> float:
+def _probe_timeout_seconds(
+    value: Any,
+    *,
+    default_seconds: float,
+    maximum_seconds: float = PROVIDER_PROBE_TIMEOUT_SECONDS,
+) -> float:
     """连通性探测始终有限:0(生成不限时)对"测试连接"没有意义,只会让按钮空转。
 
     探测问的是"这个地址通不通",不是"这个模型写得慢不慢"。
     """
     if value is None:
-        return default_seconds
+        return min(default_seconds, maximum_seconds)
     timeout_seconds = _float_value(value, "timeout_seconds")
-    return timeout_seconds if timeout_seconds > 0 else default_seconds
+    if timeout_seconds <= 0:
+        return min(default_seconds, maximum_seconds)
+    return min(timeout_seconds, maximum_seconds)
 
 
 def _validate_api_config(parsed: dict[str, Any]) -> dict[str, Any]:
@@ -1819,15 +1815,15 @@ def _mask_secret(value: str) -> str:
 
 
 def _admin_token() -> str | None:
-    from novel_system.settings import get_settings
+    from novel_system.core_runtime import load_core_runtime
 
-    return get_settings(include_runtime_config=False).admin_token
+    return load_core_runtime().admin_token
 
 
 def _config_secret() -> str | None:
-    from novel_system.settings import get_settings
+    from novel_system.core_runtime import load_core_runtime
 
-    return get_settings(include_runtime_config=False).config_secret
+    return load_core_runtime().config_secret
 
 
 def _requested_probe_model(payload: dict[str, Any]) -> str | None:

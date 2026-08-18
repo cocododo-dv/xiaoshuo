@@ -5,9 +5,9 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, event, pool
 
+from novel_system.database_runtime import load_database_runtime
 from novel_system.db.base import Base
 from novel_system.db import models  # noqa: F401
-from novel_system.settings import get_settings
 
 config = context.config
 
@@ -18,7 +18,13 @@ if config.config_file_name is not None:
     # events from the host process.
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# Migrations must be able to bootstrap an empty or historical database before
+# the runtime configuration tables exist. Only environment-level DB settings
+# are valid at this layer.
+config.set_main_option(
+    "sqlalchemy.url",
+    load_database_runtime().database_url,
+)
 
 target_metadata = Base.metadata
 

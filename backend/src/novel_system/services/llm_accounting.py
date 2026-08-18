@@ -23,6 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterRunJob, LlmCall, LlmCallAttempt, SceneRunState, utcnow
+from novel_system.llm_accounting_runtime import load_llm_accounting_runtime
 from novel_system.services.context_budget import estimate_tokens
 from novel_system.services.llm_audit import (
     audit_error_text,
@@ -39,7 +40,6 @@ from novel_system.services.llm_client import (
     OnlineAccountedExecution,
 )
 from novel_system.services.llm_providers.base import LLMDispatchKind
-from novel_system.settings import get_settings
 
 
 MESSAGE_TOKEN_OVERHEAD = 4
@@ -908,7 +908,7 @@ def _enforce_global_llm_quotas(
     and must not be reused as a singleton-wide spend counter.
     """
 
-    settings = get_settings(include_runtime_config=False)
+    settings = load_llm_accounting_runtime()
     if not _global_fences_armed(settings):
         return
     now = datetime.now(UTC)
@@ -1102,7 +1102,7 @@ def _reject_global_quota(
 def llm_quota_snapshot(session: Session, *, project_id: str | None = None) -> dict[str, Any]:
     """Return the same quota counters used by the pre-dispatch hard gate."""
 
-    settings = get_settings(include_runtime_config=False)
+    settings = load_llm_accounting_runtime()
     now = datetime.now(UTC)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -2448,7 +2448,7 @@ def recover_stale_legacy_reservations(
     else:
         current = current.astimezone(UTC)
     configured_ttl = (
-        get_settings(include_runtime_config=False).llm_reservation_recovery_ttl_seconds
+        load_llm_accounting_runtime().reservation_recovery_ttl_seconds
         if ttl_seconds is None
         else int(ttl_seconds)
     )

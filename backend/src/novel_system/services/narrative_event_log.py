@@ -30,6 +30,7 @@ from novel_system.db.models import (
     SceneCard,
 )
 from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
+from novel_system.services.narrative_contracts import INFORMATION_ASYMMETRY_FACT_KEYS
 from novel_system.services.narrative_position import NarrativePositionService
 from novel_system.services.errors import DomainError
 
@@ -676,7 +677,7 @@ class NarrativeEventLog:
             from novel_system.services.pov_knowledge_projection import (
                 PovKnowledgeProjection,
             )
-            return PovKnowledgeProjection(self.session).format_state_for_prompt(
+            return PovKnowledgeProjection(self.session, event_log=self).format_state_for_prompt(
                 project_id, scene_seq,
                 scene_id=scene_id,
                 pov_character_id=pov_character_id,
@@ -761,7 +762,7 @@ class NarrativeEventLog:
             from novel_system.services.pov_knowledge_projection import (
                 PovKnowledgeProjection,
             )
-            return PovKnowledgeProjection(self.session).information_asymmetry_digest(
+            return PovKnowledgeProjection(self.session, event_log=self).information_asymmetry_digest(
                 project_id, scene_seq, onstage_character_ids,
                 scene_id=scene_id,
                 pov_character_id=pov_character_id,
@@ -1071,14 +1072,6 @@ def _parse_llm_consistency_response(response: Any) -> list[ConsistencyViolation]
             source="llm_flag",
         ))
     return out
-
-INFORMATION_ASYMMETRY_FACT_KEYS = {
-    "secret_held_by",     # character holds a secret: value = secret description
-    "believes_false",     # character has a false belief: value = what they wrongly believe
-    "revealed_to",        # a secret was revealed to someone: value = who learned
-    "scene_revelation",   # what POV character learned in a scene
-}
-
 
 # ---------------------------------------------------------------------------
 # Hard-fact contradiction detection (blueprint §13 Step 6 / §17 Action B)

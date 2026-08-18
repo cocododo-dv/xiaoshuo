@@ -59,6 +59,7 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
     await settleActive();
 
     expect(mod.WsCatalog.ready()).toBe(false);
+    expect(mod.WsCatalog.get()).toBe(mod.WsCatalog.get());
     expect(mod.WsCatalog.set([])).toBe(false);
     expect(window.alert).toHaveBeenCalled();
 
@@ -235,9 +236,9 @@ describe("WsCatalog（目录乐观写 + 失败回滚）", () => {
 });
 
 describe("WsTrashStore（回收站乐观恢复 + 失败告警）", () => {
-  async function loadTrash() {
+  async function loadTrash(trash = [DEFAULT_TRASH]) {
     const client = await import("./lib/client.js");
-    installApiRouter(client, { trash: [DEFAULT_TRASH] });
+    installApiRouter(client, { trash });
     const mod = await import("./ws-catalog.jsx");
     await settleActive();
     await vi.waitFor(() => expect(mod.WsTrashStore.list().length).toBeGreaterThan(0), T);
@@ -270,6 +271,34 @@ describe("WsTrashStore（回收站乐观恢复 + 失败告警）", () => {
 
     // 失败兜底：restore().catch 调 window.alert（强可证伪）
     await vi.waitFor(() => expect(window.alert).toHaveBeenCalled(), T);
+  });
+
+  it("clear 子项优先清理，部分失败时返回 false 并明确告警", async () => {
+    const chapterTrash = {
+      ...DEFAULT_TRASH,
+      id: "chapter:c9",
+      kind: "chapter",
+      title: "被删的章节",
+    };
+    const workTrash = {
+      ...DEFAULT_TRASH,
+      id: "work:p9",
+      kind: "work",
+      title: "被删的作品",
+    };
+    const { mod, client } = await loadTrash([workTrash, chapterTrash, DEFAULT_TRASH]);
+    client.apiDelete.mockImplementation((url) => (
+      url.includes("chapter%3Ac9") ? Promise.reject(new Error("chapter busy")) : Promise.resolve({})
+    ));
+
+    await expect(mod.WsTrashStore.clear()).resolves.toBe(false);
+
+    expect(client.apiDelete.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v2/trash/scene%3As9",
+      "/api/v2/trash/chapter%3Ac9",
+      "/api/v2/trash/work%3Ap9",
+    ]);
+    expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("1 条仍需重试"));
   });
 });
 

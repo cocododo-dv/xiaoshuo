@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, Depends, Header, Request
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import optional_idempotent_response
 from novel_system.api.response import ok
 from novel_system.services.errors import DomainError
 from novel_system.services.literary_eval import (
@@ -21,17 +21,18 @@ from novel_system.services.literary_eval import (
 )
 from novel_system.services.llm_client import LLMClient, load_model_routing_config
 from novel_system.services.system_config import load_llm_provider_runtime_configs
+from novel_system.services.system_config import require_admin_token
 from novel_system.settings import get_settings
 
 router = APIRouter(tags=["literary_eval"])
 
 
 class LiteraryEvalRunRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     mode: Literal["baseline", "live"] = "baseline"
-    suite_path: str | None = None
-    model: str | None = None
+    suite_path: str | None = Field(default=None, max_length=2048)
+    model: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 @router.get("/api/v1/literary-eval/latest")
@@ -46,35 +47,115 @@ def latest_literary_eval_report(request: Request):
 def run_literary_eval(
     payload: LiteraryEvalRunRequest,
     request: Request,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
     session: Session = Depends(get_session),
 ):
-    suite_path = Path(payload.suite_path) if payload.suite_path else _default_suite_path()
-    suite = load_literary_eval_suite(suite_path)
-    eval_run_id = new_literary_eval_run_id()
-    generator = _generator_for_mode(
-        payload.mode,
-        model=payload.model,
-        session=session,
-        eval_run_id=eval_run_id,
+    body = payload.model_dump(mode="json")
+    if payload.suite_path is not None:
+        require_admin_token(
+            x_admin_token,
+            client_host=request.client.host if request.client is not None else None,
+        )
+
+    def run() -> dict:
+        suite_path = _resolve_suite_path(payload.suite_path)
+        suite = load_literary_eval_suite(suite_path)
+        eval_run_id = new_literary_eval_run_id()
+        generator = _generator_for_mode(
+            payload.mode,
+            model=payload.model,
+            session=session,
+            eval_run_id=eval_run_id,
+        )
+        report = LiteraryEvalRunner(
+            suite,
+            generator=generator,
+            eval_run_id=eval_run_id,
+        ).run(output_path=_latest_report_path())
+        report["mode"] = payload.mode
+        report["suite_path"] = str(suite_path)
+        _latest_report_path().write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"report": report}
+
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/literary-eval/run",
+        payload=body,
+        action=run,
     )
-    report = LiteraryEvalRunner(
-        suite,
-        generator=generator,
-        eval_run_id=eval_run_id,
-    ).run(output_path=_latest_report_path())
-    report["mode"] = payload.mode
-    report["suite_path"] = str(suite_path)
-    _latest_report_path().write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    return ok({"report": report}, req_id=getattr(request.state, "request_id", None))
 
 
 def _latest_report_path() -> Path:
-    configured = os.environ.get("NOVEL_SYSTEM_LITERARY_EVAL_REPORT_PATH")
-    return Path(configured) if configured else Path.cwd() / ".codex-run" / "literary_eval_latest.json"
+    return get_settings(include_runtime_config=False).literary_eval_report_path
 
 
 def _default_suite_path() -> Path:
     return Path(__file__).resolve().parents[5] / "config" / "evals" / "literary_small.yaml"
+
+
+def _resolve_suite_path(configured_path: str | None) -> Path:
+    if configured_path is None:
+        return _default_suite_path()
+
+    candidate = Path(configured_path).expanduser()
+    if not candidate.is_absolute():
+        raise DomainError(
+            "LITERARY_EVAL_SUITE_PATH_INVALID",
+            "custom literary eval suite paths must be absolute",
+            status_code=400,
+        )
+    if candidate.suffix.lower() not in {".yaml", ".yml"}:
+        raise DomainError(
+            "LITERARY_EVAL_SUITE_FORMAT_UNSUPPORTED",
+            "literary eval suites must use .yaml or .yml",
+            status_code=400,
+        )
+    try:
+        resolved = candidate.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise DomainError(
+            "LITERARY_EVAL_SUITE_NOT_FOUND",
+            "literary eval suite does not exist",
+            status_code=404,
+        ) from exc
+    except OSError as exc:
+        raise DomainError(
+            "LITERARY_EVAL_SUITE_PATH_INVALID",
+            "literary eval suite path could not be resolved",
+            status_code=400,
+        ) from exc
+    if not resolved.is_file():
+        raise DomainError(
+            "LITERARY_EVAL_SUITE_PATH_INVALID",
+            "literary eval suite path must point to a regular file",
+            status_code=400,
+        )
+
+    roots: list[Path] = []
+    for configured_root in get_settings(
+        include_runtime_config=False
+    ).literary_eval_suite_roots:
+        try:
+            root = configured_root.expanduser().resolve(strict=True)
+        except (FileNotFoundError, OSError):
+            continue
+        if root.is_dir():
+            roots.append(root)
+    if not roots:
+        raise DomainError(
+            "LITERARY_EVAL_SUITE_ROOT_INVALID",
+            "no configured literary eval suite root is available",
+            status_code=503,
+        )
+    if not any(resolved.is_relative_to(root) for root in roots):
+        raise DomainError(
+            "LITERARY_EVAL_SUITE_PATH_FORBIDDEN",
+            "literary eval suite is outside the configured roots",
+            status_code=403,
+        )
+    return resolved
 
 
 def _generator_for_mode(

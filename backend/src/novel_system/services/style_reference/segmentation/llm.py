@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -31,12 +31,10 @@ from novel_system.services.style_reference.untrusted_data import (
     render_untrusted_system_prompt,
     render_untrusted_user_prompt,
 )
-
-if TYPE_CHECKING:
-    from novel_system.services.style_reference.segmentation import (
-        ParagraphClassification,
-        SegmentationResult,
-    )
+from novel_system.services.style_reference.segmentation.types import (
+    ParagraphClassification,
+    SegmentationResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,11 +65,6 @@ def classify_with_llm(
     scope_id: str,
 ) -> SegmentationResult:
     """锚定集校准的 LLM 段落分类。"""
-    from novel_system.services.style_reference.segmentation import (
-        ParagraphClassification,
-        SegmentationResult,
-    )
-
     total = len(paragraphs)
     anchor_size = min(ANCHOR_SIZE, total)
     anchor_paras = paragraphs[:anchor_size]

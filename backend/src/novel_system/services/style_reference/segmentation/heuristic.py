@@ -10,13 +10,10 @@ NOVEL_SYSTEM_LLM_ENABLED=false 默认下的 fallback 路径。8 类 ParagraphTyp
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from novel_system.services.style_reference.segmentation import (
-        ParagraphClassification,
-        SegmentationResult,
-    )
+from novel_system.services.style_reference.segmentation.types import (
+    ParagraphClassification,
+    SegmentationResult,
+)
 
 # 启发式标记词
 _DIALOGUE_QUOTES = ("“", "”", '"', "「", "」", "『", "』")
@@ -72,12 +69,6 @@ def classify_heuristic(
     paragraphs: list[tuple[int, int, str]],
 ) -> SegmentationResult:
     """对全部段执行启发式分类。"""
-    # 避免循环 import
-    from novel_system.services.style_reference.segmentation import (
-        ParagraphClassification,
-        SegmentationResult,
-    )
-
     classifications: list[ParagraphClassification] = []
     for idx, (_start, _end, body) in enumerate(paragraphs):
         ptype, conf = _heuristic_classify_one(body)

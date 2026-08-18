@@ -12,6 +12,7 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.aggregator import Aggregator
+from novel_system.services.catalog import CatalogService
 from novel_system.services.errors import DomainError
 from novel_system.services.narrative_event_log import NarrativeEventLog
 
@@ -121,9 +122,10 @@ def test_chapter_reorder_changes_dynamic_replay_without_rewriting_events(session
         for event in (first, second)
     }
 
-    session.get(ChapterGoal, "NO_CH1").display_order = 2
-    session.get(ChapterGoal, "NO_CH2").display_order = 1
-    session.flush()
+    # Reorder through the catalog boundary.  The service uses a collision-free
+    # two-phase assignment because SQLite cannot defer the active-order unique
+    # index while two rows swap positions.
+    CatalogService(session).reorder_chapters(PROJECT, ["NO_CH2", "NO_CH1"])
     session.expire_all()
 
     # CH2 is now narrated first and CH1 last, so CH1's fact becomes current.

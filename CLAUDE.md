@@ -14,12 +14,14 @@ Single-machine, single-author long-form novel writing system (Chinese-language p
 - Restart full stack: `.\restart-dev.cmd`
 - Reset runtime DB/artifacts but keep LLM config: `.\reset-runtime-keep-llm.cmd` (→ `scripts/reset_runtime_keep_llm.ps1 -StopServices`; distinct from the Python `reset_author_state` tool below)
 
-On Linux use the shell equivalents: `scripts/start-all-linux.sh` / `scripts/stop-all-linux.sh` (one-shot backend + React frontend, health-probed, logs + pidfiles under `.codex-run/`), or the per-leg `scripts/start-backend-linux.sh` / `scripts/start-frontend-linux.sh` (all safe to re-run — each leg stops its own previous instance first; shared helpers in `scripts/lib/dev-lifecycle.sh`). The backend leg runs `alembic upgrade head` with **`backend/.venv/bin/python`** (not system python) and forces `NOVEL_SYSTEM_VECTOR_BACKEND=memory`; the frontend leg does `nvm use 16` and preloads `frontend-react/crypto-polyfill.cjs` via `NODE_OPTIONS --require` (the newest Node this CentOS 7 / glibc 2.17 host can run is 16, which lacks the global WebCrypto Vite 6 needs). CI (`.github/workflows/ci.yml`, Ubuntu + Node 22) runs the raw commands instead (`cd backend && python -m alembic upgrade head` then `python -m uvicorn novel_system.api.app:create_app --factory --reload --app-dir src`; `cd frontend-react && npm install && npm run dev`).
+On Linux use the shell equivalents: `scripts/start-all-linux.sh` / `scripts/stop-all-linux.sh` (one-shot backend + React frontend, health-probed, logs + pidfiles under `.codex-run/`), or the per-leg `scripts/start-backend-linux.sh` / `scripts/start-frontend-linux.sh` (all safe to re-run — each leg stops its own previous instance first; shared helpers in `scripts/lib/dev-lifecycle.sh`). The backend leg runs `alembic upgrade head` with **`backend/.venv/bin/python`** (not system python) and forces `NOVEL_SYSTEM_VECTOR_BACKEND=memory`; the frontend leg does `nvm use 16` and preloads `frontend-react/crypto-polyfill.cjs` via `NODE_OPTIONS --require` (the newest Node this CentOS 7 / glibc 2.17 host can run is 16, which lacks the global WebCrypto Vite 6 needs). CI (`.github/workflows/ci.yml`, Ubuntu + Node 22) installs locked frontend dependencies with `npm ci`, runs unit/build gates, and uses `scripts/verify_react_e2e.sh` for an isolated migrated backend + React browser contract lane.
 
 Default addresses: the **React frontend** `http://127.0.0.1:5174` (what `start-dev.cmd` auto-opens), the backend `http://127.0.0.1:8000`, and the **legacy Vue frontend** `http://127.0.0.1:5173` (**no longer started by default** — pass `-IncludeLegacyVue` to `start-dev.cmd`/`dev.ps1` to also start it). `start-dev.cmd` (→ `scripts/dev.ps1`) brings up the backend + React frontend (plus the legacy Vue frontend only when `-IncludeLegacyVue` is passed) in one shot: it runs `alembic upgrade head` (**no demo seed** — the production launcher never injects demo works), forces `NOVEL_SYSTEM_VECTOR_BACKEND=memory`, auto-generates a `NOVEL_SYSTEM_CONFIG_SECRET`, and writes pid/url files under `.codex-run/` (`backend.url`, `frontend.url`, `frontend-react.url`). If port 8000 is busy it scans upward and records the chosen URL in `.codex-run/backend.url`. Backend readiness is probed at `GET /api/v1/chapters` (a 90s timeout — if migrations are stale this probe 500s and the browser never opens). The backend also exposes `GET /live` (process liveness only) and `GET /ready` (adds DB connectivity + migration revision + required-structure checks) — deployment probes should use their distinct semantics.
 
 ### Backend (Python 3.12 / FastAPI)
 Located in `backend/`. **On Windows, do not activate a venv** — run backend `pytest` / `alembic` directly with the Anaconda Python on `PATH`, from inside `backend/`. The `.venv` / `.venv-wsl` dirs, when present, are Linux/WSL venvs (no `Scripts\Activate.ps1`) and are only consumed by the WSL/release lanes (e.g. `scripts/verify_wsl_strict.sh`). `pyproject.toml` sets `pythonpath=["src"]` and `testpaths=["tests"]`, so pytest/alembic must run **from `backend/`** with paths relative to it — and the PowerShell working dir resets to repo root between calls, so always `cd backend` in the same command.
+
+CI installs `requirements.lock` with `pip --require-hashes`; `uv.lock` is the canonical cross-platform resolution. After changing `pyproject.toml`, run `uv lock --python 3.12` and then `uv export --locked --all-extras --no-emit-project --format requirements-txt --output-file requirements.lock`, and review both files. The root is not an npm package; only `frontend/` and `frontend-react/` own Node lockfiles.
 
 ```powershell
 cd backend
@@ -37,9 +39,9 @@ The other declared marker, `consistency_validation` (blueprint §17 Action B rec
 
 Full Windows CI lane: `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1` (pytest `-m "not chroma_integration"` + `node --test scripts/tests/*.cjs` governance-QA script contract tests from the repo root + the **React mainline** `frontend-react` `npm test` (vitest) + build; the legacy Vue `npm test`/build run only with `-IncludeLegacyVue`). Full release lane (Windows CI → **React mainline contract E2E** (`scripts/verify_react_e2e.ps1`, see below) → WSL strict Chroma; the seeded Vue Playwright E2E runs only with `-IncludeLegacyVue`): `scripts/verify_release.ps1`.
 
-GitHub Actions (`.github/workflows/ci.yml`) gates three jobs on every PR/push: **Backend Tests** (pytest `-m "not chroma_integration"`), **Frontend Tests (React mainline)** (`frontend-react`: `npm ci` → vitest → build), and **Legacy Vue Frontend Tests** (`frontend`). The React mainline job is the authoritative frontend gate; the heavy lanes that need extra infra (the React contract E2E's seeded `:8009` backend, and WSL strict Chroma) stay local in `verify_release.ps1`, mirroring how the Chroma lane has always been local-only.
+GitHub Actions (`.github/workflows/ci.yml`) gates four jobs on every PR/push: **Backend Tests** (pytest `-m "not chroma_integration"`), **Frontend Tests (React mainline)** (`frontend-react`: `npm ci` → vitest → build), **React Contract E2E** (fresh migration + isolated seeded backend + real Chromium), and **Legacy Vue Frontend Tests** (`frontend`). WSL strict Chroma remains local in `verify_release.ps1`; React contract E2E runs both in CI and in that local release lane.
 
-**Schema-drift guard** (`backend/tests/test_metadata_isolation.py::test_migration_built_schema_matches_orm_models`) — the most important non-obvious gotcha. The test suite builds the schema via `Base.metadata.create_all`, but dev/prod build it via Alembic `upgrade head` (`auto_create_tables` defaults to `False`). This test builds it **both** ways and diffs tables/columns/named-indexes, because an ORM model that gains a column/index **without a matching migration** still passes every test yet 500s at runtime (`OperationalError: no such column`) — which silently kills `start-dev` (its health probe hits `GET /api/v1/chapters`). If it fails: write the missing migration, **or** declare the missing index in the model's `__table_args__`. Run: `cd backend; python -m pytest tests/test_metadata_isolation.py`.
+**Schema-drift guards** (`backend/tests/test_metadata_isolation.py`) — the most important non-obvious gotcha. Historical Alembic revisions are frozen explicit DDL and may not import the live application ORM. The test suite builds its schema via `Base.metadata.create_all`, while dev/prod use Alembic `upgrade head` (`auto_create_tables` defaults to `False`); the guard builds it **both** ways and diffs tables/columns/named-indexes. An ORM change without a matching migration must fail here instead of surfacing later as `OperationalError: no such column`. If it fails: write the missing migration, or declare a migration-only index in the model's `__table_args__`. Run: `cd backend; python -m pytest tests/test_metadata_isolation.py`.
 
 ### Frontend (React, primary) — `frontend-react/`
 The production frontend is the maintained Vite + React 18 「潮汐工作台」 in
@@ -49,7 +51,7 @@ is an explicit legacy compatibility lane.
 
 ```powershell
 cd frontend-react
-npm install        # first time
+npm ci             # exact versions from package-lock.json
 npm run dev        # http://127.0.0.1:5174
 npm run build
 ```
@@ -83,13 +85,13 @@ Architecture rules:
   project ids `work-a`/`work-b` — keep these literal ids) + `backend/tests/fixture_runtime.py`
   (`seed_runtime_fixture`, also seeds the `PRJ_DEMO_CH001` runtime fixture). These are neutral
   placeholder works for tests only — the product runtime never seeds them.
-- Contract-level E2E: `cd frontend; node ../frontend-react/scripts/run-smokes.mjs [BASE] [API]`
-  (runs `smoke-phase2..7` + `smoke-ai-settings`, reseeding via `python tests/fixture_runtime.py` before each suite; uses
-  frontend/'s Playwright install). Defaults are `BASE=http://127.0.0.1:5174/` and a **separate
+- Contract-level E2E: `cd frontend-react; node scripts/run-smokes.mjs [BASE] [API]`
+  (runs the acceptance suite, `smoke-phase2..7`, `smoke-ai-settings`, and `qa2-ui`, reseeding via `python tests/fixture_runtime.py` before each suite; uses
+  frontend-react's own locked Playwright install). Defaults are `BASE=http://127.0.0.1:5174/` and a **separate
   seeded backend** `API=http://127.0.0.1:8009` — not the dev `:8000`. `scripts/verify_react_e2e.ps1`
   now orchestrates this end-to-end (isolated e2e sqlite under `.codex-run/e2e/`, seeded `:8009`
-  backend + React `:5174`, full process-tree teardown) and is wired into `verify_release.ps1` as a
-  default gate. **Gotcha**: a fresh `alembic upgrade head` aborts on migration `20260523_0036`'s
+  backend + React `:5174`, full process-tree teardown) and is wired into both GitHub Actions
+  (`scripts/verify_react_e2e.sh`) and `verify_release.ps1` as a default gate. **Gotcha**: a fresh `alembic upgrade head` aborts on migration `20260523_0036`'s
   legacy-backup guard unless `backups/style_reference_legacy_*.json` exists; the e2e lane satisfies
   it via that migration's `STYLE_REFERENCE_REPO_ROOT` test override pointed at a placeholder backup.
 - Current user and engineering documentation is indexed in `docs/README.md`; dated plans and
@@ -100,7 +102,7 @@ Located in `frontend/`.
 
 ```powershell
 cd frontend
-npm install          # first time
+npm ci               # exact versions from package-lock.json
 npm run dev          # dev server
 npm run test         # vitest unit tests + smoke.mjs
 npm run test:e2e     # Playwright E2E

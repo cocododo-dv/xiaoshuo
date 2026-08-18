@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -25,30 +24,12 @@ from novel_system.services.style_reference.segmentation.llm import (
     SegmentationLLMError,
     classify_with_llm,
 )
+from novel_system.services.style_reference.segmentation.types import (
+    ParagraphClassification,
+    SegmentationResult,
+)
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ParagraphClassification:
-    """单段分类结果。"""
-
-    paragraph_index: int
-    paragraph_type: str  # ParagraphType.value
-    confidence: float
-    classifier_confidence_level: str = "medium"  # high / medium / low
-
-
-@dataclass
-class SegmentationResult:
-    """段落分类全集结果 + 校准元数据。
-
-    用于落盘到 `style_reference_books.stats_json.classifier_calibration` 与
-    `style_reference_paragraphs.paragraph_type`。
-    """
-
-    classifications: list[ParagraphClassification]
-    calibration: dict[str, Any] = field(default_factory=dict)
 
 
 def classify_paragraphs(

@@ -38,9 +38,5 @@ const ARR_THREAD_ROLE = {
 /* 已回收（跨章的历史场景版本）：由后端/本地真实操作填充 */
 const ARR_ARCHIVED = [];
 
-Object.assign(window, {
-  ARR_ACTS, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE, ARR_ARCHIVED,
-});
-
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { ARR_ACTS, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE, ARR_ARCHIVED };

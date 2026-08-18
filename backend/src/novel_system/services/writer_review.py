@@ -31,39 +31,9 @@ from novel_system.services.llm_task_runner import (
     current_llm_execution_id,
 )
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 WRITER_RUBRIC_ID = "drama_effectiveness_v1"
-WRITER_BRIEF_SCHEMA_VERSION = "writer_brief_v2"
-
-CHAPTER_WRITER_BRIEF_FIELDS: tuple[tuple[str, str], ...] = (
-    ("core_promise", "核心承诺"),
-    ("plot_movement", "主线推进"),
-    ("character_shift", "人物变化"),
-    ("chapter_question", "章节问题"),
-    ("ending_aftertaste", "结尾余味"),
-    ("chapter_promise", "chapter promise"),
-    ("escalation_path", "escalation path"),
-    ("relationship_delta", "relationship delta"),
-    ("reveal_or_reversal", "reveal or reversal"),
-    ("payoff_target", "payoff target"),
-    ("ending_question", "ending question"),
-)
-
-SCENE_WRITER_BRIEF_FIELDS: tuple[tuple[str, str], ...] = (
-    ("character_desire", "人物欲望"),
-    ("obstacle", "阻碍"),
-    ("stakes", "风险/代价"),
-    ("secret_or_misunderstanding", "秘密/误解"),
-    ("subtext", "潜台词"),
-    ("irreversible_change", "不可逆变化"),
-    ("reader_question", "读者问题"),
-    ("choice_under_pressure", "choice under pressure"),
-    ("power_shift", "power shift"),
-    ("new_information", "new information"),
-    ("emotional_turn", "emotional turn"),
-    ("image_anchor", "image anchor"),
-    ("reader_aftertaste", "reader aftertaste"),
-)
 
 WRITER_RUBRIC_DIMENSIONS: tuple[str, ...] = (
     "desire",
@@ -129,22 +99,6 @@ WRITER_REVIEW_LENSES: tuple[WriterReviewLens, ...] = (
         focus_dimensions=("reader_hook", "stakes", "ending_drive", "information_rhythm"),
     ),
 )
-
-
-def empty_chapter_writer_brief() -> dict[str, str]:
-    return {"schema_version": WRITER_BRIEF_SCHEMA_VERSION, **{key: "" for key, _label in CHAPTER_WRITER_BRIEF_FIELDS}}
-
-
-def empty_scene_writer_brief() -> dict[str, str]:
-    return {"schema_version": WRITER_BRIEF_SCHEMA_VERSION, **{key: "" for key, _label in SCENE_WRITER_BRIEF_FIELDS}}
-
-
-def normalize_chapter_writer_brief(value: Any) -> dict[str, str]:
-    return _normalize_writer_brief(value, CHAPTER_WRITER_BRIEF_FIELDS, "chapter")
-
-
-def normalize_scene_writer_brief(value: Any) -> dict[str, str]:
-    return _normalize_writer_brief(value, SCENE_WRITER_BRIEF_FIELDS, "scene")
 
 
 class WriterReviewService:
@@ -331,6 +285,80 @@ class WriterReviewService:
     def chapter_summary(self, chapter_id: str) -> dict[str, Any]:
         return self._review_payload("chapter", chapter_id)
 
+    def summaries(self, object_type: str, object_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Load review summaries for one object type in a bounded query set."""
+
+        ordered_ids = list(dict.fromkeys(object_id for object_id in object_ids if object_id))
+        if not ordered_ids:
+            return {}
+
+        latest_rows = self.session.execute(
+            select(WriterEvaluation)
+            .where(
+                WriterEvaluation.object_type == object_type,
+                WriterEvaluation.object_id.in_(ordered_ids),
+                WriterEvaluation.parent_evaluation_id.is_(None),
+            )
+            .order_by(
+                WriterEvaluation.object_id.asc(),
+                WriterEvaluation.created_at.desc(),
+                WriterEvaluation.evaluation_id.desc(),
+            )
+        ).scalars().all()
+        latest_by_object: dict[str, WriterEvaluation] = {}
+        for row in latest_rows:
+            latest_by_object.setdefault(row.object_id, row)
+
+        candidate_rows = self.session.execute(
+            select(RevisionCandidate)
+            .where(
+                RevisionCandidate.object_type == object_type,
+                RevisionCandidate.object_id.in_(ordered_ids),
+            )
+            .order_by(
+                RevisionCandidate.object_id.asc(),
+                RevisionCandidate.created_at.desc(),
+                RevisionCandidate.revision_id.desc(),
+            )
+        ).scalars().all()
+        candidates_by_object: dict[str, list[RevisionCandidate]] = {
+            object_id: [] for object_id in ordered_ids
+        }
+        for row in candidate_rows:
+            candidates_by_object.setdefault(row.object_id, []).append(row)
+
+        lens_by_parent: dict[str, list[WriterEvaluation]] = {}
+        parent_ids = [row.evaluation_id for row in latest_by_object.values()]
+        if parent_ids:
+            lens_rows = self.session.execute(
+                select(WriterEvaluation)
+                .where(WriterEvaluation.parent_evaluation_id.in_(parent_ids))
+                .order_by(
+                    WriterEvaluation.parent_evaluation_id.asc(),
+                    WriterEvaluation.lens.asc(),
+                    WriterEvaluation.evaluation_id.asc(),
+                )
+            ).scalars().all()
+            for row in lens_rows:
+                if row.parent_evaluation_id:
+                    lens_by_parent.setdefault(row.parent_evaluation_id, []).append(row)
+
+        return {
+            object_id: self._review_payload_from_rows(
+                object_type=object_type,
+                object_id=object_id,
+                latest=latest_by_object.get(object_id),
+                candidates=candidates_by_object.get(object_id, []),
+                lens_rows=lens_by_parent.get(
+                    latest_by_object[object_id].evaluation_id,
+                    [],
+                )
+                if object_id in latest_by_object
+                else [],
+            )
+            for object_id in ordered_ids
+        }
+
     @staticmethod
     def serialize_evaluation(evaluation: WriterEvaluation | None) -> dict[str, Any] | None:
         if evaluation is None:
@@ -387,29 +415,19 @@ class WriterReviewService:
         }
 
     def _review_payload(self, object_type: str, object_id: str) -> dict[str, Any]:
-        latest = self.session.execute(
-            select(WriterEvaluation)
-            .where(
-                WriterEvaluation.object_type == object_type,
-                WriterEvaluation.object_id == object_id,
-                WriterEvaluation.parent_evaluation_id.is_(None),
-            )
-            .order_by(WriterEvaluation.created_at.desc(), WriterEvaluation.evaluation_id.desc())
-        ).scalars().first()
-        candidates = self.session.execute(
-            select(RevisionCandidate)
-            .where(RevisionCandidate.object_type == object_type, RevisionCandidate.object_id == object_id)
-            .order_by(RevisionCandidate.created_at.desc(), RevisionCandidate.revision_id.desc())
-        ).scalars().all()
+        return self.summaries(object_type, [object_id])[object_id]
+
+    def _review_payload_from_rows(
+        self,
+        *,
+        object_type: str,
+        object_id: str,
+        latest: WriterEvaluation | None,
+        candidates: list[RevisionCandidate],
+        lens_rows: list[WriterEvaluation],
+    ) -> dict[str, Any]:
         serialized_latest = self.serialize_evaluation(latest)
-        lens_evaluations: list[dict[str, Any]] = []
-        if latest is not None:
-            lens_rows = self.session.execute(
-                select(WriterEvaluation)
-                .where(WriterEvaluation.parent_evaluation_id == latest.evaluation_id)
-                .order_by(WriterEvaluation.lens.asc(), WriterEvaluation.evaluation_id.asc())
-            ).scalars().all()
-            lens_evaluations = [item for item in (self.serialize_evaluation(row) for row in lens_rows) if item]
+        lens_evaluations = [item for item in (self.serialize_evaluation(row) for row in lens_rows) if item]
         return {
             "status": "reviewed" if latest else "not_run",
             "object_type": object_type,
@@ -1118,10 +1136,6 @@ class WriterReviewPayloadError(ValueError):
     pass
 
 
-def writer_brief_has_content(brief: dict[str, Any]) -> bool:
-    return any(str(value or "").strip() for key, value in brief.items() if key != "schema_version")
-
-
 def _finding_with_lens(finding: dict[str, Any], lens: str) -> dict[str, Any]:
     return {**finding, "lens": finding.get("lens") or lens}
 
@@ -1506,31 +1520,6 @@ def _string_list(value: Any) -> list[str]:
         if isinstance(item, str) and item.strip():
             items.append(item.strip())
     return items
-
-
-def _normalize_writer_brief(value: Any, fields: tuple[tuple[str, str], ...], object_type: str) -> dict[str, str]:
-    if value is None:
-        value = {}
-    if not isinstance(value, dict):
-        raise DomainError(
-            "WRITER_BRIEF_INVALID",
-            f"{object_type} writer_brief_json must be an object",
-            status_code=400,
-        )
-    normalized: dict[str, str] = {"schema_version": WRITER_BRIEF_SCHEMA_VERSION}
-    for key, _label in fields:
-        raw = value.get(key, "")
-        if raw is None:
-            normalized[key] = ""
-        elif isinstance(raw, (str, int, float, bool)):
-            normalized[key] = str(raw).strip()
-        else:
-            raise DomainError(
-                "WRITER_BRIEF_INVALID",
-                f"{object_type} writer brief field {key} must be a scalar value",
-                status_code=400,
-            )
-    return normalized
 
 
 def _dimension_score(values: list[Any], source_text: str) -> float:

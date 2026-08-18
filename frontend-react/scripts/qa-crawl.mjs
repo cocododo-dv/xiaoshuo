@@ -1,12 +1,12 @@
 // QA Round 1 crawler — 全视图 × 多项目 健康巡检。
 // 捕获：console error / pageerror / 4xx-5xx 网络失败 / 可见错误态 / 空白渲染 + 截图。
-// 运行（从 frontend/ 复用 playwright）：
+// 运行（Playwright 由 frontend-react 自己锁定）：
 //   cd frontend && node ../frontend-react/scripts/qa-crawl.mjs [BASE] [API] [OUTDIR]
 import path from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 
-const require = createRequire(path.join(process.cwd(), "package.json"));
+const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
 const BASE = process.argv[2] || "http://127.0.0.1:5174/";

@@ -3,7 +3,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
-const require = createRequire(path.join(process.cwd(), "package.json"));
+const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
 const BASE = process.argv[2] || "http://127.0.0.1:5174/";
@@ -87,24 +87,34 @@ chk("tide 构思页渲染(含物化/章节字样)", /整理为章节结构|章�
 await shot("q3-tide-construct");
 
 // ---- AUTHOR-04 (P2 回归)：单章项目故事弧线无 SVG 报错 ----
-// 该回归需真实单章项目 PRJ_1C88DEFF3D（dev :8000 有）。seeded 门禁后端(:8009) 只有 tide/salt，
+// 从当前后端发现单章项目；隔离门禁夹具中的 PRJ_DEMO_CH001 满足该契约。
 // 项目不在则诚实跳过——绝不在错误项目上凑一个空过的"通过"。
 ctx = "AUTHOR-04";
-const arcProject = "PRJ_1C88DEFF3D";
-let arcProjectExists = false;
+let arcProject = "";
 try {
-  const resp = await page.request.get(`${API}/api/v2/projects`);
+  const resp = await page.request.get(`${API}/api/v1/projects`);
   if (resp.ok()) {
     const body = await resp.json();
     let items = [];
     if (body && body.data && Array.isArray(body.data.items)) items = body.data.items;
     else if (body && Array.isArray(body.items)) items = body.items;
     else if (body && Array.isArray(body.data)) items = body.data;
-    arcProjectExists = items.some(p => (p.project_id || p.id) === arcProject);
+    for (const project of items) {
+      const projectId = project.project_id || project.id;
+      if (!projectId) continue;
+      const catalogResp = await page.request.get(`${API}/api/v2/projects/${encodeURIComponent(projectId)}/catalog`);
+      if (!catalogResp.ok()) continue;
+      const catalogBody = await catalogResp.json();
+      const catalog = catalogBody?.data || catalogBody;
+      if (Array.isArray(catalog?.chapters) && catalog.chapters.length === 1) {
+        arcProject = projectId;
+        break;
+      }
+    }
   }
 } catch (e) { /* 探测失败按不存在处理 → 跳过，不误判通过 */ }
-if (!arcProjectExists) {
-  skip("单章项目故事弧线无 SVG path 报错(P2 回归)", `${arcProject} 不在当前后端`);
+if (!arcProject) {
+  skip("单章项目故事弧线无 SVG path 报错(P2 回归)", "当前后端不存在单章项目");
 } else {
   consoleErrs.length = 0;
   await go(arcProject, "author");

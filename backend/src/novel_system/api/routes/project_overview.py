@@ -5,12 +5,12 @@ flow-status = 流程视图聚合；writing-stats = 今日字数/streak（D2 服�
 """
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.project_requests import ProjectProfileUpdateRequest
 from novel_system.api.response import ok
 from novel_system.services.project_overview import ProjectOverviewService
 from novel_system.services.projects import ProjectService
@@ -21,13 +21,19 @@ router = APIRouter(tags=["project-overview"])
 @router.patch("/api/v2/projects/{project_id}/profile")
 def update_project_profile(
     project_id: str,
-    payload: dict[str, Any],
+    payload: ProjectProfileUpdateRequest,
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = ProjectService(session).update_profile(project_id, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True)
+    return optional_idempotent_response(
+        request,
+        session,
+        method="PATCH",
+        path_template="/api/v2/projects/{project_id}/profile",
+        payload={"project_id": project_id, "body": body},
+        action=lambda: ProjectService(session).update_profile(project_id, body),
+    )
 
 
 @router.get("/api/v2/projects/{project_id}/writing-stats")

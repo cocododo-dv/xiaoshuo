@@ -392,9 +392,11 @@ def test_workbench_exposes_projection(client, session):
 
     _create_chapter(client, "chapter_as_wb")
     _create_scene(client, "scene_as_wb", chapter_id="chapter_as_wb", scene_seq=1)
+    state_count_before = session.query(SceneRunState).count()
     response = client.get("/api/v1/scenes/scene_as_wb/workbench")
     assert response.status_code == 200
     data = response.json()["data"]
     assert "author_state" in data
     for field in CONTRACT_FIELDS:
         assert field in data["author_state"]
+    assert session.query(SceneRunState).count() == state_count_before

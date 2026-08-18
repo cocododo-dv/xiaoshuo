@@ -20,6 +20,13 @@ QUALITY_EVIDENCE_REVISION = "20260715_0070"
 BACKGROUND_RECOVERY_REVISION = "20260716_0071"
 AUTHOR_PREFERENCE_CONSTRAINT_REVISION = "20260716_0072"
 LLM_AUDIT_PRIVACY_REVISION = "20260716_0073"
+REAL_ONLY_EVIDENCE_REVISION = "20260717_0075"
+SNOWFLAKE_CHAPTER_REVISION = "20260725_0076"
+MERGED_HISTORY_REVISION = "20260802_0077"
+CORE_INTEGRITY_REVISION = "20260802_0078"
+SCENE_AUTHOR_NOTES_REVISION = "20260802_0079"
+SCENE_DEEP_REVIEW_REVISION = "20260802_0080"
+CURRENT_SCHEMA_REVISION = "20260805_0081"
 
 
 def _migrate_database(
@@ -663,11 +670,22 @@ def test_revision_aliases_select_the_canonical_schema_profiles(tmp_path):
         ("0071", BACKGROUND_RECOVERY_REVISION),
         ("0072", AUTHOR_PREFERENCE_CONSTRAINT_REVISION),
         ("0073", LLM_AUDIT_PRIVACY_REVISION),
+        ("0076", SNOWFLAKE_CHAPTER_REVISION),
+        ("0077", MERGED_HISTORY_REVISION),
+        ("0078", CORE_INTEGRITY_REVISION),
+        ("0079", SCENE_AUTHOR_NOTES_REVISION),
+        ("0080", SCENE_DEEP_REVIEW_REVISION),
+        ("0081", CURRENT_SCHEMA_REVISION),
     ],
 )
 def test_new_revision_aliases_resolve_to_canonical_revisions(alias, canonical):
     assert database_preflight.REVISION_ALIASES[alias] == canonical
     assert database_preflight.REVISION_ALIASES[canonical] == canonical
+
+
+def test_duplicate_branch_ordinals_do_not_have_ambiguous_short_aliases():
+    assert "0074" not in database_preflight.REVISION_ALIASES
+    assert "0075" not in database_preflight.REVISION_ALIASES
 
 
 def test_fresh_0069_database_passes_head_preflight(tmp_path, monkeypatch):
@@ -732,6 +750,26 @@ def test_fresh_0073_database_passes_llm_audit_privacy_preflight(
     assert result["missing_columns"] == {}
     assert result["schema_errors"] == []
     assert result["foreign_keys"] == 1
+    assert result["ready"] is True, result
+
+
+def test_fresh_current_head_passes_complete_preflight(tmp_path, monkeypatch):
+    database_path = tmp_path / "fresh-current-head.db"
+    _migrate_database(
+        database_path,
+        "head",
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+    )
+
+    result = inspect_database(database_path, "0081")
+
+    assert result["revision"] == CURRENT_SCHEMA_REVISION
+    assert result["expected_revision_canonical"] == CURRENT_SCHEMA_REVISION
+    assert result["missing_tables"] == []
+    assert result["missing_columns"] == {}
+    assert result["schema_errors"] == []
+    assert result["foreign_key_violations"]["count"] == 0
     assert result["ready"] is True, result
 
 
@@ -1044,6 +1082,35 @@ def test_cli_reports_missing_database_as_json_without_creating_it(tmp_path, caps
     assert output["ready"] is False
     assert output["error"]
     assert database_path.exists() is False
+
+
+def test_cli_defaults_to_runtime_database_and_current_schema(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    database_path = tmp_path / "runtime.db"
+    captured: dict[str, object] = {}
+
+    def fake_inspect(path, expected_revision, *, orphan_evidence_path=None):
+        captured.update(
+            path=path,
+            expected_revision=expected_revision,
+            orphan_evidence_path=orphan_evidence_path,
+        )
+        return {"ready": True}
+
+    monkeypatch.setenv(
+        "NOVEL_SYSTEM_DATABASE_URL",
+        f"sqlite:///{database_path.as_posix()}",
+    )
+    monkeypatch.setattr(database_preflight, "inspect_database", fake_inspect)
+
+    assert database_preflight._main([]) == 0
+    assert json.loads(capsys.readouterr().out) == {"ready": True}
+    assert Path(str(captured["path"])).resolve() == database_path.resolve()
+    assert captured["expected_revision"] == CURRENT_SCHEMA_REVISION
+    assert captured["orphan_evidence_path"] is None
 
 
 def test_cli_atomically_writes_utf8_json_output(tmp_path, capsys):

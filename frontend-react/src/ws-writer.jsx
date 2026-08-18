@@ -1,15 +1,23 @@
 import React from "react";
 import { I } from "./icons.jsx";
-import { TweakRadio, TweakSection, TweakSlider, TweakToggle } from "./tweaks-panel.jsx";
 import { WsCatalog, WsTrashStore } from "./ws-catalog.jsx";
 import { WrDocs } from "./wr-doc-store.jsx";
 import { WrCanonicalControl } from "./wr-canonical-control.jsx";
 import { ContentSafetyReviewDialog, contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
-import { wrDeepUnmark, wrDeepScan, wrDxLog, wrDeepMark, wrDeepAdopt, wrDxPushLog, wrDxAddSkip, wrDxClearSkips, WrDeepDrawer } from "./ws-deep.jsx";
+import {
+  wrDeepUnmark, wrDeepScan, wrDxLog, wrDeepMark, wrDeepAdopt,
+  wrDxPushLog, wrDxAddSkip, wrDxClearSkips, wrDxSnapshot,
+  wrDxApplyPreferences, wrDxMergePreferences, wrDxLoadPreferences, wrDxSavePreferences, WrDeepDrawer,
+} from "./ws-deep.jsx";
 import { OrchestrationSignals } from "./ws-signals.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 import { onRovingTabKeyDown } from "./a11y-tabs.js";
+import { apiGet, apiPatch, apiPost } from "./lib/client.js";
+import { WriterTweaks, WRITER_TWEAK_DEFAULTS } from "./ws-shell-tweaks.jsx";
+import { navigateWithViewIntent, setViewIntentTargetReady } from "./ws-view-intents.js";
+import { sanitizeManuscriptHTML } from "./manuscript-html.js";
+import { wrPickedText, wrPlainText, wrSentences } from "./writer-candidates.js";
 
 /* global React, I */
 /* ==========================================================
@@ -19,12 +27,6 @@ import { onRovingTabKeyDown } from "./a11y-tabs.js";
    so both the standalone bootstrap and the unified shell can use it.
    ========================================================== */
 const { useState: useWS, useEffect: useWE, useRef: useWR, useCallback: useWC } = React;
-
-const WRITER_TWEAK_DEFAULTS = {
-  measure: 680, fontSize: 18, lineHeight: 2.05,
-  focus: "light", ambient: true, aiPlace: "tray",
-  wrLayout: "desk", typewriter: false,
-};
 
 /* mm:ss session clock */
 function fmtElapsed(s) {
@@ -143,12 +145,6 @@ const WR_CAND_TONES = ["slate", "crimson", "gold"];
    writer can cherry-pick just the lines they want. Marks (<mark>) are
    preserved per-sentence; adopted text is stripped to plain prose.
    ========================================================== */
-function wrSentences(html) {
-  return html.split(/(?<=[。！？!?])/g).filter(s => s.trim());
-}
-function wrPickedText(sentences, picked) {
-  return picked.slice().sort((a, b) => a - b).map(i => (sentences[i] || "").replace(/<[^>]+>/g, "")).join("");
-}
 
 function wrSceneIsApproved(sceneId) {
   if (!sceneId || !WsCatalog) return false;
@@ -280,6 +276,8 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   const [dxIssues, setDxIssues] = useWS([]);
   const [dxActive, setDxActive] = useWS(null);
   const [dxLog, setDxLog] = useWS([]);
+  const [dxPersistenceStatus, setDxPersistenceStatus] = useWS("idle");
+  const dxPreferencesRef = useWR({ sceneId: null, revisionNo: 0, saveChain: Promise.resolve() });
   const dxUndoRef = useWR(null);   // { sid, html } 采纳前的快照，一步撤销
   useWE(() => {
     if (approvedLocked && posture === "deep") setPosture("draft");
@@ -321,6 +319,14 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   const hideTimer = useWR(null);
   const baselineRef = useWR(0);   // 场景载入时的字数基线，增量回写用
   const dirtyRef = useWR(false);  // 有未落盘的改动
+  const editVersionRef = useWR(0);
+  const mountedRef = useWR(false);
+  const activeSceneRef = useWR(activeScene);
+  activeSceneRef.current = activeScene;
+  useWE(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   /* 真·自动保存：正文落盘 + 字数增量回写目录/作品 */
   const persistDoc = useWC(async () => {
@@ -331,21 +337,31 @@ function WriterRoom({ t, setTweak, onExit, go }) {
       setSaved("终稿已锁定");
       return false;
     }
+    const sceneId = activeScene;
+    const html = wrCleanHTML(el);
+    const count = wrCountOf(el);
+    const editVersion = editVersionRef.current;
+    const baseline = baselineRef.current;
     /* FE-ALIGN P3：正文落 author-drafts 主路径（WrDocs 缓存写通 + PATCH），
        字数 rollup 由保存响应回流目录/统计 */
     try {
-      await WrDocs.save(activeScene, wrCleanHTML(el));
-      const count = wrCountOf(el);
-      if (WsCatalog) { try { WsCatalog.recordSceneWords(activeScene, count, baselineRef.current); } catch (e) {} }
-      baselineRef.current = count;
-      dirtyRef.current = false;
-      setSaved("草稿已保存"); setSavedAt(Date.now());
-      const state = WrDocs.state(activeScene);
-      setCanonicalStatus(state && state.canonicalDirty === false ? "current" : "dirty");
+      await WrDocs.save(sceneId, html);
+      if (WsCatalog) { try { WsCatalog.recordSceneWords(sceneId, count, baseline); } catch (e) {} }
+      const stillCurrent = mountedRef.current && activeSceneRef.current === sceneId;
+      if (stillCurrent) baselineRef.current = count;
+      if (stillCurrent && editVersionRef.current === editVersion) {
+        dirtyRef.current = false;
+        setSaved("草稿已保存"); setSavedAt(Date.now());
+        const state = WrDocs.state(sceneId);
+        setCanonicalStatus(state && state.canonicalDirty === false ? "current" : "dirty");
+      }
       return true;
     } catch (e) {
-      dirtyRef.current = true;
-      setSaved("草稿保存失败");
+      const stillCurrent = mountedRef.current && activeSceneRef.current === sceneId;
+      if (stillCurrent && editVersionRef.current === editVersion) {
+        dirtyRef.current = true;
+        setSaved("草稿保存失败");
+      }
       return false;
     }
   }, [activeScene]);
@@ -354,6 +370,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     setSaved("正在保存草稿…");
     setCanonicalStatus("dirty");
     dirtyRef.current = true;
+    editVersionRef.current += 1;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => { void persistDoc(); }, 900);
   }, [persistDoc]);
@@ -507,20 +524,23 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     const el = editorRef.current;
     if (!el) return;
     if (!activeScene) { el.innerHTML = ""; setWordCount(0); setCanonicalStatus("unknown"); return; }
+    editVersionRef.current += 1;
+    dirtyRef.current = false;
     setSaved("草稿已加载");
     const initialState = WrDocs.state(activeScene);
     setCanonicalStatus(initialState && initialState.canonicalDirty === false ? "current" : "dirty");
     /* FE-ALIGN P3：同步读 WrDocs 缓存（兼容旧 wr-doc 本地键），后台水合服务端草稿 */
     let stored = null;
     try { stored = WrDocs.load(activeScene); } catch (e) {}
-    el.innerHTML = stored != null ? stored : wrSeedHTML(activeScene);
+    el.innerHTML = sanitizeManuscriptHTML(stored != null ? stored : wrSeedHTML(activeScene));
     wrHighlightEntities(el);
     baselineRef.current = wrCountOf(el);
     recount();
-    requestAnimationFrame(updateActive);
+    const activeFrame = requestAnimationFrame(updateActive);
+    let locateFrame = null;
     if (pendingEntity.current) {
       const id = pendingEntity.current; pendingEntity.current = null;
-      requestAnimationFrame(() => locateEntity(id));
+      locateFrame = requestAnimationFrame(() => locateEntity(id));
     }
     /* 服务端草稿水合完成且本地无未保存改动 → 回填编辑器（跨浏览器以服务端为准） */
     const onDocLoaded = (e) => {
@@ -528,7 +548,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
       let fresh = null;
       try { fresh = WrDocs.load(activeScene); } catch (e2) {}
       if (fresh != null && el.innerHTML !== fresh) {
-        el.innerHTML = fresh;
+        el.innerHTML = sanitizeManuscriptHTML(fresh);
         wrHighlightEntities(el);
         baselineRef.current = wrCountOf(el);
         recount();
@@ -550,6 +570,8 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     return () => {
       window.removeEventListener("ws:wr-doc-loaded", onDocLoaded);
       window.removeEventListener("ws:wr-doc-state", onDocState);
+      cancelAnimationFrame(activeFrame);
+      if (locateFrame != null) cancelAnimationFrame(locateFrame);
       clearTimeout(saveTimer.current);
       if (dirtyRef.current && el && sid && !wrSceneIsApproved(sid)) {
         try { void WrDocs.save(sid, wrCleanHTML(el)).catch(() => {}); } catch (e) {}
@@ -571,7 +593,6 @@ function WriterRoom({ t, setTweak, onExit, go }) {
         return prev === tgt ? prev : tgt;
       });
     };
-    if (window.__writerEntityTarget) { const id = window.__writerEntityTarget; window.__writerEntityTarget = null; setTimeout(() => tryLocate(id), 80); }
     const h = (e) => tryLocate(e.detail);
     window.addEventListener("ws:writer-locate", h);
     return () => window.removeEventListener("ws:writer-locate", h);
@@ -592,10 +613,8 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   }, []);
   const openDossier = (id) => {
     if (!id) return;
-    window.__libTarget = id;
     setEntityPop(null);
-    if (go) go("library");
-    else window.dispatchEvent(new CustomEvent("ws:lib-open", { detail: id }));
+    navigateWithViewIntent("library", "ws:lib-open", id);
   };
   const onEditorOver = (e) => {
     const sp = e.target.closest && e.target.closest(".wr-entity");
@@ -726,7 +745,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     if (!el) return;
     const p = document.createElement("p");
     p.className = "is-fresh";
-    p.innerHTML = cand.html.replace(/<\/?mark>/g, "");
+    p.innerHTML = sanitizeManuscriptHTML(cand.html.replace(/<\/?mark>/g, ""));
     el.appendChild(p);
     setTrayOpen(false); recount(); schedulePersist();
     setSession(s => s + p.innerText.length);
@@ -745,7 +764,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     if (!el) return;
     const p = document.createElement("p");
     p.className = "is-merge";
-    p.innerHTML = cand.html.replace(/<\/?mark>/g, "");
+    p.innerHTML = sanitizeManuscriptHTML(cand.html.replace(/<\/?mark>/g, ""));
     el.appendChild(p);
     setTrayOpen(false); setRightOpen(false); recount(); schedulePersist();
     requestAnimationFrame(() => {
@@ -771,19 +790,82 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     setDxActive(a => issues.some(i => i.key === a) ? a : (issues[0] ? issues[0].key : null));
   }, [activeScene]);
 
+  const queueDxPreferencesPersist = useWC((sceneId) => {
+    if (!sceneId) return;
+    const queuedSnapshot = wrDxSnapshot(sceneId);
+    let state = dxPreferencesRef.current;
+    if (state.sceneId !== sceneId) {
+      state = { sceneId, revisionNo: 0, saveChain: Promise.resolve() };
+      dxPreferencesRef.current = state;
+    }
+    setDxPersistenceStatus("saving");
+    state.saveChain = state.saveChain
+      .catch(() => undefined)
+      .then(async () => {
+        let snapshot = queuedSnapshot;
+        let result;
+        try {
+          result = await wrDxSavePreferences(sceneId, snapshot, state.revisionNo);
+        } catch (error) {
+          if (error?.code !== "SCENE_DEEP_REVIEW_PREFERENCES_CONFLICT") throw error;
+          const remote = await wrDxLoadPreferences(sceneId);
+          snapshot = wrDxMergePreferences(remote, queuedSnapshot, { localIgnoredAuthoritative: true });
+          wrDxApplyPreferences(sceneId, snapshot);
+          result = await wrDxSavePreferences(sceneId, snapshot, remote.revision_no);
+        }
+        state.revisionNo = result.revision_no;
+        if (dxPreferencesRef.current === state && activeSceneRef.current === sceneId) {
+          wrDxApplyPreferences(sceneId, result);
+          setDxLog(result.decision_log || []);
+          setDxPersistenceStatus("synced");
+        }
+      })
+      .catch(() => {
+        if (dxPreferencesRef.current === state && activeSceneRef.current === sceneId) {
+          setDxPersistenceStatus("local");
+        }
+      });
+  }, []);
+
   /* 进入深改：先冲掉未落盘改动再诊断；退出：清标注 */
   useWE(() => {
     const el = editorRef.current;
     if (!el) return;
+    let cancelled = false;
     if (posture === "deep" && activeScene) {
       persistDoc();
-      setDxLog(wrDxLog ? wrDxLog(activeScene) : []);
+      const sceneId = activeScene;
+      const local = wrDxSnapshot(sceneId);
+      const state = { sceneId, revisionNo: 0, saveChain: Promise.resolve() };
+      dxPreferencesRef.current = state;
+      setDxLog(local.decision_log);
+      setDxPersistenceStatus("loading");
       dxRescan();
       setRightOpen(true);
+      wrDxLoadPreferences(sceneId)
+        .then((remote) => {
+          if (cancelled || dxPreferencesRef.current !== state) return;
+          state.revisionNo = remote.revision_no;
+          const merged = wrDxMergePreferences(remote, local);
+          wrDxApplyPreferences(sceneId, merged);
+          setDxLog(merged.decision_log);
+          dxRescan();
+          const remoteSnapshot = {
+            decision_log: remote.decision_log || [],
+            ignored_issue_keys: remote.ignored_issue_keys || [],
+          };
+          if (JSON.stringify(merged) !== JSON.stringify(remoteSnapshot)) queueDxPreferencesPersist(sceneId);
+          else setDxPersistenceStatus("synced");
+        })
+        .catch(() => {
+          if (!cancelled && dxPreferencesRef.current === state) setDxPersistenceStatus("local");
+        });
     } else {
       if (wrDeepUnmark) wrDeepUnmark(el);
       setDxIssues([]);
+      setDxPersistenceStatus("idle");
     }
+    return () => { cancelled = true; };
   }, [posture, activeScene]); // eslint-disable-line
 
   /* 诊断结果 / 选中项变化 → 重画正文标注 */
@@ -817,11 +899,13 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     recount();
     persistDoc();
     setDxLog(wrDxPushLog(activeScene, `采纳「${cand.label}」 · ${issue.title}`));
+    queueDxPreferencesPersist(activeScene);
     dxRescan();
   };
   const dxIgnore = (issue) => {
     if (wrDxAddSkip) wrDxAddSkip(activeScene, issue.key);
     setDxLog(wrDxPushLog(activeScene, `忽略 · ${issue.title}`));
+    queueDxPreferencesPersist(activeScene);
     dxRescan();
   };
   const dxUndo = () => {
@@ -829,33 +913,52 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     const u = dxUndoRef.current, el = editorRef.current;
     if (!u || !el || u.sid !== activeScene) return;
     if (wrDeepUnmark) wrDeepUnmark(el);
-    el.innerHTML = u.html;
+    el.innerHTML = sanitizeManuscriptHTML(u.html);
     wrHighlightEntities(el);
     dxUndoRef.current = null;
     recount(); persistDoc();
     setDxLog(wrDxPushLog(activeScene, "撤销上一次采纳"));
+    queueDxPreferencesPersist(activeScene);
     dxRescan();
   };
-  const dxRescanAll = () => { if (wrDxClearSkips) wrDxClearSkips(activeScene); dxRescan(); };
+  const dxRescanAll = () => {
+    if (wrDxClearSkips) wrDxClearSkips(activeScene);
+    queueDxPreferencesPersist(activeScene);
+    dxRescan();
+  };
   const dxEditDraft = (issue) => { if (!approvedLocked) { setPosture("draft"); setTimeout(() => locateDxPara(issue.pid, true), 80); } };
   /* ================== /深改姿态 ================== */
 
 
   /* respond to command-palette jumps / actions */
   useWE(() => {
-    const onScene = (e) => { if (e.detail) { setActiveScene(e.detail); setLeftOpen(false); setRightOpen(false); } };
+    const onScene = (e) => {
+      if (e.detail) {
+        activeSceneRef.current = e.detail;
+        setActiveScene(e.detail);
+        setLeftOpen(false);
+        setRightOpen(false);
+      }
+    };
     const onSnowSrc = (e) => { if (e.detail) setSnowSrc(e.detail); };
     const onAction = (e) => {
       if (e.detail === "ai") openAI();
       else if (e.detail === "immersion") setImmersion(v => !v);
-      else if (e.detail === "deep" && !approvedLocked) setPosture("deep");
+      else if (e.detail === "deep" && activeSceneRef.current && !approvedLocked) setPosture("deep");
     };
-    const onPosture = (e) => setPosture(e.detail === "deep" && !approvedLocked ? "deep" : "draft");
+    const onPosture = (e) => setPosture(e.detail === "deep" && activeSceneRef.current && !approvedLocked ? "deep" : "draft");
     window.addEventListener("ws:writer-scene", onScene);
     window.addEventListener("ws:snow-source", onSnowSrc);
     window.addEventListener("ws:writer-action", onAction);
     window.addEventListener("ws:writer-posture", onPosture);
-    return () => { window.removeEventListener("ws:writer-scene", onScene); window.removeEventListener("ws:snow-source", onSnowSrc); window.removeEventListener("ws:writer-action", onAction); window.removeEventListener("ws:writer-posture", onPosture); };
+    setViewIntentTargetReady("writer");
+    return () => {
+      setViewIntentTargetReady("writer", false);
+      window.removeEventListener("ws:writer-scene", onScene);
+      window.removeEventListener("ws:snow-source", onSnowSrc);
+      window.removeEventListener("ws:writer-action", onAction);
+      window.removeEventListener("ws:writer-posture", onPosture);
+    };
   }, [tw.aiPlace, approvedLocked]);
 
   /* 大纲结构操作 → 全部写穿 WsCatalog（单一真相源），再刷新本地映射 */
@@ -1142,7 +1245,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
       <div className={`wr-scrim wr-scrim-drawer ${drawerOpen ? "show" : ""}`} onClick={() => { setLeftOpen(false); setRightOpen(false); }} />
       <WrOutline open={leftOpen} activeScene={activeScene} chapters={chapters} onReorder={reorderScene} onRename={renameScene} onDelete={deleteScene} onDeleteChapter={deleteChapter} onDeleteBatch={deleteBatch} onAdd={addScene} onPick={(id) => { setActiveScene(id); if (!coexist) setLeftOpen(false); }} onClose={() => setLeftOpen(false)} />
       {posture === "deep" && WrDeepDrawer
-        ? <WrDeepDrawer open={rightOpen} issues={dxIssues} activeKey={dxActive} onPick={dxPick} onAdopt={dxAdopt} onIgnore={dxIgnore} onRescan={dxRescanAll} onEditDraft={dxEditDraft} onUndo={dxUndo} canUndo={!!(dxUndoRef.current && dxUndoRef.current.sid === activeScene)} log={dxLog} onClose={() => setRightOpen(false)} />
+        ? <WrDeepDrawer open={rightOpen} issues={dxIssues} activeKey={dxActive} onPick={dxPick} onAdopt={dxAdopt} onIgnore={dxIgnore} onRescan={dxRescanAll} onEditDraft={dxEditDraft} onUndo={dxUndo} canUndo={!!(dxUndoRef.current && dxUndoRef.current.sid === activeScene)} log={dxLog} persistenceStatus={dxPersistenceStatus} onClose={() => setRightOpen(false)} />
         : <WrContext open={rightOpen} tab={rightTab} setTab={setRightTab} onClose={() => setRightOpen(false)} onOpenAI={() => { setRightOpen(false); setTrayOpen(true); }} place={tw.aiPlace} onAdopt={adopt} onMerge={merge} onAdoptText={adoptText} scene={activeScene} editorRef={editorRef} />}
       <div className={`wr-scrim wr-scrim-tray ${trayOpen ? "show" : ""}`} onClick={() => setTrayOpen(false)} />
       <WrTray open={trayOpen} onClose={() => setTrayOpen(false)} onAdopt={adopt} onMerge={merge} onAdoptText={adoptText}
@@ -1222,33 +1325,6 @@ function WrEntityPop({ pop, onOpen }) {
       {e.summary && <div className="wr-entpop-sum">{e.summary}</div>}
       <div className="wr-entpop-foot"><I.BookOpen size={12} /> 点击打开档案</div>
     </div>
-  );
-}
-
-/* ---- Writer tweak controls (shared fragment) ---- */
-function WriterTweaks({ t, setTweak }) {
-  const tw = { ...WRITER_TWEAK_DEFAULTS, ...(t || {}) };
-  return (
-    <>
-      <TweakSection label="工作台布局" />
-      <TweakRadio label="布局" value={tw.wrLayout === "immersive" ? "immersive" : "desk"}
-        options={[{ value: "desk", label: "书桌三栏" }, { value: "immersive", label: "沉浸稿纸" }]}
-        onChange={(v) => setTweak("wrLayout", v)} />
-      <TweakSection label="专注与协作" />
-      <TweakRadio label="柔和专注（暗化旁段）" value={tw.focus}
-        options={[{ value: "off", label: "关" }, { value: "light", label: "轻" }, { value: "medium", label: "中" }, { value: "deep", label: "深" }]}
-        onChange={(v) => setTweak("focus", v)} />
-      <TweakToggle label="当前行氛围光" value={tw.ambient} onChange={(v) => setTweak("ambient", v)} />
-      <TweakToggle label="打字机滚动（当前行居中）" value={tw.typewriter} onChange={(v) => setTweak("typewriter", v)} />
-      <TweakRadio label="AI 候选呈现位置" value={tw.aiPlace}
-        options={[{ value: "tray", label: "底部托盘" }, { value: "drawer", label: "右侧抽屉" }]}
-        onChange={(v) => setTweak("aiPlace", v)} />
-
-      <TweakSection label="稿纸排版" />
-      <TweakSlider label="稿纸宽度" value={tw.measure} min={560} max={860} step={20} unit="px" onChange={(v) => setTweak("measure", v)} />
-      <TweakSlider label="正文字号" value={tw.fontSize} min={15} max={24} unit="px" onChange={(v) => setTweak("fontSize", v)} />
-      <TweakSlider label="行距" value={tw.lineHeight} min={1.5} max={2.6} step={0.05} onChange={(v) => setTweak("lineHeight", v)} />
-    </>
   );
 }
 
@@ -1521,9 +1597,7 @@ function WrCtxScene({ scene }) {
      （此前整场起草只能绕道章节编排的「交给 AI」，三个台子像各自为战） */
   const inCatalog = (() => { try { return !!(WsCatalog && WsCatalog.sceneById(scene)); } catch (e) { return false; } })();
   const forkAI = () => {
-    window.__scnEnqueue = { sid: scene };
-    location.hash = "#scene";
-    setTimeout(() => window.dispatchEvent(new CustomEvent("ws:scene-enqueue", { detail: { sid: scene } })), 80);
+    navigateWithViewIntent("scene", "ws:scene-enqueue", { sid: scene });
   };
   return (
     <>
@@ -1649,31 +1723,158 @@ function WrBar({ pct, target, warn }) {
   return (<div className="wr-bar"><div className={`wr-bar-fill ${warn ? "warn" : ""}`} style={{ width: pct + "%" }} /><div className="wr-bar-target" style={{ left: target + "%" }} /></div>);
 }
 function wrNotesKey(scene) { return wsKey ? wsKey("wr-notes:" + scene) : "wr-notes:" + scene; }
+function wrNotesPendingKey(scene) { return wsKey ? wsKey("wr-notes-pending:" + scene) : "wr-notes-pending:" + scene; }
 const wrNotesSeed = () => "";
 function WrCtxNotes({ scene }) {
   const [val, setVal] = useWS("");
-  const [saved, setSaved] = useWS(true);
+  const [status, setStatus] = useWS("loading");
   const timer = useWR(null);
+  const sceneState = useWR(null);
+  const valueRef = useWR("");
+
+  const persist = useWC((value, requestedState = sceneState.current) => {
+    const state = requestedState;
+    if (!state || !state.active) return Promise.resolve();
+    const version = ++state.saveVersion;
+    const persistedEditVersion = state.editVersion;
+    if (sceneState.current === state) setStatus("saving");
+    state.chain = state.chain.then(async () => {
+      if (!state.active) return;
+      try {
+        const sceneId = state.backendSceneId || await WsCatalog.__backendSceneId(state.scene);
+        if (!state.active) return;
+        if (!sceneId) throw Object.assign(new Error("场景尚未同步到服务器"), { code: "SCENE_NOT_READY" });
+        state.backendSceneId = sceneId;
+        const data = await apiPatch(`/api/v1/scenes/${sceneId}/author-notes`, {
+          notes: value,
+          base_revision_no: state.revision,
+        });
+        const remoteRevision = Number(data && data.revision_no);
+        state.revision = Number.isFinite(remoteRevision)
+          ? Math.max(state.revision, remoteRevision)
+          : state.revision + 1;
+        if (version === state.saveVersion && persistedEditVersion === state.editVersion) {
+          try { localStorage.removeItem(wrNotesPendingKey(state.scene)); } catch (e) {}
+        }
+        if (
+          sceneState.current === state
+          && state.active
+          && version === state.saveVersion
+          && persistedEditVersion === state.editVersion
+        ) setStatus("saved");
+      } catch (error) {
+        if (!state.active) return;
+        if (error && error.code === "SCENE_AUTHOR_NOTES_CONFLICT" && state.backendSceneId) {
+          try {
+            const current = await apiGet(`/api/v1/scenes/${state.backendSceneId}/author-notes`);
+            const remoteRevision = Number(current && current.revision_no);
+            if (Number.isFinite(remoteRevision)) state.revision = Math.max(state.revision, remoteRevision);
+          } catch (e) {}
+          if (sceneState.current === state && state.active && version === state.saveVersion) setStatus("conflict");
+        } else if (sceneState.current === state && state.active && version === state.saveVersion) {
+          setStatus("local");
+        }
+      }
+    });
+    return state.chain;
+  }, []);
+
   useWE(() => {
+    const state = {
+      scene,
+      active: true,
+      backendSceneId: null,
+      revision: 0,
+      saveVersion: 0,
+      editVersion: 0,
+      chain: Promise.resolve(),
+    };
+    sceneState.current = state;
     let stored = null;
+    let pending = false;
     try { stored = localStorage.getItem(wrNotesKey(scene)); } catch (e) {}
-    setVal(stored != null ? stored : wrNotesSeed(scene));
-    setSaved(true);
-    return () => clearTimeout(timer.current);
+    try { pending = localStorage.getItem(wrNotesPendingKey(scene)) != null; } catch (e) {}
+    const initial = stored != null ? stored : wrNotesSeed(scene);
+    valueRef.current = initial;
+    setVal(initial);
+    setStatus(pending ? "local" : "loading");
+    const loadEditVersion = state.editVersion;
+    void (async () => {
+      try {
+        const sceneId = await WsCatalog.__backendSceneId(scene);
+        if (!sceneId || !state.active || sceneState.current !== state) return;
+        state.backendSceneId = sceneId;
+        const data = await apiGet(`/api/v1/scenes/${sceneId}/author-notes`);
+        if (!state.active || sceneState.current !== state) return;
+        const remoteRevision = Number(data && data.revision_no);
+        if (Number.isFinite(remoteRevision)) state.revision = Math.max(state.revision, remoteRevision);
+        if (state.editVersion !== loadEditVersion) return;
+        const serverValue = String((data && data.notes) || "");
+        let currentStored = null;
+        let currentPending = false;
+        try { currentStored = localStorage.getItem(wrNotesKey(scene)); } catch (e) {}
+        try { currentPending = localStorage.getItem(wrNotesPendingKey(scene)) != null; } catch (e) {}
+        if (currentPending && currentStored != null && currentStored !== serverValue) {
+          setStatus("conflict");
+          return;
+        }
+        valueRef.current = serverValue;
+        setVal(serverValue);
+        try {
+          localStorage.setItem(wrNotesKey(scene), serverValue);
+          localStorage.removeItem(wrNotesPendingKey(scene));
+        } catch (e) {}
+        setStatus("saved");
+      } catch (e) {
+        if (state.active && sceneState.current === state && state.editVersion === loadEditVersion) {
+          setStatus(stored != null ? "local" : "error");
+        }
+      }
+    })();
+    return () => {
+      state.active = false;
+      if (sceneState.current === state) sceneState.current = null;
+      clearTimeout(timer.current);
+    };
   }, [scene]);
+
   const onChange = (e) => {
     const v = e.target.value;
-    setVal(v); setSaved(false);
+    const state = sceneState.current;
+    if (state && state.scene === scene) state.editVersion += 1;
+    valueRef.current = v;
+    setVal(v);
+    setStatus("saving");
     clearTimeout(timer.current);
-    timer.current = setTimeout(() => { try { localStorage.setItem(wrNotesKey(scene), v); } catch (e) {} setSaved(true); }, 500);
+    try {
+      localStorage.setItem(wrNotesKey(scene), v);
+      localStorage.setItem(wrNotesPendingKey(scene), String(Date.now()));
+    } catch (e) {
+      setStatus("error");
+    }
+    timer.current = setTimeout(() => { void persist(v, state); }, 500);
   };
+  const statusText = {
+    loading: "读取服务器…",
+    saving: "保存中…",
+    saved: "已存服务器",
+    local: "未同步（已留本机）",
+    conflict: "与其他设备冲突",
+    error: "保存失败，请复制留底",
+  }[status] || "保存状态未知";
+  const healthy = status === "saved";
   return (
     <>
       <div className="wr-notes-bar">
         <span className="wr-notes-cap">本场笔记</span>
-        <span className={`wr-notes-state ${saved ? "" : "saving"}`}><span className="wr-notes-dot" />{saved ? "已存本场" : "记录中…"}</span>
+        <span className={`wr-notes-state ${healthy ? "" : "saving"}`}>
+          <span className="wr-notes-dot" />{statusText}
+          {(status === "local" || status === "conflict" || status === "error") && (
+            <button type="button" className="btn btn-quiet btn-sm" onClick={() => { clearTimeout(timer.current); void persist(valueRef.current, sceneState.current); }}>重试</button>
+          )}
+        </span>
       </div>
-      <textarea className="wr-notes" value={val} onChange={onChange} placeholder="只跟这一场有关的提醒、伏笔、待回收……（自动保存，按场独立）" />
+      <textarea className="wr-notes" value={val} onChange={onChange} placeholder="只跟这一场有关的提醒、伏笔、待回收……（自动保存到服务器，按场独立）" />
     </>
   );
 }
@@ -1807,7 +2008,6 @@ let WR_ACTIVE_SID = null;   // 当前在写场景（WriterRoom 镜像）
 let wrPatchLast = null;     // { patchId, options } —— 待裁决的最近一次候选
 
 async function wrRewriteMulti(text, instr) {
-  const { apiPost } = await import("./lib/client.js");
   let sceneId = null;
   try {
     const sid = WR_ACTIVE_SID || (((WsCatalog && WsCatalog.writingScene()) || {}).scene || {}).sid;
@@ -1841,18 +2041,17 @@ function wrPatchDecide(pickIdx, accepted) {
   const last = wrPatchLast;
   if (!last) return;
   wrPatchLast = null;
-  import("./lib/client.js").then(({ apiPost }) => {
-    const opt = last.options[pickIdx] || last.options[0] || {};
-    if (accepted) apiPost(`/api/v1/passage-patch-candidates/${last.patchId}/accept`, { selected_option_id: opt.option_id || "" }).catch(() => {});
-    else apiPost(`/api/v1/passage-patch-candidates/${last.patchId}/reject`, {}).catch(() => {});
-  }).catch(() => {});
+  const opt = last.options[pickIdx] || last.options[0] || {};
+  if (accepted) apiPost(`/api/v1/passage-patch-candidates/${last.patchId}/accept`, { selected_option_id: opt.option_id || "" }).catch(() => {});
+  else apiPost(`/api/v1/passage-patch-candidates/${last.patchId}/reject`, {}).catch(() => {});
 }
 
 /* ==========================================================
    AI 续写 — 接后端 author-drafts 的 proposals/generate（continuation
    类型："只推进下一拍，不改写作者现有正文"，见 config/prompts.yaml
-   author_proposal_generate 模板）。并发 3 次独立取样凑 3 条候选；复用
-   wrRewriteMulti 同一套 WR_ACTIVE_SID → WrDocs.draftId 映射。
+   author_proposal_generate 模板）。一次 generate-set 业务意图在服务端生成
+   action / relationship / suspense 三个明确标槽的续写；复用 wrRewriteMulti
+   同一套 WR_ACTIVE_SID → WrDocs.draftId 映射。
    离线兜底（LLM 未启用）与内联改写同一约定：rationale 命中
    /offline deterministic/i 即按"模型不可用"处理，不混入候选列表。
    ========================================================== */
@@ -1860,23 +2059,18 @@ function wrCandEscape(s) { return String(s || "").replace(/&/g, "&amp;").replace
 function wrCandTidy(s) { return String(s || "").replace(/\s*\n\s*/g, "").trim(); }
 
 async function wrContinueMulti(instruction) {
-  const { apiPost } = await import("./lib/client.js");
   const sid = WR_ACTIVE_SID || (((WsCatalog && WsCatalog.writingScene()) || {}).scene || {}).sid;
   if (!sid) { const err = new Error("no-scene"); err.code = "no-model"; throw err; }
   let draftId = null;
   try { draftId = await WrDocs.draftId(sid); } catch (e) {}
   if (!draftId) { const err = new Error("no-draft"); err.code = "no-model"; throw err; }
-  const attempts = await Promise.allSettled([0, 1, 2].map(() =>
-    apiPost(`/api/v1/author-drafts/${draftId}/proposals/generate`, {
-      proposal_type: "continuation",
-      instruction: instruction || "续写下一段，自然承接当前正文",
-      proposal_source: "writer_room_continuation_tray",
-    })
-  ));
+  const generated = await apiPost(`/api/v1/author-drafts/${draftId}/proposals/generate-set`, {
+    mode: "continuation_variants",
+    instruction: instruction || "续写下一段，自然承接当前正文",
+  });
   const cands = [];
-  attempts.forEach((r) => {
-    if (r.status !== "fulfilled") return;
-    const p = r.value && r.value.proposal;
+  const proposals = Array.isArray(generated && generated.proposals) ? generated.proposals : [];
+  proposals.forEach((p) => {
     const text = wrCandTidy(p && p.content);
     if (!text) return;
     // 离线兜底产物是确定性占位续写——按「模型不可用」如实处理，不混进候选里
@@ -2162,7 +2356,17 @@ function WrInlineRewrite({ editorRef, onCommit }) {
   );
 }
 
-Object.assign(window, { WriterRoom, WriterTweaks, WRITER_TWEAK_DEFAULTS, wrSeedHTML, wrNotesSeed, wrRewriteMulti, wrPatchDecide });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WriterRoom, WriterTweaks, WRITER_TWEAK_DEFAULTS, wrSeedHTML, wrNotesSeed };
+export {
+  WriterRoom,
+  WriterTweaks,
+  WRITER_TWEAK_DEFAULTS,
+  WrCtxNotes,
+  wrSeedHTML,
+  wrNotesSeed,
+  wrContinueMulti,
+  wrPickedText,
+  wrPlainText,
+  wrSentences,
+};

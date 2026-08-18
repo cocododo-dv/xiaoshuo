@@ -1,7 +1,9 @@
 param(
     [switch]$BackendOnly,
     [switch]$FrontendOnly,
-    [switch]$IncludeLegacyVue
+    [switch]$IncludeLegacyVue,
+    [ValidateRange(1, 16)]
+    [int]$BackendShardCount = 4
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,11 +35,34 @@ function Invoke-NativeStep {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $backendDir = Join-Path $repoRoot "backend"
+$backendPython = Join-Path $backendDir ".venv\Scripts\python.exe"
 $frontendDir = Join-Path $repoRoot "frontend"
 $reactDir = Join-Path $repoRoot "frontend-react"
 
 if (-not $FrontendOnly) {
-    Invoke-NativeStep -Label "Backend pytest (not chroma_integration)" -WorkingDirectory $backendDir -FilePath "python" -ArgumentList @("-m", "pytest", "-q", "-m", "not chroma_integration")
+    if (-not (Test-Path -LiteralPath $backendPython -PathType Leaf)) {
+        throw "Locked backend Python is missing: $backendPython. Run: cd backend; uv sync --locked --extra dev"
+    }
+    Invoke-NativeStep -Label "Backend correctness lint" -WorkingDirectory $backendDir -FilePath $backendPython -ArgumentList @("-m", "ruff", "check", "src", "tests")
+    Invoke-NativeStep -Label "Backend dependency audit" -WorkingDirectory $backendDir -FilePath $backendPython -ArgumentList @("-m", "pip_audit", "-r", "requirements.lock", "--disable-pip", "--require-hashes")
+    $backendResultsDir = Join-Path $backendDir ".test-results"
+    New-Item -ItemType Directory -Force -Path $backendResultsDir | Out-Null
+    for ($shardIndex = 0; $shardIndex -lt $BackendShardCount; $shardIndex++) {
+        $junitPath = Join-Path $backendResultsDir ("backend-windows-shard-{0}.xml" -f $shardIndex)
+        Invoke-NativeStep `
+            -Label ("Backend pytest non-Chroma shard {0}/{1}" -f ($shardIndex + 1), $BackendShardCount) `
+            -WorkingDirectory $backendDir `
+            -FilePath $backendPython `
+            -ArgumentList @(
+                "scripts\pytest_shard.py",
+                "--shard-index", "$shardIndex",
+                "--shard-count", "$BackendShardCount",
+                "--",
+                "-q",
+                "-m", "not chroma_integration",
+                "--junitxml=$junitPath"
+            )
+    }
 }
 
 if (-not $BackendOnly) {

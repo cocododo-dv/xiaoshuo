@@ -4,7 +4,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 
-const require = createRequire(path.join(process.cwd(), "package.json"));
+const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
 const BASE = process.argv[2] || "http://127.0.0.1:5174/";
@@ -118,9 +118,8 @@ await check("高级路由:展开矩阵 + 缺失路由补齐(或已齐)", async (
 await check("连接测试:不可达地址返回失败但不崩", async () => {
   const card = page.locator(`.card-flat:has-text("${PROVIDER_ID}")`);
   await card.locator('button:has-text("测试连接")').click();
-  await page.waitForTimeout(2500);
-  const note = await card.locator("text=✕").count();
-  if (!note) throw new Error("probe failure note missing");
+  // 后端探活允许最多 30 秒。等待真实状态转换，避免用固定 sleep 把正常的慢失败误报成 UI 缺陷。
+  await card.getByText(/^✕\s/).waitFor({ state: "visible", timeout: 40_000 });
 });
 
 await check("删除服务:卡片原位删除 → 后端配置移除(路由留作 orphan 待补齐)", async () => {

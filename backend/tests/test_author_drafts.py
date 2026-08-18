@@ -565,6 +565,48 @@ def test_generate_triaged_author_draft_proposals_and_records_decision_telemetry(
     assert session.get(FinalScene, final_row_id).content == "运行终稿保持独立。"
 
 
+def test_generate_continuation_variants_as_one_idempotent_three_candidate_intent(
+    client,
+    session,
+) -> None:
+    """续写托盘需要三份独立续写，而不是三个同键请求或混合类型提案。"""
+
+    _create_chapter(client, "AD275_VARIANTS", planned_scene_count=1)
+    _create_scene(
+        client,
+        "AD275_VARIANTS_SC01",
+        chapter_id="AD275_VARIANTS",
+        scene_seq=1,
+        is_chapter_last=1,
+    )
+    draft = client.post(
+        "/api/v1/author-drafts/scene/AD275_VARIANTS_SC01/ensure-blank"
+    ).json()["data"]["draft"]
+
+    response = client.post(
+        f"/api/v1/author-drafts/{draft['draft_id']}/proposals/generate-set",
+        json={
+            "mode": "continuation_variants",
+            "instruction": "续写下一段，自然承接当前正文。",
+        },
+        headers={"X-Idempotency-Key": "continuation-variants-one-intent"},
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    proposals = data["proposals"]
+    assert data["mode"] == "continuation_variants"
+    assert len(proposals) == 3
+    assert [item["proposal_type"] for item in proposals] == ["continuation"] * 3
+    assert [item["proposal_kind"] for item in proposals] == ["continuation"] * 3
+    assert len({item["proposal_id"] for item in proposals}) == 3
+    assert [item["proposal_source"] for item in proposals] == [
+        "writer_room_continuation_variants:action",
+        "writer_room_continuation_variants:relationship",
+        "writer_room_continuation_variants:suspense",
+    ]
+
+
 def test_proposal_reject_with_note_updates_preference_profile_with_safe_labels(client, session) -> None:
     _create_chapter(client, "AD276", planned_scene_count=1)
     _create_scene(client, "AD276_SC01", chapter_id="AD276", scene_seq=1, is_chapter_last=1)

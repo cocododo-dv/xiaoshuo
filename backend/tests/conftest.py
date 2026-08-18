@@ -44,6 +44,9 @@ def isolated_database(
     # 「武装 5×」为基线运行——绝大多数断言都建立在这道闸门存在之上（5×基线、耗尽码、topup
     # 审计等）。解除武装本身由 test_scene_token_budget.py 里显式设 0 的专门用例覆盖。
     monkeypatch.setenv("NOVEL_SYSTEM_SCENE_TOKEN_BUDGET_MULTIPLIER", "5")
+    # A small set of acceptance tests seed review lifecycle fixtures through a
+    # hidden maintenance boundary. Production keeps this disabled by default.
+    monkeypatch.setenv("NOVEL_SYSTEM_ENABLE_FIXTURE_IMPORT", "true")
     from novel_system.db.session import reset_engine
 
     reset_engine()

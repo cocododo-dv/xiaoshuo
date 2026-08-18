@@ -64,6 +64,22 @@ class SceneRunJobLease:
         self.lease_expires_at = self._service.renew_lease(self, lease_seconds=lease_seconds)
         return self.lease_expires_at
 
+    def renew_detached(self, *, lease_seconds: int) -> str:
+        """Renew with an independent session for long provider calls."""
+
+        with SessionLocal() as session:
+            service = SceneRunJobService(session)
+            detached = SceneRunJobLease(
+                job_id=self.job_id,
+                worker_id=self.worker_id,
+                attempt_no=self.attempt_no,
+                lease_expires_at=self.lease_expires_at,
+                _service=service,
+            )
+            expires = service.renew_lease(detached, lease_seconds=lease_seconds)
+            session.commit()
+            return expires
+
 
 class SceneRunJobService:
     def __init__(self, session: Session) -> None:

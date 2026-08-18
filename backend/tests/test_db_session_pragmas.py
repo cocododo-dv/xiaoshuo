@@ -3,8 +3,9 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import sessionmaker
 
 from novel_system.db import session as db_session
 from novel_system.settings import get_settings
@@ -180,6 +181,32 @@ def test_deferred_fk_is_reenabled_after_commit_and_rollback() -> None:
                 "INSERT INTO parent_rows VALUES ('third-parent')"
             )
             third.commit()
+    finally:
+        test_engine.dispose()
+
+
+def test_reused_orm_session_reenables_deferred_foreign_keys_after_commit() -> None:
+    test_engine = _make_deferred_fk_engine()
+    session_maker = sessionmaker(bind=test_engine, expire_on_commit=False)
+    db_session._install_sqlite_session_pragmas(session_maker)
+    try:
+        with session_maker() as session:
+            session.execute(
+                text("INSERT INTO parent_rows VALUES ('first-parent')")
+            )
+            session.commit()
+
+            connection = session.connection()
+            assert connection.exec_driver_sql(
+                "PRAGMA defer_foreign_keys"
+            ).scalar_one() == 1
+            session.execute(
+                text("INSERT INTO child_rows VALUES ('second-child', 'second-parent')")
+            )
+            session.execute(
+                text("INSERT INTO parent_rows VALUES ('second-parent')")
+            )
+            session.commit()
     finally:
         test_engine.dispose()
 

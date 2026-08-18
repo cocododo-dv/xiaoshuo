@@ -176,7 +176,5 @@ function LibOverview({ health, byId, onSelect, onPickCat, onGoGraph, onNew, onAc
   );
 }
 
-Object.assign(window, { LibOverview });
-
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { LibOverview };

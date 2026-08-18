@@ -16,36 +16,39 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import (
     AuthorDraft,
     AuthorDraftEvent,
-    ChapterAuditFinding,
-    ChapterContract,
     ChapterGoal,
+    ChapterRunJob,
     ChapterState,
-    LibraryEntity,
-    LibraryRelation,
-    LongformAnchor,
-    OutlinePlan,
-    ProjectWritingStats,
     SceneCard,
     SceneRunState,
-    SnowflakeArtifact,
-    SnowflakeAssistantTurn,
-    SnowflakeCharacterPlan,
-    SnowflakeRevisionLink,
-    SnowflakeScenePlan,
-    SnowflakeSceneTriageItem,
-    SnowflakeStepRun,
     StoryProject,
     utcnow,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.catalog import chapter_title, scene_title
 from novel_system.services.errors import DomainError
+from novel_system.services.project_purge import (
+    build_project_purge_plan,
+    delete_indirect_project_rows,
+    purge_project_vectors,
+)
+from novel_system.services.project_ownership import delete_project_owned_rows
+from novel_system.services.vector_store import VectorStore, get_vector_store
 
 
 class TrashService:
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        vector_store: VectorStore | None = None,
+    ) -> None:
         self.session = session
-        self._lifecycle = AuthorLifecycleService(session)
+        self._vector_store = vector_store
+        self._lifecycle = AuthorLifecycleService(
+            session,
+            vector_store=vector_store,
+        )
 
     # ---- 作品级 ----
 
@@ -142,6 +145,30 @@ class TrashService:
         result = self._lifecycle.trash_scenes([scene_id], actor_ref)
         return self._lifecycle_result(f"scene:{scene_id}", result)
 
+    def restore_chapter_in_project(self, project_id: str, chapter_id: str) -> dict[str, Any]:
+        """Restore a chapter only through its authoritative project boundary."""
+
+        self._require_project(project_id)
+        chapter = self.session.get(ChapterGoal, chapter_id)
+        if chapter is None or chapter.project_id != project_id:
+            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found in project", status_code=404)
+        result = self._lifecycle.restore_chapters([chapter_id])
+        return self._lifecycle_result(f"chapter:{chapter_id}", result)
+
+    def restore_scene_in_project(self, project_id: str, scene_id: str) -> dict[str, Any]:
+        """Restore a scene only through its authoritative project boundary."""
+
+        self._require_project(project_id)
+        scene = self.session.get(SceneCard, scene_id)
+        owner = scene.project_id if scene else None
+        if scene is not None and not owner:
+            chapter = self.session.get(ChapterGoal, scene.chapter_id)
+            owner = chapter.project_id if chapter else None
+        if scene is None or owner != project_id:
+            raise DomainError("SCENE_NOT_FOUND", "scene not found in project", status_code=404)
+        result = self._lifecycle.restore_scenes([scene_id])
+        return self._lifecycle_result(f"scene:{scene_id}", result)
+
     # ---- 恢复 / 永久清除（按条目 id 分发） ----
 
     def restore_entry(self, entry_id: str, *, actor_ref: str = "operator") -> dict[str, Any]:
@@ -224,11 +251,8 @@ class TrashService:
             LlmCallAttempt,
             LongformDiagnosticCard,
             LongformStructureGuidance,
-            NarrativeEvent,
             PassagePatchCandidate,
-            ProjectBacktrackItem,
             QcReport,
-            ReviewDerivedSnooze,
             ReviewItem,
             RevisionCandidate,
             SceneBlueprint,
@@ -239,8 +263,6 @@ class TrashService:
             SceneQualityContract,
             StagedBackfill,
             StoryCharacter,
-            TimelineEvent,
-            VolumeSummary,
             WriterEvaluation,
         )
 
@@ -250,6 +272,15 @@ class TrashService:
                 select(StoryCharacter.character_id).where(StoryCharacter.project_id == project_id)
             ).scalars().all()
         ]
+        purge_plan = build_project_purge_plan(
+            self.session,
+            project_id=project_id,
+            chapter_ids=chapter_ids,
+            scene_ids=scene_ids,
+            character_ids=character_ids,
+        )
+        vector_store = self._vector_store or get_vector_store()
+        purged_vector_collections = purge_project_vectors(purge_plan, vector_store)
 
         if draft_ids:
             self.session.execute(delete(AuthorDraftEvent).where(AuthorDraftEvent.draft_id.in_(draft_ids)))
@@ -314,16 +345,6 @@ class TrashService:
                 )
             )
 
-        # —— project 维度派生表（自带 project_id 列）——
-        for model in (
-            NarrativeEvent,
-            VolumeSummary,
-            ProjectBacktrackItem,
-            ReviewDerivedSnooze,
-            ForeshadowTracker,
-            ReviewItem,
-        ):
-            self.session.execute(delete(model).where(model.project_id == project_id))
         # legacy ReviewItem/LlmCall 行可能只挂 scene/chapter 列
         if scene_ids or chapter_ids:
             self.session.execute(
@@ -347,36 +368,36 @@ class TrashService:
         if chapter_ids:
             self.session.execute(delete(ForeshadowTracker).where(ForeshadowTracker.chapter_id.in_(chapter_ids)))
 
-        # —— 运行时状态与卡片本体（原有逻辑）——
+        # —— 运行时状态与项目所有权图 ——
+        # ChapterRunJob / SceneRunState / ChapterState 没有 project_id，先显式删除。随后由
+        # 元数据拓扑统一删除所有带 project_id 的子表及 SceneCard/ChapterGoal；
+        # 不能先删章/场，否则新加入的真实外键会让永久清除在半途失败。
+        if scene_ids or chapter_ids:
+            self.session.execute(
+                delete(ChapterRunJob).where(
+                    ChapterRunJob.scene_id.in_(scene_ids or [""])
+                    | ChapterRunJob.chapter_id.in_(chapter_ids or [""])
+                )
+            )
         if scene_ids:
             self.session.execute(delete(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids)))
-            self.session.execute(delete(SceneCard).where(SceneCard.scene_id.in_(scene_ids)))
         if chapter_ids:
             self.session.execute(delete(ChapterState).where(ChapterState.chapter_id.in_(chapter_ids)))
-            self.session.execute(delete(ChapterGoal).where(ChapterGoal.chapter_id.in_(chapter_ids)))
 
-        for model in (
-            SnowflakeRevisionLink,
-            SnowflakeSceneTriageItem,
-            SnowflakeScenePlan,
-            SnowflakeCharacterPlan,
-            SnowflakeAssistantTurn,
-            SnowflakeStepRun,
-            SnowflakeArtifact,
-            ChapterAuditFinding,
-            ChapterContract,
-            LongformAnchor,
-            LibraryRelation,
-            LibraryEntity,
-            TimelineEvent,
-            StoryCharacter,
-            OutlinePlan,
-            ProjectWritingStats,
-        ):
-            self.session.execute(delete(model).where(model.project_id == project_id))
+        # scope_ref_id、人物引用、版本注册表和互操作记录没有直接 project_id，
+        # 必须在通用 project_id 删除器之前按预先冻结的所有权计划清除。
+        delete_indirect_project_rows(self.session, purge_plan)
+
+        # 所有带 project_id 的 ORM 表共享同一份元数据派生清单，新增项目模型
+        # 不需要再来此处手工登记。
+        delete_project_owned_rows(self.session, project_id)
         self.session.delete(project)
         self.session.flush()
-        return {"project_id": project_id, "purged": True}
+        return {
+            "project_id": project_id,
+            "purged": True,
+            "purged_vector_collections": list(purged_vector_collections),
+        }
 
     # ---- internals ----
 

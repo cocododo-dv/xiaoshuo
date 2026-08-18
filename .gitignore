@@ -16,6 +16,7 @@ __pycache__/
 .venv-wsl/
 
 backend/.pytest_cache/
+backend/.test-results/
 backend/.vector_store/
 backend/.venv/
 backend/.venv-wsl/

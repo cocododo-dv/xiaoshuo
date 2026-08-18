@@ -491,6 +491,9 @@ def test_runtime_ledger_exposes_latest_recovery_followup_receipt_and_timeline(cl
 
 
 def test_human_review_event_detail_exposes_structured_targets(client, session) -> None:
+    # HumanReviewEvent now enforces its scene/chapter foreign keys; this test
+    # exercises response shaping, so seed the referenced target explicitly.
+    seed_story(client, session)
     session.add(
         HumanReviewEvent(
             event_id="human_review_manual_scene_structured",

@@ -51,6 +51,7 @@ from novel_system.services.llm_client import (
 from novel_system.services.llm_accounting import LLMAccountingError
 from novel_system.services.llm_task_runner import (
     UNBOUNDED_TIMEOUT_LEASE_SECONDS,
+    _execution_owner_heartbeat,
     _execution_owner_lease_seconds,
     LLMNodeExecutionError,
     LLMNodeRunner,
@@ -72,6 +73,47 @@ from novel_system.services.scene_run_checkpoint import (
     scene_job_execution_id,
 )
 from tests.real_llm_fakes import ScenePipelineOnlineFake
+
+
+def test_checkpoint_draft_invalid_ledger_returns_domain_error_instead_of_name_error(monkeypatch) -> None:
+    orchestrator = object.__new__(Orchestrator)
+    orchestrator.session = SimpleNamespace(get=lambda _model, _row_id: SimpleNamespace())
+    refs = {
+        "neutral_row": "draft-row",
+        "neutral_llm_call_id": "llm-call",
+        "neutral_execution_step_key": "neutral_draft",
+        "neutral_artifact_execution_id": "execution-id",
+    }
+    monkeypatch.setattr(
+        orchestrator,
+        "_checkpoint_artifact",
+        lambda key, **_kwargs: refs[key],
+    )
+    monkeypatch.setattr(orchestrator, "_load_checkpoint_bundle", lambda _scene_id: {"bundle_id": "bundle"})
+    monkeypatch.setattr(orchestrator, "_validate_artifact_execution_owner", lambda value: value)
+    monkeypatch.setattr(
+        orchestrator,
+        "_validate_checkpoint_llm_output",
+        lambda **_kwargs: SimpleNamespace(),
+    )
+
+    def invalid_ledger(_parent) -> None:
+        raise LLMAccountingError("LEDGER_INVALID", "ledger invalid")
+
+    monkeypatch.setattr(orchestrator, "_validate_settled_parent_ledger", invalid_ledger)
+
+    with pytest.raises(DomainError) as exc_info:
+        orchestrator._load_checkpoint_draft(
+            "scene-id",
+            ref_key="neutral_row",
+            expected_stage="neutral",
+            expected_node_at_least="neutral_draft",
+            result_type="neutral",
+        )
+
+    assert exc_info.value.code == "RUN_CHECKPOINT_CORRUPT"
+    assert exc_info.value.message == "neutral checkpoint generation attempt ledger is invalid"
+    assert exc_info.value.details == {"llm_call_id": "llm-call", "error_code": "LEDGER_INVALID"}
 
 
 @pytest.fixture(autouse=True)
@@ -6645,6 +6687,29 @@ def test_owner_lease_envelope_survives_an_unbounded_request_timeout(monkeypatch)
     unbounded = _execution_owner_lease_seconds(request_timeout_seconds=0, client=object())
     assert unbounded == UNBOUNDED_TIMEOUT_LEASE_SECONDS
     assert unbounded > 30
+
+
+def test_provider_heartbeat_periodically_renews_with_a_detached_callback() -> None:
+    class _Lease:
+        def __init__(self) -> None:
+            self.detached_renewals: list[int] = []
+
+        def renew(self, *, lease_seconds: int) -> None:
+            del lease_seconds
+
+        def renew_detached(self, *, lease_seconds: int) -> None:
+            self.detached_renewals.append(lease_seconds)
+
+    lease = _Lease()
+    token = begin_llm_execution("exec-heartbeat", lease_renewer=lease.renew)
+    try:
+        with _execution_owner_heartbeat(lease_seconds=3_600, interval_seconds=0.01):
+            time.sleep(0.045)
+    finally:
+        end_llm_execution(token)
+
+    assert len(lease.detached_renewals) >= 2
+    assert set(lease.detached_renewals) == {3_600}
 
 
 def test_dispatch_truth_allows_predispatch_retry_but_blocks_unknown_provider_outcome(session, monkeypatch) -> None:

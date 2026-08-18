@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from sqlalchemy import event
+
 from novel_system.db.models import AttemptTracker, FinalScene, HumanReviewEvent, LlmCall, QcReport, SceneDraft
+from novel_system.db.session import engine
 
 
 def _create_chapter(client, chapter_id: str = "CH920") -> None:
@@ -251,7 +254,32 @@ def test_scene_generation_history_returns_attempt_timeline_with_resolved_referen
     )
     session.commit()
 
-    response = client.get("/api/v1/scenes/CH920_SC01/generation-history")
+    lookup_selects: dict[str, int] = {
+        table: 0
+        for table in (
+            "scene_drafts",
+            "final_scenes",
+            "qc_reports",
+            "human_review_events",
+            "llm_calls",
+        )
+    }
+
+    def capture_lookup_selects(_connection, _cursor, statement, _parameters, _context, _many) -> None:
+        normalized = " ".join(statement.lower().split())
+        if not normalized.startswith("select"):
+            return
+        for table in lookup_selects:
+            if f"from {table}" in normalized:
+                lookup_selects[table] += 1
+
+    event.listen(engine(), "before_cursor_execute", capture_lookup_selects)
+    try:
+        response = client.get("/api/v1/scenes/CH920_SC01/generation-history")
+    finally:
+        event.remove(engine(), "before_cursor_execute", capture_lookup_selects)
+
+    assert lookup_selects == {table: 1 for table in lookup_selects}
 
     assert response.status_code == 200
     payload = response.json()["data"]

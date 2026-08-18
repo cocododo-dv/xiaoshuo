@@ -1,12 +1,13 @@
 import React from "react";
 import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
-import { TweakRadio, TweakSection, TweakSlider, TweakToggle } from "./tweaks-panel.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
-import { SceneRunJobControl, scnQueueLoad, scnRunLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnReQC, scnRun, scnCreateCards, scnTopupBudget, scnRunSave, scnAdoptToDoc, scnPrepareAdoption, scnPickList, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
+import { SceneRunJobControl, scnQueueLoad, scnRunLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnReQC, scnSetQcThresholds, scnRun, scnCreateCards, scnTopupBudget, scnRunSave, scnAdoptToDoc, scnPrepareAdoption, scnPickList, scnHydrateFromBackend, scnBackendQueueSids, scnCandidates, scnSelectCandidate, scnResumeAfterSelection } from "./ws-scene-run.jsx";
 import { ContentSafetyReviewDialog, contentSafetyReviewFromError } from "./wr-content-safety-review.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 import { WsWorks } from "./ws-works.jsx";
+import { SceneTweaks } from "./ws-shell-tweaks.jsx";
+import { setViewIntentTargetReady } from "./ws-view-intents.js";
 
 /* global React, I */
 const { useState: useSt8, useEffect: useEf8, useRef: useRef8, useMemo: useMemo8 } = React;
@@ -82,14 +83,7 @@ function WsSceneBoard({ go, t }) {
   /* 初始化：持久化队列（按作品）+ 编排送来的入列请求 + 每场已持久化的运行结果 */
   const initRef = useRef8(null);
   if (!initRef.current) {
-    const p = window.__scnEnqueue; window.__scnEnqueue = null;
     const sids = (scnQueueLoad ? scnQueueLoad() : []).slice();
-    // 单场（写作台/编排「交给 AI」）与批量（构思物化后「去 AI 起草」）两种入列请求
-    const pushFront = (sid) => { if (sid && !sids.includes(sid)) sids.unshift(sid); };
-    if (p && Array.isArray(p.sids)) p.sids.slice().reverse().forEach(pushFront);
-    if (p && p.sid) pushFront(p.sid);
-    // 明确入列的场先销掉「已移出」记号，否则刚加进来的场会被移出名单挡在门外
-    if (p && scnQueueDismissClear) scnQueueDismissClear([...(p.sids || []), p.sid].filter(Boolean));
     const items = sids.map(sid => scnFromCatalog(sid)).filter(Boolean);
     const runs0 = {};
     items.forEach(it => { const r = scnRunLoad ? scnRunLoad(it.sid) : null; if (r) runs0[it.id] = r; });
@@ -164,7 +158,12 @@ function WsSceneBoard({ go, t }) {
     else if (scnHydrateFromBackend) {
       // 本地无记录：尝试从后端 workbench 恢复既有产出（不覆盖期间跑起来的运行）
       scnHydrateFromBackend(sid)
-        .then(hr => { if (hr) { setRuns(m => (m["cq-" + sid] ? m : { ...m, ["cq-" + sid]: hr })); if (scnRunSave) scnRunSave(sid, hr); } })
+        .then(hr => {
+          if (hr && scenePageMounted.current) {
+            setRuns(m => (m["cq-" + sid] ? m : { ...m, ["cq-" + sid]: hr }));
+            if (scnRunSave) scnRunSave(sid, hr);
+          }
+        })
         .catch(() => {});
     }
     setPicked("cq-" + sid);
@@ -272,9 +271,18 @@ function WsSceneBoard({ go, t }) {
   useEf8(() => {
     const onDx = (e) => { const d = e.detail || {}; if (d.n) setDxDone(m => ({ ...m, [d.n]: d.count || 0 })); };
     window.addEventListener("ws:scene-deepdesk-done", onDx);
-    const onEnq = (e) => { if ((e.detail || {}).sid) enqueueSid(e.detail.sid); };
+    const onEnq = (e) => {
+      const detail = e.detail || {};
+      if (Array.isArray(detail.sids)) detail.sids.slice().reverse().forEach(enqueueSid);
+      if (detail.sid) enqueueSid(detail.sid);
+    };
     window.addEventListener("ws:scene-enqueue", onEnq);
-    return () => { window.removeEventListener("ws:scene-deepdesk-done", onDx); window.removeEventListener("ws:scene-enqueue", onEnq); };
+    setViewIntentTargetReady("scene");
+    return () => {
+      setViewIntentTargetReady("scene", false);
+      window.removeEventListener("ws:scene-deepdesk-done", onDx);
+      window.removeEventListener("ws:scene-enqueue", onEnq);
+    };
   }, []);
 
   /* 队列：目录来的场叠加运行态 */
@@ -312,8 +320,8 @@ function WsSceneBoard({ go, t }) {
     && activeBackendScene.sid === selectedCardScene.sid
   ) ? activeBackendScene.sceneId : "";
 
-  /* 质检阈值随 Tweaks 即时生效（引擎从 window.__scnQcTh 读） */
-  window.__scnQcTh = { short: tw.scnShort || 55, repeat: tw.scnRepeat || 30, long: tw.scnLong || 64 };
+  /* 质检阈值随 Tweaks 即时生效，通过模块接口同步给运行引擎。 */
+  scnSetQcThresholds({ short: tw.scnShort || 55, repeat: tw.scnRepeat || 30, long: tw.scnLong || 64 });
 
   const currentAuthoritativeJob = (
     authoritativeRunJob
@@ -1389,7 +1397,7 @@ function DecisionBar({ scene, state, runJobStatus, go, onArchive, onRun, onCreat
         <div className="scn2-decide-sum"><I.Database size={14} /> {scene.fromCard ? "已写入正文文档 · 场景卡置「完成」" : "已归档至章节场景卡"}</div>
         <div className="scn2-decide-acts">
           {scene.fromCard && (
-            <button className="btn btn-quiet btn-sm" onClick={() => { go("writer"); setTimeout(() => window.dispatchEvent(new CustomEvent("ws:writer-scene", { detail: scene.sid })), 80); }}><I.Pen size={13} /> 在写作器打开</button>
+            <button className="btn btn-quiet btn-sm" onClick={() => go("writer", { type: "ws:writer-scene", detail: scene.sid })}><I.Pen size={13} /> 在写作器打开</button>
           )}
           <button className="btn btn-quiet btn-sm" onClick={() => go("manuscripts")}>在成稿中心查看</button>
           <button className="btn btn-ghost btn-sm" onClick={toWriterDeep}><I.Microscope size={13} /> 送写作台深改</button>
@@ -1780,30 +1788,6 @@ function ScenePicker({ queued, onPick, onClose }) {
   );
 }
 
-function SceneTweaks({ t, setTweak }) {
-  return (
-    <>
-      <TweakSection label="AI 起草台" />
-      <TweakSlider label="正文字号" value={t.scnFont ?? 16} min={15} max={20} step={1} unit="px"
-        onChange={(v) => setTweak("scnFont", v)} />
-      <TweakRadio label="证据栏密度" value={t.scnDensity ?? "cozy"}
-        options={[{ value: "cozy", label: "疏朗" }, { value: "compact", label: "紧凑" }]}
-        onChange={(v) => setTweak("scnDensity", v)} />
-      <TweakToggle label="戏剧卡边条" value={t.scnBeats !== false}
-        onChange={(v) => setTweak("scnBeats", v)} />
-      <TweakToggle label="运行日志默认展开" value={t.scnLog !== false}
-        onChange={(v) => setTweak("scnLog", v)} />
-      <TweakSection label="质检阈值 · 对已生成稿实时重算" />
-      <TweakSlider label="短句率目标" value={t.scnShort ?? 55} min={30} max={85} step={5} unit="%"
-        onChange={(v) => setTweak("scnShort", v)} />
-      <TweakSlider label="句式重复上限" value={t.scnRepeat ?? 30} min={10} max={60} step={5} unit="%"
-        onChange={(v) => setTweak("scnRepeat", v)} />
-      <TweakSlider label="超长句阈值" value={t.scnLong ?? 64} min={40} max={120} step={4} unit="字"
-        onChange={(v) => setTweak("scnLong", v)} />
-    </>
-  );
-}
-
 /* 运行队列：从章节目录加场入列——真实起草：读雪花构思 + 场景卡，质检后写回正文。 */
 function WsScene(props) {
   const hasCatalog = (() => { try { return WsCatalog && WsCatalog.get().length > 0; } catch (e) { return false; } })();
@@ -1828,7 +1812,5 @@ function WsScene(props) {
   );
 }
 
-Object.assign(window, { WsScene, SceneTweaks });
-
-/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
+/* 场景工作台只通过显式 ESM 导出。 */
 export { WsScene, SceneTweaks };

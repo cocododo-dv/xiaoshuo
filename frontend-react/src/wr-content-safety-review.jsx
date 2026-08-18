@@ -66,7 +66,7 @@ function ContentSafetyReviewDialog({ review, busy = false, error = "", onCancel,
     previousFocus.current = document.activeElement;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    requestAnimationFrame(() => cancelRef.current?.focus());
+    const frame = requestAnimationFrame(() => cancelRef.current?.focus());
     const onKey = (event) => {
       if (event.key === "Escape" && !busyRef.current) {
         event.preventDefault();
@@ -82,6 +82,7 @@ function ContentSafetyReviewDialog({ review, busy = false, error = "", onCancel,
     };
     window.addEventListener("keydown", onKey);
     return () => {
+      cancelAnimationFrame(frame);
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", onKey);
       previousFocus.current?.focus?.();

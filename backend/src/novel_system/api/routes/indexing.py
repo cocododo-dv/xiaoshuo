@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
 from novel_system.db.models import HumanReviewEvent, OperationLog, ReconcileFault, ReindexJob, VectorAliasRegistry, VerifyJob
 from novel_system.services.human_review_support import (
@@ -146,7 +147,12 @@ def job_detail(job_id: str, request: Request, session: Session = Depends(get_ses
 
 
 @router.post("/api/v1/index/verify/{job_id}/retry")
-def retry_verify(job_id: str, request: Request, session: Session = Depends(get_session)):
+def retry_verify(
+    job_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
@@ -166,7 +172,13 @@ def retry_verify(job_id: str, request: Request, session: Session = Depends(get_s
 
 
 @router.post("/api/v1/runtime/recovery/sweep")
-def recovery_sweep(request: Request, session: Session = Depends(get_session)):
+def recovery_sweep(
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
+    from novel_system.services.scene_run_jobs import recover_expired_cancel_requested_jobs
+
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
@@ -174,7 +186,9 @@ def recovery_sweep(request: Request, session: Session = Depends(get_session)):
         method="POST",
         path_template="/api/v1/runtime/recovery/sweep",
         payload={},
-        action=lambda: RuntimeRecoveryService(session).recover_stuck_jobs(),
+        action=lambda: RuntimeRecoveryService(session).recover_stuck_jobs(
+            scene_cancellation_recoverer=recover_expired_cancel_requested_jobs,
+        ),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -182,7 +196,11 @@ def recovery_sweep(request: Request, session: Session = Depends(get_session)):
 
 
 @router.post("/api/v1/runtime/promotions/run-due")
-def run_due_promotions(request: Request, session: Session = Depends(get_session)):
+def run_due_promotions(
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,

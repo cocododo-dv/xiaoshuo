@@ -3,22 +3,11 @@ import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
 import { TweakRadio, TweakSection, TweakSlider, TweakToggle, TweaksPanel, useTweaks } from "./tweaks-panel.jsx";
 import { WsWorks, useActiveWork, useWorks } from "./ws-works.jsx";
-import { WRITER_TWEAK_DEFAULTS, WriterRoom, WriterTweaks } from "./ws-writer.jsx";
-import { WsReview, useReviewBadge } from "./ws-review.jsx";
-import { WsHome } from "./ws-home.jsx";
-import { WsConstruct, WsSnowflake } from "./ws-snow.jsx";
-import { WsFlowmap } from "./ws-flowmap.jsx";
-import { WsStyleRef } from "./ws-styleref.jsx";
-import { WsLibrary, WsTrash } from "./ws-library.jsx";
-import { WsAuthor } from "./ws-author.jsx";
-import { SceneTweaks, WsScene } from "./ws-scene.jsx";
-import { WsManuscripts } from "./ws-manuscripts.jsx";
-import { WsQuality } from "./ws-quality.jsx";
-import { WsEval } from "./ws-eval.jsx";
-import { WsCost } from "./ws-cost.jsx";
-import { WsIndex, WsInterop } from "./ws-ops.jsx";
-import { WsSettings } from "./ws-settings.jsx";
+import { useReviewBadge } from "./ws-review-badge.jsx";
 import { WsPalette } from "./ws-palette.jsx";
+import { SceneTweaks, WriterTweaks } from "./ws-shell-tweaks.jsx";
+import { ProjectRequired, ViewErrorBoundary, ViewLoading } from "./ws-view-boundary.jsx";
+import { flushViewIntents, queueViewIntents } from "./ws-view-intents.js";
 import { onRovingTabKeyDown } from "./a11y-tabs.js";
 
 /* global React, ReactDOM, I, useTweaks, TweaksPanel, TweakSection, TweakSlider, TweakToggle, TweakRadio,
@@ -27,6 +16,44 @@ import { onRovingTabKeyDown } from "./a11y-tabs.js";
    WsCost, WsIndex, WsInterop, WsSettings, WsPalette, WsWorks, useActiveWork, useWorks */
 const { useState: useAS, useEffect: useAE, useRef: useARef } = React;
 const wsPortal = ReactDOM.createPortal;
+
+function lazyNamed(loader, exportName) {
+  return React.lazy(async () => {
+    const module = await loader();
+    const component = module[exportName];
+    if (!component) throw new Error(`模块缺少导出：${exportName}`);
+    return { default: component };
+  });
+}
+
+const LazyWsHome = lazyNamed(() => import("./ws-home.jsx"), "WsHome");
+const LazyWsConstruct = lazyNamed(() => import("./ws-snow.jsx"), "WsConstruct");
+const LazyWsReview = lazyNamed(() => import("./ws-review.jsx"), "WsReview");
+const LazyWsFlowmap = lazyNamed(() => import("./ws-flowmap.jsx"), "WsFlowmap");
+const LazyWsStyleRef = lazyNamed(() => import("./ws-styleref.jsx"), "WsStyleRef");
+const LazyWsLibrary = lazyNamed(() => import("./ws-library.jsx"), "WsLibrary");
+const LazyWsTrash = lazyNamed(() => import("./ws-library.jsx"), "WsTrash");
+const LazyWsAuthor = lazyNamed(() => import("./ws-author.jsx"), "WsAuthor");
+const LazyWsScene = lazyNamed(() => import("./ws-scene.jsx"), "WsScene");
+const LazyWsManuscripts = lazyNamed(() => import("./ws-manuscripts.jsx"), "WsManuscripts");
+const LazyWsQuality = lazyNamed(() => import("./ws-quality.jsx"), "WsQuality");
+const LazyWsEval = lazyNamed(() => import("./ws-eval.jsx"), "WsEval");
+const LazyWsCost = lazyNamed(() => import("./ws-cost.jsx"), "WsCost");
+const LazyWsIndex = lazyNamed(() => import("./ws-ops.jsx"), "WsIndex");
+const LazyWsInterop = lazyNamed(() => import("./ws-ops.jsx"), "WsInterop");
+const LazyWsSettings = lazyNamed(() => import("./ws-settings.jsx"), "WsSettings");
+const LazyWriterRoom = lazyNamed(() => import("./ws-writer.jsx"), "WriterRoom");
+const LazyWrRecoveryCenter = lazyNamed(() => import("./wr-recovery-center.jsx"), "WrRecoveryCenter");
+
+function ViewReady({ view, children }) {
+  useAE(() => {
+    const schedule = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 0));
+    const cancel = window.cancelAnimationFrame || window.clearTimeout;
+    const handle = schedule(() => flushViewIntents(view, window, { onlyWhenReady: true }));
+    return () => cancel(handle);
+  }, [view]);
+  return children;
+}
 
 const WS_THEME = { day: "light", dusk: "sepia", night: "dark" };
 
@@ -83,7 +110,7 @@ const WS_NAV_GROUPS = [
     items: [
       { id: "cost",    label: "成本看板", icon: "Coins" },
       { id: "index",   label: "发布索引", icon: "UploadCloud" },
-      { id: "interop", label: "导入导出", icon: "FileInput" },
+      { id: "interop", label: "互操作与导出", icon: "FileInput" },
     ],
   },
   {
@@ -102,6 +129,10 @@ const WS_VIEW_LABELS = (() => {
   return m;
 })();
 const WS_ALL_VIEWS = Object.keys(WS_VIEW_LABELS);
+const WS_PROJECT_SCOPED_VIEWS = new Set([
+  "flowmap", "snowflake", "writer", "library", "author", "scene",
+  "manuscripts", "quality", "eval", "index", "interop",
+]);
 /* 旧路由别名：独立深改台已并入写作台，深链重定向到深改姿态 */
 const WS_VIEW_ALIAS = { deepdesk: "writer" };
 
@@ -122,7 +153,7 @@ function App() {
       if (WS_VIEW_ALIAS[h]) {
         const target = WS_VIEW_ALIAS[h];
         history.replaceState(null, "", "#" + target);
-        if (h === "deepdesk") setTimeout(() => window.dispatchEvent(new CustomEvent("ws:writer-posture", { detail: "deep" })), 120);
+        if (h === "deepdesk") queueViewIntents(target, { type: "ws:writer-posture", detail: "deep" });
         h = target;
       }
       if (WS_ALL_VIEWS.includes(h)) {
@@ -136,19 +167,26 @@ function App() {
     return () => window.removeEventListener("hashchange", r);
   }, []);
 
-  const go = (v) => {
+  const go = (v, intents) => {
+    const queued = Array.isArray(intents) ? [...intents] : (intents ? [intents] : []);
     if (WS_VIEW_ALIAS[v]) {
       const orig = v;
       v = WS_VIEW_ALIAS[v];
-      if (orig === "deepdesk") setTimeout(() => window.dispatchEvent(new CustomEvent("ws:writer-posture", { detail: "deep" })), 120);
+      if (orig === "deepdesk") queued.push({ type: "ws:writer-posture", detail: "deep" });
     }
-    if (!WS_ALL_VIEWS.includes(v)) return;
+    if (!WS_ALL_VIEWS.includes(v)) return false;
+    queueViewIntents(v, queued);
     // navigating to an advanced view auto-reveals 高级 mode so the rail stays consistent
     const isAdvanced = WS_NAV_GROUPS.some(g => g.advanced && g.items.some(it => it.id === v));
     if (isAdvanced && mode !== "advanced") setTweak("mode", "advanced");
     setView(v);
-    history.replaceState(null, "", "#" + v);
+    if (location.hash !== "#" + v) history.pushState(null, "", "#" + v);
     setPalette(false);
+    if (v === view && queued.length) {
+      const schedule = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 0));
+      schedule(() => flushViewIntents(v, window, { onlyWhenReady: true }));
+    }
+    return true;
   };
 
   // ⌘K palette
@@ -167,16 +205,13 @@ function App() {
       case "mode": setTweak("mode", cmd.value); break;
       case "tweaks": window.dispatchEvent(new CustomEvent("ws:tweaks-open")); break;
       case "scene":
-        go("writer");
-        setTimeout(() => window.dispatchEvent(new CustomEvent("ws:writer-scene", { detail: cmd.sceneId })), 60);
+        go("writer", { type: "ws:writer-scene", detail: cmd.sceneId });
         break;
       case "writer-action":
-        go("writer");
-        setTimeout(() => window.dispatchEvent(new CustomEvent("ws:writer-action", { detail: cmd.action })), 60);
+        go("writer", { type: "ws:writer-action", detail: cmd.action });
         break;
       case "step":
-        go("snowflake");
-        setTimeout(() => window.dispatchEvent(new CustomEvent("ws:snow-step", { detail: cmd.key })), 60);
+        go("snowflake", { type: "ws:snow-step", detail: cmd.key });
         break;
       case "work":
         WsWorks.setActive(cmd.workId);
@@ -192,25 +227,37 @@ function App() {
   const inWriter = view === "writer";
 
   const renderView = () => {
+    if (WS_PROJECT_SCOPED_VIEWS.has(view)) {
+      if (work.id === "__loading__") return <ViewLoading label="书架" />;
+      if (!work.id) {
+        return (
+          <ProjectRequired
+            label={WS_VIEW_LABELS[view] || "这个页面"}
+            onCreate={() => window.dispatchEvent(new CustomEvent("ws:new-work"))}
+            onGoHome={() => go("home")}
+          />
+        );
+      }
+    }
     switch (view) {
-      case "home":        return <WsHome go={go} />;
-      case "snowflake":   return <WsConstruct go={go} />;
-      case "review":      return <WsReview go={go} />;
-      case "flowmap":     return <WsFlowmap go={go} />;
-      case "styleref":    return <WsStyleRef go={go} />;
-      case "library":     return <WsLibrary go={go} />;
-      case "author":      return <WsAuthor go={go} />;
-      case "scene":       return <WsScene go={go} t={t} />;
-      case "manuscripts": return <WsManuscripts go={go} />;
-      case "quality":     return <WsQuality go={go} />;
-      case "eval":        return <WsEval go={go} />;
-      case "cost":        return <WsCost go={go} />;
-      case "index":       return <WsIndex go={go} />;
-      case "interop":     return <WsInterop go={go} />;
-      case "settings":    return <WsSettings go={go} t={t} setTweak={setTweak} />;
-      case "trash":       return <WsTrash go={go} />;
-      case "writer":      return <div className="ws-writer-mount"><WriterRoom t={t} setTweak={setTweak} go={go} onExit={() => go("home")} /></div>;
-      default:            return <WsHome go={go} />;
+      case "home":        return <LazyWsHome go={go} />;
+      case "snowflake":   return <LazyWsConstruct go={go} />;
+      case "review":      return <LazyWsReview go={go} />;
+      case "flowmap":     return <LazyWsFlowmap go={go} />;
+      case "styleref":    return <LazyWsStyleRef go={go} />;
+      case "library":     return <LazyWsLibrary go={go} />;
+      case "author":      return <LazyWsAuthor go={go} />;
+      case "scene":       return <LazyWsScene go={go} t={t} />;
+      case "manuscripts": return <LazyWsManuscripts go={go} />;
+      case "quality":     return <LazyWsQuality go={go} />;
+      case "eval":        return <LazyWsEval go={go} />;
+      case "cost":        return <LazyWsCost go={go} />;
+      case "index":       return <LazyWsIndex go={go} />;
+      case "interop":     return <LazyWsInterop go={go} />;
+      case "settings":    return <LazyWsSettings go={go} t={t} setTweak={setTweak} />;
+      case "trash":       return <LazyWsTrash go={go} />;
+      case "writer":      return <div className="ws-writer-mount"><LazyWriterRoom t={t} setTweak={setTweak} go={go} onExit={() => go("home")} /></div>;
+      default:            return <LazyWsHome go={go} />;
     }
   };
 
@@ -219,10 +266,18 @@ function App() {
       <Rail view={view} go={go} t={t} setTweak={setTweak} mode={mode} onPalette={() => setPalette(true)} />
       <div className="ws-rail-scrim" aria-hidden="true" />
       <main className={`ws-content ${inWriter ? "is-writer" : ""}`} key={view + "::" + work.id} data-screen-label={`ws · ${view}`}>
-        {renderView()}
+        <ViewErrorBoundary resetKey={view + "::" + work.id} onGoHome={() => go("home")}>
+          <React.Suspense fallback={<ViewLoading label={WS_VIEW_LABELS[view] || "页面"} />}>
+            <ViewReady view={view}>{renderView()}</ViewReady>
+          </React.Suspense>
+        </ViewErrorBoundary>
       </main>
 
       <WsPalette open={palette} onClose={() => setPalette(false)} run={run} theme={t.theme} mode={mode} />
+
+      <ViewErrorBoundary resetKey="recovery-center" onGoHome={() => go("home")}>
+        <React.Suspense fallback={null}><LazyWrRecoveryCenter /></React.Suspense>
+      </ViewErrorBoundary>
 
       <TweaksPanel title="Tweaks">
         <TweakSection label="氛围与主题" />

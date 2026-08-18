@@ -665,10 +665,10 @@ def test_llm_client_timeout_message_names_the_connect_ceiling_when_unbounded() -
     assert "timed out after" not in message
 
 
-def test_llm_settings_default_to_no_response_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_llm_settings_default_to_finite_response_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("NOVEL_SYSTEM_LLM_TIMEOUT_SECONDS", raising=False)
 
-    assert get_settings().llm_timeout_seconds == 0.0
+    assert get_settings().llm_timeout_seconds == 900.0
 
 
 def test_llm_client_normalizes_request_failures() -> None:

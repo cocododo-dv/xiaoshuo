@@ -6,13 +6,14 @@
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
 from novel_system.db.models import EvaluationExperiment, EvaluationPair, EvaluationVote
 from novel_system.services.evaluation_experiment import EvaluationExperimentService
@@ -22,36 +23,39 @@ router = APIRouter(tags=["evaluation_experiments"])
 
 
 class CreateExperimentRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    name: str
-    hypothesis: str = ""
-    treatment_policy: dict[str, Any] = {}
-    control_policy: dict[str, Any] = {}
-    isolation_mode: str | None = None
-    snapshot_source_ref: str | None = None
-    evidence_provenance: str = "synthetic"
+    name: str = Field(min_length=1, max_length=255)
+    hypothesis: str = Field(default="", max_length=20_000)
+    treatment_policy: BoundedJsonObject = Field(default_factory=dict)
+    control_policy: BoundedJsonObject = Field(default_factory=dict)
+    isolation_mode: Literal[
+        "seed_project", "time_isolated", "external_holdout"
+    ] | None = None
+    snapshot_source_ref: str | None = Field(default=None, max_length=512)
+    evidence_provenance: Literal["synthetic", "human"] = "synthetic"
 
 
 class AddPairRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    scene_snapshot_hash: str
-    treatment_text: str
-    control_text: str
-    treatment_ref: str | None = None
-    control_ref: str | None = None
-    token_cost: dict[str, Any] = {}
-    genre: str | None = None
-    scene_function: str | None = None
+    scene_snapshot_hash: str = Field(min_length=1, max_length=128)
+    treatment_text: str = Field(max_length=2_000_000)
+    control_text: str = Field(max_length=2_000_000)
+    treatment_ref: str | None = Field(default=None, max_length=512)
+    control_ref: str | None = Field(default=None, max_length=512)
+    token_cost: BoundedJsonObject = Field(default_factory=dict)
+    genre: str | None = Field(default=None, max_length=128)
+    scene_function: str | None = Field(default=None, max_length=128)
 
 
 class VoteRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    choice: str
-    reviewer_ref: str | None = None
-    duration_ms: int | None = None
+    # Keep INVALID_VOTE_CHOICE from the domain service as the public error.
+    choice: str = Field(min_length=1, max_length=64)
+    reviewer_ref: str | None = Field(default=None, max_length=255)
+    duration_ms: int | None = Field(default=None, ge=0, le=(1 << 63) - 1)
 
 
 def _experiment_dict(exp: EvaluationExperiment) -> dict[str, Any]:
@@ -133,7 +137,12 @@ def create_experiment(payload: CreateExperimentRequest, request: Request, sessio
 
 
 @router.post("/api/v1/evaluation-experiments/{experiment_id}/freeze")
-def freeze_experiment(experiment_id: str, request: Request, session: Session = Depends(get_session)):
+def freeze_experiment(
+    experiment_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,

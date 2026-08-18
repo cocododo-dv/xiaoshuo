@@ -10,9 +10,6 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-from novel_system.db import models  # noqa: F401
-from novel_system.db.base import Base
-
 revision = "20260410_0003"
 down_revision = "20260409_0002"
 branch_labels = None
@@ -35,6 +32,12 @@ TARGET_COLLECTION_SQL = (
     "WHEN item_type = 'chapter_summary' THEN 'chapter_memories' "
     "ELSE 'review_items' END"
 )
+
+
+def _create_table(table_name: str, *columns: object) -> None:
+    if table_name in sa.inspect(op.get_bind()).get_table_names():
+        return
+    (op.create_table)(table_name, *columns)
 
 
 def upgrade() -> None:
@@ -86,15 +89,97 @@ def upgrade() -> None:
         ],
     )
 
-    Base.metadata.create_all(
-        bind=bind,
-        tables=[
-            Base.metadata.tables["style_rules"],
-            Base.metadata.tables["banned_rule_clusters"],
-            Base.metadata.tables["world_rules"],
-            Base.metadata.tables["calibration_lines"],
-            Base.metadata.tables["foreshadow_tracker"],
-        ],
+    _create_runtime_item_table(
+        "style_rules",
+        "style_rule_set_id",
+        "content",
+        "ck_style_rules_runtime",
+    )
+    _create_runtime_item_table(
+        "banned_rule_clusters",
+        "banned_cluster_id",
+        "content",
+        "ck_banned_clusters_runtime",
+    )
+    _create_table(
+        "world_rules",
+        sa.Column("row_id", sa.String(), nullable=False),
+        sa.Column("world_rule_id", sa.String(), nullable=False),
+        sa.Column("version", sa.Integer(), nullable=False),
+        sa.Column("scope", sa.String(), nullable=False),
+        sa.Column("scope_ref_id", sa.String(), nullable=True),
+        sa.Column("rule_tier", sa.String(), nullable=False),
+        sa.Column("content", sa.Text(), nullable=False),
+        sa.Column("source_review_id", sa.String(), nullable=True),
+        sa.Column("active_flag", sa.Integer(), nullable=False),
+        sa.Column("runtime_eligible", sa.Integer(), nullable=False),
+        sa.Column("runtime_eligibility_basis", sa.String(), nullable=False),
+        sa.Column("effective_at", sa.String(), nullable=True),
+        sa.Column("expires_at", sa.String(), nullable=True),
+        sa.Column("created_at", sa.String(), nullable=False),
+        sa.Column("updated_at", sa.String(), nullable=False),
+        sa.CheckConstraint(
+            "NOT (active_flag = 0 AND runtime_eligible = 1)",
+            name="ck_world_rules_runtime",
+        ),
+        sa.PrimaryKeyConstraint("row_id"),
+    )
+    _create_runtime_item_table(
+        "calibration_lines",
+        "calibration_line_id",
+        "text",
+        "ck_calibration_lines_runtime",
+    )
+    _create_table(
+        "foreshadow_tracker",
+        sa.Column("row_id", sa.String(), nullable=False),
+        sa.Column("foreshadow_id", sa.String(), nullable=False),
+        sa.Column("version", sa.Integer(), nullable=False),
+        sa.Column("chapter_id", sa.String(), nullable=False),
+        sa.Column("scene_id", sa.String(), nullable=True),
+        sa.Column("text", sa.Text(), nullable=False),
+        sa.Column("tracker_status", sa.String(), nullable=False),
+        sa.Column("source_review_id", sa.String(), nullable=True),
+        sa.Column("active_flag", sa.Integer(), nullable=False),
+        sa.Column("runtime_eligible", sa.Integer(), nullable=False),
+        sa.Column("runtime_eligibility_basis", sa.String(), nullable=False),
+        sa.Column("effective_at", sa.String(), nullable=True),
+        sa.Column("created_at", sa.String(), nullable=False),
+        sa.Column("updated_at", sa.String(), nullable=False),
+        sa.CheckConstraint(
+            "NOT (active_flag = 0 AND runtime_eligible = 1)",
+            name="ck_foreshadow_runtime",
+        ),
+        sa.PrimaryKeyConstraint("row_id"),
+    )
+
+
+def _create_runtime_item_table(
+    table_name: str,
+    lineage_column: str,
+    text_column: str,
+    check_name: str,
+) -> None:
+    _create_table(
+        table_name,
+        sa.Column("row_id", sa.String(), nullable=False),
+        sa.Column(lineage_column, sa.String(), nullable=False),
+        sa.Column("version", sa.Integer(), nullable=False),
+        sa.Column("scope", sa.String(), nullable=False),
+        sa.Column("scope_ref_id", sa.String(), nullable=True),
+        sa.Column(text_column, sa.Text(), nullable=False),
+        sa.Column("source_review_id", sa.String(), nullable=True),
+        sa.Column("active_flag", sa.Integer(), nullable=False),
+        sa.Column("runtime_eligible", sa.Integer(), nullable=False),
+        sa.Column("runtime_eligibility_basis", sa.String(), nullable=False),
+        sa.Column("effective_at", sa.String(), nullable=True),
+        sa.Column("created_at", sa.String(), nullable=False),
+        sa.Column("updated_at", sa.String(), nullable=False),
+        sa.CheckConstraint(
+            "NOT (active_flag = 0 AND runtime_eligible = 1)",
+            name=check_name,
+        ),
+        sa.PrimaryKeyConstraint("row_id"),
     )
 
 
@@ -110,13 +195,11 @@ def _add_missing_columns(inspector: sa.Inspector, table_name: str, columns: list
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-
-    Base.metadata.tables["foreshadow_tracker"].drop(bind=bind, checkfirst=True)
-    Base.metadata.tables["calibration_lines"].drop(bind=bind, checkfirst=True)
-    Base.metadata.tables["world_rules"].drop(bind=bind, checkfirst=True)
-    Base.metadata.tables["banned_rule_clusters"].drop(bind=bind, checkfirst=True)
-    Base.metadata.tables["style_rules"].drop(bind=bind, checkfirst=True)
+    op.drop_table("foreshadow_tracker")
+    op.drop_table("calibration_lines")
+    op.drop_table("world_rules")
+    op.drop_table("banned_rule_clusters")
+    op.drop_table("style_rules")
 
     with op.batch_alter_table("chapter_memories") as batch_op:
         batch_op.drop_column("effective_at")

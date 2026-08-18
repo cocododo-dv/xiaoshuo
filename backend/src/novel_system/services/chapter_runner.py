@@ -11,6 +11,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterRunJob, HumanReviewEvent, SceneCard, SceneRunState, utcnow
+from novel_system.db.session import SessionLocal
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.author_actions import author_action
 from novel_system.services.project_backtracks import ProjectBacktrackService
@@ -42,6 +43,41 @@ class ChapterRunLease:
         self.lease_expires_at = self._service._renew_lease(self, lease_seconds=lease_seconds)
         return self.lease_expires_at
 
+    def renew_detached(self, *, lease_seconds: int) -> str:
+        """Renew with an independent session for long provider calls."""
+
+        with SessionLocal() as session:
+            service = ChapterRunnerService(session)
+            detached = ChapterRunLease(
+                job_id=self.job_id,
+                worker_id=self.worker_id,
+                attempt_no=self.attempt_no,
+                lease_expires_at=self.lease_expires_at,
+                _service=service,
+            )
+            expires = service._renew_lease(detached, lease_seconds=lease_seconds)
+            session.commit()
+            return expires
+
+
+@dataclass
+class _CompositeLeaseRenewer:
+    chapter_lease: ChapterRunLease
+    request_lease: Any | None = None
+
+    def __call__(self, *, lease_seconds: int) -> None:
+        self.chapter_lease.renew(lease_seconds=lease_seconds)
+        if self.request_lease is not None:
+            self.request_lease.renew(lease_seconds=lease_seconds)
+
+    def renew_detached(self, *, lease_seconds: int) -> None:
+        self.chapter_lease.renew_detached(lease_seconds=lease_seconds)
+        if self.request_lease is None:
+            return
+        renew = getattr(self.request_lease, "renew_detached", None)
+        if callable(renew):
+            renew(lease_seconds=lease_seconds)
+
 
 class ChapterRunnerService:
     def __init__(self, session: Session) -> None:
@@ -70,10 +106,7 @@ class ChapterRunnerService:
         self._active_owner = owner
         self.session.commit()
 
-        def _renew_all(*, lease_seconds: int) -> None:
-            owner.renew(lease_seconds=lease_seconds)
-            if request_lease is not None:
-                request_lease.renew(lease_seconds=lease_seconds)
+        renew_all = _CompositeLeaseRenewer(owner, request_lease)
 
         orchestrator = Orchestrator(self.session)
         while True:
@@ -96,7 +129,7 @@ class ChapterRunnerService:
                 if "execution_id" in call_parameters:
                     call_kwargs = {
                         "execution_id": chapter_scene_execution_id(job.job_id, next_scene_id),
-                        "lease_renewer": _renew_all,
+                        "lease_renewer": renew_all,
                     }
                     if "run_job_id" in call_parameters or any(
                         parameter.kind == inspect.Parameter.VAR_KEYWORD

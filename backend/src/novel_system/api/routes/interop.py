@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
@@ -13,9 +13,9 @@ router = APIRouter(tags=["interop"])
 
 
 class BundleWorksheetYamlRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    worksheet_yaml: str
+    worksheet_yaml: str = Field(min_length=1, max_length=2_000_000)
 
 
 @router.post("/api/v1/interop/preview/bundle-worksheet")
@@ -24,6 +24,7 @@ def preview_bundle_worksheet(
     request: Request,
     session: Session = Depends(get_session),
 ):
+    # idempotency-exempt: deterministic read-only preview; no DB/file/provider side effect.
     payload = InteropCenterService(session).preview_yaml(body.worksheet_yaml)
     return ok(payload, req_id=getattr(request.state, "request_id", None))
 

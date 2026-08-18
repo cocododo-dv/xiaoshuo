@@ -280,6 +280,7 @@ def test_provider_models_endpoint_live_and_preset_fallback(client, monkeypatch) 
 
 def test_load_active_config_payload_retries_transient_db_errors(client, session, monkeypatch) -> None:
     """sqlite 瞬时锁不应让 LLM 被误判为未配置(历史 KeyError 审计行的根因)。"""
+    import pytest
     from sqlalchemy.exc import OperationalError
 
     from novel_system.services import system_config as sc
@@ -300,12 +301,14 @@ def test_load_active_config_payload_retries_transient_db_errors(client, session,
     assert sc.load_active_config_payload("api") is None
     assert attempts["n"] == 2
 
-    # 持续失败 → 仍然安静返回 None(行为兜底不变)
+    # 持续失败 → 保留 OperationalError，由 API 边界明确映射为可重试 503；
+    # 绝不能伪装成“没有激活配置”。
     attempts["n"] = -10_000
     monkeypatch.setattr(sc, "SessionLocal", lambda: (_ for _ in ()).throw(
         OperationalError("SELECT 1", {}, Exception("database is locked"))
     ))
-    assert sc.load_active_config_payload("api") is None
+    with pytest.raises(OperationalError):
+        sc.load_active_config_payload("api")
 
 
 def test_runner_retry_backoff_reads_job_runtime_override(session) -> None:

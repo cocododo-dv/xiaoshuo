@@ -56,7 +56,6 @@ class StoryProject(Base):
     accent: Mapped[str | None] = mapped_column(String, nullable=True)
     synopsis_line: Mapped[str | None] = mapped_column(Text, nullable=True)
     words_target_daily: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    is_demo: Mapped[int] = mapped_column(Integer, default=0)
     outline_text: Mapped[str] = mapped_column(Text)
     planning_mode: Mapped[str] = mapped_column(String, default="outline_driven")
     snowflake_schema_version: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -241,6 +240,7 @@ class SnowflakeScenePlan(Base):
         # row_uid 基（见 snowflake_workspace._mint_scene_id），这条唯一索引是结构兜底：
         # 万一还有别的路径铸出重复 id，宁可硬报错也不要静默丢场。
         Index("ix_snowflake_scene_plans_scene_id", "project_id", "scene_id", unique=True),
+        Index("ix_snowflake_scene_plans_chapter_plan_id", "chapter_plan_id"),
     )
 
     scene_plan_id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -250,7 +250,11 @@ class SnowflakeScenePlan(Base):
     # P2：章归属。chapter_id 从「创建时铸死的系统身份」降级为由分章结果推导的
     # 物化目标 id；真正的归属锚是 chapter_plan_id（NULL = 还没分章）。
     chapter_plan_id: Mapped[str | None] = mapped_column(
-        ForeignKey("snowflake_chapter_plans.chapter_plan_id"), nullable=True
+        ForeignKey(
+            "snowflake_chapter_plans.chapter_plan_id",
+            name="fk_snowflake_scene_plans_chapter_plan_id",
+        ),
+        nullable=True,
     )
     chapter_id: Mapped[str] = mapped_column(String)
     # 作者在 09 场景列表上标的灾一/灾二/灾三。历史上前端从不上行、水合还硬写回 ""，
@@ -385,11 +389,19 @@ class ChapterContract(Base):
     """
 
     __tablename__ = "chapter_contracts"
-    __table_args__ = (Index("ix_chapter_contracts_project", "project_id", "chapter_id"),)
+    __table_args__ = (
+        Index("ix_chapter_contracts_project", "project_id", "chapter_id"),
+        Index(
+            "ux_chapter_contracts_project_chapter",
+            "project_id",
+            "chapter_id",
+            unique=True,
+        ),
+    )
 
     contract_id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
-    chapter_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str] = mapped_column(ForeignKey("chapter_goals.chapter_id"))
     status: Mapped[str] = mapped_column(String, default="drafting")
     constraints_json: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True, default=list)
     dispatched_at: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -412,7 +424,7 @@ class ChapterAuditFinding(Base):
 
     finding_id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
-    chapter_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str] = mapped_column(ForeignKey("chapter_goals.chapter_id"))
     kind: Mapped[str] = mapped_column(String, default="drift")
     severity: Mapped[str] = mapped_column(String, default="warn")
     text: Mapped[str] = mapped_column(Text)
@@ -489,11 +501,29 @@ class TimelineEvent(Base):
 class ChapterGoal(Base):
     __tablename__ = "chapter_goals"
     __table_args__ = (
+        CheckConstraint(
+            "display_order IS NULL OR display_order >= 0",
+            name="ck_chapter_goals_display_order_nonnegative",
+        ),
         Index(
             "ix_chapter_goals_project_display_order",
             "project_id",
             "display_order",
             "chapter_id",
+        ),
+        Index(
+            "ux_chapter_goals_active_project_display_order",
+            "project_id",
+            "display_order",
+            unique=True,
+            sqlite_where=text(
+                "trashed_flag = 0 AND project_id IS NOT NULL "
+                "AND display_order IS NOT NULL"
+            ),
+            postgresql_where=text(
+                "trashed_flag = 0 AND project_id IS NOT NULL "
+                "AND display_order IS NOT NULL"
+            ),
         ),
     )
 
@@ -525,12 +555,24 @@ class ChapterGoal(Base):
 class SceneCard(Base):
     __tablename__ = "scene_cards"
     __table_args__ = (
+        CheckConstraint(
+            "scene_seq >= 1",
+            name="ck_scene_cards_scene_seq_positive",
+        ),
         Index(
             "ix_scene_cards_project_chapter_seq",
             "project_id",
             "chapter_id",
             "scene_seq",
             "scene_id",
+        ),
+        Index(
+            "ux_scene_cards_active_chapter_scene_seq",
+            "chapter_id",
+            "scene_seq",
+            unique=True,
+            sqlite_where=text("trashed_flag = 0"),
+            postgresql_where=text("trashed_flag = 0"),
         ),
     )
 
@@ -557,6 +599,14 @@ class SceneCard(Base):
     # （正文保存时更新；排序复用既有 scene_seq，不另建 display_order）。
     state: Mapped[str] = mapped_column(String, default="todo")
     words_current: Mapped[int] = mapped_column(Integer, default=0)
+    # Writer-side reminders are authoritative author data, not disposable
+    # browser cache. The revision is used as a compare-and-swap fence between
+    # browsers/devices.
+    author_notes: Mapped[str] = mapped_column(Text, default="")
+    author_notes_revision_no: Mapped[int] = mapped_column(Integer, default=0)
+    deep_review_decision_log_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    deep_review_ignored_keys_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    deep_review_preferences_revision_no: Mapped[int] = mapped_column(Integer, default=0)
     # §16 "breathing gap" — author-facing slider; 0.0=free-flow, 1.0=full-rigor, NULL=auto (criticality-based)
     constraint_intensity: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     trashed_flag: Mapped[int] = mapped_column(Integer, default=0)
@@ -726,7 +776,12 @@ class SceneBundle(Base):
 
     bundle_id: Mapped[str] = mapped_column(String, primary_key=True)
     scene_id: Mapped[str] = mapped_column(ForeignKey("scene_cards.scene_id"))
-    chapter_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "chapter_goals.chapter_id",
+            name="fk_scene_bundles_chapter_id",
+        )
+    )
     execution_mode: Mapped[str] = mapped_column(String, default="P2")
     bundle_snapshot_hash: Mapped[str] = mapped_column(String)
     frozen_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON)
@@ -743,8 +798,12 @@ class SceneBlueprint(Base):
     )
 
     row_id: Mapped[str] = mapped_column(String, primary_key=True)
-    scene_id: Mapped[str] = mapped_column(String)
-    chapter_id: Mapped[str] = mapped_column(String)
+    scene_id: Mapped[str] = mapped_column(
+        ForeignKey("scene_cards.scene_id", name="fk_scene_blueprints_scene_id")
+    )
+    chapter_id: Mapped[str] = mapped_column(
+        ForeignKey("chapter_goals.chapter_id", name="fk_scene_blueprints_chapter_id")
+    )
     source_bundle_id: Mapped[str | None] = mapped_column(String, nullable=True)
     source_bundle_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     blueprint_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -763,8 +822,18 @@ class SceneQualityContract(Base):
     )
 
     contract_id: Mapped[str] = mapped_column(String, primary_key=True)
-    scene_id: Mapped[str] = mapped_column(String)
-    chapter_id: Mapped[str] = mapped_column(String)
+    scene_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "scene_cards.scene_id",
+            name="fk_scene_quality_contracts_scene_id",
+        )
+    )
+    chapter_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "chapter_goals.chapter_id",
+            name="fk_scene_quality_contracts_chapter_id",
+        )
+    )
     contract_version: Mapped[str] = mapped_column(String, default="scene_quality_contract_v1")
     contract_hash: Mapped[str] = mapped_column(String)
     source_snapshot_hash: Mapped[str] = mapped_column(String)
@@ -785,9 +854,25 @@ class SceneExecutionContract(Base):
     )
 
     contract_id: Mapped[str] = mapped_column(String, primary_key=True)
-    scene_id: Mapped[str] = mapped_column(String)
-    chapter_id: Mapped[str] = mapped_column(String)
-    project_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "scene_cards.scene_id",
+            name="fk_scene_execution_contracts_scene_id",
+        )
+    )
+    chapter_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "chapter_goals.chapter_id",
+            name="fk_scene_execution_contracts_chapter_id",
+        )
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "story_projects.project_id",
+            name="fk_scene_execution_contracts_project_id",
+        ),
+        nullable=True,
+    )
     contract_version: Mapped[str] = mapped_column(String, default="scene_execution_contract_v1")
     source_snapshot_hash: Mapped[str] = mapped_column(String)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -1010,8 +1095,12 @@ class SceneDraft(Base):
     __table_args__ = (Index("ix_scene_drafts_scene", "scene_id"),)
 
     row_id: Mapped[str] = mapped_column(String, primary_key=True)
-    scene_id: Mapped[str] = mapped_column(String)
-    chapter_id: Mapped[str] = mapped_column(String)
+    scene_id: Mapped[str] = mapped_column(
+        ForeignKey("scene_cards.scene_id", name="fk_scene_drafts_scene_id")
+    )
+    chapter_id: Mapped[str] = mapped_column(
+        ForeignKey("chapter_goals.chapter_id", name="fk_scene_drafts_chapter_id")
+    )
     stage: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="active", server_default="active")
     content: Mapped[str] = mapped_column(Text)
@@ -1026,8 +1115,14 @@ class QcReport(Base):
     __table_args__ = (Index("ix_qc_reports_scene", "scene_id"),)
 
     qc_report_id: Mapped[str] = mapped_column(String, primary_key=True)
-    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_id: Mapped[str | None] = mapped_column(
+        ForeignKey("scene_cards.scene_id", name="fk_qc_reports_scene_id"),
+        nullable=True,
+    )
+    chapter_id: Mapped[str | None] = mapped_column(
+        ForeignKey("chapter_goals.chapter_id", name="fk_qc_reports_chapter_id"),
+        nullable=True,
+    )
     qc_type: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="active")
     source_draft_row_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -1446,8 +1541,12 @@ class FinalScene(Base):
     )
 
     row_id: Mapped[str] = mapped_column(String, primary_key=True)
-    scene_id: Mapped[str] = mapped_column(String)
-    chapter_id: Mapped[str] = mapped_column(String)
+    scene_id: Mapped[str] = mapped_column(
+        ForeignKey("scene_cards.scene_id", name="fk_final_scenes_scene_id")
+    )
+    chapter_id: Mapped[str] = mapped_column(
+        ForeignKey("chapter_goals.chapter_id", name="fk_final_scenes_chapter_id")
+    )
     content: Mapped[str] = mapped_column(Text)
     content_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default="approved")
@@ -1549,8 +1648,14 @@ class AttemptTracker(Base):
     __table_args__ = (Index("ix_attempt_tracker_scene", "scene_id"),)
 
     attempt_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_id: Mapped[str | None] = mapped_column(
+        ForeignKey("scene_cards.scene_id", name="fk_attempt_tracker_scene_id"),
+        nullable=True,
+    )
+    chapter_id: Mapped[str | None] = mapped_column(
+        ForeignKey("chapter_goals.chapter_id", name="fk_attempt_tracker_chapter_id"),
+        nullable=True,
+    )
     step: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String)
     source_bundle_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -1563,8 +1668,14 @@ class ChapterRunJob(Base):
     __table_args__ = (Index("ix_chapter_run_jobs_scene_created", "scene_id", "created_at"),)
 
     job_id: Mapped[str] = mapped_column(String, primary_key=True)
-    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    chapter_id: Mapped[str | None] = mapped_column(
+        ForeignKey("chapter_goals.chapter_id", name="fk_chapter_run_jobs_chapter_id"),
+        nullable=True,
+    )
+    scene_id: Mapped[str | None] = mapped_column(
+        ForeignKey("scene_cards.scene_id", name="fk_chapter_run_jobs_scene_id"),
+        nullable=True,
+    )
     status: Mapped[str] = mapped_column(String)
     job_type: Mapped[str] = mapped_column(String)
     payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
@@ -1678,8 +1789,14 @@ class HumanReviewEvent(Base):
     )
 
     event_id: Mapped[str] = mapped_column(String, primary_key=True)
-    scene_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    chapter_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    scene_id: Mapped[str | None] = mapped_column(
+        ForeignKey("scene_cards.scene_id", name="fk_human_review_events_scene_id"),
+        nullable=True,
+    )
+    chapter_id: Mapped[str | None] = mapped_column(
+        ForeignKey("chapter_goals.chapter_id", name="fk_human_review_events_chapter_id"),
+        nullable=True,
+    )
     object_ref: Mapped[str | None] = mapped_column(String, nullable=True)
     event_source: Mapped[str] = mapped_column(String, default="system")
     priority: Mapped[str] = mapped_column(String, default="normal")
@@ -2751,3 +2868,57 @@ class StyleReferenceFindingFeedback(Base):
     vote: Mapped[str] = mapped_column(String)  # "up" | "down"
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+# Keep ``Base.metadata.create_all`` test databases aligned with Alembic 0081.
+# Every declared foreign key used for parent lookup/deletion must have an index
+# whose first column is that foreign-key column.  Existing composite indexes are
+# left in their domain models; these are the previously uncovered lookups.
+_FOREIGN_KEY_LOOKUP_INDEXES: tuple[tuple[str, str], ...] = (
+    ("attempt_tracker", "chapter_id"),
+    ("chapter_audit_findings", "chapter_id"),
+    ("chapter_contracts", "chapter_id"),
+    ("chapter_goals", "outline_plan_id"),
+    ("chapter_run_jobs", "chapter_id"),
+    ("human_review_events", "chapter_id"),
+    ("outline_plans", "project_id"),
+    ("project_backtrack_items", "chapter_id"),
+    ("project_backtrack_items", "project_id"),
+    ("project_backtrack_items", "scene_id"),
+    ("project_backtrack_items", "source_contract_id"),
+    ("project_backtrack_items", "source_qc_report_id"),
+    ("qc_reports", "chapter_id"),
+    ("quality_benchmark_runs", "policy_id"),
+    ("quality_strategy_policies", "evidence_experiment_id"),
+    ("quality_strategy_policies", "benchmark_manifest_id"),
+    ("scene_blueprints", "chapter_id"),
+    ("scene_blueprints", "scene_id"),
+    ("scene_bundles", "chapter_id"),
+    ("scene_cards", "outline_plan_id"),
+    ("scene_drafts", "chapter_id"),
+    ("scene_execution_contracts", "project_id"),
+    ("scene_execution_contracts", "chapter_id"),
+    ("scene_execution_contracts", "scene_id"),
+    ("scene_quality_contracts", "chapter_id"),
+    ("scene_quality_contracts", "scene_id"),
+    ("snowflake_artifacts", "project_id"),
+    ("snowflake_assistant_turns", "project_id"),
+    ("snowflake_character_plans", "project_id"),
+    ("snowflake_revision_links", "project_id"),
+    ("snowflake_scene_triage_items", "scene_plan_id"),
+    ("snowflake_scene_triage_items", "project_id"),
+    ("snowflake_step_runs", "project_id"),
+    ("staged_backfill", "scene_id"),
+    ("staged_backfill", "chapter_id"),
+    ("story_characters", "project_id"),
+    ("style_reference_evidences", "quote_id"),
+    ("style_reference_findings", "run_id"),
+    ("style_reference_profiles", "run_id"),
+    ("style_reference_quotes", "paragraph_id"),
+)
+
+for _table_name, _column_name in _FOREIGN_KEY_LOOKUP_INDEXES:
+    Index(
+        f"ix_{_table_name}_{_column_name}",
+        Base.metadata.tables[_table_name].c[_column_name],
+    )

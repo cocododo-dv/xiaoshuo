@@ -10,6 +10,81 @@ const OPERATOR_REF_KEY = "novel-system-operator-ref";
 const DEFAULT_OPERATOR_REF = "operator";
 const REMOTE_ACCESS_TOKEN_KEY = "novel-system-remote-access-token";
 const DEFAULT_REMOTE_ACCESS_TOKEN = (import.meta.env.VITE_NOVEL_SYSTEM_ACCESS_TOKEN || "").trim();
+const memoryStorage = { local: new Map(), session: new Map() };
+const storageStatus = {
+  local: { available: true, errorName: null },
+  session: { available: true, errorName: null },
+};
+
+function storageObject(scope) {
+  if (typeof window === "undefined") return null;
+  return scope === "session" ? window.sessionStorage : window.localStorage;
+}
+
+function markStorageResult(scope, error = null) {
+  storageStatus[scope] = {
+    available: !error,
+    errorName: error ? String(error.name || "StorageError") : null,
+  };
+}
+
+function safeStorageGet(scope, key) {
+  try {
+    const storage = storageObject(scope);
+    if (storage) {
+      const value = storage.getItem(key);
+      markStorageResult(scope);
+      if (value !== null) {
+        memoryStorage[scope].set(key, value);
+        return value;
+      }
+    }
+  } catch (error) {
+    markStorageResult(scope, error);
+  }
+  return memoryStorage[scope].get(key) ?? null;
+}
+
+function safeStorageSet(scope, key, value) {
+  const normalized = String(value);
+  memoryStorage[scope].set(key, normalized);
+  try {
+    const storage = storageObject(scope);
+    if (storage) storage.setItem(key, normalized);
+    markStorageResult(scope);
+  } catch (error) {
+    markStorageResult(scope, error);
+  }
+}
+
+function safeStorageRemove(scope, key) {
+  memoryStorage[scope].delete(key);
+  try {
+    const storage = storageObject(scope);
+    if (storage) storage.removeItem(key);
+    markStorageResult(scope);
+  } catch (error) {
+    markStorageResult(scope, error);
+  }
+}
+
+export function getClientStorageStatus() {
+  return {
+    local: { ...storageStatus.local },
+    session: { ...storageStatus.session },
+  };
+}
+
+function timeoutValue(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+const DEFAULT_READ_TIMEOUT_MS = timeoutValue(import.meta.env.VITE_NOVEL_SYSTEM_READ_TIMEOUT_MS, 30_000);
+const DEFAULT_MUTATION_TIMEOUT_MS = timeoutValue(
+  import.meta.env.VITE_NOVEL_SYSTEM_MUTATION_TIMEOUT_MS,
+  15 * 60_000,
+);
 
 function isLoopbackApiBase(value) {
   try {
@@ -40,22 +115,22 @@ export function getApiBase() {
   if (typeof window === "undefined") {
     return DEFAULT_API_BASE;
   }
-  const stored = (window.localStorage.getItem(API_BASE_KEY) || "").trim();
-  const storedDefault = (window.localStorage.getItem(API_BASE_DEFAULT_KEY) || "").trim();
+  const stored = (safeStorageGet("local", API_BASE_KEY) || "").trim();
+  const storedDefault = (safeStorageGet("local", API_BASE_DEFAULT_KEY) || "").trim();
   if (shouldUseInjectedDefault(stored, storedDefault)) {
-    window.localStorage.setItem(API_BASE_KEY, DEFAULT_API_BASE);
-    window.localStorage.setItem(API_BASE_DEFAULT_KEY, DEFAULT_API_BASE);
+    safeStorageSet("local", API_BASE_KEY, DEFAULT_API_BASE);
+    safeStorageSet("local", API_BASE_DEFAULT_KEY, DEFAULT_API_BASE);
     return DEFAULT_API_BASE;
   }
-  window.localStorage.setItem(API_BASE_DEFAULT_KEY, DEFAULT_API_BASE);
+  safeStorageSet("local", API_BASE_DEFAULT_KEY, DEFAULT_API_BASE);
   return stored;
 }
 
 export function setApiBase(value) {
   const normalized = value.trim() || DEFAULT_API_BASE;
   if (typeof window !== "undefined") {
-    window.localStorage.setItem(API_BASE_KEY, normalized);
-    window.localStorage.setItem(API_BASE_DEFAULT_KEY, DEFAULT_API_BASE);
+    safeStorageSet("local", API_BASE_KEY, normalized);
+    safeStorageSet("local", API_BASE_DEFAULT_KEY, DEFAULT_API_BASE);
   }
   return normalized;
 }
@@ -64,13 +139,13 @@ export function getOperatorRef() {
   if (typeof window === "undefined") {
     return DEFAULT_OPERATOR_REF;
   }
-  return window.localStorage.getItem(OPERATOR_REF_KEY) || DEFAULT_OPERATOR_REF;
+  return safeStorageGet("local", OPERATOR_REF_KEY) || DEFAULT_OPERATOR_REF;
 }
 
 export function setOperatorRef(value) {
   const normalized = value.trim() || DEFAULT_OPERATOR_REF;
   if (typeof window !== "undefined") {
-    window.localStorage.setItem(OPERATOR_REF_KEY, normalized);
+    safeStorageSet("local", OPERATOR_REF_KEY, normalized);
   }
   return normalized;
 }
@@ -79,14 +154,14 @@ export function getRemoteAccessToken() {
   if (typeof window === "undefined") {
     return DEFAULT_REMOTE_ACCESS_TOKEN;
   }
-  return (window.sessionStorage.getItem(REMOTE_ACCESS_TOKEN_KEY) || DEFAULT_REMOTE_ACCESS_TOKEN).trim();
+  return (safeStorageGet("session", REMOTE_ACCESS_TOKEN_KEY) || DEFAULT_REMOTE_ACCESS_TOKEN).trim();
 }
 
 export function setRemoteAccessToken(value) {
   const normalized = String(value || "").trim();
   if (typeof window !== "undefined") {
-    if (normalized) window.sessionStorage.setItem(REMOTE_ACCESS_TOKEN_KEY, normalized);
-    else window.sessionStorage.removeItem(REMOTE_ACCESS_TOKEN_KEY);
+    if (normalized) safeStorageSet("session", REMOTE_ACCESS_TOKEN_KEY, normalized);
+    else safeStorageRemove("session", REMOTE_ACCESS_TOKEN_KEY);
   }
   return normalized;
 }
@@ -113,7 +188,13 @@ const inflightIdempotencyKeys = new Map();
 function requestSignature(method, path, body) {
   let payload = "";
   try {
-    payload = body === undefined ? "" : JSON.stringify(body);
+    payload = body === undefined ? "" : JSON.stringify(body, (_key, value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      return Object.keys(value).sort().reduce((sorted, key) => {
+        sorted[key] = value[key];
+        return sorted;
+      }, {});
+    });
   } catch {
     payload = String(body);
   }
@@ -174,11 +255,20 @@ export function buildQueryPath(path, filters = {}, aliases = {}) {
   return query ? `${path}?${query}` : path;
 }
 
-function normalizeRequestError(error, clientRequestId = null) {
+function normalizeRequestError(error, clientRequestId = null, timeout = null) {
   if (error instanceof ApiRequestError) {
     return error;
   }
   if (error && error.name === "AbortError") {
+    if (timeout && timeout.didTimeout) {
+      return new ApiRequestError("请求超时，请稍后重试。", {
+        code: "REQUEST_TIMEOUT",
+        status: 0,
+        details: { retryable: true, reachedServer: null, timeoutMs: timeout.timeoutMs },
+        clientRequestId,
+        retryable: true,
+      });
+    }
     return new ApiRequestError("请求已取消。", {
       code: "REQUEST_ABORTED",
       status: 0,
@@ -191,7 +281,12 @@ function normalizeRequestError(error, clientRequestId = null) {
     if (error.code || error.status) {
       return error;
     }
-    if (error.message === "Failed to fetch") {
+    // Fetch rejects transport failures with a TypeError, but the message is
+    // browser- and locale-specific (Failed to fetch / Load failed /
+    // NetworkError when attempting to fetch resource / fetch failed).  The
+    // request may already have reached the server, so every such rejection is
+    // an uncertain, retryable mutation and must retain its idempotency key.
+    if (error instanceof TypeError || error.name === "NetworkError") {
       return new ApiRequestError(`连接接口失败，请确认 API 地址和后端服务是否可用。当前 API 地址：${getApiBase()}`, {
         code: "NETWORK_ERROR",
         status: 0,
@@ -237,24 +332,67 @@ async function parseEnvelope(response, clientRequestId = null) {
   return payload?.data;
 }
 
-export async function apiGet(path, { signal } = {}) {
-  const clientRequestId = buildClientRequestId();
+function requestAbortGuard(externalSignal, timeoutMs, defaultTimeoutMs) {
+  const controller = new AbortController();
+  const effectiveTimeoutMs = timeoutValue(timeoutMs, defaultTimeoutMs);
+  let didTimeout = false;
+  const forwardAbort = () => controller.abort(externalSignal && externalSignal.reason);
+  if (externalSignal) {
+    if (externalSignal.aborted) forwardAbort();
+    else externalSignal.addEventListener("abort", forwardAbort, { once: true });
+  }
+  const timer = setTimeout(() => {
+    didTimeout = true;
+    controller.abort();
+  }, effectiveTimeoutMs);
+  return {
+    signal: controller.signal,
+    timeoutMs: effectiveTimeoutMs,
+    didTimeout: () => didTimeout,
+    cleanup() {
+      clearTimeout(timer);
+      if (externalSignal) externalSignal.removeEventListener("abort", forwardAbort);
+    },
+  };
+}
+
+async function requestEnvelope(
+  path,
+  init,
+  { signal, timeoutMs } = {},
+  clientRequestId,
+  defaultTimeoutMs = DEFAULT_READ_TIMEOUT_MS,
+) {
+  const guard = requestAbortGuard(signal, timeoutMs, defaultTimeoutMs);
   try {
-    const response = await fetch(buildUrl(path), {
-      headers: withAccessToken({ "X-Client-Request-Id": clientRequestId }),
-      signal,
-    });
-    return parseEnvelope(response, clientRequestId);
+    const response = await fetch(buildUrl(path), { ...init, signal: guard.signal });
+    return await parseEnvelope(response, clientRequestId);
   } catch (error) {
-    throw normalizeRequestError(error, clientRequestId);
+    throw normalizeRequestError(error, clientRequestId, {
+      didTimeout: guard.didTimeout(),
+      timeoutMs: guard.timeoutMs,
+    });
+  } finally {
+    guard.cleanup();
   }
 }
 
-export async function apiPost(path, body = {}, { signal } = {}) {
+export async function apiGet(path, { signal, timeoutMs } = {}) {
+  const clientRequestId = buildClientRequestId();
+  return requestEnvelope(
+    path,
+    { headers: withAccessToken({ "X-Client-Request-Id": clientRequestId }) },
+    { signal, timeoutMs },
+    clientRequestId,
+    DEFAULT_READ_TIMEOUT_MS,
+  );
+}
+
+export async function apiPost(path, body = {}, { signal, timeoutMs } = {}) {
   const clientRequestId = buildClientRequestId();
   const { key, signature } = acquireIdempotencyKey("POST", path, body);
   try {
-    const response = await fetch(buildUrl(path), {
+    const data = await requestEnvelope(path, {
       method: "POST",
       headers: withAccessToken({
         "Content-Type": "application/json",
@@ -263,9 +401,7 @@ export async function apiPost(path, body = {}, { signal } = {}) {
         "X-Client-Request-Id": clientRequestId,
       }),
       body: JSON.stringify(body),
-      signal,
-    });
-    const data = await parseEnvelope(response, clientRequestId);
+    }, { signal, timeoutMs }, clientRequestId, DEFAULT_MUTATION_TIMEOUT_MS);
     releaseIdempotencyKey(signature);
     return data;
   } catch (error) {
@@ -286,39 +422,53 @@ export function getLatestSceneRunJob(sceneId, options) {
   return apiGet(`/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs/latest`, options);
 }
 
-export async function apiPatch(path, body = {}) {
+export async function apiPatch(path, body = {}, { signal, timeoutMs } = {}) {
   const clientRequestId = buildClientRequestId();
+  const { key, signature } = acquireIdempotencyKey("PATCH", path, body);
   try {
-    const response = await fetch(buildUrl(path), {
+    const data = await requestEnvelope(path, {
       method: "PATCH",
       headers: withAccessToken({
         "Content-Type": "application/json",
+        "X-Idempotency-Key": key,
         "X-Operator-Ref": getOperatorRef(),
         "X-Client-Request-Id": clientRequestId,
       }),
       body: JSON.stringify(body),
-    });
-    return parseEnvelope(response, clientRequestId);
+    }, { signal, timeoutMs }, clientRequestId, DEFAULT_MUTATION_TIMEOUT_MS);
+    releaseIdempotencyKey(signature);
+    return data;
   } catch (error) {
-    throw normalizeRequestError(error, clientRequestId);
+    const normalized = normalizeRequestError(error, clientRequestId);
+    if (!normalized.retryable && normalized.code !== "IDEMPOTENCY_REQUEST_IN_PROGRESS") {
+      releaseIdempotencyKey(signature);
+    }
+    throw normalized;
   }
 }
 
-export async function apiPut(path, body = {}) {
+export async function apiPut(path, body = {}, { signal, timeoutMs } = {}) {
   const clientRequestId = buildClientRequestId();
+  const { key, signature } = acquireIdempotencyKey("PUT", path, body);
   try {
-    const response = await fetch(buildUrl(path), {
+    const data = await requestEnvelope(path, {
       method: "PUT",
       headers: withAccessToken({
         "Content-Type": "application/json",
+        "X-Idempotency-Key": key,
         "X-Operator-Ref": getOperatorRef(),
         "X-Client-Request-Id": clientRequestId,
       }),
       body: JSON.stringify(body),
-    });
-    return parseEnvelope(response, clientRequestId);
+    }, { signal, timeoutMs }, clientRequestId, DEFAULT_MUTATION_TIMEOUT_MS);
+    releaseIdempotencyKey(signature);
+    return data;
   } catch (error) {
-    throw normalizeRequestError(error, clientRequestId);
+    const normalized = normalizeRequestError(error, clientRequestId);
+    if (!normalized.retryable && normalized.code !== "IDEMPOTENCY_REQUEST_IN_PROGRESS") {
+      releaseIdempotencyKey(signature);
+    }
+    throw normalized;
   }
 }
 
@@ -326,19 +476,24 @@ export async function apiPut(path, body = {}) {
    系统配置写接口需要管理令牌;无令牌配置的本地后端对 loopback 放行,
    此时 adminToken 传空即可。令牌存取由调用方(WsAiProviders)负责。 */
 
-export async function apiAdminGet(path, adminToken = "") {
+export async function apiAdminGet(path, adminToken = "", { signal, timeoutMs } = {}) {
   const clientRequestId = buildClientRequestId();
   try {
     const headers = withAccessToken({ "X-Client-Request-Id": clientRequestId });
     if (adminToken) headers["X-Admin-Token"] = adminToken;
-    const response = await fetch(buildUrl(path), { headers });
-    return parseEnvelope(response, clientRequestId);
+    return await requestEnvelope(
+      path,
+      { headers },
+      { signal, timeoutMs },
+      clientRequestId,
+      DEFAULT_READ_TIMEOUT_MS,
+    );
   } catch (error) {
     throw normalizeRequestError(error, clientRequestId);
   }
 }
 
-export async function apiAdminPost(path, body = {}, adminToken = "") {
+export async function apiAdminPost(path, body = {}, adminToken = "", { signal, timeoutMs } = {}) {
   const clientRequestId = buildClientRequestId();
   const { key, signature } = acquireIdempotencyKey("POST", path, body);
   try {
@@ -349,12 +504,11 @@ export async function apiAdminPost(path, body = {}, adminToken = "") {
       "X-Client-Request-Id": clientRequestId,
     });
     if (adminToken) headers["X-Admin-Token"] = adminToken;
-    const response = await fetch(buildUrl(path), {
+    const data = await requestEnvelope(path, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
-    });
-    const data = await parseEnvelope(response, clientRequestId);
+    }, { signal, timeoutMs }, clientRequestId, DEFAULT_MUTATION_TIMEOUT_MS);
     releaseIdempotencyKey(signature);
     return data;
   } catch (error) {
@@ -366,7 +520,7 @@ export async function apiAdminPost(path, body = {}, adminToken = "") {
   }
 }
 
-export async function apiAdminDelete(path, adminToken = "") {
+export async function apiAdminDelete(path, adminToken = "", { signal, timeoutMs } = {}) {
   const clientRequestId = buildClientRequestId();
   const { key, signature } = acquireIdempotencyKey("DELETE", path, undefined);
   try {
@@ -376,8 +530,13 @@ export async function apiAdminDelete(path, adminToken = "") {
       "X-Client-Request-Id": clientRequestId,
     });
     if (adminToken) headers["X-Admin-Token"] = adminToken;
-    const response = await fetch(buildUrl(path), { method: "DELETE", headers });
-    const data = await parseEnvelope(response, clientRequestId);
+    const data = await requestEnvelope(
+      path,
+      { method: "DELETE", headers },
+      { signal, timeoutMs },
+      clientRequestId,
+      DEFAULT_MUTATION_TIMEOUT_MS,
+    );
     releaseIdempotencyKey(signature);
     return data;
   } catch (error) {
@@ -389,19 +548,18 @@ export async function apiAdminDelete(path, adminToken = "") {
   }
 }
 
-export async function apiDelete(path) {
+export async function apiDelete(path, { signal, timeoutMs } = {}) {
   const clientRequestId = buildClientRequestId();
   const { key, signature } = acquireIdempotencyKey("DELETE", path, undefined);
   try {
-    const response = await fetch(buildUrl(path), {
+    const data = await requestEnvelope(path, {
       method: "DELETE",
       headers: withAccessToken({
         "X-Idempotency-Key": key,
         "X-Operator-Ref": getOperatorRef(),
         "X-Client-Request-Id": clientRequestId,
       }),
-    });
-    const data = await parseEnvelope(response, clientRequestId);
+    }, { signal, timeoutMs }, clientRequestId, DEFAULT_MUTATION_TIMEOUT_MS);
     releaseIdempotencyKey(signature);
     return data;
   } catch (error) {

@@ -3,7 +3,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 
-const require = createRequire(path.join(process.cwd(), "package.json"));
+const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
 const BASE = process.argv[2] || "http://127.0.0.1:5174/";
@@ -61,7 +61,7 @@ await check("人物改名落库（character_id 不变）", async () => {
     window.LIB_persist({ "lin-cen": { name: "角色甲·改" } });
   });
   await page.waitForTimeout(1500);
-  const overview = await api("/api/v2/projects/tide/library");
+  const overview = await api("/api/v2/projects/work-a/library");
   const c = overview.characters.find(x => x.character_id === "lin-cen");
   if (!c || c.name !== "角色甲·改") throw new Error(`name: ${c && c.name}`);
   // 还原
@@ -70,21 +70,21 @@ await check("人物改名落库（character_id 不变）", async () => {
 });
 
 await check("建关系 → 关系图投影即时可见", async () => {
-  const graphBefore = await api("/api/v2/projects/tide/library/graph");
+  const graphBefore = await api("/api/v2/projects/work-a/library/graph");
   await page.evaluate(async (apiBase) => {
-    await fetch(`${apiBase}/api/v2/projects/tide/library/relations`, {
+    await fetch(`${apiBase}/api/v2/projects/work-a/library/relations`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Idempotency-Key": "p6-rel-" + Date.now() },
       body: JSON.stringify({ from_ref: "character:a-ke", to_ref: "entity:old-archive", kind: "works_at", note: "P6 冒烟新边" }),
     });
   }, API);
-  const graphAfter = await api("/api/v2/projects/tide/library/graph");
+  const graphAfter = await api("/api/v2/projects/work-a/library/graph");
   if (graphAfter.edges.length !== graphBefore.edges.length + 1) throw new Error("edge not added");
   if (!graphAfter.edges.some(e => e.note === "P6 冒烟新边")) throw new Error("edge note missing");
 });
 
 await check("时间线按章排序数据完整", async () => {
-  const timeline = await api("/api/v2/projects/tide/library/timeline");
+  const timeline = await api("/api/v2/projects/work-a/library/timeline");
   if (timeline.items.length < 2) throw new Error(`events: ${timeline.items.length}`);
   if (!timeline.items.every(e => e.label)) throw new Error("labels missing");
 });
@@ -113,9 +113,9 @@ await check("idea 卡「确认入库」→ 实体进库进图（D5 半自动）"
   await page.waitForTimeout(400);
   await page.click('button:has-text("确认入库")');
   await page.waitForTimeout(2000);
-  const overview = await api("/api/v2/projects/tide/library");
+  const overview = await api("/api/v2/projects/work-a/library");
   if (!overview.entities.some(e => e.name === "盐雾灯塔")) throw new Error("entity not created");
-  const graph = await api("/api/v2/projects/tide/library/graph");
+  const graph = await api("/api/v2/projects/work-a/library/graph");
   if (!graph.nodes.some(n => n.name === "盐雾灯塔")) throw new Error("node missing in graph");
 });
 

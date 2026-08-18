@@ -4,17 +4,19 @@
 # 演练：备份现库 → 复制一份「生产副本」→ 故意破坏它 → 从备份恢复 → integrity_check 绿。
 # 用真实 SQLite 在线备份 API（backend/src/novel_system/tools/db_backup.py），不动真正现库。
 #
-# 用法：bash scripts/db_backup_drill.sh [DB_PATH]
+# 先停止应用写入，再运行：bash scripts/db_backup_drill.sh [DB_PATH]
 #   DB_PATH 缺省取 backend/novel_system.db；也可传 sqlite URL / 任意 sqlite 文件。
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BACKEND_DIR="$REPO_ROOT/backend"
 PY="${PYTHON:-$REPO_ROOT/backend/.venv/bin/python}"
 [ -x "$PY" ] || PY="python3"
+export PYTHONPATH="$BACKEND_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
 SRC_INPUT="${1:-$REPO_ROOT/backend/novel_system.db}"
 # 解析 sqlite URL → 文件路径（复用工具的解析逻辑）
-SRC="$("$PY" -c "import sys; from novel_system.tools.db_backup import resolve_sqlite_path as r; print(r(sys.argv[1]))" "$SRC_INPUT" 2>/dev/null || echo "$SRC_INPUT")"
+SRC="$("$PY" -c "import os,sys; from novel_system.tools.db_backup import resolve_sqlite_path as r; print(os.path.abspath(r(sys.argv[1])))" "$SRC_INPUT")"
 
 if [ ! -f "$SRC" ]; then
   echo "[drill] 源库不存在：$SRC —— 先启动一次服务或建库再演练。" >&2

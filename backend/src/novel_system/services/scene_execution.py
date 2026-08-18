@@ -68,6 +68,43 @@ class SceneExecutionContractService:
             return latest
         return self.generate(scene_id, actor_ref=actor_ref)
 
+    def preview(self, scene_id: str, *, actor_ref: str = "preview") -> SceneExecutionContract:
+        """Project the current contract without inserting or superseding any row."""
+
+        scene = self._require_scene(scene_id)
+        chapter = self._require_chapter(scene.chapter_id)
+        project = self.session.get(StoryProject, scene.project_id) if scene.project_id else None
+        blueprint = self._latest_blueprint(scene_id)
+        reference_rules = self._reference_rules(project)
+        snapshot = self._source_snapshot(scene, chapter, project, blueprint, reference_rules)
+        snapshot_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
+        latest = self.latest(scene_id)
+        if latest is not None and latest.source_snapshot_hash == snapshot_hash and latest.status != "stale":
+            return latest
+
+        payload, missing_fields = self._payload(scene, chapter, blueprint, reference_rules)
+        causal_assessment = self._check_causal_readiness(scene, project)
+        if causal_assessment is not None and causal_assessment.warning:
+            payload["causal_readiness_warning"] = causal_assessment.warning
+            missing_fields.append("causal_prerequisite(advisory)")
+        if causal_assessment is not None and causal_assessment.diagnostics:
+            payload["causal_readiness_diagnostics"] = causal_assessment.diagnostics
+            missing_fields.append("causal_readiness_diagnostic(advisory)")
+
+        blocking_fields = [field for field in missing_fields if not field.endswith("(advisory)")]
+        return SceneExecutionContract(
+            contract_id=None,
+            scene_id=scene.scene_id,
+            chapter_id=scene.chapter_id,
+            project_id=scene.project_id,
+            contract_version=EXECUTION_CONTRACT_VERSION,
+            source_snapshot_hash=snapshot_hash,
+            payload_json=payload,
+            missing_fields_json=missing_fields,
+            status="active" if not blocking_fields else "blocked",
+            created_by=actor_ref or "preview",
+        )
+
     def generate(self, scene_id: str, *, actor_ref: str = "operator") -> SceneExecutionContract:
         scene = self._require_scene(scene_id)
         chapter = self._require_chapter(scene.chapter_id)
@@ -590,8 +627,14 @@ class SceneTriageService:
         scene = self.contracts._require_scene(scene_id)
         state = self.session.get(SceneRunState, scene_id)
         if state is None:
-            raise DomainError("SCENE_RUN_STATE_NOT_FOUND", "scene run state not found", status_code=404)
-        contract = self.contracts.get_or_create(scene_id, actor_ref=actor_ref)
+            if mutate:
+                raise DomainError("SCENE_RUN_STATE_NOT_FOUND", "scene run state not found", status_code=404)
+            state = SceneRunState(scene_id=scene_id, scene_status="ready")
+        contract = (
+            self.contracts.get_or_create(scene_id, actor_ref=actor_ref)
+            if mutate
+            else self.contracts.preview(scene_id, actor_ref=actor_ref)
+        )
         latest_qc = self._latest_qc_report(scene_id, state)
         decision = "yes"
         next_action = "chapter_aggregate"
@@ -645,7 +688,8 @@ class SceneTriageService:
             "execution_contract_id": contract.contract_id,
             "backtrack_item_id": backtrack_item.item_id if backtrack_item is not None else None,
         }
-        self.session.flush()
+        if mutate:
+            self.session.flush()
         return payload
 
     def _ensure_backtrack_item(

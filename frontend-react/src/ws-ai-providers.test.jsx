@@ -27,6 +27,7 @@ describe("WsAiProviders store(AI 模型接入)", () => {
   beforeEach(() => {
     vi.resetModules();
     window.localStorage.clear();
+    window.sessionStorage.clear();
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -82,5 +83,18 @@ describe("WsAiProviders store(AI 模型接入)", () => {
     await expect(mod.WsAiProviders.deleteProvider("ghost")).rejects.toThrow("not found");
     expect(mod.WsAiProviders.state().busy["delete:ghost"]).toBeUndefined();
     expect(client.apiGet.mock.calls.length).toBe(callsBefore);
+  });
+
+  it("admin token stays session-scoped and migrates legacy local storage", async () => {
+    window.localStorage.setItem("novel-system-admin-token", "legacy-token");
+    const { mod } = await loadStore();
+
+    expect(mod.WsAiProviders.adminToken()).toBe("legacy-token");
+    expect(window.localStorage.getItem("novel-system-admin-token")).toBeNull();
+    expect(window.sessionStorage.getItem("novel-system-admin-token")).toBe("legacy-token");
+
+    mod.WsAiProviders.setAdminToken("session-token");
+    expect(window.sessionStorage.getItem("novel-system-admin-token")).toBe("session-token");
+    expect(window.localStorage.getItem("novel-system-admin-token")).toBeNull();
   });
 });

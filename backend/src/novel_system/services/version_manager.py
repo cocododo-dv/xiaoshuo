@@ -3,12 +3,9 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from novel_system.services.vector_store import VectorStore, get_vector_store
-from novel_system.services.versioning import (
-    PromotionService,
-    ReviewMaterializationService,
-    RuntimeRecoveryService,
-    VectorLifecycleService,
-)
+from novel_system.services.versioning.promotion import PromotionService
+from novel_system.services.versioning.review_materialization import ReviewMaterializationService
+from novel_system.services.versioning.vector_lifecycle import VectorLifecycleService
 
 
 class VersionManager:
@@ -18,7 +15,6 @@ class VersionManager:
         self.review_materialization = ReviewMaterializationService(session, vector_store=self.vector_store)
         self.vector_lifecycle = VectorLifecycleService(session, vector_store=self.vector_store)
         self.promotion = PromotionService(session, vector_store=self.vector_store)
-        self.runtime_recovery = RuntimeRecoveryService(session, vector_store=self.vector_store)
 
     def materialize_review(self, review_id: str) -> dict:
         return self.review_materialization.materialize_review(review_id)
@@ -34,6 +30,3 @@ class VersionManager:
 
     def run_due_promotions(self) -> dict:
         return self.promotion.run_due_promotions()
-
-    def recover_stuck_jobs(self) -> dict:
-        return self.runtime_recovery.recover_stuck_jobs()

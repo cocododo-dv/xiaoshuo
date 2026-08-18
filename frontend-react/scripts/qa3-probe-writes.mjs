@@ -3,7 +3,7 @@
 // 运行：cd frontend && node ../frontend-react/scripts/qa3-probe-writes.mjs
 import path from "node:path";
 import { createRequire } from "node:module";
-const require = createRequire(path.join(process.cwd(), "package.json"));
+const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 const BASE = "http://127.0.0.1:5174/", API = "http://127.0.0.1:8000";
 

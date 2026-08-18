@@ -38,9 +38,10 @@ from novel_system.services.llm_task_runner import (
     LLMNodeRunner,
     current_llm_execution_id,
 )
+from novel_system.services.manuscript_html import sanitize_manuscript_html
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
-from novel_system.services.writer_review import (
+from novel_system.services.writer_briefs import (
     empty_chapter_writer_brief,
     empty_scene_writer_brief,
     normalize_chapter_writer_brief,
@@ -79,10 +80,18 @@ AUTHOR_PROPOSAL_MODE_TRIADS = {
     "language": (("language_pass", "language_pass"), ("local_patch", "local_patch"), ("near_final_rewrite", "near_final_rewrite")),
     "rewrite": (("whole_draft", "whole_draft"), ("local_patch", "local_patch"), ("structure_candidate", "structure_note")),
     "continuation": (("continuation", "continuation"), ("structure_candidate", "structure_note"), ("language_pass", "language_pass")),
+    # Writer-room continuation tray: three insertable continuations generated
+    # under one durable idempotency intent, with distinct prompt directions.
+    "continuation_variants": (("continuation", "continuation"), ("continuation", "continuation"), ("continuation", "continuation")),
     "near_final": (("near_final_rewrite", "near_final_rewrite"), ("language_pass", "language_pass"), ("dialogue_pass", "dialogue_pass")),
     "acceptance": (("near_final_rewrite", "near_final_rewrite"), ("language_pass", "language_pass"), ("structure_candidate", "structure_note")),
     "daily": (("structure_candidate", "structure_note"), ("passage_candidate", "local_patch"), ("language_candidate", "language_pass")),
 }
+CONTINUATION_VARIANT_DIRECTIONS = (
+    ("action", "候选方向：优先用动作推进下一拍，避免解释和总结。"),
+    ("relationship", "候选方向：优先增加人物关系压力，用反应、停顿或选择推进。"),
+    ("suspense", "候选方向：优先释放一个新信息或悬念钩子，但不要越过下一拍。"),
+)
 
 
 class AuthorDraftService:
@@ -172,7 +181,7 @@ class AuthorDraftService:
         if current is None:
             source = {
                 "source_text_ref": _author_first_source_ref(chapter.chapter_id, body),
-                "content": _optional_text(body, "initial_content") or "",
+                "content": sanitize_manuscript_html(_optional_text(body, "initial_content") or ""),
             }
             current = self._create_draft_row(
                 "chapter",
@@ -191,9 +200,12 @@ class AuthorDraftService:
             project.current_chapter_id = chapter.chapter_id
         self.session.flush()
 
-        from novel_system.services.writer_room import WriterRoomService
-
-        return WriterRoomService(self.session).room("chapter", chapter.chapter_id)
+        return {
+            "object_type": "chapter",
+            "object_id": chapter.chapter_id,
+            "chapter_id": chapter.chapter_id,
+            "draft": self._draft_response(current),
+        }
 
     def _ensure_author_first_chapter(
         self,
@@ -245,7 +257,7 @@ class AuthorDraftService:
             object_type=object_type,
             object_id=object_id,
             source_text_ref=source["source_text_ref"],
-            content=source["content"],
+            content=sanitize_manuscript_html(source["content"]),
             revision_no=1,
             status="current",
             created_by=actor_ref or "author_draft",
@@ -293,6 +305,7 @@ class AuthorDraftService:
         content = payload.get("content")
         if not isinstance(content, str):
             raise DomainError("AUTHOR_DRAFT_INVALID", "content must be a string", status_code=400)
+        content = sanitize_manuscript_html(content)
         content_changed = content != previous_content
         require_author_target_mutation_allowed(
             self.session,
@@ -381,8 +394,9 @@ class AuthorDraftService:
     def derive_from_generation(self, draft_id: str, *, actor_ref: str = "operator") -> dict[str, Any]:
         draft = self._require_draft(draft_id)
         source = self._source_for_target(draft.object_type, draft.object_id)
+        source_content = sanitize_manuscript_html(source["content"])
         changed_fields = []
-        if draft.content != source["content"]:
+        if draft.content != source_content:
             changed_fields.append("author_draft.content")
         if draft.source_text_ref != source["source_text_ref"]:
             changed_fields.append("author_draft.source_text_ref")
@@ -397,7 +411,7 @@ class AuthorDraftService:
             response = self._draft_response(draft)
             response["changed"] = False
             return response
-        draft.content = source["content"]
+        draft.content = source_content
         draft.source_text_ref = source["source_text_ref"]
         draft.revision_no += 1
         draft.updated_by = actor_ref or draft.updated_by
@@ -479,21 +493,28 @@ class AuthorDraftService:
         target_range = request_payload.get("target_range") if isinstance(request_payload.get("target_range"), dict) else None
         source_evaluation_id = _optional_text(request_payload, "source_evaluation_id")
         target = self._target_payload(draft.object_type, draft.object_id)
-        proposals = [
-            self._create_proposal(
+        proposals: list[AuthorDraftProposal] = []
+        for index, (proposal_type, proposal_kind) in enumerate(_proposal_mode_triads(mode)):
+            effective_source = proposal_source
+            effective_instruction = instruction
+            if mode == "continuation_variants":
+                slot, direction = CONTINUATION_VARIANT_DIRECTIONS[index]
+                effective_source = f"writer_room_continuation_variants:{slot}"
+                effective_instruction = "\n".join(
+                    part for part in (instruction, direction) if part
+                )
+            proposals.append(self._create_proposal(
                 draft,
                 target=target,
                 proposal_type=proposal_type,
-                instruction=instruction,
-                proposal_source=proposal_source,
+                instruction=effective_instruction,
+                proposal_source=effective_source,
                 proposal_kind=proposal_kind,
                 target_range=target_range,
                 replacement_text=None,
                 source_evaluation_id=source_evaluation_id,
                 actor_ref=actor_ref,
-            )
-            for proposal_type, proposal_kind in _proposal_mode_triads(mode)
-        ]
+            ))
         self.session.flush()
         return {"draft_id": draft.draft_id, "mode": mode, "proposals": [self.serialize_proposal(row) for row in proposals]}
 
@@ -555,7 +576,7 @@ class AuthorDraftService:
         apply_mode = _normalize_apply_mode(_optional_text(request_payload, "apply_mode"), proposal)
         if apply_mode not in AUTHOR_PROPOSAL_APPLY_MODES:
             raise DomainError("AUTHOR_DRAFT_PROPOSAL_APPLY_MODE_INVALID", "unsupported proposal apply_mode", status_code=400)
-        next_content = _apply_proposal_to_content(current, proposal, apply_mode)
+        next_content = sanitize_manuscript_html(_apply_proposal_to_content(current, proposal, apply_mode))
         require_author_target_mutation_allowed(
             self.session,
             object_type=draft.object_type,
@@ -615,7 +636,7 @@ class AuthorDraftService:
         affected_excerpt = _optional_text(request_payload, "affected_excerpt")
 
         current_content = draft.content or ""
-        next_content = _apply_proposal_to_content(current_content, proposal, apply_mode)
+        next_content = sanitize_manuscript_html(_apply_proposal_to_content(current_content, proposal, apply_mode))
         require_author_target_mutation_allowed(
             self.session,
             object_type=draft.object_type,
@@ -838,7 +859,7 @@ class AuthorDraftService:
         replacement = str(option.get("replacement_text") or "").strip()
         if not replacement:
             raise DomainError("AUTHOR_DRAFT_PATCH_OPTION_INVALID", "patch option has no replacement text", status_code=400)
-        draft.content = _replace_or_append(draft.content or "", source_excerpt, replacement)
+        draft.content = sanitize_manuscript_html(_replace_or_append(draft.content or "", source_excerpt, replacement))
         draft.revision_no += 1
         draft.updated_by = actor_ref or draft.updated_by
         patch.inserted_into_author_draft = 1
@@ -962,7 +983,7 @@ class AuthorDraftService:
             "revision": {
                 "draft_id": draft.draft_id,
                 "revision_no": row.revision_no,
-                "content": row.content,
+                "content": sanitize_manuscript_html(row.content),
                 "words": row.words,
                 "origin": row.origin,
                 "created_by": row.created_by,
@@ -1231,7 +1252,7 @@ class AuthorDraftService:
             "object_type": row.object_type,
             "object_id": row.object_id,
             "source_text_ref": row.source_text_ref,
-            "content": row.content,
+            "content": sanitize_manuscript_html(row.content),
             "revision_no": row.revision_no,
             "last_promoted_revision_no": row.last_promoted_revision_no,
             "last_promoted_final_scene_row_id": row.last_promoted_final_scene_row_id,

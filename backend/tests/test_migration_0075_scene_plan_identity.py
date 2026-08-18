@@ -108,7 +108,7 @@ def test_migration_repairs_duplicate_scene_ids_on_a_legacy_database(tmp_path, mo
         backend_dir = Path(__file__).resolve().parents[1]
         cfg = Config(str(backend_dir / "alembic.ini"))
         cfg.set_main_option("script_location", str(backend_dir / "alembic"))
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "20260725_0075")
 
         with engine.begin() as conn:
             rows = {
@@ -198,7 +198,7 @@ def test_the_keeper_follows_the_materialized_card_not_merely_the_oldest_row(tmp_
         backend_dir = Path(__file__).resolve().parents[1]
         cfg = Config(str(backend_dir / "alembic.ini"))
         cfg.set_main_option("script_location", str(backend_dir / "alembic"))
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "20260725_0075")
 
         with engine.begin() as conn:
             rows = {

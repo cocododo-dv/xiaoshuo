@@ -3,10 +3,12 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
 from novel_system.services.longform_editor import LongformEditorService
 
@@ -14,18 +16,18 @@ router = APIRouter(tags=["longform-editor"])
 
 
 class CardActionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     action: Literal["resolve", "dismiss", "reopen"]
-    note: str | None = None
+    note: str | None = Field(default=None, max_length=4_000)
 
 
 class PublishGuidanceRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     scope_type: Literal["global", "chapter", "scene", "character"]
-    scope_ref_id: str | None = None
-    content: str
+    scope_ref_id: str | None = Field(default=None, max_length=255)
+    content: str = Field(min_length=1, max_length=100_000)
 
 
 @router.get("/api/v1/longform-editor/overview")
@@ -35,10 +37,19 @@ def get_longform_editor_overview(request: Request, session: Session = Depends(ge
 
 
 @router.post("/api/v1/longform-editor/diagnose")
-def diagnose_longform_editor(request: Request, session: Session = Depends(get_session)):
-    payload = LongformEditorService(session).diagnose()
-    session.commit()
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+def diagnose_longform_editor(
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/longform-editor/diagnose",
+        payload={},
+        action=lambda: LongformEditorService(session).diagnose(),
+    )
 
 
 @router.get("/api/v1/longform-editor/cards")
@@ -66,9 +77,15 @@ def longform_editor_card_action(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = LongformEditorService(session).card_action(card_id, **payload.model_dump(mode="json"))
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json")
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/longform-editor/cards/{card_id}/actions",
+        payload={"card_id": card_id, "body": body},
+        action=lambda: LongformEditorService(session).card_action(card_id, **body),
+    )
 
 
 @router.post("/api/v1/longform-editor/cards/{card_id}/publish-guidance")
@@ -78,6 +95,12 @@ def publish_longform_guidance(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = LongformEditorService(session).publish_guidance(card_id, **payload.model_dump(mode="json"))
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json")
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/longform-editor/cards/{card_id}/publish-guidance",
+        payload={"card_id": card_id, "body": body},
+        action=lambda: LongformEditorService(session).publish_guidance(card_id, **body),
+    )

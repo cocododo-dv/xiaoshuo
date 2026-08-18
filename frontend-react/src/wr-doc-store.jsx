@@ -1,4 +1,5 @@
 import { apiGet, apiPatch, apiPost } from "./lib/client.js";
+import { manuscriptToDocHTML, sanitizeManuscriptHTML } from "./manuscript-html.js";
 
 /* global window */
 /* ==========================================================
@@ -61,7 +62,7 @@ function recoveryCreate({ sid, html, type = "conflict", reason = "", label = "",
     label: label || (sid ? `场景 ${sid}` : "未命名稿件"),
     source,
     createdAt,
-    html: String(html || ""),
+    html: sanitizeManuscriptHTML(html || ""),
     durable: true,
   };
   try {
@@ -163,6 +164,7 @@ function meta(sid) {
     revision: 0,
     hydrated: false,
     dirty: false,
+    saveVersion: 0,
     chain: Promise.resolve(),
     serverContent: "",
     currentFinalSceneRowId: null,
@@ -185,7 +187,7 @@ function absorbServerState(m, data) {
   if (draft) {
     if (draft.draft_id) m.draftId = draft.draft_id;
     if (Number.isInteger(draft.revision_no)) m.revision = draft.revision_no;
-    if (Object.prototype.hasOwnProperty.call(draft, "content")) m.serverContent = draft.content || "";
+    if (Object.prototype.hasOwnProperty.call(draft, "content")) m.serverContent = sanitizeManuscriptHTML(draft.content || "");
     if (Object.prototype.hasOwnProperty.call(draft, "last_promoted_revision_no")) {
       m.lastPromotedRevisionNo = draft.last_promoted_revision_no;
     }
@@ -246,9 +248,10 @@ function cacheReadForWork(sid, workId) {
   } catch (e) { return null; }
 }
 function cacheWrite(sid, html) {
-  volatileDocs.set(metaKeyOf(sid), html);
+  const safeHTML = sanitizeManuscriptHTML(html);
+  volatileDocs.set(metaKeyOf(sid), safeHTML);
   try {
-    localStorage.setItem(wrKeyOf(sid), html);
+    localStorage.setItem(wrKeyOf(sid), safeHTML);
     return { ok: true, error: null };
   } catch (error) {
     return { ok: false, error: storageFailure(error) };
@@ -267,14 +270,7 @@ async function backendSceneId(sid) {
 
 /* 文本 → 文档 HTML（服务端草稿以 \n 分段；写作器编辑器吃 <p> 段落） */
 function toDocHTML(content) {
-  if (!content) return "";
-  if (/<\w+[^>]*>/.test(content)) return content; // 已是 HTML
-  return content
-    .split(/\n+/)
-    .map(line => line.trim())
-    .filter(Boolean)
-    .map(line => `<p>${line}</p>`)
-    .join("");
+  return manuscriptToDocHTML(content);
 }
 
 /* HTML → 存库内容：原样存 HTML（count_words 服务端会剥标签） */
@@ -351,8 +347,9 @@ async function hydrate(sid) {
   }
 }
 
-async function pushSave(sid, html) {
+async function pushSave(sid, html, saveVersion) {
   const m = meta(sid);
+  html = sanitizeManuscriptHTML(html);
   try {
     await ensureDraft(sid);
     if (!m.draftId) {
@@ -363,9 +360,14 @@ async function pushSave(sid, html) {
       base_revision_no: m.revision,
     });
     absorbServerState(m, data);
-    m.dirty = false;
-    m.lastSaveError = null;
-    pendingClear(sid); // 保存成功：消费跨会话失败标记
+    const isLatestSave = saveVersion === m.saveVersion;
+    m.dirty = !isLatestSave;
+    if (isLatestSave) {
+      m.lastSaveError = null;
+      pendingClear(sid); // 只有最新版本成功，才能消费跨会话失败标记
+    } else {
+      pendingWrite(sid);
+    }
     if (data && data.words_rollup && window.WsCatalog && window.WsCatalog.__applyWordsRollup) {
       window.WsCatalog.__applyWordsRollup(sid, data.words_rollup);
     }
@@ -374,6 +376,17 @@ async function pushSave(sid, html) {
   } catch (e) {
     m.lastSaveError = e;
     if (e && e.code === "AUTHOR_DRAFT_CONFLICT") {
+      if (saveVersion < m.saveVersion) {
+        // 旧请求冲突时，队列里已经有更新的本地正文。只刷新服务端 revision，
+        // 绝不能按旧请求的 html 做恢复副本或把服务端内容覆盖到最新本地缓存。
+        m.draftId = null;
+        m.hydrated = false;
+        m.dirty = true;
+        pendingWrite(sid);
+        await hydrate(sid);
+        notifyState(sid);
+        throw e;
+      }
       // 服务端已被改（另一端保存）：以服务端为准重新水合。
       // 审计 P-12：覆盖前把本地未保存稿留一份副本，避免较新的本地编辑无痕丢失。
       const backup = recoveryCreate({
@@ -435,7 +448,7 @@ function htmlToParas(raw) {
   if (!raw) return [];
   if (!/<\w+[^>]*>/.test(raw)) return String(raw).split(/\n+/).map(x => x.trim()).filter(Boolean);
   const div = document.createElement("div");
-  div.innerHTML = raw;
+  div.innerHTML = sanitizeManuscriptHTML(raw);
   let paras = Array.from(div.querySelectorAll("p, li")).map(p => (p.textContent || "").trim()).filter(Boolean);
   if (!paras.length) {
     const t = (div.textContent || "").trim();
@@ -536,11 +549,15 @@ const WrDocs = {
     m.localDurable = cached.ok;
     m.cacheError = cached.error;
     m.dirty = true;
+    const saveVersion = ++m.saveVersion;
     m.canonicalDirty = true;
     m.lastSaveError = null;
+    // 从本地写入开始就标记未同步。浏览器若在请求完成前退出，下次水合会先留恢复副本，
+    // 不会把服务端旧稿静默盖回本地。
+    pendingWrite(sid);
     notifyState(sid);
     // 调用方拿到本次保存的真实结果；内部队列单独吞掉失败，保证下次保存仍能继续。
-    const operation = m.chain.catch(() => {}).then(() => pushSave(sid, html));
+    const operation = m.chain.catch(() => {}).then(() => pushSave(sid, html, saveVersion));
     m.chain = operation.catch(() => {});
     return operation;
   },
@@ -577,6 +594,34 @@ const WrDocs = {
     m.canonicalDirty = Boolean(data.canonical_dirty);
     notifyState(sid);
     return data;
+  },
+  /* adopt-current 的 exact_author_draft 已在一个服务端事务内完成保存与提升。
+     这里只吸收权威回包和刷新读缓存，绝不能再 PATCH 一次制造新修订。 */
+  acceptCanonical(sid, html, data) {
+    if (!sid) throw Object.assign(new Error("缺少场景标识"), { code: "AUTHOR_DRAFT_SCENE_REQUIRED" });
+    const m = meta(sid);
+    const normalized = sanitizeManuscriptHTML(html || "");
+    const serverDraft = data && data.author_draft;
+    if (!serverDraft || !serverDraft.draft_id || !Number.isInteger(serverDraft.revision_no)) {
+      throw Object.assign(new Error("归档响应缺少作者稿修订信息"), { code: "AUTHOR_DRAFT_ADOPTION_RESPONSE_INVALID" });
+    }
+    if (m.draftId && m.draftId !== serverDraft.draft_id) {
+      throw Object.assign(new Error("归档响应属于另一份作者稿"), { code: "AUTHOR_DRAFT_ADOPTION_MISMATCH" });
+    }
+    const cached = cacheWrite(sid, normalized);
+    m.localDurable = cached.ok;
+    m.cacheError = cached.error;
+    m.serverContent = normalized;
+    m.dirty = false;
+    m.lastSaveError = null;
+    absorbServerState(m, {
+      draft: { ...serverDraft, content: normalized },
+      runtime_final_ref: data.final_scene_row_id ? `final_scene:${data.final_scene_row_id}` : null,
+    });
+    pendingClear(sid);
+    notifyLoaded(sid);
+    notifyState(sid);
+    return stateSnapshot(sid);
   },
   /* 当前在写场景预热（目录装载后调用） */
   hydrateActive() {

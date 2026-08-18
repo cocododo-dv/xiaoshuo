@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
+from sqlalchemy import func, select
 
 from novel_system.db.models import (
     ChapterGoal,
@@ -89,12 +90,20 @@ def _seed_scene_parent(session, scene_id: str) -> None:
         )
         session.flush()
     if session.get(SceneCard, scene_id) is None:
+        next_scene_seq = int(
+            session.scalar(
+                select(func.max(SceneCard.scene_seq)).where(
+                    SceneCard.chapter_id == "chapter-1"
+                )
+            )
+            or 0
+        ) + 1
         session.add(
             SceneCard(
                 scene_id=scene_id,
                 chapter_id="chapter-1",
                 project_id="project-1",
-                scene_seq=1,
+                scene_seq=next_scene_seq,
                 scene_goal="Exercise one accounted provider call",
                 onstage_chars_json=[],
                 beats_json=[],
@@ -2019,6 +2028,7 @@ def test_scene_accounting_refreshes_cached_run_state_after_settlement(session) -
 
 def test_pending_business_write_is_precommitted_and_survives_provider_failure(session) -> None:
     accounting = _accounting_module()
+    _seed_scene_parent(session, "scene-1")
     session.add(
         SceneDraft(
             row_id="business-before-provider",
@@ -2055,6 +2065,8 @@ def test_pending_business_write_is_precommitted_and_survives_provider_failure(se
 
 def test_network_wait_holds_no_caller_write_lock_and_second_session_can_commit(session) -> None:
     accounting = _accounting_module()
+    _seed_scene_parent(session, "scene-1")
+    _seed_scene_parent(session, "scene-2")
     session.add(
         SceneDraft(
             row_id="caller-pending",

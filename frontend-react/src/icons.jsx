@@ -100,8 +100,4 @@ const I = {
   Download: (p) => <Icon {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></Icon>,
 };
 
-window.I = I;
-window.Icon = Icon;
-
-/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { I, Icon };

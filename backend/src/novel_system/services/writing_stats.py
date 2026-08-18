@@ -7,11 +7,12 @@
 - catBumpStreak: 当天首次正向增量记账 —— 昨天也写过则 +1，否则重记为 1。
 - catEffectiveStreak: 展示态 —— 最后记账日是今天或昨天则取 streak，否则 0。
 
-字数口径与写作器一致（wrCountOf）：剥掉 HTML 标签后去全部空白字符的字符数。
+字数口径与写作器一致（wrCountOf）：解析 HTML 可见文本与实体后，统计去空白字符数。
 """
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -22,16 +23,48 @@ from novel_system.db.models import ProjectWritingStats, StoryProject, utcnow
 
 WRITING_STATS_TZ = ZoneInfo("Asia/Shanghai")
 
-_TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
 
-def count_words(text: str | None) -> int:
-    """原型口径：el.innerText.replace(/\\s/g, "").length —— 中文按字符计数。"""
+class _VisibleTextExtractor(HTMLParser):
+    """Approximate the editor's visible ``innerText`` without executing HTML."""
+
+    _HIDDEN_TAGS = frozenset({"script", "style", "template", "noscript"})
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.hidden_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in self._HIDDEN_TAGS:
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in self._HIDDEN_TAGS and self.hidden_depth:
+            self.hidden_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self.hidden_depth:
+            self.parts.append(data)
+
+
+def visible_manuscript_text(text: str | None) -> str:
     if not text:
-        return 0
-    stripped = _TAG_RE.sub("", text)
-    return len(_WS_RE.sub("", stripped))
+        return ""
+    value = str(text)
+    if "<" not in value:
+        return value
+    parser = _VisibleTextExtractor()
+    parser.feed(value)
+    parser.close()
+    return "".join(parser.parts)
+
+
+def count_words(text: str | None) -> int:
+    """编辑器口径：可见文本去空白后的 Unicode code-point 数。"""
+
+    return len(_WS_RE.sub("", visible_manuscript_text(text)))
 
 
 def _local_day(now: datetime) -> str:

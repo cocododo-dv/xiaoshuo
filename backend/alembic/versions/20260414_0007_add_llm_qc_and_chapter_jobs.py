@@ -99,8 +99,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # The dynamic base migration (`20260408_0001`) uses live Base.metadata, so on this
-    # checkout a database stamped/upgraded to `20260413_0006` may already contain these
-    # tables and columns before `20260414_0007` runs. Dropping them here would risk
-    # destructive rollback drift, so this downgrade is intentionally a no-op.
+    # Older installations may have run the dynamic base migration form of 0001 and
+    # therefore may already have these objects before 0007. Dropping them here would
+    # risk destructive rollback drift, so this downgrade is intentionally a no-op.
     pass

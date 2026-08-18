@@ -5,7 +5,7 @@ from collections.abc import Generator
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-from novel_system.settings import get_settings
+from novel_system.database_runtime import load_database_runtime
 
 _ENGINE = None
 _SESSION_FACTORY = None
@@ -14,14 +14,18 @@ _SESSION_FACTORY = None
 def engine():
     global _ENGINE
     if _ENGINE is None:
-        settings = get_settings(include_runtime_config=False)
-        is_sqlite = settings.database_url.startswith("sqlite")
+        database_runtime = load_database_runtime()
+        is_sqlite = database_runtime.database_url.startswith("sqlite")
         connect_args = {"check_same_thread": False, "timeout": 30} if is_sqlite else {}
-        _ENGINE = create_engine(settings.database_url, connect_args=connect_args, future=True)
+        _ENGINE = create_engine(
+            database_runtime.database_url,
+            connect_args=connect_args,
+            future=True,
+        )
         if is_sqlite:
             _install_sqlite_pragmas(
                 _ENGINE,
-                enforce_foreign_keys=settings.sqlite_foreign_keys_enabled,
+                enforce_foreign_keys=database_runtime.sqlite_foreign_keys_enabled,
             )
     return _ENGINE
 
@@ -31,6 +35,12 @@ def _configure_sqlite_connection(
     *,
     enforce_foreign_keys: bool,
 ) -> None:
+    original_autocommit = getattr(dbapi_connection, "autocommit", None)
+    if original_autocommit is not None:
+        # SQLite ignores PRAGMA foreign_keys changes inside a transaction.
+        # Temporarily enter autocommit while configuring this new connection,
+        # then restore the PEP-249 mode requested by ``engine()``.
+        dbapi_connection.autocommit = True
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute(
@@ -51,6 +61,8 @@ def _configure_sqlite_connection(
         cursor.execute("PRAGMA busy_timeout=30000")
     finally:
         cursor.close()
+        if original_autocommit is not None:
+            dbapi_connection.autocommit = original_autocommit
 
 
 def _install_sqlite_pragmas(
@@ -70,6 +82,51 @@ def _install_sqlite_pragmas(
         @event.listens_for(sqlalchemy_engine, "begin")
         def defer_sqlite_foreign_keys(sqlalchemy_connection) -> None:
             _configure_sqlite_transaction(sqlalchemy_connection)
+
+
+def _install_sqlite_session_pragmas(
+    session_maker,
+    *,
+    enforce_foreign_keys: bool = True,
+) -> None:
+    """Reapply deferred FKs at ORM transaction and flush boundaries.
+
+    Python 3.12's default SQLite legacy transaction control can reuse a DBAPI
+    connection after ``Session.commit()`` without reliably producing a second
+    engine-level ``begin`` event.  The ORM ``after_begin`` event is the stable
+    transaction boundary in that case.  Keeping both hooks also covers direct
+    ``Connection`` users and ORM users.  Before an ORM flush we explicitly open
+    a deferred DBAPI transaction when the legacy driver has not opened one yet;
+    this prevents its first DML statement from resetting the pragma.  Read-only
+    sessions remain in legacy mode, preserving the project's explicit
+    ``BEGIN IMMEDIATE`` accounting lock semantics and short-lived read behavior.
+    """
+
+    if not enforce_foreign_keys:
+        return
+
+    @event.listens_for(session_maker, "after_begin")
+    def defer_sqlite_session_foreign_keys(
+        _session,
+        _transaction,
+        sqlalchemy_connection,
+    ) -> None:
+        if sqlalchemy_connection.dialect.name == "sqlite":
+            _configure_sqlite_transaction(sqlalchemy_connection)
+
+    @event.listens_for(session_maker, "before_flush")
+    def begin_sqlite_flush_transaction(
+        orm_session,
+        _flush_context,
+        _instances,
+    ) -> None:
+        sqlalchemy_connection = orm_session.connection()
+        if sqlalchemy_connection.dialect.name != "sqlite":
+            return
+        dbapi_connection = sqlalchemy_connection.connection.dbapi_connection
+        if not dbapi_connection.in_transaction:
+            sqlalchemy_connection.exec_driver_sql("BEGIN")
+        _configure_sqlite_transaction(sqlalchemy_connection)
 
 
 def _configure_sqlite_transaction(sqlalchemy_connection) -> None:
@@ -102,7 +159,18 @@ def _configure_sqlite_transaction(sqlalchemy_connection) -> None:
 def session_factory():
     global _SESSION_FACTORY
     if _SESSION_FACTORY is None:
-        _SESSION_FACTORY = sessionmaker(bind=engine(), autoflush=False, autocommit=False, expire_on_commit=False)
+        runtime_engine = engine()
+        _SESSION_FACTORY = sessionmaker(
+            bind=runtime_engine,
+            autoflush=False,
+            autocommit=False,
+            expire_on_commit=False,
+        )
+        if runtime_engine.dialect.name == "sqlite":
+            _install_sqlite_session_pragmas(
+                _SESSION_FACTORY,
+                enforce_foreign_keys=load_database_runtime().sqlite_foreign_keys_enabled,
+            )
     return _SESSION_FACTORY
 
 

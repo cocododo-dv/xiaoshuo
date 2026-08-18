@@ -108,8 +108,9 @@ def test_recovery_sweep_route_uses_runtime_recovery_service(client, monkeypatch)
         def __init__(self, session) -> None:
             called["session"] = session
 
-        def recover_stuck_jobs(self) -> dict:
+        def recover_stuck_jobs(self, *, scene_cancellation_recoverer=None) -> dict:
             called["called"] = True
+            called["scene_cancellation_recoverer"] = scene_cancellation_recoverer
             return {"reclaimed_jobs": 1, "created_human_review_events": 0}
 
     class LegacyBomb:
@@ -131,6 +132,7 @@ def test_recovery_sweep_route_uses_runtime_recovery_service(client, monkeypatch)
         "created_human_review_events": 0,
     }
     assert called["called"] is True
+    assert callable(called["scene_cancellation_recoverer"])
 
 
 def test_run_due_promotions_route_uses_promotion_service(client, monkeypatch) -> None:

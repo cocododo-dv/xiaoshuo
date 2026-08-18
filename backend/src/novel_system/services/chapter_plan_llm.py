@@ -200,7 +200,6 @@ class ChapterPlanService:
             actor_ref=actor_ref or "author",
             context=None,
         )
-        self.session.commit()
         return {"architecture": _serialize_architecture(artifact)}
 
     def _persist_architecture(

@@ -2,7 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
 import { apiGet, apiPost } from "./lib/client.js";
-import { WsWorks, wsKey } from "./ws-works.jsx";
+import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 
 /* global React, ReactDOM, I */
@@ -151,20 +151,48 @@ function rvFetchDebounced() {
   rvFetchTimer = setTimeout(() => { rvFetch(); }, 600);
 }
 
-/* 一次性迁移：旧 localStorage 的 custom 项上行（resolved/snoozed 状态迁不动则丢弃——卡片可再生） */
+/* 一次性迁移：旧 localStorage 的 custom 项上行。
+   只有全部写入成功才落完成标记；每项使用稳定 dedupe_key，因此中途失败后的整批重试
+   不会复制已成功写入的卡片。resolved/snoozed 状态无法可靠映射，保留为 open。 */
+const rvLegacyMigrations = new Map();
 async function rvMigrateLegacy(pid) {
+  if (!pid || pid === "__loading__") return false;
+  const flagKey = RV_MIGRATED_LS + "::" + pid;
   try {
-    const flagKey = RV_MIGRATED_LS + "::" + pid;
-    if (localStorage.getItem(flagKey)) return;
-    const raw = localStorage.getItem((wsKey ? wsKey(RV_LEGACY_LS) : RV_LEGACY_LS));
-    const st = raw ? JSON.parse(raw) : null;
-    const custom = (st && st.custom) || [];
-    for (const it of custom) {
-      if (!it || !it.title) continue;
-      try { await apiPost("/api/v1/review-items", rvToPayload(it)); } catch (e) {}
+    if (localStorage.getItem(flagKey)) return true;
+  } catch (e) {
+    console.warn("[WsReview] 无法读取旧待办迁移状态:", e);
+    return false;
+  }
+  if (rvLegacyMigrations.has(pid)) return rvLegacyMigrations.get(pid);
+
+  const migration = (async () => {
+    try {
+      // 使用调用时已锁定的作品 id；不能再读取可能已切换的全局 activeId。
+      const raw = localStorage.getItem(`${RV_LEGACY_LS}::${pid}`);
+      const st = raw ? JSON.parse(raw) : null;
+      const custom = Array.isArray(st && st.custom) ? st.custom : [];
+      for (let index = 0; index < custom.length; index += 1) {
+        const it = custom[index];
+        if (!it || !it.title) continue;
+        const legacyId = String(it.id || "item").replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 80);
+        await apiPost("/api/v1/review-items", rvToPayload({
+          ...it,
+          dedupeKey: it.dedupeKey || it.dedupe_key || `legacy-review:${index}:${legacyId}`,
+        }));
+      }
+      localStorage.setItem(flagKey, new Date().toISOString());
+      return true;
+    } catch (e) {
+      // 不写完成标记，也不删除旧数据；下一次刷新会用同一 dedupe_key 安全重试。
+      console.warn("[WsReview] 旧待办迁移失败（保留旧数据，下次重试）:", e);
+      return false;
+    } finally {
+      rvLegacyMigrations.delete(pid);
     }
-    localStorage.setItem(flagKey, new Date().toISOString());
-  } catch (e) {}
+  })();
+  rvLegacyMigrations.set(pid, migration);
+  return migration;
 }
 
 function rvCustomList() { return rvCache.open.filter(i => !i.live); }
@@ -271,15 +299,34 @@ function useReviewBadge() {
   return rvBadge();
 }
 
-/* 启动装载 + 真相变动时刷新（派生卡在后端现算，目录/作品切换都可能改变它们） */
-try { rvFetch(); } catch (e) {}
-window.addEventListener("ws:work-changed", () => { try { rvFetchDebounced(); } catch (e) {} });
-window.addEventListener("ws:trash-changed", () => { try { rvFetchDebounced(); } catch (e) {} });
-try { if (WsCatalog) WsCatalog.subscribe(() => rvFetchDebounced()); } catch (e) {}
-/* 进入待办视图时刷新一轮（外部投递的卡即时可见） */
-window.addEventListener("hashchange", () => {
+/* 启动装载 + 真相变动时刷新（派生卡在后端现算，目录/作品切换都可能改变它们）。
+   模块在 HMR/测试 resetModules 后可能重新执行，先撤销旧实例的全局订阅。 */
+if (window.__wsReviewGlobalHandlers) {
+  const old = window.__wsReviewGlobalHandlers;
+  window.removeEventListener("ws:work-changed", old.workChanged);
+  window.removeEventListener("ws:trash-changed", old.trashChanged);
+  window.removeEventListener("hashchange", old.hashChanged);
+  old.catalogUnsubscribe?.();
+  old.cancelPending?.();
+}
+const rvOnWorkChanged = () => { try { rvFetchDebounced(); } catch (e) {} };
+const rvOnTrashChanged = () => { try { rvFetchDebounced(); } catch (e) {} };
+const rvOnHashChanged = () => {
   try { if ((location.hash || "").includes("review")) rvFetchDebounced(); } catch (e) {}
-});
+};
+window.addEventListener("ws:work-changed", rvOnWorkChanged);
+window.addEventListener("ws:trash-changed", rvOnTrashChanged);
+window.addEventListener("hashchange", rvOnHashChanged);
+let rvCatalogUnsubscribe = null;
+try { if (WsCatalog) rvCatalogUnsubscribe = WsCatalog.subscribe(() => rvFetchDebounced()); } catch (e) {}
+window.__wsReviewGlobalHandlers = {
+  workChanged: rvOnWorkChanged,
+  trashChanged: rvOnTrashChanged,
+  hashChanged: rvOnHashChanged,
+  catalogUnsubscribe: rvCatalogUnsubscribe,
+  cancelPending: () => clearTimeout(rvFetchTimer),
+};
+try { rvFetch(); } catch (e) {}
 Object.assign(window, { rvResolveAction });
 
 
@@ -427,13 +474,13 @@ function WsReview({ go }) {
     if (a.op === "nav" && a.to) {
       /* AI 起草台深链（管线 blocked 稿卡片）：入列惯用法——挂载读 __scnEnqueue，
          已挂载走 ws:scene-enqueue 事件（与写作台 forkAI / 构思「去 AI 起草」同源） */
-      if (a.to === "scene" && a.scene) window.__scnEnqueue = { sid: a.scene };
-      go(a.to);
       /* 带上下文深链：雪花步骤 / 写作器场景 / 深改姿态（与命令面板同一套事件） */
-      if (a.step) setTimeout(() => window.dispatchEvent(new CustomEvent("ws:snow-step", { detail: a.step })), 60);
-      if (a.scene && a.to === "scene") setTimeout(() => window.dispatchEvent(new CustomEvent("ws:scene-enqueue", { detail: { sid: a.scene } })), 80);
-      else if (a.scene) setTimeout(() => window.dispatchEvent(new CustomEvent("ws:writer-scene", { detail: a.scene })), 60);
-      if (a.posture) setTimeout(() => window.dispatchEvent(new CustomEvent("ws:writer-posture", { detail: a.posture })), 110);
+      const intents = [];
+      if (a.step) intents.push({ type: "ws:snow-step", detail: a.step });
+      if (a.scene && a.to === "scene") intents.push({ type: "ws:scene-enqueue", detail: { sid: a.scene } });
+      else if (a.scene) intents.push({ type: "ws:writer-scene", detail: a.scene });
+      if (a.posture) intents.push({ type: "ws:writer-posture", detail: a.posture });
+      go(a.to, intents);
     }
     else if (a.op === "snooze") snooze(item.id);
     else if (a.op === "bridge") {
@@ -721,4 +768,4 @@ function RvEmpty({ hasSnoozed, go }) {
 Object.assign(window, { WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvCustomList, rvIsResolved, useReviewBadge });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvCustomList, rvIsResolved, useReviewBadge };
+export { WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvCustomList, rvIsResolved, useReviewBadge, rvMigrateLegacy };

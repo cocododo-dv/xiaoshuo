@@ -73,4 +73,28 @@ describe("WsReview（收件箱乐观处理 + 失败告警）", () => {
 
     await vi.waitFor(() => expect(window.alert).toHaveBeenCalled(), T);
   });
+
+  it("旧待办迁移失败时不落完成标记，并以稳定去重键安全重试", async () => {
+    const { mod, client } = await loadReview();
+    const migrationProject = "prj-migration-test";
+    const legacyKey = `ws_review_v1::${migrationProject}`;
+    const migratedKey = `ws_review_migrated_v1::${migrationProject}`;
+    window.localStorage.removeItem(migratedKey);
+    window.localStorage.setItem(legacyKey, JSON.stringify({
+      custom: [{ id: "legacy-1", title: "未迁移批注", kind: "note" }],
+    }));
+    client.apiPost.mockClear();
+    client.apiPost.mockRejectedValueOnce(new Error("offline"));
+
+    await expect(mod.rvMigrateLegacy(migrationProject)).resolves.toBe(false);
+    expect(window.localStorage.getItem(migratedKey)).toBeNull();
+    expect(window.localStorage.getItem(legacyKey)).not.toBeNull();
+
+    await expect(mod.rvMigrateLegacy(migrationProject)).resolves.toBe(true);
+    expect(window.localStorage.getItem(migratedKey)).not.toBeNull();
+    const writes = client.apiPost.mock.calls.filter(([url]) => url === "/api/v1/review-items");
+    expect(writes).toHaveLength(2);
+    expect(writes[0][1].dedupe_key).toBe("legacy-review:0:legacy-1");
+    expect(writes[1][1].dedupe_key).toBe(writes[0][1].dedupe_key);
+  });
 });

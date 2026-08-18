@@ -21,11 +21,35 @@ dev_stop_port "$PORT"
 cd "$REPO_ROOT/backend"
 
 export NOVEL_SYSTEM_VECTOR_BACKEND=memory
-export NOVEL_SYSTEM_CONFIG_SECRET="${NOVEL_SYSTEM_CONFIG_SECRET:-dev-local-secret-change-me}"
+PYTHON="$REPO_ROOT/backend/.venv/bin/python"
+CONFIG_SECRET_FILE="$RUN_DIR/config.secret"
+ARTIFACT_RETENTION_DAYS="${NOVEL_SYSTEM_ARTIFACT_RETENTION_DAYS:-14}"
 
-.venv/bin/python -m alembic upgrade head
+"$PYTHON" "$SCRIPT_DIR/cleanup_runtime_artifacts.py" \
+  --run-dir "$RUN_DIR" \
+  --retention-days "$ARTIFACT_RETENTION_DAYS" \
+  --apply
+
+# Match the Windows launcher: create one per-workspace random encryption key and
+# reuse it across restarts. A public fallback key makes provider API keys in the
+# SQLite database decryptable by anyone who obtains the file.
+if [ -z "${NOVEL_SYSTEM_CONFIG_SECRET:-}" ]; then
+  if [ -s "$CONFIG_SECRET_FILE" ]; then
+    NOVEL_SYSTEM_CONFIG_SECRET="$(<"$CONFIG_SECRET_FILE")"
+  else
+    umask 077
+    NOVEL_SYSTEM_CONFIG_SECRET="$($PYTHON -c 'import secrets; print(secrets.token_urlsafe(48))')"
+    printf '%s' "$NOVEL_SYSTEM_CONFIG_SECRET" > "$CONFIG_SECRET_FILE"
+  fi
+fi
+export NOVEL_SYSTEM_CONFIG_SECRET
+chmod 600 "$CONFIG_SECRET_FILE" 2>/dev/null || true
+
+$PYTHON -m alembic upgrade head
+
+$PYTHON -m novel_system.tools.database_preflight
 
 echo "http://127.0.0.1:${PORT}" > "$URL_FILE"
 echo $$ > "$PID_FILE"
-exec .venv/bin/python -m uvicorn novel_system.api.app:create_app --factory --reload \
+exec "$PYTHON" -m uvicorn novel_system.api.app:create_app --factory --reload \
   --host 127.0.0.1 --port "$PORT" --app-dir src

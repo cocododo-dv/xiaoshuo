@@ -13,6 +13,7 @@ import pytest
 
 from novel_system.db.models import (
     AttemptTracker,
+    AuthorDraft,
     ChapterGoal,
     FinalScene,
     SceneCard,
@@ -80,6 +81,63 @@ def test_adopt_promotes_style_draft_to_archived_final(client, session):
     # 完成门：章节聚合（FinalScene 为源）取到全文——清除任何前端缓存都不影响
     detail = client.get("/api/v1/chapter-manuscripts/chapter_adopt_1").json()["data"]
     assert "潮水退去" in detail["assembled"]["content"]
+
+
+def test_adopt_exact_author_revision_archives_the_submitted_text_not_stale_pipeline_draft(
+    client,
+    session,
+):
+    """浏览器当前稿必须与权威 FinalScene 是同一份修订，不能由服务端另选旧管线稿。"""
+
+    _create_chapter(client, "chapter_adopt_exact")
+    _create_scene(
+        client,
+        "scene_adopt_exact",
+        chapter_id="chapter_adopt_exact",
+        scene_seq=1,
+    )
+    _seed_style_draft(
+        session,
+        "scene_adopt_exact",
+        "chapter_adopt_exact",
+        content="这是服务端仍指向的旧管线稿。",
+    )
+    ensured = client.post(
+        "/api/v1/author-drafts/scene/scene_adopt_exact/ensure",
+        json={},
+        headers={"X-Idempotency-Key": "adopt-exact-ensure"},
+    )
+    assert ensured.status_code == 200, ensured.text
+    author_draft = ensured.json()["data"]["draft"]
+
+    response = client.post(
+        "/api/v1/scenes/scene_adopt_exact/adopt-current",
+        json={
+            "accepted_warning_codes": [],
+            "exact_author_draft": {
+                "draft_id": author_draft["draft_id"],
+                "base_revision_no": author_draft["revision_no"],
+                "expected_current_final_scene_row_id": None,
+                "content": "<p>这是作者在浏览器中明确选中的正文。</p>",
+            },
+        },
+        headers={"X-Idempotency-Key": "adopt-exact"},
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    final = session.get(FinalScene, data["final_scene_row_id"])
+    saved = session.get(AuthorDraft, author_draft["draft_id"])
+    assert final is not None
+    assert final.content == "这是作者在浏览器中明确选中的正文。"
+    assert final.content != "这是服务端仍指向的旧管线稿。"
+    assert final.source_kind == "author_draft"
+    assert final.source_author_draft_id == author_draft["draft_id"]
+    assert final.source_author_draft_revision_no == data["draft_revision_no"]
+    assert saved is not None and saved.content == "<p>这是作者在浏览器中明确选中的正文。</p>"
+    assert saved.revision_no == data["draft_revision_no"]
+    assert data["author_draft"]["revision_no"] == data["draft_revision_no"]
+    assert data["author_draft"]["canonical_dirty"] is False
 
 
 def test_adopt_without_any_draft_409(client, session):

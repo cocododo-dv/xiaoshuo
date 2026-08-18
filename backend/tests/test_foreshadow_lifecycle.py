@@ -8,6 +8,7 @@ from novel_system.db.models import (
     SceneCard,
     StoryProject,
 )
+from novel_system.services.catalog import CatalogService
 from novel_system.services.foreshadow_lifecycle import (
     ForeshadowLifecycleService,
     MAX_PLANTS_PER_SCENE,
@@ -243,8 +244,10 @@ def test_project_health_recomputes_overdue_after_chapter_reorder(session) -> Non
 
     assert service.project_health_report(project_id).overdue == ["FS_REORDER"]
 
-    first_chapter.display_order = 2
-    second_chapter.display_order = 1
+    CatalogService(session).reorder_chapters(
+        project_id,
+        [second_chapter.chapter_id, first_chapter.chapter_id],
+    )
     session.commit()
 
     assert service.project_health_report(project_id).overdue == []

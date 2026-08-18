@@ -4,7 +4,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 
-const require = createRequire(path.join(process.cwd(), "package.json"));
+const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
 const BASE = process.argv[2] || "http://127.0.0.1:5174/";
@@ -63,10 +63,10 @@ await check("编排台改章题 → 后端落库 + 主页一致", async () => {
   await titleInput.fill("P3改名·样章08");
   await titleInput.press("Enter");
   await page.waitForFunction(async (apiBase) => {
-    const body = await fetch(`${apiBase}/api/v2/projects/tide/catalog`).then(r => r.json());
+    const body = await fetch(`${apiBase}/api/v2/projects/work-a/catalog`).then(r => r.json());
     return body.data.chapters[7].title === "P3改名·样章08";
   }, API);
-  const tree = await api("/api/v2/projects/tide/catalog");
+  const tree = await api("/api/v2/projects/work-a/catalog");
   if (tree.chapters[7].title !== "P3改名·样章08") throw new Error(`backend title: ${tree.chapters[7].title}`);
   await page.evaluate(() => { location.hash = "#home"; });
   await page.waitForSelector(".hm-chaps");
@@ -77,19 +77,19 @@ await check("编排台改章题 → 后端落库 + 主页一致", async () => {
   await page.fill('input[aria-label="章节标题"]', "样章08");
   await page.press('input[aria-label="章节标题"]', "Enter");
   await page.waitForFunction(async (apiBase) => {
-    const body = await fetch(`${apiBase}/api/v2/projects/tide/catalog`).then(r => r.json());
+    const body = await fetch(`${apiBase}/api/v2/projects/work-a/catalog`).then(r => r.json());
     return body.data.chapters[7].title === "样章08";
   }, API);
 });
 
 await check("写作器加场景 → 后端可见", async () => {
-  const before = (await api("/api/v2/projects/tide/catalog")).chapters[7].scenes.length;
+  const before = (await api("/api/v2/projects/work-a/catalog")).chapters[7].scenes.length;
   await page.evaluate(() => {
     const cur = window.WsCatalog.get()[7];
     window.WsCatalog.addScene(cur.id, "P3冒烟新场景");
   });
   await page.waitForTimeout(1500);
-  const after = (await api("/api/v2/projects/tide/catalog")).chapters[7];
+  const after = (await api("/api/v2/projects/work-a/catalog")).chapters[7];
   if (after.scenes.length !== before + 1) throw new Error(`scenes: ${before} -> ${after.scenes.length}`);
   if (!after.scenes.some(s => s.title === "P3冒烟新场景")) throw new Error("new scene title missing");
 });
@@ -101,12 +101,12 @@ await check("删场景 → v1 trash 生效（后端目录消失）", async () =>
     window.WsCatalog.removeScene(cur.id, victim.sid);
   });
   await page.waitForTimeout(1500);
-  const after = (await api("/api/v2/projects/tide/catalog")).chapters[7];
+  const after = (await api("/api/v2/projects/work-a/catalog")).chapters[7];
   if (after.scenes.some(s => s.title === "P3冒烟新场景")) throw new Error("scene still present");
 });
 
 await check("写作器正文保存 → words rollup 全链路后端", async () => {
-  const statsBefore = await api("/api/v2/projects/tide/writing-stats");
+  const statsBefore = await api("/api/v2/projects/work-a/writing-stats");
   await page.evaluate(() => { location.hash = "#writer"; });
   await page.waitForTimeout(1800);
   // 直接经 WrDocs 保存（等价于编辑器自动保存路径）
@@ -115,9 +115,9 @@ await check("写作器正文保存 → words rollup 全链路后端", async () =
     await window.WrDocs.save(w.scene.sid, `<p>样例正文第一段：占位句。</p><p>样例正文第二段：占位句。</p><p>这是 P3 冒烟新增的第三段，用来验证字数增量上报。本轮标记：${Date.now().toString(36)}</p>`);
   });
   await page.waitForTimeout(1500);
-  const statsAfter = await api("/api/v2/projects/tide/writing-stats");
+  const statsAfter = await api("/api/v2/projects/work-a/writing-stats");
   if (statsAfter.words_total === statsBefore.words_total) throw new Error("words_total unchanged");
-  const tree = await api("/api/v2/projects/tide/catalog");
+  const tree = await api("/api/v2/projects/work-a/catalog");
   const sc = tree.chapters[7].scenes.find(s => s.state === "writing");
   if (!sc || sc.words <= 0) throw new Error("scene words_current not updated");
 });

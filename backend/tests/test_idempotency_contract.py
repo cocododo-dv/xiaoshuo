@@ -72,6 +72,97 @@ def test_same_key_different_payload_is_rejected(client) -> None:
     assert second.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD"
 
 
+def test_after_commit_observes_durable_success_and_replays_without_rerunning_action(session) -> None:
+    action_calls = 0
+    observations: list[tuple[str | None, bool]] = []
+
+    def action() -> dict:
+        nonlocal action_calls
+        action_calls += 1
+        session.add(
+            OperationLog(
+                event_type="post_commit_domain_write",
+                object_type="test",
+                object_ref="durable-before-dispatch",
+                payload_json={},
+            )
+        )
+        return {"queued": True}
+
+    def after_commit(_result: dict) -> None:
+        with SessionLocal() as observer:
+            record = observer.get(IdempotencyKey, "post-commit-dispatch")
+            domain_write = observer.execute(
+                select(OperationLog).where(
+                    OperationLog.event_type == "post_commit_domain_write"
+                )
+            ).scalar_one_or_none()
+            observations.append(
+                (record.status if record is not None else None, domain_write is not None)
+            )
+
+    first, first_status = execute_with_idempotency(
+        session,
+        idempotency_key="post-commit-dispatch",
+        method="POST",
+        path_template="/queued-action",
+        payload={"work": 1},
+        action=action,
+        after_commit=after_commit,
+    )
+    replay, replay_status = execute_with_idempotency(
+        session,
+        idempotency_key="post-commit-dispatch",
+        method="POST",
+        path_template="/queued-action",
+        payload={"work": 1},
+        action=lambda: pytest.fail("replay must not rerun the business action"),
+        after_commit=after_commit,
+    )
+
+    assert first["queued"] is True
+    assert first_status is None
+    assert replay["queued"] is True
+    assert replay_status == "replayed"
+    assert action_calls == 1
+    assert observations == [("succeeded", True), ("succeeded", True)]
+
+
+def test_after_commit_failure_keeps_succeeded_record_for_dispatch_retry(session) -> None:
+    def dispatch_failure(_result: dict) -> None:
+        raise RuntimeError("queue temporarily unavailable")
+
+    with pytest.raises(RuntimeError, match="queue temporarily unavailable"):
+        execute_with_idempotency(
+            session,
+            idempotency_key="post-commit-retry",
+            method="POST",
+            path_template="/queued-action",
+            payload={},
+            action=lambda: {"queued": True},
+            after_commit=dispatch_failure,
+        )
+
+    session.expire_all()
+    record = session.get(IdempotencyKey, "post-commit-retry")
+    assert record is not None
+    assert record.status == "succeeded"
+
+    dispatched: list[bool] = []
+    replay, replay_status = execute_with_idempotency(
+        session,
+        idempotency_key="post-commit-retry",
+        method="POST",
+        path_template="/queued-action",
+        payload={},
+        action=lambda: pytest.fail("dispatch retry must not rerun the action"),
+        after_commit=lambda result: dispatched.append(bool(result["queued"])),
+    )
+    assert replay["queued"] is True
+    assert replay_status == "replayed"
+    assert dispatched == [True]
+
+
 def test_concurrent_same_key_insert_is_reported_as_in_progress(session, monkeypatch) -> None:
     def raise_duplicate_key() -> None:
         raise IntegrityError("INSERT INTO idempotency_keys", {}, Exception("duplicate key"))
@@ -441,3 +532,23 @@ def test_lease_renewal_is_fenced_by_worker_and_attempt(session) -> None:
     with pytest.raises(DomainError) as lost:
         owner.renew(lease_seconds=120)
     assert lost.value.code == "RUN_OWNER_LEASE_LOST"
+
+
+def test_detached_lease_renewal_commits_from_an_independent_session(session) -> None:
+    request_hash = canonical_request_hash("POST", "/run", {"scene_id": "SC01"})
+    owner = IdempotencyLeaseService(session).claim(
+        idempotency_key="renew-lease-detached",
+        request_hash=request_hash,
+        worker_id="worker-a",
+        lease_seconds=1,
+    )
+    session.commit()
+    before = owner.lease_expires_at
+
+    renewed = owner.renew_detached(lease_seconds=120)
+
+    with SessionLocal() as observer:
+        persisted = observer.get(IdempotencyKey, "renew-lease-detached")
+        assert persisted is not None
+        assert persisted.lease_expires_at == renewed
+        assert persisted.lease_expires_at > before

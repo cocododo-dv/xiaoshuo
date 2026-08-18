@@ -1,17 +1,60 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.project_requests import ProjectCreateRequest
+from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
-from novel_system.services.idempotency import execute_with_idempotency
+from novel_system.api.snowflake_requests import (
+    SnowflakeAcceptStaleScenesRequest,
+    SnowflakeAcceptStaleStepRequest,
+    SnowflakeAssistantRequest,
+    SnowflakeFeCandidatesRequest,
+    SnowflakeOrphanResolveRequest,
+    SnowflakeResyncRequest,
+    SnowflakeSceneTriageSuggestRequest,
+    SnowflakeStepGenerateRequest,
+    SnowflakeStepRestoreRequest,
+)
+from novel_system.services.idempotency import execute_with_idempotency, execute_with_optional_idempotency
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 
 router = APIRouter(tags=["snowflake-workspace"])
+
+
+def _actor(request: Request) -> str:
+    return getattr(request.state, "operator_ref", None) or "operator"
+
+
+def _req_id(request: Request) -> str | None:
+    return getattr(request.state, "request_id", None)
+
+
+def _mutation_response(
+    request: Request,
+    session: Session,
+    *,
+    method: str,
+    path_template: str,
+    payload: dict[str, Any],
+    action: Callable[[], dict],
+):
+    result, status = execute_with_optional_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method=method,
+        path_template=path_template,
+        payload=payload,
+        action=action,
+        actor_ref=_actor(request),
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=_req_id(request), headers=headers)
 
 
 @router.get("/api/v2/projects")
@@ -24,18 +67,19 @@ def list_snowflake_workspace_projects(request: Request, session: Session = Depen
 
 @router.post("/api/v2/projects")
 def create_snowflake_workspace_project(
-    payload: dict[str, Any],
+    payload: ProjectCreateRequest,
     request: Request,
     session: Session = Depends(get_session),
 ):
+    body = payload.model_dump(mode="json", exclude_unset=True)
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects",
-        payload=payload,
-        action=lambda: SnowflakeWorkspaceService(session).create_project(payload),
+        payload=body,
+        action=lambda: SnowflakeWorkspaceService(session).create_project(body),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -54,39 +98,57 @@ def get_snowflake_workspace(project_id: str, request: Request, session: Session 
 def generate_workspace_step(
     project_id: str,
     step_key: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: SnowflakeStepGenerateRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    result = SnowflakeWorkspaceService(session).generate_step(project_id, step_key, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/generate",
+        payload={"project_id": project_id, "step_key": step_key, "body": body},
+        action=lambda: SnowflakeWorkspaceService(session).generate_step(project_id, step_key, body),
+    )
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/fe-candidates")
 def generate_workspace_step_fe_candidates(
     project_id: str,
     step_key: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: SnowflakeFeCandidatesRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    result = SnowflakeWorkspaceService(session).fe_step_candidates(project_id, step_key, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/fe-candidates",
+        payload={"project_id": project_id, "step_key": step_key, "body": body},
+        action=lambda: SnowflakeWorkspaceService(session).fe_step_candidates(project_id, step_key, body),
+    )
 
 
 @router.patch("/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}")
 def update_workspace_step(
     project_id: str,
     step_key: str,
-    payload: dict[str, Any] | None,
+    payload: BoundedJsonObject | None,
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = SnowflakeWorkspaceService(session).update_step(project_id, step_key, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload or {}
+    return _mutation_response(
+        request,
+        session,
+        method="PATCH",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}",
+        payload={"project_id": project_id, "step_key": step_key, "body": body},
+        action=lambda: SnowflakeWorkspaceService(session).update_step(project_id, step_key, body),
+    )
 
 
 @router.get("/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/history")
@@ -107,122 +169,182 @@ def get_workspace_step_history(
 def restore_workspace_step(
     project_id: str,
     step_key: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: SnowflakeStepRestoreRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    result = SnowflakeWorkspaceService(session).restore_step(project_id, step_key, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/restore",
+        payload={"project_id": project_id, "step_key": step_key, "body": body},
+        action=lambda: SnowflakeWorkspaceService(session).restore_step(project_id, step_key, body),
+    )
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve")
 def approve_workspace_step(
     project_id: str,
     step_key: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    result = SnowflakeWorkspaceService(session).approve_step(project_id, step_key)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json") if payload else {}
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/approve",
+        payload={"project_id": project_id, "step_key": step_key, "body": body},
+        action=lambda: SnowflakeWorkspaceService(session).approve_step(project_id, step_key),
+    )
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/accept-stale")
 def accept_workspace_stale_step(
     project_id: str,
     step_key: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: SnowflakeAcceptStaleStepRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = SnowflakeWorkspaceService(session).accept_stale_step(project_id, step_key, payload or {}, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/steps/{step_key}/accept-stale",
+        payload={"project_id": project_id, "step_key": step_key, "body": body},
+        action=lambda: SnowflakeWorkspaceService(session).accept_stale_step(
+            project_id,
+            step_key,
+            body,
+            actor_ref=_actor(request),
+        ),
+    )
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/assistant")
 def request_workspace_assistant(
     project_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: SnowflakeAssistantRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    result = SnowflakeWorkspaceService(session).request_assistant(project_id, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/assistant",
+        payload={"project_id": project_id, "body": body},
+        action=lambda: SnowflakeWorkspaceService(session).request_assistant(project_id, body),
+    )
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/scene-triage/suggest")
 def suggest_workspace_scene_triage(
     project_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: SnowflakeSceneTriageSuggestRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    result = SnowflakeWorkspaceService(session).suggest_scene_triage(project_id, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/scene-triage/suggest",
+        payload={"project_id": project_id, "body": body},
+        action=lambda: SnowflakeWorkspaceService(session).suggest_scene_triage(project_id, body),
+    )
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/scene-triage")
 def save_workspace_scene_triage(
     project_id: str,
-    payload: dict[str, Any] | None,
+    payload: BoundedJsonObject | None,
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = SnowflakeWorkspaceService(session).save_scene_triage(project_id, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload or {}
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/scene-triage",
+        payload={"project_id": project_id, "body": body},
+        action=lambda: SnowflakeWorkspaceService(session).save_scene_triage(project_id, body),
+    )
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/scenes/accept-stale")
 def accept_workspace_stale_scenes(
     project_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: SnowflakeAcceptStaleScenesRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = SnowflakeWorkspaceService(session).accept_stale_scenes(project_id, payload or {}, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/scenes/accept-stale",
+        payload={"project_id": project_id, "body": body},
+        action=lambda: SnowflakeWorkspaceService(session).accept_stale_scenes(
+            project_id,
+            body,
+            actor_ref=_actor(request),
+        ),
+    )
 
 
 @router.patch("/api/v2/projects/{project_id}/snowflake-workspace/scenes/{scene_plan_id}")
 def update_workspace_scene_plan(
     project_id: str,
     scene_plan_id: str,
-    payload: dict[str, Any] | None,
+    payload: BoundedJsonObject | None,
     request: Request,
     session: Session = Depends(get_session),
 ):
-    result = SnowflakeWorkspaceService(session).update_scene_plan(project_id, scene_plan_id, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload or {}
+    return _mutation_response(
+        request,
+        session,
+        method="PATCH",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/scenes/{scene_plan_id}",
+        payload={"project_id": project_id, "scene_plan_id": scene_plan_id, "body": body},
+        action=lambda: SnowflakeWorkspaceService(session).update_scene_plan(project_id, scene_plan_id, body),
+    )
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/scene-triage/{triage_id}/apply")
 def apply_workspace_scene_triage_repair(
     project_id: str,
     triage_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    del payload
-    result = SnowflakeWorkspaceService(session).apply_scene_triage_repair(project_id, triage_id)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json") if payload else {}
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/scene-triage/{triage_id}/apply",
+        payload={"project_id": project_id, "triage_id": triage_id, "body": body},
+        action=lambda: SnowflakeWorkspaceService(session).apply_scene_triage_repair(project_id, triage_id),
+    )
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/materialize")
 def materialize_workspace_outline(
     project_id: str,
-    payload: dict[str, Any] | None,
+    payload: BoundedJsonObject | None,
     request: Request,
     session: Session = Depends(get_session),
 ):
@@ -233,7 +355,7 @@ def materialize_workspace_outline(
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/snowflake-workspace/materialize",
-        payload={"project_id": project_id, **body},
+        payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).materialize(project_id, body, actor_ref=actor_ref),
         actor_ref=actor_ref,
     )
@@ -244,7 +366,7 @@ def materialize_workspace_outline(
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/preview")
 def preview_chapter_plan(
     project_id: str,
-    payload: dict[str, Any] | None,
+    payload: BoundedJsonObject | None,
     request: Request,
     session: Session = Depends(get_session),
 ):
@@ -257,15 +379,21 @@ def preview_chapter_plan(
     或场景行自带的 chapter_id —— 那是系统已经知道的事，不是待决策项），所以要 commit。
     历史项目第一次打开面板时，因此会看到归属从「未分章」变成实际章数，这是补录不是决策。
     """
-    result = SnowflakeChapteringService(session).preview(project_id, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload or {}
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/preview",
+        payload={"project_id": project_id, "body": body},
+        action=lambda: SnowflakeChapteringService(session).preview(project_id, body),
+    )
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/suggest")
 def suggest_chapter_plan(
     project_id: str,
-    payload: dict[str, Any] | None,
+    payload: BoundedJsonObject | None,
     request: Request,
     session: Session = Depends(get_session),
 ):
@@ -274,24 +402,42 @@ def suggest_chapter_plan(
     fail-closed：LLM 没配好就 409 + author_action。作者点的是「让 AI 建议」，拿一份
     规则算出来的东西冒充建议是撒谎 —— 规则分章本来就以 spine_anchor 策略摆在面板上。
     """
-    result = SnowflakeChapteringService(session).suggest(project_id, payload or {})
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload or {}
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/suggest",
+        payload={"project_id": project_id, "body": body},
+        action=lambda: SnowflakeChapteringService(session).suggest(project_id, body),
+    )
 
 
 @router.patch("/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan")
 def save_chapter_plan(
     project_id: str,
-    payload: dict[str, Any] | None,
+    payload: BoundedJsonObject | None,
     request: Request,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    service = SnowflakeWorkspaceService(session)
-    saved = SnowflakeChapteringService(session).save(project_id, payload or {}, actor_ref=actor_ref)
-    result = {**saved, "workspace": service.workspace(project_id)}
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload or {}
+
+    def save() -> dict:
+        saved = SnowflakeChapteringService(session).save(
+            project_id,
+            body,
+            actor_ref=_actor(request),
+        )
+        return {**saved, "workspace": SnowflakeWorkspaceService(session).workspace(project_id)}
+
+    return _mutation_response(
+        request,
+        session,
+        method="PATCH",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan",
+        payload={"project_id": project_id, "body": body},
+        action=save,
+    )
 
 
 @router.post(
@@ -300,8 +446,8 @@ def save_chapter_plan(
 def resolve_orphaned_scene(
     project_id: str,
     scene_plan_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: SnowflakeOrphanResolveRequest | None = None,
     session: Session = Depends(get_session),
 ):
     """处置一个孤儿场：``action`` = discard（正文也进回收站）/ keep（正文留在目录里）。
@@ -309,48 +455,65 @@ def resolve_orphaned_scene(
     没有这个端点时分章面板的 blocker 是死结——它让作者「先决定是一并删除还是保留」，
     但界面上不存在这两个决定，「确认分章」按钮从此再也点不动。
     """
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    action = str((payload or {}).get("action") or "").strip()
-    resolved = SnowflakeChapteringService(session).resolve_orphan(
-        project_id, scene_plan_id, action=action, actor_ref=actor_ref
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    action = str(body.get("action") or "").strip()
+
+    def resolve() -> dict:
+        resolved = SnowflakeChapteringService(session).resolve_orphan(
+            project_id,
+            scene_plan_id,
+            action=action,
+            actor_ref=_actor(request),
+        )
+        return {**resolved, "workspace": SnowflakeWorkspaceService(session).workspace(project_id)}
+
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/orphaned-scenes/{scene_plan_id}/resolve",
+        payload={"project_id": project_id, "scene_plan_id": scene_plan_id, "action": action},
+        action=resolve,
     )
-    result = {**resolved, "workspace": SnowflakeWorkspaceService(session).workspace(project_id)}
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/resync")
 def resync_workspace_scenes(
     project_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: SnowflakeResyncRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = SnowflakeWorkspaceService(session).resync_materialized_scenes(
-        project_id,
-        payload or {},
-        actor_ref=actor_ref,
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+    return _mutation_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v2/projects/{project_id}/snowflake-workspace/resync",
+        payload={"project_id": project_id, "body": body},
+        action=lambda: SnowflakeWorkspaceService(session).resync_materialized_scenes(
+            project_id,
+            body,
+            actor_ref=_actor(request),
+        ),
     )
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/outline/approve")
 def approve_workspace_outline(
     project_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload or {}
+    body = payload.model_dump(mode="json") if payload else {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/snowflake-workspace/outline/approve",
-        payload={"project_id": project_id, **body},
+        payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).approve_outline(project_id),
         actor_ref=actor_ref,
     )

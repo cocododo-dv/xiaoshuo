@@ -4,6 +4,7 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
 from sqlalchemy import event, select
 
 from novel_system.db.models import IdempotencyKey, LlmCall, LlmCallAttempt, OperationLog

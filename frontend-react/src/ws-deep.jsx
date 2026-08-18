@@ -1,6 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
+import { apiGet, apiPatch } from "./lib/client.js";
 
 /* global React, I */
 /* ==========================================================
@@ -10,7 +11,7 @@ import { wsKey, WsWorks } from "./ws-works.jsx";
    · wrDeepMark / wrDeepUnmark  在编辑器里标注 / 清除风险高亮
    · wrDeepAdopt(el, issue, cand) 把候选写回正文 DOM（调用方负责落盘）
    · WrDeepDrawer             写作台右栏的诊断面板（问题 + 候选 + 决定日志）
-   诊断 = 启发式规则（任何作品可用）+ 演示作品的精修条目（带改写候选）。
+   诊断使用适用于所有作品的本地启发式规则；候选改写由真实后端单独生成。
    ========================================================== */
 const { useState: useDX, useEffect: useDXE } = React;
 
@@ -36,6 +37,52 @@ function wrDxClearSkips(sid) {
   try { localStorage.removeItem(dxKey("wr-deep-skip:" + sid)); } catch (e) {}
 }
 
+function wrDxSnapshot(sid) {
+  return { decision_log: wrDxLog(sid), ignored_issue_keys: [...wrDxSkips(sid)] };
+}
+
+function wrDxApplyPreferences(sid, preferences) {
+  const decisionLog = Array.isArray(preferences?.decision_log) ? preferences.decision_log.slice(0, 30) : [];
+  const ignoredKeys = Array.isArray(preferences?.ignored_issue_keys)
+    ? [...new Set(preferences.ignored_issue_keys)].slice(0, 200)
+    : [];
+  try { localStorage.setItem(dxKey("wr-deep-log:" + sid), JSON.stringify(decisionLog)); } catch (e) {}
+  try { localStorage.setItem(dxKey("wr-deep-skip:" + sid), JSON.stringify(ignoredKeys)); } catch (e) {}
+  return { decision_log: decisionLog, ignored_issue_keys: ignoredKeys };
+}
+
+function wrDxMergePreferences(remote, local, { localIgnoredAuthoritative = false } = {}) {
+  const seenLogs = new Set();
+  const decisionLog = [...(local?.decision_log || []), ...(remote?.decision_log || [])]
+    .filter((entry) => {
+      const key = `${entry?.at ?? ""}:${entry?.text ?? ""}`;
+      if (!entry?.text || seenLogs.has(key)) return false;
+      seenLogs.add(key);
+      return true;
+    })
+    .sort((a, b) => Number(b.at || 0) - Number(a.at || 0))
+    .slice(0, 30);
+  const ignoredSource = localIgnoredAuthoritative
+    ? (local?.ignored_issue_keys || [])
+    : [...(local?.ignored_issue_keys || []), ...(remote?.ignored_issue_keys || [])];
+  return {
+    decision_log: decisionLog,
+    ignored_issue_keys: [...new Set(ignoredSource)].slice(0, 200),
+  };
+}
+
+async function wrDxLoadPreferences(sid) {
+  return apiGet(`/api/v1/scenes/${encodeURIComponent(sid)}/deep-review/preferences`);
+}
+
+async function wrDxSavePreferences(sid, snapshot, baseRevisionNo) {
+  return apiPatch(`/api/v1/scenes/${encodeURIComponent(sid)}/deep-review/preferences`, {
+    decision_log: (snapshot?.decision_log || []).slice(0, 30),
+    ignored_issue_keys: [...new Set(snapshot?.ignored_issue_keys || [])].slice(0, 200),
+    base_revision_no: baseRevisionNo,
+  });
+}
+
 
 const WR_DX_KINDS = {
   echo: { tag: "ECH", label: "回响" },
@@ -44,7 +91,7 @@ const WR_DX_KINDS = {
   rdn:  { tag: "RDN", label: "重复" },
 };
 
-/* ---- 诊断：精修条目 + 启发式规则 ---- */
+/* ---- 诊断：启发式规则 ---- */
 function wrDeepScan(el, sid) {
   if (!el) return [];
   const paras = Array.from(el.querySelectorAll("p, blockquote"));
@@ -163,7 +210,7 @@ function wrDeepAdopt(el, issue, cand) {
 /* ==========================================================
    WrDeepDrawer — 写作台右栏 · 深改面板
    ========================================================== */
-function WrDeepDrawer({ open, issues, activeKey, onPick, onAdopt, onIgnore, onRescan, onEditDraft, onUndo, canUndo, log, onClose }) {
+function WrDeepDrawer({ open, issues, activeKey, onPick, onAdopt, onIgnore, onRescan, onEditDraft, onUndo, canUndo, log, persistenceStatus = "idle", onClose }) {
   const active = issues.find(it => it.key === activeKey) || issues[0] || null;
   const cands = (active && active.cands) || [];
   return (
@@ -248,17 +295,20 @@ function WrDeepDrawer({ open, issues, activeKey, onPick, onAdopt, onIgnore, onRe
           </div>
         )}
 
-        <div className="wr-dxd-note">采纳即写回本场正文并自动保存；忽略的条目不再提示，可点 <I.Refresh size={11} style={{ verticalAlign: "-1px" }} /> 重新诊断找回。</div>
+        <div className="wr-dxd-note">
+          采纳即写回本场正文并自动保存；忽略的条目不再提示，可点 <I.Refresh size={11} style={{ verticalAlign: "-1px" }} /> 重新诊断找回。
+          {persistenceStatus === "loading" || persistenceStatus === "saving" ? " 决定正在同步…" : null}
+          {persistenceStatus === "synced" ? " 决定已同步。" : null}
+          {persistenceStatus === "local" ? " 服务端暂不可用，决定已保存在本机并会在下次操作重试。" : null}
+        </div>
       </div>
     </aside>
   );
 }
 
-Object.assign(window, {
+export {
   wrDeepScan, wrDeepMark, wrDeepUnmark, wrDeepAdopt,
-  wrDxLog, wrDxPushLog, wrDxAddSkip, wrDxClearSkips,
+  wrDxLog, wrDxPushLog, wrDxAddSkip, wrDxClearSkips, wrDxSnapshot,
+  wrDxApplyPreferences, wrDxMergePreferences, wrDxLoadPreferences, wrDxSavePreferences,
   WrDeepDrawer,
-});
-
-/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { wrDeepScan, wrDeepMark, wrDeepUnmark, wrDeepAdopt, wrDxLog, wrDxPushLog, wrDxAddSkip, wrDxClearSkips, WrDeepDrawer };
+};

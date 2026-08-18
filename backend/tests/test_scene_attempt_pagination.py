@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from sqlalchemy import event
+
 from novel_system.db.models import AttemptTracker, ChapterGoal, ChapterState, SceneCard, SceneRunState
+from novel_system.db.session import engine
 
 
 def test_scene_attempts_support_page_and_cursor_pagination_without_breaking_workbench(client, session) -> None:
@@ -70,7 +73,26 @@ def test_scene_attempts_support_page_and_cursor_pagination_without_breaking_work
     )
     session.commit()
 
-    page_response = client.get("/api/v1/scenes/CH300_SC01/attempts", params={"page": 1, "page_size": 2})
+    attempt_selects: list[str] = []
+
+    def capture_attempt_selects(_connection, _cursor, statement, _parameters, _context, _many) -> None:
+        normalized = " ".join(statement.lower().split())
+        if normalized.startswith("select") and "attempt_tracker" in normalized:
+            attempt_selects.append(normalized)
+
+    event.listen(engine(), "before_cursor_execute", capture_attempt_selects)
+    try:
+        page_response = client.get(
+            "/api/v1/scenes/CH300_SC01/attempts",
+            params={"page": 1, "page_size": 2},
+        )
+    finally:
+        event.remove(engine(), "before_cursor_execute", capture_attempt_selects)
+
+    assert len(attempt_selects) == 2
+    assert any("count(" in statement for statement in attempt_selects)
+    assert any(" limit " in statement for statement in attempt_selects)
+    assert all("count(" in statement or " limit " in statement for statement in attempt_selects)
     assert page_response.status_code == 200
     page_data = page_response.json()["data"]
     assert [item["step"] for item in page_data["items"]] == ["archived", "style_rewritten"]

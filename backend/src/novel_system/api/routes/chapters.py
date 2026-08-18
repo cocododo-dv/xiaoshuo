@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -8,7 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
-from novel_system.api.request_types import WriterBriefJsonInput
+from novel_system.api.request_types import (
+    BoundedJsonObject,
+    EmptyRequest,
+    WriterBriefJsonInput,
+)
 from novel_system.api.response import ok
 from novel_system.db.models import ChapterGoal, ChapterState, SceneCard, SceneRunState
 from novel_system.services.author_lifecycle import AuthorLifecycleService
@@ -21,34 +25,63 @@ from novel_system.services.chapter_runtime import ChapterRuntimeService
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.text_validation import validate_user_text_payload
-from novel_system.services.writer_review import normalize_chapter_writer_brief
+from novel_system.services.writer_briefs import normalize_chapter_writer_brief
 
 router = APIRouter(tags=["chapters"])
+INT64_MAX = (1 << 63) - 1
 
 
 class ChapterUpsertRequest(BaseModel):
     """Whitelist the chapter fields an author is allowed to edit."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     chapter_id: str = Field(min_length=1, max_length=255)
-    chapter_goal: str
-    project_id: str | None = None
-    outline_plan_id: str | None = None
-    planned_scene_count: int | None = Field(default=None, ge=0)
+    chapter_goal: str = Field(max_length=100_000)
+    project_id: str | None = Field(default=None, max_length=255)
+    outline_plan_id: str | None = Field(default=None, max_length=255)
+    planned_scene_count: int | None = Field(default=None, ge=0, le=INT64_MAX)
     mid_aggregate_enabled: int = Field(default=0, ge=0, le=1)
-    narrative_json: dict[str, Any] | None = None
-    state: str = "planned"
-    words_target: int | None = Field(default=None, ge=0)
-    display_order: int | None = Field(default=None, ge=0)
-    main_plot_push: str | None = None
-    emotional_target: str | None = None
-    ending_effect: str | None = None
-    must_not: str | None = None
-    notes: str | None = None
+    narrative_json: BoundedJsonObject | None = None
+    state: str = Field(default="planned", min_length=1, max_length=64)
+    words_target: int | None = Field(default=None, ge=0, le=INT64_MAX)
+    display_order: int | None = Field(default=None, ge=0, le=INT64_MAX)
+    main_plot_push: str | None = Field(default=None, max_length=100_000)
+    emotional_target: str | None = Field(default=None, max_length=100_000)
+    ending_effect: str | None = Field(default=None, max_length=100_000)
+    must_not: str | None = Field(default=None, max_length=100_000)
+    notes: str | None = Field(default=None, max_length=100_000)
     # Shape validation belongs to normalize_chapter_writer_brief() so chapter
     # and scene endpoints share WRITER_BRIEF_INVALID / HTTP 400 semantics.
     writer_brief_json: WriterBriefJsonInput = None
+
+
+BoundedIdentifier = Annotated[str, Field(min_length=1, max_length=255)]
+
+
+class ChapterIdsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    chapter_ids: list[BoundedIdentifier] = Field(max_length=10_000)
+
+
+class ChapterRuntimeBackfillRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    strategy: str = Field(min_length=1, max_length=64)
+
+
+class ChapterManualHoldRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    reason: str = Field(min_length=1, max_length=4_000)
+
+
+class ChapterSceneOrderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    scene_ids: list[BoundedIdentifier] = Field(max_length=10_000)
+    last_scene_id: BoundedIdentifier
 
 
 @router.get("/api/v1/chapters")
@@ -95,15 +128,16 @@ def create_chapter(
 
 
 @router.post("/api/v1/chapters/trash")
-def trash_chapters(payload: dict, request: Request, session: Session = Depends(get_session)):
+def trash_chapters(payload: ChapterIdsRequest, request: Request, session: Session = Depends(get_session)):
+    body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/trash",
-        payload=payload,
-        action=lambda: AuthorLifecycleService(session).trash_chapters(payload.get("chapter_ids") or [], actor_ref),
+        payload=body,
+        action=lambda: AuthorLifecycleService(session).trash_chapters(body["chapter_ids"], actor_ref),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -111,15 +145,16 @@ def trash_chapters(payload: dict, request: Request, session: Session = Depends(g
 
 
 @router.post("/api/v1/chapters/restore")
-def restore_chapters(payload: dict, request: Request, session: Session = Depends(get_session)):
+def restore_chapters(payload: ChapterIdsRequest, request: Request, session: Session = Depends(get_session)):
+    body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/restore",
-        payload=payload,
-        action=lambda: AuthorLifecycleService(session).restore_chapters(payload.get("chapter_ids") or []),
+        payload=body,
+        action=lambda: AuthorLifecycleService(session).restore_chapters(body["chapter_ids"]),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -127,15 +162,16 @@ def restore_chapters(payload: dict, request: Request, session: Session = Depends
 
 
 @router.post("/api/v1/chapters/purge")
-def purge_chapters(payload: dict, request: Request, session: Session = Depends(get_session)):
+def purge_chapters(payload: ChapterIdsRequest, request: Request, session: Session = Depends(get_session)):
+    body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/purge",
-        payload=payload,
-        action=lambda: AuthorLifecycleService(session).purge_chapters(payload.get("chapter_ids") or []),
+        payload=body,
+        action=lambda: AuthorLifecycleService(session).purge_chapters(body["chapter_ids"]),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -150,6 +186,16 @@ def _create_chapter(session: Session, payload: dict) -> dict:
     }
     chapter = session.get(ChapterGoal, payload["chapter_id"])
     created = chapter is None
+    _assert_chapter_display_order_available(
+        session,
+        chapter_id=payload["chapter_id"],
+        project_id=(payload.get("project_id") if chapter is None else chapter.project_id),
+        display_order=(
+            payload.get("display_order")
+            if "display_order" in payload
+            else (chapter.display_order if chapter is not None else None)
+        ),
+    )
     if chapter is None:
         if str(payload.get("state") or "").strip() == "approved":
             raise DomainError(
@@ -219,11 +265,40 @@ def _create_chapter(session: Session, payload: dict) -> dict:
     return {"chapter_id": chapter.chapter_id, "changed": changed}
 
 
+def _assert_chapter_display_order_available(
+    session: Session,
+    *,
+    chapter_id: str,
+    project_id: str | None,
+    display_order: int | None,
+) -> None:
+    if project_id is None or display_order is None:
+        return
+    conflict = session.execute(
+        select(ChapterGoal.chapter_id).where(
+            ChapterGoal.project_id == project_id,
+            ChapterGoal.display_order == int(display_order),
+            ChapterGoal.trashed_flag == 0,
+            ChapterGoal.chapter_id != chapter_id,
+        )
+    ).scalar_one_or_none()
+    if conflict is not None:
+        raise DomainError(
+            "CHAPTER_DISPLAY_ORDER_CONFLICT",
+            "another active chapter already uses this display_order",
+            status_code=409,
+            details={
+                "project_id": project_id,
+                "display_order": int(display_order),
+                "conflicting_chapter_id": conflict,
+            },
+        )
+
+
 @router.get("/api/v1/chapters/{chapter_id}/status")
 def chapter_status(chapter_id: str, request: Request, session: Session = Depends(get_session)):
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
-    payload = ChapterRuntimeService(session).chapter_state_payload(chapter_id)
-    session.commit()
+    payload = ChapterRuntimeService(session).chapter_state_snapshot(chapter_id)
     return ok(payload, req_id=getattr(request.state, "request_id", None))
 
 
@@ -244,7 +319,12 @@ def chapter_scene_draft(chapter_id: str, request: Request, session: Session = De
 
 
 @router.post("/api/v1/chapters/{chapter_id}/run/full")
-def run_chapter_full(chapter_id: str, request: Request, session: Session = Depends(get_session)):
+def run_chapter_full(
+    chapter_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
     result, status = execute_with_idempotency(
@@ -264,7 +344,6 @@ def run_chapter_full(chapter_id: str, request: Request, session: Session = Depen
 def chapter_run_status(chapter_id: str, request: Request, session: Session = Depends(get_session)):
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
     payload = ChapterRunnerService(session).run_status(chapter_id)
-    session.commit()
     return ok(payload, req_id=getattr(request.state, "request_id", None))
 
 
@@ -272,10 +351,11 @@ def chapter_run_status(chapter_id: str, request: Request, session: Session = Dep
 def chapter_runtime_backfill(
     chapter_id: str,
     stage_id: str,
-    payload: dict,
+    payload: ChapterRuntimeBackfillRequest,
     request: Request,
     session: Session = Depends(get_session),
 ):
+    body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
     result, status = execute_with_idempotency(
@@ -283,8 +363,8 @@ def chapter_runtime_backfill(
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/{chapter_id}/runtime/backfill/{stage_id}",
-        payload={"chapter_id": chapter_id, "stage_id": stage_id, **payload},
-        action=lambda: ChapterRuntimeService(session).run_backfill(chapter_id, stage_id, payload.get("strategy", "")),
+        payload={"chapter_id": chapter_id, "stage_id": stage_id, **body},
+        action=lambda: ChapterRuntimeService(session).run_backfill(chapter_id, stage_id, body["strategy"]),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -292,7 +372,12 @@ def chapter_runtime_backfill(
 
 
 @router.post("/api/v1/chapters/{chapter_id}/runtime/aggregate/final")
-def chapter_runtime_final_aggregate(chapter_id: str, request: Request, session: Session = Depends(get_session)):
+def chapter_runtime_final_aggregate(
+    chapter_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
     result, status = execute_with_idempotency(
@@ -311,10 +396,11 @@ def chapter_runtime_final_aggregate(chapter_id: str, request: Request, session: 
 @router.post("/api/v1/chapters/{chapter_id}/runtime/manual-hold")
 def chapter_runtime_manual_hold(
     chapter_id: str,
-    payload: dict,
+    payload: ChapterManualHoldRequest,
     request: Request,
     session: Session = Depends(get_session),
 ):
+    body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
     result, status = execute_with_idempotency(
@@ -322,8 +408,8 @@ def chapter_runtime_manual_hold(
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/{chapter_id}/runtime/manual-hold",
-        payload={"chapter_id": chapter_id, **payload},
-        action=lambda: ChapterRuntimeService(session).set_manual_hold(chapter_id, payload.get("reason", "")),
+        payload={"chapter_id": chapter_id, **body},
+        action=lambda: ChapterRuntimeService(session).set_manual_hold(chapter_id, body["reason"]),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -331,7 +417,12 @@ def chapter_runtime_manual_hold(
 
 
 @router.post("/api/v1/chapters/{chapter_id}/runtime/manual-hold/clear")
-def chapter_runtime_manual_hold_clear(chapter_id: str, request: Request, session: Session = Depends(get_session)):
+def chapter_runtime_manual_hold_clear(
+    chapter_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
     result, status = execute_with_idempotency(
@@ -350,18 +441,19 @@ def chapter_runtime_manual_hold_clear(chapter_id: str, request: Request, session
 @router.post("/api/v1/chapters/{chapter_id}/scene-order")
 def reorder_chapter_scenes(
     chapter_id: str,
-    payload: dict,
+    payload: ChapterSceneOrderRequest,
     request: Request,
     session: Session = Depends(get_session),
 ):
+    body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/{chapter_id}/scene-order",
-        payload={"chapter_id": chapter_id, **payload},
-        action=lambda: _reorder_chapter_scenes(session, chapter_id, payload),
+        payload={"chapter_id": chapter_id, **body},
+        action=lambda: _reorder_chapter_scenes(session, chapter_id, body),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -426,6 +518,12 @@ def _reorder_chapter_scenes(session: Session, chapter_id: str, payload: dict) ->
         operation="chapters.reorder_scenes",
     )
     if changed:
+        temporary_start = max(
+            int(scene.scene_seq or 0) for scene in ordered_scenes
+        ) + 1
+        for offset, scene in enumerate(ordered_scenes):
+            scene.scene_seq = temporary_start + offset
+        session.flush()
         for index, scene in enumerate(ordered_scenes, start=1):
             scene.scene_seq = index
             scene.is_chapter_last = 1 if scene.scene_id == last_scene_id else 0

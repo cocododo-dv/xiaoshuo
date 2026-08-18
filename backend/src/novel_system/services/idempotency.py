@@ -89,6 +89,28 @@ class IdempotencyLease:
         self.lease_expires_at = self._service.renew(self, lease_seconds=lease_seconds)
         return self.lease_expires_at
 
+    def renew_detached(self, *, lease_seconds: int) -> str:
+        """Renew from a dedicated session, safe for provider heartbeat threads."""
+
+        from novel_system.db.session import SessionLocal
+
+        with SessionLocal() as session:
+            service = IdempotencyLeaseService(session)
+            detached = IdempotencyLease(
+                idempotency_key=self.idempotency_key,
+                request_hash=self.request_hash,
+                worker_id=self.worker_id,
+                attempt_no=self.attempt_no,
+                lease_expires_at=self.lease_expires_at,
+                status=self.status,
+                response_json=self.response_json,
+                reclaimed=self.reclaimed,
+                _service=service,
+            )
+            expires = service.renew(detached, lease_seconds=lease_seconds)
+            session.commit()
+            return expires
+
 
 class IdempotencyLeaseService:
     """Claims and renews an idempotency owner with conditional UPDATE fences."""
@@ -244,6 +266,7 @@ def execute_with_idempotency(
     path_template: str,
     payload: Any,
     action: Callable[..., dict],
+    after_commit: Callable[[dict], None] | None = None,
     owned_failure_callback: Callable[[DomainError], None] | None = None,
     actor_ref: str = "operator",
     worker_id: str | None = None,
@@ -264,7 +287,13 @@ def execute_with_idempotency(
         lease_seconds=owner_lease_ttl_seconds(),
     )
     if lease.status == "succeeded":
-        return lease.response_json or {}, "replayed"
+        result = lease.response_json or {}
+        if after_commit is not None:
+            # A durable queued action may have committed immediately before the
+            # process died. Replaying the callback is safe when the worker owns
+            # a queued->running CAS, and closes that commit/dispatch gap.
+            after_commit(result)
+        return result, "replayed"
 
     session.add(
         OperationLog(
@@ -343,7 +372,6 @@ def execute_with_idempotency(
             )
         )
         session.commit()
-        return result, None
     except DomainError as exc:
         _mark_owned_idempotency_failed(
             session,
@@ -380,6 +408,79 @@ def execute_with_idempotency(
             status_code=500,
             details={"retryable": False},
         ) from exc
+
+    # This deliberately lives outside the action exception boundary. The
+    # business mutation and the succeeded idempotency record are already
+    # committed; a dispatch error must not roll them back or downgrade the
+    # durable idempotency state. Retrying the same key reruns only this callback.
+    if after_commit is not None:
+        after_commit(result)
+    return result, None
+
+
+def execute_with_optional_idempotency(
+    session: Session,
+    *,
+    idempotency_key: str | None,
+    method: str,
+    path_template: str,
+    payload: Any,
+    action: Callable[..., dict],
+    actor_ref: str = "operator",
+) -> tuple[dict, str | None]:
+    """Honor an idempotency key without breaking legacy callers that omit it.
+
+    New browser clients attach ``X-Idempotency-Key`` to every mutation, while
+    a few older API surfaces predate that contract. Those routes can use this
+    compatibility wrapper during migration: keyed calls get durable
+    claim/replay/conflict semantics, and unkeyed calls keep their historical
+    single-execution behavior.
+
+    The action must not commit its own transaction. On the unkeyed path this
+    helper owns the commit/rollback just as ``execute_with_idempotency`` does on
+    the keyed path.
+    """
+
+    if idempotency_key:
+        return execute_with_idempotency(
+            session,
+            idempotency_key=idempotency_key,
+            method=method,
+            path_template=path_template,
+            payload=payload,
+            action=action,
+            actor_ref=actor_ref,
+        )
+
+    try:
+        result = _invoke_idempotent_action(action, _NoopIdempotencyLease())
+        session.commit()
+        return result, None
+    except Exception:
+        session.rollback()
+        raise
+
+
+@dataclass(frozen=True)
+class _NoopIdempotencyLease:
+    """Lease-shaped value for an optional action that accepts a lease."""
+
+    idempotency_key: str = ""
+    request_hash: str = ""
+    worker_id: str = ""
+    attempt_no: int = 0
+    lease_expires_at: str = ""
+    status: str = "unkeyed"
+    response_json: dict[str, Any] | None = None
+    reclaimed: bool = False
+
+    @property
+    def execution_id(self) -> str:
+        return ""
+
+    def renew(self, *, lease_seconds: int) -> str:
+        del lease_seconds
+        return ""
 
 
 def _invoke_idempotent_action(action: Callable[..., dict], lease: IdempotencyLease) -> dict:

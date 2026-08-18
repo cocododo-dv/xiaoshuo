@@ -111,6 +111,80 @@ class ChapterRuntimeService:
         chapter_state, staged_items = self.sync_chapter(chapter_id)
         return self._serialize_chapter_state(chapter_state, staged_items)
 
+    def chapter_state_snapshot(self, chapter_id: str) -> dict[str, Any]:
+        """Project the same status without creating or updating runtime rows.
+
+        Status/workbench GET endpoints used to call ``sync_chapter`` and commit,
+        so merely refreshing a page created ``ChapterState``/``StagedBackfill``
+        records and rewrote pending statuses. Mutations still call
+        ``sync_chapter`` before acting; this method only computes their would-be
+        view for read paths.
+        """
+
+        self._ensure_chapter_exists(chapter_id)
+        chapter_state = self.session.get(ChapterState, chapter_id)
+        scenes = self.session.execute(
+            select(SceneCard)
+            .where(SceneCard.chapter_id == chapter_id)
+            .order_by(SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
+        ).scalars().all()
+        markers = {marker.stage_id: marker for scene in scenes for marker in self._parse_scene_markers(scene)}
+        stored_rows = {
+            row.stage_id: row
+            for row in self.session.execute(
+                select(StagedBackfill).where(StagedBackfill.chapter_id == chapter_id)
+            ).scalars().all()
+        }
+
+        staged_items: list[dict[str, Any]] = []
+        all_stage_ids = set(markers) | set(stored_rows)
+        for stage_id in all_stage_ids:
+            marker = markers.get(stage_id)
+            stored = stored_rows.get(stage_id)
+            if marker is not None:
+                tracker = self._latest_tracker(marker.chapter_id, marker.marker_id)
+                item = {
+                    "stage_id": marker.stage_id,
+                    "chapter_id": marker.chapter_id,
+                    "scene_id": marker.scene_id,
+                    "marker_id": marker.marker_id,
+                    "marker_text": marker.marker_text,
+                    "marker_token": marker.marker_token,
+                    "status": BACKFILL_PENDING,
+                    "linked_tracker_row_id": tracker.row_id if tracker is not None else None,
+                    "last_strategy": None,
+                }
+            else:
+                assert stored is not None
+                item = self._serialize_staged_backfill(stored)
+                if item["status"] == BACKFILL_PENDING:
+                    item["status"] = BACKFILL_COMPLETED
+            staged_items.append(item)
+
+        staged_items.sort(key=lambda item: (str(item["scene_id"]), str(item["stage_id"])))
+        pending_count = sum(1 for item in staged_items if item["status"] == BACKFILL_PENDING)
+        manual_hold_reason = chapter_state.manual_hold_reason if chapter_state is not None else None
+        aggregate_block_reason = (
+            "manual_hold"
+            if manual_hold_reason
+            else "blocked_waiting_backfill"
+            if pending_count > 0
+            else "none"
+        )
+        return {
+            "chapter_id": chapter_id,
+            "chapter_passed_scene_count": chapter_state.chapter_passed_scene_count if chapter_state is not None else 0,
+            "chapter_backfill_pending_count": pending_count,
+            "mid_aggregate_enabled_effective": (
+                chapter_state.mid_aggregate_enabled_effective if chapter_state is not None else 0
+            ),
+            "aggregate_block_reason": aggregate_block_reason,
+            "manual_hold_reason": manual_hold_reason,
+            "last_interim_memory_row_id": chapter_state.last_interim_memory_row_id if chapter_state is not None else None,
+            "last_final_memory_row_id": chapter_state.last_final_memory_row_id if chapter_state is not None else None,
+            "staged_backfill_items": staged_items,
+        }
+
     def run_backfill(self, chapter_id: str, stage_id: str, strategy: str) -> dict[str, Any]:
         if strategy not in BACKFILL_STRATEGIES:
             raise DomainError("BACKFILL_STRATEGY_INVALID", "unsupported backfill strategy", status_code=400)

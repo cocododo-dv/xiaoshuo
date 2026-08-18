@@ -131,7 +131,7 @@ def _latest_tracker(session) -> ForeshadowTracker:
     return tracker
 
 
-def test_status_and_workbench_sync_template_markers_into_staged_backfill(client, session) -> None:
+def test_status_and_workbench_project_template_markers_without_writing_on_get(client, session) -> None:
     _create_chapter_and_scene(client)
 
     status_response = client.get(f"/api/v1/chapters/{CHAPTER_ID}/status")
@@ -156,7 +156,7 @@ def test_status_and_workbench_sync_template_markers_into_staged_backfill(client,
             "last_strategy": None,
         }
     ]
-    assert len(_stage_rows(session)) == 1
+    assert _stage_rows(session) == []
 
     workbench_response = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench")
 
@@ -167,6 +167,7 @@ def test_status_and_workbench_sync_template_markers_into_staged_backfill(client,
     assert workbench_data["chapter_state"]["aggregate_block_reason"] == "blocked_waiting_backfill"
     assert workbench_data["chapter_state"]["manual_hold_reason"] is None
     assert workbench_data["chapter_state"]["staged_backfill_items"][0]["marker_token"] == MARKER_TOKEN
+    assert _stage_rows(session) == []
 
 
 def test_run_backfill_again_requires_existing_tracker_and_reopens_it(client, session) -> None:

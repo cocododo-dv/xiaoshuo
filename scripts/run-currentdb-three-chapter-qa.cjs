@@ -9,7 +9,7 @@ const { loadReferenceQaProfile } = require("./lib/reference-qa-profile.cjs");
 // （buildChapters 等），不得因缺浏览器依赖而在加载期崩溃。
 function resolveChromium() {
   try {
-    return require("../frontend/node_modules/playwright").chromium;
+    return require("../frontend-react/node_modules/playwright").chromium;
   } catch {
     return require("playwright").chromium;
   }

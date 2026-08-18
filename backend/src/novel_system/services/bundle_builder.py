@@ -33,9 +33,10 @@ from novel_system.services.literary_quality import fingerprint_literary_quality
 from novel_system.services.resolver import Resolver
 from novel_system.services.character_continuity import CHARACTER_CONTRACT_VERSION, build_character_contract_digest
 from novel_system.services.scene_digest import scene_card_digest
+from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.style_profile import STYLE_FEATURE_CONTRACT_VERSION, StyleProfileService
 from novel_system.services.style_reference.injection import InjectionService
-from novel_system.services.writer_review import normalize_chapter_writer_brief, normalize_scene_writer_brief, writer_brief_has_content
+from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief, writer_brief_has_content
 from novel_system.services.author_preferences import merge_preference_summaries, safe_preference_summary_for_prompt
 from novel_system.services.author_instructions import normalize_author_note
 
@@ -802,12 +803,7 @@ class BundleBuilder:
         try:
             from novel_system.services.narrative_event_log import NarrativeEventLog
             log = NarrativeEventLog(self.session)
-            # 审计 P-6：project_id 以 SceneCard 权威列优先；rsplit 启发式只作 legacy 兜底
-            # （目录冷启动章 id 形如 {project}_CH_{hex}，rsplit 会推导出错误值），
-            # 与事件写侧（orchestrator._record_narrative_events）保持同一规则。
-            project_id = scene.project_id or (
-                scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id
-            )
+            project_id = require_scene_project_id(self.session, scene)
             # Wave 4（§5.6）：传 pov_character_id → format_state_for_prompt 委派
             # PovKnowledgeProjection 做减法投影，隐藏非 POV 秘密内容（硬 QC 仍读全量）。
             text = log.format_state_for_prompt(
@@ -1017,7 +1013,8 @@ class BundleBuilder:
             # 审计 P-7 关联：统一走 get_vector_store()（memory=进程级单例 / chroma=持久化）。
             # 行为保持"每次由 DB 重建集合再查询"——自包含且结果始终新鲜。
             from novel_system.services.vector_store import get_vector_store
-            collection_name = f"scenes_{scene.project_id or scene.chapter_id.rsplit('_', 1)[0]}"
+            project_id = require_scene_project_id(self.session, scene)
+            collection_name = f"scenes_{project_id}"
             store = get_vector_store()
             approved_scenes = self.session.execute(
                 select(FinalScene)
@@ -1026,7 +1023,7 @@ class BundleBuilder:
                     FinalScene.status.in_(("approved", "near_final_ready", "archived")),
                     SceneCard.trashed_flag == 0,
                     SceneCard.scene_id != scene.scene_id,
-                    SceneCard.project_id == scene.project_id,
+                    SceneCard.project_id == project_id,
                 )
                 .order_by(SceneCard.scene_seq.asc())
             ).scalars().all()
@@ -1105,10 +1102,7 @@ class BundleBuilder:
             pov_id = scene.pov_character_id
             if not pov_id:
                 return None
-            project_id = (
-                scene.project_id
-                or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
-            )
+            project_id = require_scene_project_id(self.session, scene)
             # Calculate global progress: chapter_order / total_chapters
             chapter = self.session.get(ChapterGoal, scene.chapter_id)
             if chapter is None or chapter.display_order is None:
@@ -1161,10 +1155,7 @@ class BundleBuilder:
         """Blueprint §11: relationship dynamics matrix for onstage characters."""
         try:
             from novel_system.services.relationship_matrix import RelationshipMatrixService
-            project_id = (
-                scene.project_id
-                or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
-            )
+            project_id = require_scene_project_id(self.session, scene)
             onstage = scene.onstage_chars_json or []
             if len(onstage) < 2:
                 return None
@@ -1191,10 +1182,7 @@ class BundleBuilder:
         try:
             from novel_system.services.narrative_event_log import NarrativeEventLog
             log = NarrativeEventLog(self.session)
-            project_id = (
-                scene.project_id
-                or (scene.chapter_id.rsplit("_", 1)[0] if "_" in scene.chapter_id else scene.chapter_id)
-            )
+            project_id = require_scene_project_id(self.session, scene)
             onstage = scene.onstage_chars_json or []
             if len(onstage) < 2:
                 return None

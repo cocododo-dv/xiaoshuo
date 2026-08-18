@@ -58,11 +58,14 @@ async function render(node) {
 const click = (node) => act(async () => node.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 const rows = (host) => [...host.querySelectorAll('[data-testid="scene-queue-item"]')];
 const dismissed = () => JSON.parse(window.localStorage.getItem("scn-queue-dismissed:v1::prj-main") || "[]");
+async function queueSceneIntent(detail) {
+  const { queueViewIntent } = await import("./ws-view-intents.js");
+  queueViewIntent("scene", "ws:scene-enqueue", detail);
+}
 
 beforeEach(() => {
   vi.resetModules();
   window.localStorage.clear();
-  window.__scnEnqueue = null;
   vi.spyOn(window, "confirm").mockReturnValue(true);
   vi.spyOn(window, "alert").mockImplementation(() => {});
 });
@@ -73,13 +76,14 @@ afterEach(async () => {
     await act(async () => root.unmount());
     host.remove();
   }
-  window.__scnEnqueue = null;
+  const { clearViewIntents } = await import("./ws-view-intents.js");
+  clearViewIntents("scene");
   vi.restoreAllMocks();
 });
 
 describe("AI 起草台 · 运行队列移出", () => {
   it("单条移出：不拦确认弹窗，直接移出并给回执，且从不调用场景软删端点", async () => {
-    window.__scnEnqueue = { sids: ["ch01s1", "ch01s2"] };
+    await queueSceneIntent({ sids: ["ch01s1", "ch01s2"] });
     const { WsScene, client } = await loadScene();
     const host = await render(<WsScene t={{}} />);
     await vi.waitFor(() => expect(rows(host)).toHaveLength(2), T);
@@ -101,7 +105,7 @@ describe("AI 起草台 · 运行队列移出", () => {
   });
 
   it("撤销把场原样放回队列并销掉移出记号", async () => {
-    window.__scnEnqueue = { sids: ["ch01s1", "ch01s2"] };
+    await queueSceneIntent({ sids: ["ch01s1", "ch01s2"] });
     const { WsScene } = await loadScene();
     const host = await render(<WsScene t={{}} />);
     await vi.waitFor(() => expect(rows(host)).toHaveLength(2), T);
@@ -119,7 +123,7 @@ describe("AI 起草台 · 运行队列移出", () => {
   });
 
   it("多选批量移出：勾选的场一次清空队列，全部记名", async () => {
-    window.__scnEnqueue = { sids: ["ch01s1", "ch01s2"] };
+    await queueSceneIntent({ sids: ["ch01s1", "ch01s2"] });
     const { WsScene } = await loadScene();
     const host = await render(<WsScene t={{}} />);
     await vi.waitFor(() => expect(rows(host)).toHaveLength(2), T);
@@ -137,7 +141,7 @@ describe("AI 起草台 · 运行队列移出", () => {
 
   it("已移出的场不会被后端 run-states 恢复回队列；重新入列即销名", async () => {
     window.localStorage.setItem("scn-queue-dismissed:v1::prj-main", JSON.stringify(["ch01s1"]));
-    window.__scnEnqueue = { sids: ["ch01s2"] };
+    await queueSceneIntent({ sids: ["ch01s2"] });
     const { WsScene } = await loadScene({ runStateSceneIds: ["s1", "s2"] });
     const host = await render(<WsScene t={{}} />);
 
@@ -151,7 +155,7 @@ describe("AI 起草台 · 运行队列移出", () => {
   });
 
   it("运行中的场不许移出：拦下并说明先中止", async () => {
-    window.__scnEnqueue = { sids: ["ch01s1"] };
+    await queueSceneIntent({ sids: ["ch01s1"] });
     window.localStorage.setItem("scn-run:ch01s1::prj-main", JSON.stringify({ state: "running", draft: [] }));
     const { WsScene } = await loadScene();
     const host = await render(<WsScene t={{}} />);

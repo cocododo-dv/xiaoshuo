@@ -83,7 +83,6 @@ class ProjectService:
             accent=_optional_text(payload.get("accent")),
             synopsis_line=_optional_text(payload.get("synopsis_line")),
             words_target_daily=_optional_positive_int(payload.get("words_target_daily")),
-            is_demo=1 if payload.get("is_demo") else 0,
             outline_text=outline_text,
             planning_mode=planning_mode,
             snowflake_schema_version=SNOWFLAKE_METHOD_VERSION if planning_mode == "snowflake" else None,
@@ -1371,7 +1370,9 @@ def project_payload(
         "accent": getattr(project, "accent", None),
         "synopsis_line": getattr(project, "synopsis_line", None),
         "words_target_daily": getattr(project, "words_target_daily", None),
-        "is_demo": bool(getattr(project, "is_demo", 0) or 0),
+        # Compatibility-only response field. Demo project identity was retired
+        # by migration 20260717_0074 and is no longer persisted.
+        "is_demo": False,
         "outline_text": project.outline_text,
         "planning_mode": getattr(project, "planning_mode", "outline_driven") or "outline_driven",
         "snowflake_schema_version": getattr(project, "snowflake_schema_version", None),

@@ -6,6 +6,7 @@ verify 用 PRAGMA integrity_check + 元数据 checksum 双校验。恢复不回�
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -51,6 +52,8 @@ def test_backup_produces_verifiable_snapshot(tmp_path):
     assert v["ok"] is True
     assert v["integrity"] == "ok"
     assert v["checksum_ok"] is True
+    assert v["foreign_key_violations"] == 0
+    assert v["metadata_ok"] is True
 
 
 def test_backup_captures_uncheckpointed_wal_writes(tmp_path):
@@ -99,3 +102,84 @@ def test_restore_refuses_corrupt_backup(tmp_path):
         db_backup.restore_database(str(bad), src)
     # 拒绝损坏备份后现库不被破坏
     assert _read_all(src) == live_before
+
+
+def test_verify_and_restore_require_a_sidecar_manifest(tmp_path):
+    source = str(tmp_path / "source.db")
+    destination = str(tmp_path / "destination.db")
+    _make_db(source, rows=2).close()
+    _make_db(destination, rows=1).close()
+
+    verification = db_backup.verify_backup(source)
+    assert verification["ok"] is False
+    assert verification["error"] == "metadata_missing"
+    with pytest.raises(ValueError, match="metadata_missing"):
+        db_backup.restore_database(source, destination)
+    assert _read_all(destination) == [(0, "v0")]
+
+
+def test_backup_rejects_same_source_and_destination_without_touching_source(tmp_path):
+    source = str(tmp_path / "source.db")
+    _make_db(source, rows=2).close()
+    before = (tmp_path / "source.db").read_bytes()
+
+    with pytest.raises(ValueError, match="different files"):
+        db_backup.backup_database(source, source)
+
+    assert (tmp_path / "source.db").read_bytes() == before
+    assert _read_all(source) == [(0, "v0"), (1, "v1")]
+
+
+def test_failed_snapshot_build_preserves_previous_backup(tmp_path, monkeypatch):
+    source = str(tmp_path / "source.db")
+    previous_source = str(tmp_path / "previous.db")
+    destination = str(tmp_path / "backup.db")
+    _make_db(source, rows=3).close()
+    _make_db(previous_source, rows=1).close()
+    db_backup.backup_database(previous_source, destination)
+    before_database = (tmp_path / "backup.db").read_bytes()
+    before_manifest = (tmp_path / "backup.db.meta.json").read_bytes()
+
+    def fail_build(_source, _target):
+        raise sqlite3.OperationalError("injected backup failure")
+
+    monkeypatch.setattr(db_backup, "_build_snapshot", fail_build)
+    with pytest.raises(sqlite3.OperationalError, match="injected"):
+        db_backup.backup_database(source, destination)
+
+    assert (tmp_path / "backup.db").read_bytes() == before_database
+    assert (tmp_path / "backup.db.meta.json").read_bytes() == before_manifest
+
+
+def test_restore_refuses_busy_destination_and_preserves_uncommitted_wal(tmp_path):
+    source = str(tmp_path / "source.db")
+    destination = str(tmp_path / "destination.db")
+    backup = str(tmp_path / "backup.db")
+    _make_db(source, rows=3).close()
+    db_backup.backup_database(source, backup)
+    writer = _make_db(destination, rows=1)
+    writer.execute("BEGIN IMMEDIATE")
+    writer.execute("UPDATE t SET v = 'uncommitted' WHERE id = 0")
+    try:
+        with pytest.raises(RuntimeError, match="stop all database users|WAL is busy"):
+            db_backup.restore_database(backup, destination)
+        assert writer.execute("SELECT v FROM t WHERE id = 0").fetchone()[0] == "uncommitted"
+    finally:
+        writer.rollback()
+        writer.close()
+    assert _read_all(destination) == [(0, "v0")]
+
+
+def test_manifest_tampering_fails_closed(tmp_path):
+    source = str(tmp_path / "source.db")
+    backup = str(tmp_path / "backup.db")
+    _make_db(source, rows=2).close()
+    db_backup.backup_database(source, backup)
+    manifest_path = tmp_path / "backup.db.meta.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["page_count"] += 1
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    verification = db_backup.verify_backup(backup)
+    assert verification["ok"] is False
+    assert verification["page_count_ok"] is False

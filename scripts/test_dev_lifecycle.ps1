@@ -98,9 +98,9 @@ $stopWrapper = Join-Path $repoRoot "stop-dev.cmd"
 $restartWrapper = Join-Path $repoRoot "restart-dev.cmd"
 $runDir = Join-Path $repoRoot ".codex-run"
 $backendPidFile = Join-Path $runDir "backend.pid"
-$frontendPidFile = Join-Path $runDir "frontend.pid"
+$reactPidFile = Join-Path $runDir "frontend-react.pid"
 $backendUrlFile = Join-Path $runDir "backend.url"
-$frontendUrlFile = Join-Path $runDir "frontend.url"
+$reactUrlFile = Join-Path $runDir "frontend-react.url"
 
 Assert-True -Condition (Test-Path $mainScript) -Message "Missing lifecycle script: scripts/dev.ps1"
 Assert-True -Condition (Test-Path $startWrapper) -Message "Missing wrapper: start-dev.cmd"
@@ -115,32 +115,32 @@ try {
 
     Invoke-CheckedScript -FilePath $startWrapper
     $backendUrl = Read-RequiredText -Path $backendUrlFile
-    $frontendUrl = Read-RequiredText -Path $frontendUrlFile
-    Wait-Until -Label "backend health" -Condition { Test-UrlHealthy -Url "$backendUrl/api/v1/chapters" } -TimeoutSeconds 90
-    Wait-Until -Label "frontend home" -Condition { Test-UrlHealthy -Url $frontendUrl } -TimeoutSeconds 60
+    $reactUrl = Read-RequiredText -Path $reactUrlFile
+    Wait-Until -Label "backend readiness" -Condition { Test-UrlHealthy -Url "$backendUrl/ready" } -TimeoutSeconds 90
+    Wait-Until -Label "React frontend home" -Condition { Test-UrlHealthy -Url $reactUrl } -TimeoutSeconds 60
     $overview = Invoke-RestMethod -UseBasicParsing -Uri "$backendUrl/api/v1/system-config" -TimeoutSec 5
     Assert-True -Condition ($overview.data.runtime.secret_configured -eq $true) -Message "Dev backend must provide NOVEL_SYSTEM_CONFIG_SECRET so local API-key providers can be saved."
     Assert-True -Condition (Test-Path $backendPidFile) -Message "Missing backend PID file after start."
-    Assert-True -Condition (Test-Path $frontendPidFile) -Message "Missing frontend PID file after start."
+    Assert-True -Condition (Test-Path $reactPidFile) -Message "Missing React frontend PID file after start."
 
     Invoke-CheckedScript -FilePath $restartWrapper
     $backendUrl = Read-RequiredText -Path $backendUrlFile
-    $frontendUrl = Read-RequiredText -Path $frontendUrlFile
-    Wait-Until -Label "backend after restart" -Condition { Test-UrlHealthy -Url "$backendUrl/api/v1/chapters" } -TimeoutSeconds 90
-    Wait-Until -Label "frontend after restart" -Condition { Test-UrlHealthy -Url $frontendUrl } -TimeoutSeconds 60
+    $reactUrl = Read-RequiredText -Path $reactUrlFile
+    Wait-Until -Label "backend after restart" -Condition { Test-UrlHealthy -Url "$backendUrl/ready" } -TimeoutSeconds 90
+    Wait-Until -Label "React frontend after restart" -Condition { Test-UrlHealthy -Url $reactUrl } -TimeoutSeconds 60
     $overview = Invoke-RestMethod -UseBasicParsing -Uri "$backendUrl/api/v1/system-config" -TimeoutSec 5
     Assert-True -Condition ($overview.data.runtime.secret_configured -eq $true) -Message "Restarted dev backend must keep NOVEL_SYSTEM_CONFIG_SECRET configured."
     Assert-True -Condition (Test-Path $backendPidFile) -Message "Missing backend PID file after restart."
-    Assert-True -Condition (Test-Path $frontendPidFile) -Message "Missing frontend PID file after restart."
+    Assert-True -Condition (Test-Path $reactPidFile) -Message "Missing React frontend PID file after restart."
 
     $backendPort = Get-PortFromUrl -Url $backendUrl
-    $frontendPort = Get-PortFromUrl -Url $frontendUrl
+    $reactPort = Get-PortFromUrl -Url $reactUrl
     Invoke-CheckedScript -FilePath $stopWrapper
     Wait-Until -Label "dev service ports to close after stop" -Condition {
-        (Test-PortClosed -Port $backendPort) -and (Test-PortClosed -Port $frontendPort)
+        (Test-PortClosed -Port $backendPort) -and (Test-PortClosed -Port $reactPort)
     } -TimeoutSeconds 30
     Assert-True -Condition (-not (Test-Path $backendPidFile)) -Message "Backend PID file still exists after stop."
-    Assert-True -Condition (-not (Test-Path $frontendPidFile)) -Message "Frontend PID file still exists after stop."
+    Assert-True -Condition (-not (Test-Path $reactPidFile)) -Message "React frontend PID file still exists after stop."
 }
 finally {
     if (Test-Path $stopWrapper) {

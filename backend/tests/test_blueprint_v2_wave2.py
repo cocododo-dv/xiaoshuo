@@ -453,6 +453,32 @@ class TestOrchestrationSignalsEndpoint:
         assert resp.status_code == 200
         assert resp.json()["data"]["available"] is False
 
+    def test_signals_endpoint_reports_and_logs_degraded_dependencies(
+        self,
+        client,
+        session,
+        monkeypatch,
+        caplog,
+    ):
+        from novel_system.services import cost_aggregation
+
+        self._seed_scene_with_state(session)
+
+        def fail_cost(*_args, **_kwargs):
+            raise RuntimeError("cost backend unavailable")
+
+        monkeypatch.setattr(cost_aggregation, "scene_cost", fail_cost)
+        with caplog.at_level("WARNING"):
+            resp = client.get("/api/v1/scenes/sc_os/orchestration-signals")
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["cost"] is None
+        assert {item["signal"]: item["error_code"] for item in data["degraded_signals"]} == {
+            "cost": "SCENE_SIGNAL_COMPUTATION_FAILED"
+        }
+        assert "signal=cost scene_id=sc_os" in caplog.text
+
 
 # ===========================================================================
 # §7  anti-mean sampling — end-to-end flow lock (regression guard)

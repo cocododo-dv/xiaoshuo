@@ -1,6 +1,38 @@
 from __future__ import annotations
 
-from novel_system.db.models import HumanReviewEvent, ReviewItem
+import base64
+import json
+
+from novel_system.db.models import ChapterGoal, HumanReviewEvent, ReviewItem, SceneCard
+
+
+def _encode_test_payload(value) -> str:
+    payload = json.dumps(value, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _encode_test_cursor(values) -> str:
+    return _encode_test_payload({"values": values})
+
+
+def _seed_human_review_targets(
+    session,
+    chapter_id: str,
+    scene_ids: list[str],
+) -> None:
+    session.add(ChapterGoal(chapter_id=chapter_id, chapter_goal="query filter fixture"))
+    session.add_all(
+        [
+            SceneCard(
+                scene_id=scene_id,
+                chapter_id=chapter_id,
+                scene_seq=index,
+                scene_goal="query filter fixture",
+            )
+            for index, scene_id in enumerate(scene_ids, start=1)
+        ]
+    )
+    session.flush()
 
 
 def test_review_items_support_page_and_cursor_pagination(client, session) -> None:
@@ -93,6 +125,25 @@ def test_review_items_support_page_and_cursor_pagination(client, session) -> Non
     invalid_cursor_data = invalid_cursor_response.json()["data"]
     assert [item["review_id"] for item in invalid_cursor_data["items"]] == ["review_page_004", "review_page_003"]
     assert invalid_cursor_data["pagination"]["mode"] == "cursor"
+
+    malformed_cursors = [
+        _encode_test_cursor([None, None]),
+        _encode_test_cursor([{}, []]),
+        _encode_test_cursor([123, 456]),
+        _encode_test_payload([]),
+        "游标",
+    ]
+    for malformed_cursor in malformed_cursors:
+        malformed_cursor_response = client.get(
+            "/api/v1/review-items",
+            params={"cursor": malformed_cursor, "limit": 2},
+        )
+        assert malformed_cursor_response.status_code == 200
+        malformed_cursor_data = malformed_cursor_response.json()["data"]
+        assert [item["review_id"] for item in malformed_cursor_data["items"]] == [
+            "review_page_004",
+            "review_page_003",
+        ]
 
 
 def test_review_items_filter_by_status_scene_and_chapter(client, session) -> None:
@@ -243,6 +294,8 @@ def test_review_items_filter_by_target_collection(client, session) -> None:
 
 
 def test_human_review_events_apply_all_supported_filters(client, session) -> None:
+    _seed_human_review_targets(session, "CH001", ["CH001_SC01", "CH001_SC02"])
+    _seed_human_review_targets(session, "CH002", [])
     session.add_all(
         [
             HumanReviewEvent(
@@ -364,6 +417,7 @@ def test_human_review_events_apply_all_supported_filters(client, session) -> Non
 
 
 def test_human_review_events_support_page_and_cursor_pagination(client, session) -> None:
+    _seed_human_review_targets(session, "CH200", ["CH200_SC01"])
     session.add_all(
         [
             HumanReviewEvent(

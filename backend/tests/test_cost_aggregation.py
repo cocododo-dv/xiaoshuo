@@ -7,18 +7,49 @@ token 不相加（分词器不同）、汇总以费用为准；三口径（估�
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import func, select
 
 from novel_system.db.models import (
+    ChapterGoal,
     FinalScene,
     LlmCall,
     LlmCallAttempt,
     SceneCard,
     SceneRunState,
+    StoryProject,
 )
 from novel_system.services import cost_aggregation as ca
 
 
-def _scene(session, scene_id, chapter_id="CH1", project_id="proj1", seq=1):
+def _scene(session, scene_id, chapter_id="CH1", project_id="proj1", seq=None):
+    if project_id and session.get(StoryProject, project_id) is None:
+        session.add(
+            StoryProject(
+                project_id=project_id,
+                title=project_id,
+                outline_text="test outline",
+            )
+        )
+        session.flush()
+    if session.get(ChapterGoal, chapter_id) is None:
+        session.add(
+            ChapterGoal(
+                chapter_id=chapter_id,
+                project_id=project_id,
+                chapter_goal=f"goal {chapter_id}",
+            )
+        )
+        session.flush()
+    if seq is None:
+        seq = int(
+            session.scalar(
+                select(func.coalesce(func.max(SceneCard.scene_seq), 0)).where(
+                    SceneCard.chapter_id == chapter_id,
+                    SceneCard.trashed_flag == 0,
+                )
+            )
+            or 0
+        ) + 1
     session.add(
         SceneCard(
             scene_id=scene_id,

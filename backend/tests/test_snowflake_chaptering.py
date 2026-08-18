@@ -452,6 +452,45 @@ def _chapter_llm_response(chapters):
                        response_format="json_object", raw_response={}, usage={}, finish_reason="stop")
 
 
+def test_chapter_plan_suggestion_replays_without_a_second_llm_call(client, monkeypatch) -> None:
+    import json as _json
+
+    from novel_system.services.llm_client import LLMResponse
+
+    project_id = _create_project(client, "suggest-idempotent")
+    _seed(client, project_id)
+    calls = 0
+
+    def responder(_request):
+        nonlocal calls
+        calls += 1
+        payload = {"assignments": [], "rationale": "Keep the deterministic grouping."}
+        return LLMResponse(
+            request_id="suggest-once",
+            provider="fake",
+            model="fake",
+            text=_json.dumps(payload),
+            structured_output=payload,
+            response_format="json_object",
+            raw_response={},
+            usage={},
+            finish_reason="stop",
+        )
+
+    _install_llm(monkeypatch, responder)
+    headers = {"X-Idempotency-Key": "chapter-plan-suggest-once"}
+    path = f"/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/suggest"
+
+    suggested = client.post(path, headers=headers, json={})
+    replayed = client.post(path, headers=headers, json={})
+
+    assert suggested.status_code == 200, suggested.text
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.headers["X-Idempotency-Status"] == "replayed"
+    assert replayed.json()["data"] == suggested.json()["data"]
+    assert calls == 1
+
+
 def _live_chapters(session, project_id: str) -> list[SnowflakeChapterPlan]:
     session.expire_all()
     return list(session.execute(

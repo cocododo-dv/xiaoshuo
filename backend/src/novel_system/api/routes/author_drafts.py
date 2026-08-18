@@ -7,10 +7,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
 from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.canonical_manuscripts import CanonicalSceneService
 from novel_system.services.idempotency import execute_with_idempotency
+from novel_system.services.writer_room import WriterRoomService
 
 router = APIRouter(tags=["author-drafts"])
 
@@ -97,6 +100,41 @@ class ProposalRejectRequest(StrictAuthorDraftRequest):
     rejected_ai_trace: str | None = Field(default=None, max_length=100_000)
 
 
+class PatchOptionApplyRequest(StrictAuthorDraftRequest):
+    # patch_id stays optional at the transport boundary so the service keeps
+    # returning AUTHOR_DRAFT_INVALID for a missing identifier.
+    patch_id: OptionalIdentifier | None = None
+    option_id: OptionalIdentifier | None = None
+    source_excerpt: str | None = Field(default=None, max_length=100_000)
+    note: NoteText | None = None
+
+
+class CandidateEventRequest(StrictAuthorDraftRequest):
+    # The domain service owns the event vocabulary and AUTHOR_DRAFT_EVENT_INVALID.
+    event_type: str | None = Field(default=None, max_length=64)
+    patch_id: OptionalIdentifier | None = None
+    revision_id: OptionalIdentifier | None = None
+    option_id: OptionalIdentifier | None = None
+    note: NoteText | None = None
+    payload_json: BoundedJsonObject | None = None
+
+
+class StructureCandidateDecisionRequest(StrictAuthorDraftRequest):
+    note: NoteText | None = None
+
+
+class OpenChapterDraftRequest(StrictAuthorDraftRequest):
+    chapter_id: OptionalIdentifier | None = None
+    chapter_goal: str | None = Field(default=None, max_length=100_000)
+    initial_content: str | None = Field(
+        default=None,
+        max_length=MAX_DRAFT_CONTENT_CHARS,
+    )
+    source: str | None = Field(default=None, max_length=255)
+    source_ref: str | None = Field(default=None, max_length=2000)
+    writer_brief_json: BoundedJsonObject | None = None
+
+
 @router.get("/api/v1/author-drafts/{object_type}/{object_id}/current")
 def get_current_author_draft(object_type: str, object_id: str, request: Request, session: Session = Depends(get_session)):
     payload = AuthorDraftService(session).current(object_type, object_id)
@@ -104,19 +142,41 @@ def get_current_author_draft(object_type: str, object_id: str, request: Request,
 
 
 @router.post("/api/v1/author-drafts/{object_type}/{object_id}/ensure")
-def ensure_author_draft(object_type: str, object_id: str, request: Request, session: Session = Depends(get_session)):
+def ensure_author_draft(
+    object_type: str,
+    object_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    payload = AuthorDraftService(session).ensure(object_type, object_id, actor_ref=actor_ref)
-    session.commit()
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/author-drafts/{object_type}/{object_id}/ensure",
+        payload={"object_type": object_type, "object_id": object_id},
+        action=lambda: AuthorDraftService(session).ensure(object_type, object_id, actor_ref=actor_ref),
+    )
 
 
 @router.post("/api/v1/author-drafts/{object_type}/{object_id}/ensure-blank")
-def ensure_blank_author_draft(object_type: str, object_id: str, request: Request, session: Session = Depends(get_session)):
+def ensure_blank_author_draft(
+    object_type: str,
+    object_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    payload = AuthorDraftService(session).ensure_blank(object_type, object_id, actor_ref=actor_ref)
-    session.commit()
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/author-drafts/{object_type}/{object_id}/ensure-blank",
+        payload={"object_type": object_type, "object_id": object_id},
+        action=lambda: AuthorDraftService(session).ensure_blank(object_type, object_id, actor_ref=actor_ref),
+    )
 
 
 @router.patch("/api/v1/author-drafts/{draft_id}")
@@ -127,13 +187,15 @@ def save_author_draft(
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).save(
-        draft_id,
-        payload.model_dump(exclude_unset=True),
-        actor_ref=actor_ref,
+    body = payload.model_dump(exclude_unset=True)
+    return optional_idempotent_response(
+        request,
+        session,
+        method="PATCH",
+        path_template="/api/v1/author-drafts/{draft_id}",
+        payload={"draft_id": draft_id, "body": body},
+        action=lambda: AuthorDraftService(session).save(draft_id, body, actor_ref=actor_ref),
     )
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
 @router.post("/api/v1/author-drafts/{draft_id}/promote-canonical")
@@ -187,11 +249,21 @@ def get_author_draft_revision(draft_id: str, revision_no: int, request: Request,
 
 
 @router.post("/api/v1/author-drafts/{draft_id}/derive-from-generation")
-def derive_author_draft_from_generation(draft_id: str, request: Request, session: Session = Depends(get_session)):
+def derive_author_draft_from_generation(
+    draft_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).derive_from_generation(draft_id, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/author-drafts/{draft_id}/derive-from-generation",
+        payload={"draft_id": draft_id},
+        action=lambda: AuthorDraftService(session).derive_from_generation(draft_id, actor_ref=actor_ref),
+    )
 
 
 @router.get("/api/v1/author-drafts/{draft_id}/proposals")
@@ -220,9 +292,14 @@ def apply_author_draft_scoped_proposal(
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     body = payload.model_dump(exclude_unset=True) if payload is not None else {}
-    result = AuthorDraftService(session).apply_proposal_to_draft(draft_id, body, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/author-drafts/{draft_id}/apply-proposal",
+        payload={"draft_id": draft_id, "body": body},
+        action=lambda: AuthorDraftService(session).apply_proposal_to_draft(draft_id, body, actor_ref=actor_ref),
+    )
 
 
 @router.post("/api/v1/author-drafts/{draft_id}/proposals/generate")
@@ -234,9 +311,14 @@ def generate_author_draft_proposal(
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     body = payload.model_dump(exclude_unset=True) if payload is not None else {}
-    result = AuthorDraftService(session).generate_proposal(draft_id, body, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/author-drafts/{draft_id}/proposals/generate",
+        payload={"draft_id": draft_id, "body": body},
+        action=lambda: AuthorDraftService(session).generate_proposal(draft_id, body, actor_ref=actor_ref),
+    )
 
 
 @router.post("/api/v1/author-drafts/{draft_id}/proposals/generate-set")
@@ -248,9 +330,14 @@ def generate_author_draft_proposal_set(
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     body = payload.model_dump(exclude_unset=True) if payload is not None else {}
-    result = AuthorDraftService(session).generate_proposal_set(draft_id, body, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/author-drafts/{draft_id}/proposals/generate-set",
+        payload={"draft_id": draft_id, "body": body},
+        action=lambda: AuthorDraftService(session).generate_proposal_set(draft_id, body, actor_ref=actor_ref),
+    )
 
 
 @router.post("/api/v1/author-draft-proposals/{proposal_id}/apply")
@@ -262,9 +349,14 @@ def apply_author_draft_proposal(
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     body = payload.model_dump(exclude_unset=True) if payload is not None else {}
-    result = AuthorDraftService(session).apply_proposal(proposal_id, body, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/author-draft-proposals/{proposal_id}/apply",
+        payload={"proposal_id": proposal_id, "body": body},
+        action=lambda: AuthorDraftService(session).apply_proposal(proposal_id, body, actor_ref=actor_ref),
+    )
 
 
 @router.post("/api/v1/author-draft-proposals/{proposal_id}/reject")
@@ -276,59 +368,112 @@ def reject_author_draft_proposal(
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     body = payload.model_dump(exclude_unset=True) if payload is not None else {}
-    result = AuthorDraftService(session).reject_proposal(proposal_id, body, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/author-draft-proposals/{proposal_id}/reject",
+        payload={"proposal_id": proposal_id, "body": body},
+        action=lambda: AuthorDraftService(session).reject_proposal(proposal_id, body, actor_ref=actor_ref),
+    )
 
 
 @router.post("/api/v1/author-drafts/{draft_id}/apply-patch-option")
-def apply_author_draft_patch_option(draft_id: str, payload: dict, request: Request, session: Session = Depends(get_session)):
+def apply_author_draft_patch_option(
+    draft_id: str,
+    payload: PatchOptionApplyRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).apply_patch_option(draft_id, payload, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True)
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/author-drafts/{draft_id}/apply-patch-option",
+        payload={"draft_id": draft_id, "body": body},
+        action=lambda: AuthorDraftService(session).apply_patch_option(draft_id, body, actor_ref=actor_ref),
+    )
 
 
 @router.post("/api/v1/author-drafts/{draft_id}/candidate-events")
-def record_author_draft_candidate_event(draft_id: str, payload: dict, request: Request, session: Session = Depends(get_session)):
+def record_author_draft_candidate_event(
+    draft_id: str,
+    payload: CandidateEventRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).record_candidate_event(draft_id, payload, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True)
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/author-drafts/{draft_id}/candidate-events",
+        payload={"draft_id": draft_id, "body": body},
+        action=lambda: AuthorDraftService(session).record_candidate_event(draft_id, body, actor_ref=actor_ref),
+    )
 
 
 @router.post("/api/v1/author-drafts/{draft_id}/structure-extract")
-def extract_author_draft_structure(draft_id: str, request: Request, session: Session = Depends(get_session)):
+def extract_author_draft_structure(
+    draft_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).extract_structure(draft_id, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/author-drafts/{draft_id}/structure-extract",
+        payload={"draft_id": draft_id},
+        action=lambda: AuthorDraftService(session).extract_structure(draft_id, actor_ref=actor_ref),
+    )
 
 
 @router.post("/api/v1/author-structure-candidates/{candidate_id}/apply")
 def apply_author_structure_candidate(
     candidate_id: str,
     request: Request,
-    payload: dict | None = None,
+    payload: StructureCandidateDecisionRequest | None = None,
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).apply_structure_candidate(candidate_id, payload or {}, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/author-structure-candidates/{candidate_id}/apply",
+        payload={"candidate_id": candidate_id, "body": body},
+        action=lambda: AuthorDraftService(session).apply_structure_candidate(
+            candidate_id, body, actor_ref=actor_ref
+        ),
+    )
 
 
 @router.post("/api/v1/author-structure-candidates/{candidate_id}/reject")
 def reject_author_structure_candidate(
     candidate_id: str,
     request: Request,
-    payload: dict | None = None,
+    payload: StructureCandidateDecisionRequest | None = None,
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).reject_structure_candidate(candidate_id, payload or {}, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/author-structure-candidates/{candidate_id}/reject",
+        payload={"candidate_id": candidate_id, "body": body},
+        action=lambda: AuthorDraftService(session).reject_structure_candidate(
+            candidate_id, body, actor_ref=actor_ref
+        ),
+    )
 
 
 @router.get("/api/v1/projects/{project_id}/discovery-draft/current")
@@ -338,34 +483,63 @@ def get_project_discovery_draft(project_id: str, request: Request, session: Sess
 
 
 @router.post("/api/v1/projects/{project_id}/discovery-draft/ensure")
-def ensure_project_discovery_draft(project_id: str, request: Request, session: Session = Depends(get_session)):
+def ensure_project_discovery_draft(
+    project_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    payload = AuthorDraftService(session).ensure_blank("project", project_id, actor_ref=actor_ref)
-    session.commit()
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/projects/{project_id}/discovery-draft/ensure",
+        payload={"project_id": project_id},
+        action=lambda: AuthorDraftService(session).ensure_blank("project", project_id, actor_ref=actor_ref),
+    )
 
 
 @router.post("/api/v1/projects/{project_id}/chapter-drafts/open")
 def open_project_chapter_draft(
     project_id: str,
     request: Request,
-    payload: dict | None = None,
+    payload: OpenChapterDraftRequest | None = None,
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).open_chapter_draft(project_id, payload or {}, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
+
+    def open_room() -> dict:
+        opened = AuthorDraftService(session).open_chapter_draft(project_id, body, actor_ref=actor_ref)
+        return WriterRoomService(session).room(opened["object_type"], opened["object_id"])
+
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/projects/{project_id}/chapter-drafts/open",
+        payload={"project_id": project_id, "body": body},
+        action=open_room,
+    )
 
 
 @router.post("/api/v1/author-structure-candidates/{candidate_id}/apply-to-snowflake")
 def apply_author_structure_candidate_to_snowflake(
     candidate_id: str,
     request: Request,
-    payload: dict | None = None,
+    payload: StructureCandidateDecisionRequest | None = None,
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = AuthorDraftService(session).apply_project_structure_to_snowflake(candidate_id, payload or {}, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/author-structure-candidates/{candidate_id}/apply-to-snowflake",
+        payload={"candidate_id": candidate_id, "body": body},
+        action=lambda: AuthorDraftService(session).apply_project_structure_to_snowflake(
+            candidate_id, body, actor_ref=actor_ref
+        ),
+    )

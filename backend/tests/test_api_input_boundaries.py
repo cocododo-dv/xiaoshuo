@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
+from novel_system.api.app import create_app
+from novel_system.api.request_types import MAX_API_OBJECT_PROPERTIES
+
 
 def _headers(key: str) -> dict[str, str]:
     return {"X-Idempotency-Key": key}
@@ -89,3 +94,247 @@ def test_existing_scene_cannot_be_reparented(client) -> None:
 
     assert moved.status_code == 409
     assert moved.json()["error"]["code"] == "SCENE_IDENTITY_IMMUTABLE"
+
+
+def test_flexible_json_body_rejects_excessive_top_level_properties(client) -> None:
+    payload = {
+        f"field_{index}": index
+        for index in range(MAX_API_OBJECT_PROPERTIES + 1)
+    }
+
+    response = client.post("/api/v1/projects", json=payload)
+
+    assert response.status_code == 422
+    assert _validation_issues(response)
+    assert "field_256" not in response.text
+
+
+def test_flexible_json_body_rejects_excessive_nesting(client) -> None:
+    payload: dict = {"value": "leaf"}
+    for _ in range(25):
+        payload = {"nested": payload}
+
+    response = client.post("/api/v1/projects", json=payload)
+
+    assert response.status_code == 422
+    assert _validation_issues(response)
+    assert "leaf" not in response.text
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/projects/UNKNOWN/outline-plan/UNKNOWN/approve",
+        "/api/v1/projects/UNKNOWN/chapters/UNKNOWN/run",
+        "/api/v1/projects/UNKNOWN/chapters/UNKNOWN/final-review",
+        "/api/v1/projects/UNKNOWN/reference-profiles",
+        "/api/v1/author-drafts/UNKNOWN/apply-patch-option",
+        "/api/v1/author-drafts/UNKNOWN/candidate-events",
+        "/api/v1/author-structure-candidates/UNKNOWN/apply",
+        "/api/v1/projects/UNKNOWN/chapter-drafts/open",
+        "/api/v1/revision-candidates/UNKNOWN/accept",
+        "/api/v1/passages/patch-candidates",
+        "/api/v1/passage-patch-candidates/UNKNOWN/reject",
+        "/api/v1/literary-quality/analyze-text",
+        "/api/v1/literary-quality/chapter-set-review",
+        "/api/v1/work-profile",
+        "/api/v1/review-items/UNKNOWN/resolve",
+        "/api/v1/review-items/UNKNOWN/unresolve",
+        "/api/v1/review-items/UNKNOWN/approve",
+        "/api/v1/review-items/UNKNOWN/reject",
+        "/api/v1/review-items/UNKNOWN/release",
+        "/api/v1/human-review-events/UNKNOWN/actions",
+        "/api/v2/projects/UNKNOWN/snowflake-workspace/steps/book_brief/generate",
+        "/api/v2/projects/UNKNOWN/snowflake-workspace/steps/book_brief/fe-candidates",
+        "/api/v2/projects/UNKNOWN/snowflake-workspace/steps/book_brief/restore",
+        "/api/v2/projects/UNKNOWN/snowflake-workspace/steps/book_brief/approve",
+        "/api/v2/projects/UNKNOWN/snowflake-workspace/steps/book_brief/accept-stale",
+        "/api/v2/projects/UNKNOWN/snowflake-workspace/assistant",
+        "/api/v2/projects/UNKNOWN/snowflake-workspace/scene-triage/suggest",
+        "/api/v2/projects/UNKNOWN/snowflake-workspace/scenes/accept-stale",
+        "/api/v2/projects/UNKNOWN/snowflake-workspace/scene-triage/UNKNOWN/apply",
+        "/api/v2/projects/UNKNOWN/snowflake-workspace/orphaned-scenes/UNKNOWN/resolve",
+        "/api/v2/projects/UNKNOWN/snowflake-workspace/resync",
+        "/api/v2/projects/UNKNOWN/snowflake-workspace/outline/approve",
+        "/api/v1/projects/UNKNOWN/snowflake/steps/book_brief/generate",
+        "/api/v1/projects/UNKNOWN/snowflake/artifacts/UNKNOWN/approve",
+        "/api/v1/projects/UNKNOWN/snowflake/materialize-outline-plan",
+        "/api/v2/projects/UNKNOWN/catalog/chapters/UNKNOWN/architecture/generate",
+        "/api/v2/projects/UNKNOWN/catalog/chapters/UNKNOWN/plan/candidates",
+        "/api/v2/projects/UNKNOWN/catalog/chapters/UNKNOWN/plan/fill",
+        "/api/v2/projects/UNKNOWN/catalog/chapters/UNKNOWN/plan/review",
+        "/api/v2/projects/UNKNOWN/catalog/chapters/UNKNOWN/plan/apply",
+        "/api/v2/projects/UNKNOWN/catalog/chapters",
+        "/api/v2/projects/UNKNOWN/catalog/chapter-order",
+        "/api/v2/projects/UNKNOWN/catalog/chapters/UNKNOWN/scenes",
+        "/api/v2/projects/UNKNOWN/catalog/scenes/UNKNOWN/move",
+        "/api/v2/projects/UNKNOWN/catalog/chapters/UNKNOWN/restore",
+        "/api/v2/projects/UNKNOWN/catalog/scenes/UNKNOWN/restore",
+        "/api/v2/projects/UNKNOWN/catalog/import",
+        "/api/v2/projects/UNKNOWN/library/entities",
+        "/api/v2/projects/UNKNOWN/library/relations",
+        "/api/v2/projects/UNKNOWN/library/timeline",
+        "/api/v2/projects/UNKNOWN/library/characters",
+        "/api/v2/projects/UNKNOWN/library/derive",
+        "/api/v2/projects/UNKNOWN/longform/anchors",
+        "/api/v2/projects/UNKNOWN/longform/derive-structure",
+        "/api/v2/projects/UNKNOWN/longform/chapters/UNKNOWN/contract/transition",
+        "/api/v2/projects/UNKNOWN/longform/chapters/UNKNOWN/audit",
+        "/api/v2/projects/UNKNOWN/longform/audit/UNKNOWN/adjudicate",
+        "/api/v2/projects/UNKNOWN/longform/chapters/UNKNOWN/audit/adjudicate-draft",
+        "/api/v1/author-drafts/chapter/UNKNOWN/ensure",
+        "/api/v1/author-drafts/chapter/UNKNOWN/ensure-blank",
+        "/api/v1/author-drafts/UNKNOWN/derive-from-generation",
+        "/api/v1/author-drafts/UNKNOWN/structure-extract",
+        "/api/v1/projects/UNKNOWN/discovery-draft/ensure",
+        "/api/v1/auto-rewrite-runs/UNKNOWN/promote",
+        "/api/v1/auto-rewrite-runs/UNKNOWN/rollback",
+        "/api/v1/chapters/UNKNOWN/deep-review",
+        "/api/v1/chapters/UNKNOWN/run/full",
+        "/api/v1/chapters/UNKNOWN/runtime/aggregate/final",
+        "/api/v1/chapters/UNKNOWN/runtime/manual-hold/clear",
+        "/api/v1/chapters/UNKNOWN/writer-review",
+        "/api/v1/chapters/UNKNOWN/writer-review/run",
+        "/api/v1/evaluation-experiments/UNKNOWN/freeze",
+        "/api/v1/index/verify/UNKNOWN/retry",
+        "/api/v1/longform-editor/diagnose",
+        "/api/v1/runtime/promotions/run-due",
+        "/api/v1/runtime/recovery/sweep",
+        "/api/v1/scenes/UNKNOWN/deep-review",
+        "/api/v1/scenes/UNKNOWN/execution-contract",
+        "/api/v1/scenes/UNKNOWN/literary-blueprint",
+        "/api/v1/scenes/UNKNOWN/preflight/create-cards",
+        "/api/v1/scenes/UNKNOWN/quality-contract",
+        "/api/v1/scenes/UNKNOWN/resume-after-selection",
+        "/api/v1/scenes/UNKNOWN/triage",
+        "/api/v1/scenes/UNKNOWN/writer-review",
+        "/api/v1/scenes/UNKNOWN/writer-review/run",
+        "/api/v1/system-config/UNKNOWN/activate",
+        "/api/v1/system-config/llm/providers/UNKNOWN/default",
+        "/api/v2/projects/UNKNOWN/restore",
+        "/api/v2/style-reference/books/UNKNOWN/reclassify",
+        "/api/v2/style-reference/books/UNKNOWN/safety-profile/extract",
+        "/api/v2/style-reference/profiles/UNKNOWN/preview",
+        "/api/v2/style-reference/runs/UNKNOWN/cancel",
+        "/api/v2/style-reference/runs/UNKNOWN/synthesize",
+        "/api/v2/trash/UNKNOWN/restore",
+    ],
+)
+def test_fixed_command_bodies_reject_unknown_fields_before_domain_lookup(
+    client,
+    path: str,
+) -> None:
+    response = client.post(path, json={"unexpected_secret": "must-not-be-echoed"})
+
+    assert response.status_code == 422
+    issues = _validation_issues(response)
+    assert any(item["type"] == "extra_forbidden" for item in issues)
+    assert "must-not-be-echoed" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("patch", "/api/v1/projects/UNKNOWN/snowflake/artifacts/UNKNOWN"),
+        ("patch", "/api/v2/projects/UNKNOWN/catalog/chapters/UNKNOWN"),
+        ("patch", "/api/v2/projects/UNKNOWN/catalog/scenes/UNKNOWN"),
+        ("delete", "/api/v2/projects/UNKNOWN/catalog/chapters/UNKNOWN"),
+        ("delete", "/api/v2/projects/UNKNOWN/catalog/scenes/UNKNOWN"),
+        ("patch", "/api/v2/projects/UNKNOWN/library/entities/UNKNOWN"),
+        ("patch", "/api/v2/projects/UNKNOWN/library/timeline/UNKNOWN"),
+        ("patch", "/api/v2/projects/UNKNOWN/library/characters/UNKNOWN"),
+        ("delete", "/api/v2/projects/UNKNOWN/library/relations/UNKNOWN"),
+        ("delete", "/api/v2/projects/UNKNOWN/library/timeline/UNKNOWN"),
+        ("delete", "/api/v2/projects/UNKNOWN/library/characters/UNKNOWN"),
+        ("delete", "/api/v2/projects/UNKNOWN/library/entities/UNKNOWN"),
+        ("patch", "/api/v2/projects/UNKNOWN/longform/anchors/UNKNOWN"),
+        ("put", "/api/v2/projects/UNKNOWN/longform/chapters/UNKNOWN/contract"),
+        ("delete", "/api/v1/system-config/llm/providers/UNKNOWN"),
+        ("delete", "/api/v2/projects/UNKNOWN"),
+        ("delete", "/api/v2/style-reference/banned-terms/UNKNOWN"),
+        ("delete", "/api/v2/style-reference/bindings/UNKNOWN"),
+        ("delete", "/api/v2/style-reference/books/UNKNOWN"),
+        ("delete", "/api/v2/trash/UNKNOWN"),
+    ],
+)
+def test_fixed_non_post_bodies_reject_unknown_fields_before_domain_lookup(
+    client,
+    method: str,
+    path: str,
+) -> None:
+    response = client.request(
+        method,
+        path,
+        json={"unexpected_secret": "must-not-be-echoed"},
+    )
+
+    assert response.status_code == 422
+    assert any(item["type"] == "extra_forbidden" for item in _validation_issues(response))
+    assert "must-not-be-echoed" not in response.text
+
+
+def test_review_demo_import_cannot_assign_server_owned_lifecycle_columns(client) -> None:
+    response = client.post(
+        "/api/v1/review-items/import-demo",
+        json={
+            "review_id": "boundary_review",
+            "item_type": "style_observation",
+            "candidate_text": "bounded fixture candidate",
+            "status": "approved",
+            "materialize_status": "succeeded",
+            "approved_item_row_id": "spoofed-row",
+        },
+    )
+
+    assert response.status_code == 422
+    forbidden = {
+        issue["field"].rsplit(".", 1)[-1]
+        for issue in _validation_issues(response)
+        if issue["type"] == "extra_forbidden"
+    }
+    assert forbidden == {
+        "approved_item_row_id",
+        "materialize_status",
+        "status",
+    }
+    assert "spoofed-row" not in response.text
+
+
+def test_every_open_json_mutation_schema_advertises_property_ceiling() -> None:
+    spec = create_app().openapi()
+    offenders: list[str] = []
+
+    def inspect_schema(schema: dict, *, operation: str) -> None:
+        if schema.get("type") == "object" and schema.get("additionalProperties") is True:
+            if schema.get("maxProperties") != MAX_API_OBJECT_PROPERTIES:
+                offenders.append(operation)
+        for variant in schema.get("anyOf", []):
+            inspect_schema(variant, operation=operation)
+
+    for path, path_item in spec["paths"].items():
+        for method in ("post", "put", "patch", "delete"):
+            operation = path_item.get(method)
+            if operation is None:
+                continue
+            schema = (
+                operation.get("requestBody", {})
+                .get("content", {})
+                .get("application/json", {})
+                .get("schema", {})
+            )
+            inspect_schema(schema, operation=f"{method.upper()} {path}")
+
+    assert offenders == []
+
+
+def test_every_mutation_declares_a_request_body_contract() -> None:
+    spec = create_app().openapi()
+    missing: list[str] = []
+
+    for path, path_item in spec["paths"].items():
+        for method in ("post", "put", "patch", "delete"):
+            operation = path_item.get(method)
+            if operation is not None and "requestBody" not in operation:
+                missing.append(f"{method.upper()} {path}")
+
+    assert missing == []

@@ -38,6 +38,24 @@ const libActiveId = () => { try { return WsWorks ? WsWorks.activeId() : null; } 
 
 /* 关系 id 缓存（编辑层 diff 删边用）：refPair "a|b" → relation_id */
 let LIB_RELATIONS = [];
+let LIB_REVISION = 0;
+const libSubscribers = new Set();
+
+function libNotify() {
+  LIB_REVISION += 1;
+  libSubscribers.forEach((listener) => {
+    try { listener(); } catch (e) {}
+  });
+  /* 兼容仍通过 window 事件读取资料库的过渡期模块。 */
+  try { window.dispatchEvent(new CustomEvent("ws:library-changed")); } catch (e) {}
+}
+
+function libSubscribe(listener) {
+  libSubscribers.add(listener);
+  return () => libSubscribers.delete(listener);
+}
+
+function libSnapshot() { return LIB_REVISION; }
 
 function libStripRef(ref) { return String(ref || "").split(":").slice(1).join(":"); }
 
@@ -94,13 +112,46 @@ function libAdaptEvent(ev, byRef) {
 }
 
 let libFetching = null;
+let libFetchingProjectId = null;
+let libVisibleProjectId = null;
+let libRequestSerial = 0;
+
+function libClearForProject(projectId) {
+  libVisibleProjectId = projectId || null;
+  LIB_RELATIONS = [];
+  LIB_ENTRIES.length = 0;
+  Object.keys(LIB_BY_ID).forEach(k => { delete LIB_BY_ID[k]; });
+  libNotify();
+}
+
 function libFetch() {
   const pid = libActiveId();
-  if (!pid || pid === "__loading__") return Promise.resolve();
-  if (libFetching) return libFetching;
-  libFetching = (async () => {
+  if (!pid || pid === "__loading__") {
+    if (libVisibleProjectId !== null || LIB_ENTRIES.length || LIB_RELATIONS.length) {
+      libRequestSerial += 1; // 让尚未返回的旧作品请求失效
+      libFetching = null;
+      libFetchingProjectId = null;
+      libClearForProject(null);
+    }
+    return Promise.resolve();
+  }
+
+  /* 切换作品时立即清空旧快照；新请求完成前绝不展示上一部作品的数据。 */
+  if (libVisibleProjectId !== pid) {
+    libRequestSerial += 1;
+    libFetching = null;
+    libFetchingProjectId = null;
+    libClearForProject(pid);
+  }
+  if (libFetching && libFetchingProjectId === pid) return libFetching;
+
+  const requestSerial = ++libRequestSerial;
+  libFetchingProjectId = pid;
+  const pending = (async () => {
     try {
       const data = await apiGet(`/api/v2/projects/${pid}/library`);
+      /* A→B 快速切换时，A 的迟到响应不得覆盖 B 的资料库。 */
+      if (requestSerial !== libRequestSerial || libActiveId() !== pid || libVisibleProjectId !== pid) return;
       LIB_RELATIONS = (data && data.relations) || [];
       const linkIndex = {};
       for (const rel of LIB_RELATIONS) {
@@ -118,21 +169,35 @@ function libFetch() {
       LIB_ENTRIES.push(...next);
       Object.keys(LIB_BY_ID).forEach(k => { delete LIB_BY_ID[k]; });
       next.forEach(e => { LIB_BY_ID[e.id] = e; });
-      try { window.dispatchEvent(new CustomEvent("ws:library-changed")); } catch (e) {}
+      libNotify();
     } catch (e) {
       console.warn("[WsLibrary] 拉取资料库失败:", e);
     } finally {
-      libFetching = null;
+      if (requestSerial === libRequestSerial) {
+        libFetching = null;
+        libFetchingProjectId = null;
+      }
     }
   })();
-  return libFetching;
+  libFetching = pending;
+  return pending;
 }
 
 try { libFetch(); } catch (e) {}
-window.addEventListener("ws:work-changed", () => { try { libFetch(); } catch (e) {} });
-Object.assign(window, { LIB_relationsRaw: () => LIB_RELATIONS, LIB_refetch: libFetch });
+if (window.__wsLibraryDataWorkChanged) {
+  window.removeEventListener("ws:work-changed", window.__wsLibraryDataWorkChanged);
+}
+const libOnWorkChanged = () => { try { libFetch(); } catch (e) {} };
+window.addEventListener("ws:work-changed", libOnWorkChanged);
+window.__wsLibraryDataWorkChanged = libOnWorkChanged;
+Object.assign(window, {
+  LIB_relationsRaw: () => LIB_RELATIONS,
+  LIB_refetch: libFetch,
+  LIB_subscribe: libSubscribe,
+  LIB_snapshot: libSnapshot,
+});
 
 Object.assign(window, { LIB_CATS, LIB_ENTRIES, LIB_BY_ID });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { LIB_CATS, LIB_ENTRIES, LIB_BY_ID };
+export { LIB_CATS, LIB_ENTRIES, LIB_BY_ID, libSubscribe, libSnapshot };

@@ -585,9 +585,9 @@ class ValidateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    generated_text: str = Field(min_length=1)
+    generated_text: str = Field(min_length=1, max_length=2_000_000)
     target_kind: ValidationTargetKind = ValidationTargetKind.MANUAL
-    target_ref_id: str | None = None
+    target_ref_id: str | None = Field(default=None, max_length=255)
     mode: ValidationMode = ValidationMode.ASYNC_FULL
     task_context: dict[str, Any] | None = None
 
@@ -672,7 +672,7 @@ class InjectionPreviewRequest(BaseModel):
     strategy: InjectionStrategy = InjectionStrategy.A
     task_type: TaskType = TaskType.SCENE_GENERATION
     intensity: int = Field(default=50, ge=0, le=100)
-    sub_dimensions: list[str] = Field(default_factory=list)
+    sub_dimensions: list[str] = Field(default_factory=list, max_length=128)
     include_positive: bool = True
     include_forbidden: bool = True
     include_metric: bool = False

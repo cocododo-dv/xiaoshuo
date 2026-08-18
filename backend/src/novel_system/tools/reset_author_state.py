@@ -19,6 +19,8 @@ from novel_system.db.models import (
     AutoRewriteRun,
     BannedRuleCluster,
     CalibrationLine,
+    ChapterAuditFinding,
+    ChapterContract,
     ChapterGoal,
     ChapterMemory,
     ChapterRollingNote,
@@ -76,6 +78,7 @@ from novel_system.db.models import (
     WriterEvaluation,
 )
 from novel_system.db.session import SessionLocal
+from novel_system.services.project_ownership import project_owned_models_child_first
 
 PRESERVED_DOMAINS = [
     "ReviewItem / LlmCall 中的历史 reference 审计痕迹",
@@ -144,7 +147,7 @@ def _build_reset_plan(session: Session) -> list[ResetStep]:
 
 
 def _reset_targets() -> list[ResetTarget]:
-    return [
+    targets = [
         ResetTarget("operation_logs", OperationLog),
         ResetTarget("reconcile_faults", ReconcileFault),
         ResetTarget("idempotency_keys", IdempotencyKey),
@@ -201,6 +204,8 @@ def _reset_targets() -> list[ResetTarget]:
         ResetTarget("scene_run_states", SceneRunState),
         ResetTarget("scene_cards", SceneCard),
         ResetTarget("chapter_states", ChapterState),
+        ResetTarget("chapter_audit_findings", ChapterAuditFinding),
+        ResetTarget("chapter_contracts", ChapterContract),
         ResetTarget("chapter_goals", ChapterGoal),
         ResetTarget("snowflake_assistant_turns", SnowflakeAssistantTurn),
         ResetTarget("snowflake_scene_triage_items", SnowflakeSceneTriageItem),
@@ -213,6 +218,15 @@ def _reset_targets() -> list[ResetTarget]:
         ResetTarget("outline_plans", OutlinePlan),
         ResetTarget("story_projects", StoryProject),
     ]
+    registered_models = {target.model for target in targets}
+    project_root = targets.pop()
+    targets.extend(
+        ResetTarget(model.__table__.name, model)
+        for model in project_owned_models_child_first()
+        if model not in registered_models
+    )
+    targets.append(project_root)
+    return targets
 
 
 def _review_item_ids_to_delete(session: Session) -> list[str]:

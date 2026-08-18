@@ -11,14 +11,16 @@ vi.mock("./lib/client.js", () => ({
 }));
 
 // 在 mock 就位后再动态载入 store，拿到「全新」模块实例（module 级 WS_WORKS 复位）。
-async function loadStore() {
+async function loadStore(items = [{ project_id: "p1", title: "Test Project", stats: {} }]) {
   const client = await import("./lib/client.js");
-  // 导入即触发的 wsRefresh() 会 apiGet("/api/v2/projects")；返回空 items 使其 no-op。
-  client.apiGet.mockResolvedValue({ items: [] });
+  client.apiGet.mockImplementation((url) => (
+    url === "/api/v2/projects" ? Promise.resolve({ items }) : Promise.resolve({})
+  ));
   client.apiPatch.mockResolvedValue({});
   client.apiPost.mockResolvedValue({});
   client.apiDelete.mockResolvedValue({});
   const mod = await import("./ws-works.jsx");
+  await vi.waitFor(() => expect(mod.WsWorks.status().projects.phase).toBe("ready"));
   return { mod, client };
 }
 
@@ -79,6 +81,44 @@ describe("WsWorks 远端状态（内联失败与重试契约）", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
+  it("后端确认空书架后清除加载占位，且不请求伪 dashboard", async () => {
+    window.localStorage.setItem("ws_active_work_v1", "stale-project");
+    const client = await import("./lib/client.js");
+    client.apiGet.mockResolvedValue({ items: [] });
+
+    const { WsWorks } = await import("./ws-works.jsx");
+
+    await vi.waitFor(() => expect(WsWorks.status().projects.phase).toBe("ready"));
+    expect(WsWorks.list()).toEqual([]);
+    expect(WsWorks.activeId()).toBe("");
+    expect(WsWorks.active()).toMatchObject({ id: "", title: "还没有作品" });
+    expect(window.localStorage.getItem("ws_active_work_v1")).toBeNull();
+    expect(client.apiGet).toHaveBeenCalledTimes(1);
+    expect(client.apiGet).toHaveBeenCalledWith("/api/v2/projects");
+  });
+
+  it("清除可丢弃的作品缓存后仍恢复用户选中的作品", async () => {
+    window.localStorage.setItem("ws_active_work_v1", "p2");
+    const client = await import("./lib/client.js");
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v2/projects") {
+        return Promise.resolve({
+          items: [
+            { project_id: "p1", title: "First", stats: {} },
+            { project_id: "p2", title: "Selected", stats: {} },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const { WsWorks } = await import("./ws-works.jsx");
+
+    await vi.waitFor(() => expect(WsWorks.status().projects.phase).toBe("ready"));
+    expect(WsWorks.activeId()).toBe("p2");
+    expect(WsWorks.active().title).toBe("Selected");
+  });
+
   it("作品列表断网时保留缓存并暴露可重试 error，成功后收敛 ready", async () => {
     const client = await import("./lib/client.js");
     const offline = Object.assign(new Error("无法连接作品服务"), { code: "NETWORK_ERROR" });
@@ -116,5 +156,22 @@ describe("WsWorks 远端状态（内联失败与重试契约）", () => {
     await WsWorks.retry("dashboard", "p1");
     expect(WsWorks.status("p1").dashboard.phase).toBe("ready");
     expect(WsWorks.active().wordsTotal).toBe(99);
+  });
+
+  it("离线缓存不会复活已退役的演示作品", async () => {
+    window.localStorage.setItem("ws_active_work_v1", "tide");
+    window.localStorage.setItem("ws_works_cache_v1", JSON.stringify([
+      { id: "tide", title: "退役演示一" },
+      { id: "salt", title: "退役演示二" },
+      { id: "project-real", title: "作者作品", home: { blank: true } },
+    ]));
+    const client = await import("./lib/client.js");
+    client.apiGet.mockRejectedValue(new Error("offline"));
+
+    const { WsWorks } = await import("./ws-works.jsx");
+
+    await vi.waitFor(() => expect(WsWorks.status().projects.phase).toBe("error"));
+    expect(WsWorks.list().map((work) => work.id)).toEqual(["project-real"]);
+    expect(WsWorks.activeId()).toBe("project-real");
   });
 });

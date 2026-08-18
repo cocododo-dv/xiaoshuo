@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import RelationProfile, SceneBlueprint, SceneCard, VoiceProfile
 from novel_system.services.resolver import Resolver
 from novel_system.services.scene_execution import SceneExecutionContractService
-from novel_system.services.writer_review import normalize_scene_writer_brief
+from novel_system.services.writer_briefs import normalize_scene_writer_brief
 
 
 class SceneRunPreflightService:

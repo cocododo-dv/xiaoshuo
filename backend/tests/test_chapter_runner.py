@@ -4,7 +4,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from novel_system.db.models import ChapterRunJob, HumanReviewEvent, SceneCard, SceneRunState
+from novel_system.db.models import (
+    ChapterGoal,
+    ChapterRunJob,
+    HumanReviewEvent,
+    SceneCard,
+    SceneRunState,
+)
 from novel_system.db.session import SessionLocal
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.errors import DomainError
@@ -47,6 +53,11 @@ def _create_scene(client, chapter_id: str, scene_id: str, scene_seq: int, *, is_
         headers={"X-Idempotency-Key": f"create-scene-{scene_id}"},
     )
     assert response.status_code == 200
+
+
+def _add_job_parent(session, chapter_id: str) -> None:
+    session.add(ChapterGoal(chapter_id=chapter_id, chapter_goal=f"goal {chapter_id}"))
+    session.flush()
 
 
 def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block_kind: str | None = None):
@@ -144,6 +155,37 @@ def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block
     return shared
 
 
+def test_chapter_job_detached_renewal_is_visible_to_other_sessions(session) -> None:
+    _add_job_parent(session, "CH_RENEW")
+    job = ChapterRunJob(
+        job_id="chapter-renew-detached",
+        chapter_id="CH_RENEW",
+        status="pending",
+        job_type="chapter_run_full",
+        payload_json={"scene_ids": [], "completed_scene_ids": []},
+        result_summary_json={"scene_ids": [], "completed_scene_ids": []},
+        worker_id="local-process",
+        attempt_no=0,
+    )
+    session.add(job)
+    session.commit()
+    owner = ChapterRunnerService(session)._claim_running(
+        job,
+        worker_id="worker-a",
+        lease_seconds=1,
+    )
+    session.commit()
+    before = owner.lease_expires_at
+
+    renewed = owner.renew_detached(lease_seconds=120)
+
+    with SessionLocal() as observer:
+        persisted = observer.get(ChapterRunJob, "chapter-renew-detached")
+        assert persisted is not None
+        assert persisted.lease_expires_at == renewed
+        assert persisted.lease_expires_at > before
+
+
 def test_chapter_run_full_executes_scenes_in_order_and_reports_completed_status(client, session, monkeypatch) -> None:
     _create_chapter(client, "CH900")
     _create_scene(client, "CH900", "CH900_SC01", 1)
@@ -186,6 +228,7 @@ def test_chapter_run_full_executes_scenes_in_order_and_reports_completed_status(
 
 
 def test_chapter_job_owner_cas_reclaim_renewal_and_terminal_fence(session) -> None:
+    _add_job_parent(session, "CH_OWNER")
     expired = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
     session.add(
         ChapterRunJob(
@@ -275,6 +318,7 @@ def test_terminal_chapter_job_claim_is_rejected_without_mutation(
     session,
     terminal_status: str,
 ) -> None:
+    _add_job_parent(session, "CH_TERMINAL")
     job = ChapterRunJob(
         job_id=f"chapter-terminal-{terminal_status}",
         chapter_id="CH_TERMINAL",
@@ -332,6 +376,7 @@ def test_terminal_chapter_job_claim_is_rejected_without_mutation(
 
 
 def test_running_chapter_job_without_lease_is_reclaimable_by_cas(session) -> None:
+    _add_job_parent(session, "CH_RUNNING")
     job = ChapterRunJob(
         job_id="chapter-running-no-lease",
         chapter_id="CH_RUNNING",

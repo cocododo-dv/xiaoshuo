@@ -38,13 +38,13 @@ class ChapterManuscriptService:
         chapter_state = self.session.get(ChapterState, chapter_id)
         scenes = self._active_scenes(chapter_id)
         scene_states = self._scene_states(scenes)
-        scene_entries = [self._scene_entry(scene, scene_states.get(scene.scene_id)) for scene in scenes]
+        scene_entries, final_scenes = self._scene_entries(scenes, scene_states)
         assembled = self._assembled_payload(scene_entries)
         completion = self._completion_contract_from_assembled(assembled)
         aggregate = self._aggregate_payload(self._resolve_final_aggregate(chapter_id, chapter_state))
         source_safety_scan = ReferenceSafetyService(self.session).scan_runtime_text(
             [assembled["content"], aggregate["content"] if aggregate else ""],
-            source_profile_ids=self._source_profile_ids_for_entries(scene_entries),
+            source_profile_ids=self._source_profile_ids_for_entries(scene_entries, final_scenes),
         )
         writer_review = WriterReviewService(self.session)
         writer_review_summary = writer_review.chapter_summary(chapter_id)
@@ -75,10 +75,7 @@ class ChapterManuscriptService:
         self.lifecycle.require_active_chapter(chapter_id)
         scenes = self._active_scenes(chapter_id)
         scene_states = self._scene_states(scenes)
-        scene_entries = [
-            self._scene_entry(scene, scene_states.get(scene.scene_id))
-            for scene in scenes
-        ]
+        scene_entries, _final_scenes = self._scene_entries(scenes, scene_states)
         return self._completion_contract_from_assembled(
             self._assembled_payload(scene_entries)
         )
@@ -101,7 +98,7 @@ class ChapterManuscriptService:
         chapter_state = self.session.get(ChapterState, chapter.chapter_id)
         scenes = self._active_scenes(chapter.chapter_id)
         scene_states = self._scene_states(scenes)
-        scene_entries = [self._scene_entry(scene, scene_states.get(scene.scene_id)) for scene in scenes]
+        scene_entries, _final_scenes = self._scene_entries(scenes, scene_states)
         assembled = self._assembled_payload(scene_entries)
         aggregate = self._aggregate_payload(self._resolve_final_aggregate(chapter.chapter_id, chapter_state))
         return {
@@ -133,22 +130,51 @@ class ChapterManuscriptService:
         ).scalars().all()
         return {state.scene_id: state for state in states}
 
-    def _scene_entry(self, scene: SceneCard, scene_state: SceneRunState | None) -> dict[str, Any]:
-        final_scene = self._resolve_current_final_scene(scene, scene_state)
+    def _scene_entries(
+        self,
+        scenes: list[SceneCard],
+        scene_states: dict[str, SceneRunState],
+    ) -> tuple[list[dict[str, Any]], dict[str, FinalScene]]:
+        row_ids = {
+            state.current_final_scene_row_id
+            for state in scene_states.values()
+            if state.current_final_scene_row_id
+        }
+        final_scenes = (
+            {
+                row.row_id: row
+                for row in self.session.execute(
+                    select(FinalScene).where(FinalScene.row_id.in_(row_ids))
+                ).scalars().all()
+            }
+            if row_ids
+            else {}
+        )
+        entries = [
+            self._scene_entry(
+                scene,
+                scene_states.get(scene.scene_id),
+                final_scenes,
+            )
+            for scene in scenes
+        ]
+        return entries, final_scenes
+
+    def _scene_entry(
+        self,
+        scene: SceneCard,
+        scene_state: SceneRunState | None,
+        final_scenes: dict[str, FinalScene],
+    ) -> dict[str, Any]:
+        final_scene = None
+        if scene_state is not None and scene_state.current_final_scene_row_id:
+            candidate = final_scenes.get(scene_state.current_final_scene_row_id)
+            if candidate is not None and candidate.scene_id == scene.scene_id and candidate.chapter_id == scene.chapter_id:
+                final_scene = candidate
         return {
             **self.lifecycle.serialize_author_scene(scene, scene_state),
             "final_scene": self._final_scene_payload(final_scene),
         }
-
-    def _resolve_current_final_scene(self, scene: SceneCard, scene_state: SceneRunState | None) -> FinalScene | None:
-        if scene_state is None or not scene_state.current_final_scene_row_id:
-            return None
-        final_scene = self.session.get(FinalScene, scene_state.current_final_scene_row_id)
-        if final_scene is None:
-            return None
-        if final_scene.scene_id != scene.scene_id or final_scene.chapter_id != scene.chapter_id:
-            return None
-        return final_scene
 
     @staticmethod
     def _final_scene_payload(final_scene: FinalScene | None) -> dict[str, Any] | None:
@@ -162,7 +188,8 @@ class ChapterManuscriptService:
             "created_at": final_scene.created_at,
         }
 
-    def _assembled_payload(self, scene_entries: list[dict[str, Any]]) -> dict[str, Any]:
+    @staticmethod
+    def _assembled_payload(scene_entries: list[dict[str, Any]]) -> dict[str, Any]:
         generated_contents: list[str] = []
         missing_scene_ids: list[str] = []
         for scene in scene_entries:
@@ -170,11 +197,11 @@ class ChapterManuscriptService:
             if final_scene is None:
                 missing_scene_ids.append(scene["scene_id"])
                 continue
-            row = self.session.get(FinalScene, final_scene["row_id"])
-            if row is None or not str(row.content or "").strip():
+            content = str(final_scene.get("content") or "")
+            if not content.strip():
                 missing_scene_ids.append(scene["scene_id"])
                 continue
-            generated_contents.append(row.content or "")
+            generated_contents.append(content)
         content = "\n".join(generated_contents)
         return {
             "content": content,
@@ -184,17 +211,36 @@ class ChapterManuscriptService:
             "missing_scene_ids": missing_scene_ids,
         }
 
-    def _source_profile_ids_for_entries(self, scene_entries: list[dict[str, Any]]) -> list[str]:
+    def _source_profile_ids_for_entries(
+        self,
+        scene_entries: list[dict[str, Any]],
+        final_scenes: dict[str, FinalScene],
+    ) -> list[str]:
         values: list[str] = []
         seen: set[str] = set()
+        bundle_ids = {
+            row.source_bundle_id
+            for row in final_scenes.values()
+            if row.source_bundle_id
+        }
+        bundles = (
+            {
+                bundle.bundle_id: bundle
+                for bundle in self.session.execute(
+                    select(SceneBundle).where(SceneBundle.bundle_id.in_(bundle_ids))
+                ).scalars().all()
+            }
+            if bundle_ids
+            else {}
+        )
         for scene in scene_entries:
             final_scene = scene.get("final_scene")
             if not isinstance(final_scene, dict):
                 continue
-            row = self.session.get(FinalScene, final_scene.get("row_id"))
+            row = final_scenes.get(str(final_scene.get("row_id") or ""))
             if row is None or not row.source_bundle_id:
                 continue
-            bundle = self.session.get(SceneBundle, row.source_bundle_id)
+            bundle = bundles.get(row.source_bundle_id)
             for value in source_profile_ids_from_snapshot(bundle.frozen_snapshot_json if bundle else None):
                 if value in seen:
                     continue
@@ -211,16 +257,18 @@ class ChapterManuscriptService:
         writer_review: WriterReviewService,
         aggregate: dict[str, Any] | None,
     ) -> dict[str, Any]:
+        scene_ids = [scene["scene_id"] for scene in scene_entries]
+        scene_review_by_id = writer_review.summaries("scene", scene_ids)
         scene_reviews = [
             {
                 "scene_id": scene["scene_id"],
                 "scene_seq": scene.get("scene_seq"),
                 "scene_goal": scene.get("scene_goal"),
-                "review": writer_review.scene_summary(scene["scene_id"]),
+                "review": scene_review_by_id[scene["scene_id"]],
             }
             for scene in scene_entries
         ]
-        candidates = self._chapter_revision_candidates(chapter_id, [scene["scene_id"] for scene in scene_entries])
+        candidates = self._chapter_revision_candidates(chapter_id, scene_ids)
         review_summaries = [chapter_review, *[item["review"] for item in scene_reviews]]
         return {
             "reading_source": "aggregate" if aggregate else "assembled",

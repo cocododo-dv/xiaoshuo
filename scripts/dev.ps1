@@ -274,8 +274,11 @@ function Invoke-BackendBootstrap {
         $env:PYTHONPATH = "src"
         $env:NOVEL_SYSTEM_VECTOR_BACKEND = "memory"
         $env:NOVEL_SYSTEM_CONFIG_SECRET = Resolve-DevConfigSecret
-        Invoke-NativeStep -Label "Backend migration" -WorkingDirectory $script:BackendDir -FilePath "python" -ArgumentList @("-m", "alembic", "upgrade", "head")
-        # 演示数据已退役：生产启动器只跑迁移，绝不向运行库注入任何演示作品。
+        Invoke-NativeStep -Label "Backend migration" -WorkingDirectory $script:BackendDir -FilePath $script:PythonExe -ArgumentList @("-m", "alembic", "upgrade", "head")
+        Invoke-NativeStep -Label "Backend database preflight" -WorkingDirectory $script:BackendDir -FilePath $script:PythonExe -ArgumentList @(
+            "-m", "novel_system.tools.database_preflight"
+        )
+        # Production startup runs migrations and preflight only; it never seeds demo projects.
     }
     finally {
         if ($null -eq $previousPythonPath) {
@@ -368,8 +371,24 @@ function Show-StartupFailureDiagnostics {
 }
 
 function Start-TrackedServices {
-    Assert-CommandAvailable -Name "python"
     Assert-CommandAvailable -Name "npm.cmd"
+    if (-not (Test-Path -LiteralPath $script:PythonExe -PathType Leaf)) {
+        throw "Locked backend Python is missing: $script:PythonExe. Run: cd backend; uv sync --locked --extra dev"
+    }
+
+    $artifactRetentionDays = if ($env:NOVEL_SYSTEM_ARTIFACT_RETENTION_DAYS) {
+        $env:NOVEL_SYSTEM_ARTIFACT_RETENTION_DAYS
+    } else {
+        "14"
+    }
+    Invoke-NativeStep -Label "Pruning expired reproducible runtime artifacts" -WorkingDirectory $repoRoot -FilePath $script:PythonExe -ArgumentList @(
+        (Join-Path $PSScriptRoot "cleanup_runtime_artifacts.py"),
+        "--run-dir",
+        $script:RunDir,
+        "--retention-days",
+        $artifactRetentionDays,
+        "--apply"
+    )
 
     $liveTrackedIds = @(Get-LiveRecordedRootProcessIds)
     if ($liveTrackedIds.Count -gt 0) {
@@ -379,7 +398,7 @@ function Start-TrackedServices {
     Remove-RunState
     $script:BackendPort = Resolve-AvailablePort -PreferredPort $script:BackendPreferredPort -Label "Backend"
     $script:BackendUrl = "http://127.0.0.1:$script:BackendPort"
-    $script:BackendHealthUrl = "$script:BackendUrl/api/v1/chapters"
+    $script:BackendHealthUrl = "$script:BackendUrl/ready"
     if ($script:IncludeLegacyVue) {
         Assert-PortAvailable -Port $script:FrontendPort -Label "Frontend"
     }
@@ -392,7 +411,8 @@ function Start-TrackedServices {
     try {
         Write-Step -Message "Starting backend on $script:BackendUrl"
         $configSecretLiteral = ConvertTo-SingleQuotedPowerShellLiteral -Value (Resolve-DevConfigSecret)
-        $backendCommand = '$env:PYTHONPATH = ''src''; $env:NOVEL_SYSTEM_VECTOR_BACKEND = ''memory''; $env:NOVEL_SYSTEM_CONFIG_SECRET = {0}; python -m uvicorn novel_system.api.app:create_app --factory --reload --host 127.0.0.1 --port {1} --app-dir src' -f $configSecretLiteral, $script:BackendPort
+        $pythonLiteral = ConvertTo-SingleQuotedPowerShellLiteral -Value $script:PythonExe
+        $backendCommand = '$env:PYTHONPATH = ''src''; $env:NOVEL_SYSTEM_VECTOR_BACKEND = ''memory''; $env:NOVEL_SYSTEM_CONFIG_SECRET = {0}; & {1} -m uvicorn novel_system.api.app:create_app --factory --reload --host 127.0.0.1 --port {2} --app-dir src' -f $configSecretLiteral, $pythonLiteral, $script:BackendPort
         $backendProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $backendCommand) -WorkingDirectory $script:BackendDir -RedirectStandardOutput $script:BackendOutLog -RedirectStandardError $script:BackendErrLog -PassThru
         Set-Content -Path $script:BackendPidFile -Value $backendProcess.Id
         Set-Content -Path $script:BackendUrlFile -Value $script:BackendUrl
@@ -461,12 +481,13 @@ $script:FrontendErrLog = Join-Path $script:RunDir "frontend.err.log"
 $script:ReactOutLog = Join-Path $script:RunDir "frontend-react.out.log"
 $script:ReactErrLog = Join-Path $script:RunDir "frontend-react.err.log"
 $script:BackendPreferredPort = 8000
+$script:PythonExe = Join-Path $script:BackendDir ".venv\Scripts\python.exe"
 $script:BackendPort = $script:BackendPreferredPort
 $script:FrontendPort = 5173
 $script:ReactPort = 5174
 $script:IncludeLegacyVue = [bool]$IncludeLegacyVue
 $script:BackendUrl = "http://127.0.0.1:$script:BackendPort"
-$script:BackendHealthUrl = "$script:BackendUrl/api/v1/chapters"
+$script:BackendHealthUrl = "$script:BackendUrl/ready"
 $script:FrontendUrl = "http://127.0.0.1:5173"
 $script:ReactUrl = "http://127.0.0.1:5174"
 

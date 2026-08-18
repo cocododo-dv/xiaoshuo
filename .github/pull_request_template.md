@@ -8,16 +8,16 @@
 
 - [ ] `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
 - [ ] Backend pytest evidence called out for `backend/tests/test_scene_generation.py`, `backend/tests/test_qc_engine.py`, and `backend/tests/test_chapter_runner.py` plus `backend/tests/test_chapter_runtime.py`
-- [ ] `cd frontend && npm run test:e2e`
+- [ ] `powershell -ExecutionPolicy Bypass -File scripts/verify_react_e2e.ps1`
 - [ ] `wsl -d Ubuntu-24.04 bash -lc "cd <current-checkout-in-wsl> && bash scripts/verify_wsl_strict.sh"` using the checkout/worktree under review
 - [ ] `cd backend && alembic upgrade head`
-- [ ] `cd backend && python -m novel_system.tools.seed_demo`
+- [ ] Fresh `cd backend && python -m alembic upgrade head` matches ORM schema (`tests/test_metadata_isolation.py`)
 - [ ] GitHub Actions CI passed
 - [ ] If a real-provider smoke run was used, it is documented as local-only evidence and kept separate from CI-required fake-provider/deterministic coverage
 
-## Seeded Runtime-Ops E2E
+## Isolated React Contract E2E
 
-- [ ] Record the `npm run test:e2e` result
+- [ ] Record the `scripts/verify_react_e2e.ps1` result
 - [ ] Record the fixture operator identities: `ops.chapter.e2e`, `ops.scene-llm.e2e`, `ops.runtime.e2e`, `ops.knowledge.e2e`, and `ops.interop.e2e`
 - [ ] Confirm the E2E lane covered `Scene Workbench` chapter runtime backfill / manual hold / final aggregate on `CH200_SC01`
 - [ ] Confirm the E2E lane covered the focused `Scene Workbench` LLM pipeline on `CH001_SC01`: mocked/offline generation evidence, QC pass, and archived final scene

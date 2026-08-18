@@ -12,6 +12,7 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.scene_execution import SceneExecutionContractService
+from novel_system.services.catalog import CatalogService
 
 
 PROJECT_ID = "CAUSAL_ORDER_PROJECT"
@@ -184,8 +185,10 @@ def test_causal_readiness_recomputes_after_chapter_reorder(session) -> None:
         "CAUSAL_READINESS_ORDINAL_FALLBACK"
     }
 
-    first_chapter.display_order = 2
-    second_chapter.display_order = 1
+    CatalogService(session).reorder_chapters(
+        project.project_id,
+        [second_chapter.chapter_id, first_chapter.chapter_id],
+    )
     session.commit()
 
     reordered_contract = service.generate(second_scene.scene_id)
@@ -199,8 +202,10 @@ def test_causal_readiness_recomputes_after_chapter_reorder(session) -> None:
     session.refresh(second_scene)
     assert first_scene.scene_seq == second_scene.scene_seq == 1
 
-    first_chapter.display_order = 1
-    second_chapter.display_order = 2
+    CatalogService(session).reorder_chapters(
+        project.project_id,
+        [first_chapter.chapter_id, second_chapter.chapter_id],
+    )
     session.commit()
 
     restored_contract = service.generate(second_scene.scene_id)
@@ -209,7 +214,7 @@ def test_causal_readiness_recomputes_after_chapter_reorder(session) -> None:
 
 
 def test_complete_scene_anchors_survive_catalog_reorder(session) -> None:
-    _project, first_chapter, second_chapter, _first_scene, second_scene = (
+    project, first_chapter, second_chapter, _first_scene, second_scene = (
         _seed_cross_chapter_skeleton(session, anchor_mode="complete")
     )
     service = SceneExecutionContractService(session)
@@ -218,8 +223,10 @@ def test_complete_scene_anchors_survive_catalog_reorder(session) -> None:
     assert "causal_readiness_warning" in initial_contract.payload_json
     assert "causal_readiness_diagnostics" not in initial_contract.payload_json
 
-    first_chapter.display_order = 2
-    second_chapter.display_order = 1
+    CatalogService(session).reorder_chapters(
+        project.project_id,
+        [second_chapter.chapter_id, first_chapter.chapter_id],
+    )
     session.commit()
 
     reordered_contract = service.generate(second_scene.scene_id)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import select
@@ -9,12 +10,18 @@ from novel_system.services.versioning.base import VersioningServiceBase
 
 
 class RuntimeRecoveryService(VersioningServiceBase):
-    def recover_stuck_jobs(self) -> dict[str, Any]:
-        from novel_system.services.scene_run_jobs import recover_expired_cancel_requested_jobs
-
-        recovered_scene_cancellations = recover_expired_cancel_requested_jobs(
-            self.session,
-            worker_id="system/recovery_sweep",
+    def recover_stuck_jobs(
+        self,
+        *,
+        scene_cancellation_recoverer: Callable[..., list[dict[str, Any]]] | None = None,
+    ) -> dict[str, Any]:
+        recovered_scene_cancellations = (
+            scene_cancellation_recoverer(
+                self.session,
+                worker_id="system/recovery_sweep",
+            )
+            if scene_cancellation_recoverer is not None
+            else []
         )
         running_jobs = [
             *self.session.execute(select(ReindexJob).where(ReindexJob.status == "running")).scalars().all(),

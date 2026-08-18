@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 from novel_system.api.app import SUPPORTED_DATABASE_REVISION, create_app
 from novel_system.db.base import Base
 from novel_system.db.session import engine
-from novel_system.settings import get_settings
+from novel_system.settings import (
+    BACKEND_ROOT,
+    DEFAULT_DATABASE_PATH,
+    DEFAULT_LITERARY_EVAL_REPORT_PATH,
+    DEFAULT_VECTOR_STORE_DIR,
+    get_settings,
+)
 
 
 def _stamp_database_revision(revision: str = SUPPORTED_DATABASE_REVISION) -> None:
@@ -43,6 +50,38 @@ def test_settings_read_does_not_create_vector_store_directory(monkeypatch, tmp_p
     assert not vector_dir.exists()
 
 
+def test_default_runtime_paths_do_not_depend_on_process_working_directory(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("NOVEL_SYSTEM_DATABASE_URL", raising=False)
+    monkeypatch.delenv("NOVEL_SYSTEM_CHROMA_DIR", raising=False)
+    monkeypatch.delenv("NOVEL_SYSTEM_LITERARY_EVAL_REPORT_PATH", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    settings = get_settings(include_runtime_config=False)
+
+    assert settings.database_url == f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
+    assert settings.vector_store_dir == DEFAULT_VECTOR_STORE_DIR
+    assert settings.literary_eval_report_path == DEFAULT_LITERARY_EVAL_REPORT_PATH
+    assert settings.vector_store_dir.is_relative_to(BACKEND_ROOT)
+
+
+def test_relative_runtime_paths_are_resolved_from_backend_root(monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_CHROMA_DIR", "runtime/vector")
+    monkeypatch.setenv(
+        "NOVEL_SYSTEM_LITERARY_EVAL_REPORT_PATH",
+        "runtime/eval/latest.json",
+    )
+
+    settings = get_settings(include_runtime_config=False)
+
+    assert settings.vector_store_dir == BACKEND_ROOT / "runtime" / "vector"
+    assert settings.literary_eval_report_path == (
+        BACKEND_ROOT / "runtime" / "eval" / "latest.json"
+    )
+
+
 def test_cors_defaults_to_local_dev_origins_without_wildcard_credentials(monkeypatch) -> None:
     monkeypatch.delenv("NOVEL_SYSTEM_CORS_ORIGINS", raising=False)
     app = create_app()
@@ -65,6 +104,58 @@ def test_cors_defaults_to_local_dev_origins_without_wildcard_credentials(monkeyp
 
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
     assert disallowed.headers.get("access-control-allow-origin") != "*"
+
+
+def test_request_body_limit_rejects_declared_oversize_with_standard_envelope(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_MAX_REQUEST_BODY_BYTES", "64")
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/api/v1/chapters",
+            content=b"x" * 65,
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "http://127.0.0.1:5173",
+            },
+        )
+
+    payload = response.json()
+    assert response.status_code == 413
+    assert payload["error"]["code"] == "REQUEST_BODY_TOO_LARGE"
+    assert payload["error"]["details"] == {"max_bytes": 64}
+    assert payload["request_id"] == response.headers["X-Request-Id"]
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+
+
+def test_request_body_limit_counts_chunked_stream_when_length_is_absent(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_MAX_REQUEST_BODY_BYTES", "64")
+
+    def chunks():
+        yield b"x" * 40
+        yield b"y" * 40
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/api/v1/chapters",
+            content=chunks(),
+            headers={
+                "Content-Type": "application/json",
+                "Transfer-Encoding": "chunked",
+            },
+        )
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "REQUEST_BODY_TOO_LARGE"
+
+
+def test_request_body_limit_configuration_must_be_positive(monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_MAX_REQUEST_BODY_BYTES", "0")
+
+    with pytest.raises(ValueError, match="MAX_REQUEST_BODY_BYTES"):
+        create_app()
 
 
 def test_unhandled_errors_return_request_id_without_leaking_exception_text() -> None:
@@ -170,6 +261,45 @@ def test_remote_mode_authenticates_every_non_health_request(monkeypatch) -> None
     assert accepted.status_code == 200
     assert ready.status_code == 200
     assert ready.json() == {"status": "ready"}
+
+
+def test_remote_mode_does_not_trust_client_supplied_operator_ref(monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_LOCAL_ONLY", "false")
+    monkeypatch.setenv("NOVEL_SYSTEM_REMOTE_ACCESS_TOKEN", "remote-secret")
+    app = create_app()
+
+    @app.get("/operator-ref-for-test")
+    def operator_ref_for_test(request: Request):
+        return {"operator_ref": request.state.operator_ref}
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/operator-ref-for-test",
+            headers={
+                "X-Novel-Access-Token": "remote-secret",
+                "X-Operator-Ref": "forged-admin",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["operator_ref"] == "remote-access-token"
+
+
+def test_local_mode_keeps_operator_ref_for_single_author_audit() -> None:
+    app = create_app()
+
+    @app.get("/operator-ref-for-test")
+    def operator_ref_for_test(request: Request):
+        return {"operator_ref": request.state.operator_ref}
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/operator-ref-for-test",
+            headers={"X-Operator-Ref": "local-author"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["operator_ref"] == "local-author"
 
 
 def test_ready_rejects_database_without_alembic_version() -> None:

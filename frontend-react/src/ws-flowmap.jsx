@@ -267,24 +267,28 @@ function WsFlowmap({ go }) {
   const [sel, setSel] = useStFM("writer");
   const [playing, setPlaying] = useStFM(false);
   const timer = useRefFM(null);
+  const frame = useRefFM(null);
   const active = M.stages.find(s => s.key === sel) || M.stages[2];
 
   // 带上下文跳转：切到工位的同时，定位到具体那一项（目前用于雪花步骤）
   const jump = (to, step) => {
     if (step) window.__snowStepTarget = step;
-    go(to);
-    if (step) setTimeout(() => window.dispatchEvent(new CustomEvent("ws:snow-step", { detail: step })), 90);
+    go(to, step ? { type: "ws:snow-step", detail: step } : undefined);
   };
 
   const play = () => {
     setPlaying(false);
-    requestAnimationFrame(() => {
+    cancelAnimationFrame(frame.current);
+    frame.current = requestAnimationFrame(() => {
       setPlaying(true);
       clearTimeout(timer.current);
       timer.current = setTimeout(() => setPlaying(false), 3400);
     });
   };
-  useEfFM(() => () => clearTimeout(timer.current), []);
+  useEfFM(() => () => {
+    cancelAnimationFrame(frame.current);
+    clearTimeout(timer.current);
+  }, []);
 
   return (
     <div className="page flow-page" data-screen-label="flowmap">
@@ -484,8 +488,6 @@ function WsFlowmap({ go }) {
     </div>
   );
 }
-
-Object.assign(window, { WsFlowmap });
 
 function StationNode({ stage, selected, onSelect, onOpen }) {
   const r = 30, c = 2 * Math.PI * r;

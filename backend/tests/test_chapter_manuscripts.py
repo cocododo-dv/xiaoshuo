@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from sqlalchemy import event
+
 from novel_system.db.models import (
     ChapterMemory,
     ChapterState,
@@ -12,6 +14,7 @@ from novel_system.db.models import (
     StyleReferenceRun,
     WriterEvaluation,
 )
+from novel_system.services.chapter_manuscripts import ChapterManuscriptService
 
 
 def _create_chapter(client, chapter_id: str, *, goal: str = "Draft a chapter") -> None:
@@ -101,6 +104,45 @@ def _set_final_aggregate(session, chapter_id: str, content: str, *, row_id: str 
     session.add(memory)
     session.commit()
     return memory_row_id
+
+
+def _statement_count(session, action) -> int:
+    engine = session.get_bind()
+    statements: list[str] = []
+
+    def record_statement(_connection, _cursor, statement, _parameters, _context, _executemany) -> None:
+        statements.append(statement)
+
+    session.expire_all()
+    event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        action()
+    finally:
+        event.remove(engine, "before_cursor_execute", record_statement)
+    return len(statements)
+
+
+def test_manuscript_detail_query_count_does_not_grow_with_scene_count(client, session) -> None:
+    _create_chapter(client, "CHM_QUERY_ONE")
+    _create_scene(client, "CHM_QUERY_ONE_SC01", chapter_id="CHM_QUERY_ONE", scene_seq=1)
+    _finalize_scene(session, "CHM_QUERY_ONE_SC01", "CHM_QUERY_ONE", "one")
+
+    _create_chapter(client, "CHM_QUERY_MANY")
+    for scene_seq in range(1, 9):
+        scene_id = f"CHM_QUERY_MANY_SC{scene_seq:02d}"
+        _create_scene(client, scene_id, chapter_id="CHM_QUERY_MANY", scene_seq=scene_seq)
+        _finalize_scene(session, scene_id, "CHM_QUERY_MANY", f"scene {scene_seq}")
+
+    one_scene_queries = _statement_count(
+        session,
+        lambda: ChapterManuscriptService(session).manuscript_detail("CHM_QUERY_ONE"),
+    )
+    many_scene_queries = _statement_count(
+        session,
+        lambda: ChapterManuscriptService(session).manuscript_detail("CHM_QUERY_MANY"),
+    )
+
+    assert many_scene_queries <= one_scene_queries + 1
 
 
 def test_chapter_manuscript_detail_assembles_current_final_scenes_and_marks_missing(client, session) -> None:

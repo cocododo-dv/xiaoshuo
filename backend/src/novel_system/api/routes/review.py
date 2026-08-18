@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
+from pydantic import Field, StrictBool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.request_types import BoundedJsonObject, EmptyRequest, StrictRequestModel
 from novel_system.api.response import ok
 from novel_system.db.models import (
     AuthorPreferenceProfile,
@@ -27,15 +30,92 @@ from novel_system.services.human_review_support import (
 )
 from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.knowledge_registry import descriptor_for_item_type
-from novel_system.services.pagination import paginate_items, resolve_pagination_request
-from novel_system.services.review_cards import CARD_KINDS, ReviewCardService
+from novel_system.services.pagination import paginate_select, resolve_pagination_request
+from novel_system.services.review_cards import ReviewCardService
 from novel_system.services.versioning import (
     PromotionService,
     ReviewMaterializationService,
     VectorLifecycleService,
 )
+from novel_system.settings import get_settings
 
 router = APIRouter(tags=["review"])
+
+Identifier = Annotated[str, Field(min_length=1, max_length=255)]
+OptionalIdentifier = Annotated[str, Field(max_length=255)]
+CardListItem = Annotated[str, Field(max_length=4000)]
+
+
+class ReviewCardCreateRequest(StrictRequestModel):
+    project_id: OptionalIdentifier | None = None
+    scene_id: OptionalIdentifier | None = None
+    chapter_id: OptionalIdentifier | None = None
+    # Values remain domain-validated for REVIEW_CARD_KIND_INVALID.
+    kind: str = Field(max_length=64)
+    priority: int | None = Field(default=None, ge=1, le=10)
+    title: str | None = Field(default=None, max_length=10_000)
+    source: str | None = Field(default=None, max_length=255)
+    where: str | None = Field(default=None, max_length=1000)
+    occurred_at: str | None = Field(default=None, max_length=128)
+    detail: str | None = Field(default=None, max_length=100_000)
+    preview: str | None = Field(default=None, max_length=100_000)
+    checklist: list[CardListItem] | None = Field(default=None, max_length=500)
+    options: list[CardListItem] | None = Field(default=None, max_length=500)
+    actions: list[BoundedJsonObject] | None = Field(default=None, max_length=100)
+    dedupe_key: str | None = Field(default=None, max_length=512)
+
+
+class ReviewCandidateCreateRequest(StrictRequestModel):
+    # review_id remains optional so the established REVIEW_ID_REQUIRED domain
+    # response is retained for an omitted identifier.
+    review_id: OptionalIdentifier | None = None
+    scene_id: OptionalIdentifier | None = None
+    chapter_id: OptionalIdentifier | None = None
+    item_type: str = Field(min_length=1, max_length=128)
+    candidate_text: str = Field(max_length=2_000_000)
+    candidate_payload_json: BoundedJsonObject = Field(default_factory=dict)
+    active_on_approve: int = Field(default=1, ge=0, le=1)
+
+
+class ReviewDemoImportRequest(StrictRequestModel):
+    """Fixture import boundary without writable lifecycle/derived columns."""
+
+    review_id: Identifier
+    scene_id: OptionalIdentifier | None = None
+    chapter_id: OptionalIdentifier | None = None
+    item_type: str = Field(min_length=1, max_length=128)
+    candidate_text: str = Field(max_length=2_000_000)
+    candidate_payload_json: BoundedJsonObject = Field(default_factory=dict)
+    active_on_approve: int = Field(default=1, ge=0, le=1)
+
+
+class ReviewCardResolveRequest(StrictRequestModel):
+    action_index: int | None = Field(default=None, ge=0, le=10_000)
+    project_id: OptionalIdentifier | None = None
+
+
+class ReviewCardProjectRequest(StrictRequestModel):
+    project_id: OptionalIdentifier | None = None
+
+
+class ReviewRiskConfirmationRequest(StrictRequestModel):
+    acknowledged: StrictBool = False
+    reason: str | None = Field(default=None, max_length=4000)
+    severity: str | None = Field(default=None, max_length=64)
+
+
+class ReviewApproveRequest(StrictRequestModel):
+    risk_confirmation: ReviewRiskConfirmationRequest | None = None
+
+
+class ReviewRejectRequest(StrictRequestModel):
+    reason: str | None = Field(default=None, max_length=4000)
+
+
+class HumanReviewActionRequest(StrictRequestModel):
+    # Missing/invalid action vocabulary remains owned by HumanReviewManager.
+    action: str | None = Field(default=None, max_length=128)
+    reason: str | None = Field(default=None, max_length=4000)
 
 
 @router.get("/api/v1/review-items")
@@ -71,10 +151,14 @@ def list_review_items(
         query = query.where(ReviewItem.scene_id == scene_id)
     if chapter_id:
         query = query.where(ReviewItem.chapter_id == chapter_id)
-    items = session.execute(query.order_by(ReviewItem.created_at.desc(), ReviewItem.review_id.desc())).scalars().all()
-    page_items, pagination = paginate_items(
-        items,
+    page_items, pagination = paginate_select(
+        session,
+        query,
         request=resolve_pagination_request(page=page, page_size=page_size, cursor=cursor, limit=limit),
+        order_columns=(
+            (ReviewItem.created_at, "desc"),
+            (ReviewItem.review_id, "desc"),
+        ),
         cursor_values=lambda item: [item.created_at, item.review_id],
     )
     return ok(
@@ -97,21 +181,26 @@ def review_detail(review_id: str, request: Request, session: Session = Depends(g
 
 
 @router.post("/api/v1/review-items")
-def create_review_item(payload: dict, request: Request, session: Session = Depends(get_session)):
+def create_review_item(
+    payload: ReviewCardCreateRequest | ReviewCandidateCreateRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    body = payload.model_dump(mode="json", exclude_unset=True)
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     # FE-ALIGN P5：带 kind 的载荷走卡片创建（dedupe_key 去重）；legacy 载荷保持原 upsert 流
-    is_card = payload.get("kind") in CARD_KINDS and "review_id" not in payload
+    is_card = "kind" in body and "review_id" not in body
     action = (
-        (lambda: ReviewCardService(session).create_card(payload, actor_ref=actor_ref))
+        (lambda: ReviewCardService(session).create_card(body, actor_ref=actor_ref))
         if is_card
-        else (lambda: _upsert_review_item(session, payload))
+        else (lambda: _upsert_review_item(session, body))
     )
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/review-items",
-        payload=payload,
+        payload=body,
         action=action,
         actor_ref=actor_ref,
     )
@@ -128,11 +217,11 @@ def create_review_item(payload: dict, request: Request, session: Session = Depen
 def resolve_review_card(
     review_id: str,
     request: Request,
-    payload: dict[str, Any] | None = None,
+    payload: ReviewCardResolveRequest | None = None,
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    body = dict(payload or {})
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
@@ -152,48 +241,75 @@ def resolve_review_card(
 
 
 @router.post("/api/v1/review-items/{review_id}/unresolve")
-def unresolve_review_card(review_id: str, request: Request, session: Session = Depends(get_session)):
-    result = ReviewCardService(session).unresolve(review_id)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+def unresolve_review_card(
+    review_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/review-items/{review_id}/unresolve",
+        payload={"review_id": review_id},
+        action=lambda: ReviewCardService(session).unresolve(review_id),
+    )
 
 
 @router.post("/api/v1/review-items/{review_id}/snooze")
 def snooze_review_card(
     review_id: str,
     request: Request,
-    payload: dict[str, Any] | None = None,
+    payload: ReviewCardProjectRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = dict(payload or {})
-    result = ReviewCardService(session).snooze(review_id, project_id=body.get("project_id"))
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/review-items/{review_id}/snooze",
+        payload={"review_id": review_id, **body},
+        action=lambda: ReviewCardService(session).snooze(review_id, project_id=body.get("project_id")),
+    )
 
 
 @router.post("/api/v1/review-items/{review_id}/unsnooze")
 def unsnooze_review_card(
     review_id: str,
     request: Request,
-    payload: dict[str, Any] | None = None,
+    payload: ReviewCardProjectRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = dict(payload or {})
-    result = ReviewCardService(session).unsnooze(review_id, project_id=body.get("project_id"))
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/review-items/{review_id}/unsnooze",
+        payload={"review_id": review_id, **body},
+        action=lambda: ReviewCardService(session).unsnooze(review_id, project_id=body.get("project_id")),
+    )
 
 
-@router.post("/api/v1/review-items/import-demo")
-def import_demo_review(payload: dict, request: Request, session: Session = Depends(get_session)):
+@router.post("/api/v1/review-items/import-demo", include_in_schema=False)
+def import_demo_review(
+    payload: ReviewDemoImportRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    if not get_settings(include_runtime_config=False).fixture_import_enabled:
+        raise DomainError("FIXTURE_IMPORT_DISABLED", "fixture import is disabled", status_code=404)
+    body = payload.model_dump(mode="json", exclude_unset=True)
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/review-items/import-demo",
-        payload=payload,
-        action=lambda: _import_review(session, payload),
+        payload=body,
+        action=lambda: _import_review(session, body),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -233,11 +349,11 @@ def _upsert_review_item(session: Session, payload: dict) -> dict:
 def approve_review(
     review_id: str,
     request: Request,
-    payload: dict[str, Any] | None = None,
+    payload: ReviewApproveRequest | None = None,
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    approval_payload = dict(payload or {})
+    approval_payload = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     approval_payload["review_id"] = review_id
     result, status = execute_with_idempotency(
         session,
@@ -447,7 +563,12 @@ def _risk_confirmation_reason(value: Any) -> str | None:
 
 
 @router.post("/api/v1/review-items/{review_id}/release")
-def release_review(review_id: str, request: Request, session: Session = Depends(get_session)):
+def release_review(
+    review_id: str,
+    request: Request,
+    payload: EmptyRequest | None = None,
+    session: Session = Depends(get_session),
+):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
@@ -466,11 +587,11 @@ def release_review(review_id: str, request: Request, session: Session = Depends(
 def reject_review(
     review_id: str,
     request: Request,
-    payload: dict[str, Any] | None = None,
+    payload: ReviewRejectRequest | None = None,
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    reject_payload = dict(payload or {})
+    reject_payload = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     reject_payload["review_id"] = review_id
     result, status = execute_with_idempotency(
         session,
@@ -748,10 +869,14 @@ def list_human_review_events(
         query = query.where(HumanReviewEvent.scene_id == scene_id)
     if chapter_id:
         query = query.where(HumanReviewEvent.chapter_id == chapter_id)
-    items = session.execute(query.order_by(HumanReviewEvent.created_at.desc(), HumanReviewEvent.event_id.desc())).scalars().all()
-    page_items, pagination = paginate_items(
-        items,
+    page_items, pagination = paginate_select(
+        session,
+        query,
         request=resolve_pagination_request(page=page, page_size=page_size, cursor=cursor, limit=limit),
+        order_columns=(
+            (HumanReviewEvent.created_at, "desc"),
+            (HumanReviewEvent.event_id, "desc"),
+        ),
         cursor_values=lambda item: [item.created_at, item.event_id],
     )
     return ok(
@@ -769,8 +894,14 @@ def human_review_event_detail(event_id: str, request: Request, session: Session 
 
 
 @router.post("/api/v1/human-review-events/{event_id}/actions")
-def human_review_event_action(event_id: str, payload: dict, request: Request, session: Session = Depends(get_session)):
-    action_name = payload.get("action")
+def human_review_event_action(
+    event_id: str,
+    payload: HumanReviewActionRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    body = payload.model_dump(mode="json", exclude_unset=True)
+    action_name = body.get("action")
     if not action_name:
         raise DomainError("HUMAN_REVIEW_ACTION_REQUIRED", "missing action", status_code=400)
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
@@ -779,8 +910,8 @@ def human_review_event_action(event_id: str, payload: dict, request: Request, se
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/human-review-events/{event_id}/actions",
-        payload={"event_id": event_id, **payload},
-        action=lambda: HumanReviewManager(session).run_action(event_id, action_name, actor_ref=actor_ref, payload=payload),
+        payload={"event_id": event_id, **body},
+        action=lambda: HumanReviewManager(session).run_action(event_id, action_name, actor_ref=actor_ref, payload=body),
         owned_failure_callback=lambda error: VectorLifecycleService.publish_owned_verify_failure(
             session,
             error,

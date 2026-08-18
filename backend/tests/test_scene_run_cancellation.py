@@ -129,6 +129,7 @@ def test_cancel_rejects_non_cancel_terminal_status_with_stable_details(
     session,
     status: str,
 ) -> None:
+    _seed_owned_scene(session)
     job = ChapterRunJob(
         job_id=f"terminal-cancel-{status}",
         scene_id="SC01",

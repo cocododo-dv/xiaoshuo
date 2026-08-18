@@ -62,7 +62,7 @@ def test_finding_referencing_non_pov_secret_excluded_from_auto_patch(session) ->
         "actual": "客厅",
         "evidence": "X在客厅",
     }
-    proj = PovKnowledgeProjection(session)
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     safe, redacted = proj.desensitize_findings(
         [finding_secret, finding_public], PROJECT, scene_seq=2,
         pov_character_id="Y", onstage_character_ids=["X", "Y"],
@@ -79,7 +79,7 @@ def test_finding_on_public_fact_passes_through(session) -> None:
         "issue_key": "x", "quality_level": "Q1",
         "expected": "书房", "actual": "客厅", "evidence": "X在客厅",
     }
-    proj = PovKnowledgeProjection(session)
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     safe, redacted = proj.desensitize_findings(
         [finding_public], PROJECT, scene_seq=2,
         pov_character_id="Y", onstage_character_ids=["X", "Y"],
@@ -95,7 +95,7 @@ def test_pov_owned_secret_finding_passes_through(session) -> None:
         "issue_key": "x", "quality_level": "Q1",
         "expected": "X是幕后凶手", "actual": "...", "evidence": "X是幕后凶手",
     }
-    proj = PovKnowledgeProjection(session)
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     # POV=X 本人 → 该秘密对 X 不是"非 POV 秘密" → 放行。
     safe, redacted = proj.desensitize_findings(
         [finding_pov_secret], PROJECT, scene_seq=2,
@@ -108,7 +108,7 @@ def test_pov_owned_secret_finding_passes_through(session) -> None:
 def test_redact_brief_drops_secret_lines(session) -> None:
     """补丁 brief（list[str] 指令）中引用非 POV 秘密的条目被剔除。"""
     _seed(session)
-    proj = PovKnowledgeProjection(session)
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     brief = [
         "让X的动机更清晰：X是幕后凶手，应在结尾点破。",   # 引用非 POV 秘密 → 剔除
         "加强场景的节奏与钩子。",                          # 纯软性 → 保留
@@ -124,7 +124,7 @@ def test_redact_brief_drops_secret_lines(session) -> None:
 def test_desensitize_noop_without_pov(session) -> None:
     """pov=None（全知视角）→ 不脱敏，全部放行。"""
     _seed(session)
-    proj = PovKnowledgeProjection(session)
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     findings = [{"expected": "X是幕后凶手"}]
     safe, redacted = proj.desensitize_findings(
         findings, PROJECT, scene_seq=2, pov_character_id=None,

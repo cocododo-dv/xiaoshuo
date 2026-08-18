@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import StyleReferenceRun
 
 from novel_system.services.errors import DomainError
+from novel_system.services.style_reference.background_heartbeat import periodic_heartbeat
 from novel_system.services.style_reference.dimensions import Layer
 from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.extractors import (
@@ -40,10 +42,12 @@ logger = logging.getLogger(__name__)
 # RUNNING 超过该时长的 run 视为僵尸(进程崩溃 / 连接中断遗留),
 # 下次同书启动新 run 时自动降级 FAILED,避免永久卡死。
 STALE_RUN_TIMEOUT_MINUTES = 60
+RUN_HEARTBEAT_INTERVAL_SECONDS = 30
 
-# 后台抽取串行执行(单 worker):抽取是重 LLM 负载,串行同时规避 SQLite 写争用;
-# 排队中的 run 保持 RUNNING + progress.layers_done=0,由僵尸回收兜底。
-_RUN_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sr_extract")
+# 后台抽取串行执行(单 worker):抽取是重 LLM 负载,串行同时规避 SQLite 写争用。
+# 执行器按需创建并由 FastAPI lifespan 关闭；这也允许同进程 TestClient 重启。
+_RUN_EXECUTOR: ThreadPoolExecutor | None = None
+_RUN_EXECUTOR_LOCK = threading.Lock()
 
 
 # layer.value → BaseExtractor 子类
@@ -97,6 +101,7 @@ class RunOrchestrator:
         idempotency_key: str | None = None,  # noqa: ARG002 (预留 PR-4 路由层接入)
         background: bool = False,
         force: bool = False,
+        defer_dispatch: bool = False,
     ) -> RunResult:
         """启动一次抽取 run;LLM 不可用 raise DomainError(STYLE_REFERENCE_LLM_REQUIRED)。
 
@@ -194,14 +199,19 @@ class RunOrchestrator:
             return self._execute(run_id, book_id, layers, progress_commits=False)
 
         # 后台模式:先把 run 行落盘,worker 用独立 session 接管
-        self.session.commit()
-        start_style_reference_run_worker(
-            run_id=run_id,
-            book_id=book_id,
-            layer_values=[layer.value for layer in layers],
-            llm_client=self._llm_client,
-            retry_policy=self._retry_policy,
-        )
+        # Direct service callers retain the historical commit+dispatch
+        # behaviour. HTTP mutation boundaries pass defer_dispatch=True so the
+        # idempotency transaction commits the run and response atomically, then
+        # submits the CAS-protected worker from an after-commit callback.
+        if not defer_dispatch:
+            self.session.commit()
+            start_style_reference_run_worker(
+                run_id=run_id,
+                book_id=book_id,
+                layer_values=[layer.value for layer in layers],
+                llm_client=self._llm_client,
+                retry_policy=self._retry_policy,
+            )
         return RunResult(
             run_id=run_id,
             book_id=book_id,
@@ -231,7 +241,7 @@ class RunOrchestrator:
                     observed = self._observed_status(run_id)
                     if observed != RunStatus.RUNNING.value:
                         # run 已被外部置为终态:CANCELLED(用户取消)补 finished_at;
-                        # FAILED(排队超时被 _reap_stale_runs 回收)等其它终态
+                        # FAILED(运行心跳超时被 _reap_stale_runs 回收)等其它终态
                         # **不得复活**——此前僵尸回收后排队 worker 开跑会把 FAILED
                         # 拉回 RUNNING→DONE,并与同书新 run 并发互撞。
                         final = observed or RunStatus.CANCELLED.value
@@ -369,12 +379,14 @@ class RunOrchestrator:
     def _reap_stale_runs(self, book_id: str) -> int:
         """把同书超时仍 RUNNING 的僵尸 run 降级 FAILED,返回回收数量。
 
-        run 在 HTTP 请求内同步执行;RUNNING 超过 STALE_RUN_TIMEOUT_MINUTES
-        只可能是进程崩溃 / 连接中断遗留,不存在仍在执行的可能。
+        queued 尚未取得 worker 所有权，不能按运行心跳回收；running（以及
+        旧版本没有 dispatch_state 的活动行）超时才表示 worker 已中断。
         """
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=STALE_RUN_TIMEOUT_MINUTES)
         reaped = 0
         for run in self.repo.list_runs(book_id=book_id, status=RunStatus.RUNNING.value):
+            if run.dispatch_state == "queued":
+                continue
             heartbeat = _parse_iso(run.heartbeat_at or run.started_at or run.created_at)
             if heartbeat is None or heartbeat > cutoff:
                 continue
@@ -412,14 +424,29 @@ def start_style_reference_run_worker(
     concurrent ASGI startup hooks are harmless.
     """
 
-    _RUN_EXECUTOR.submit(
-        _background_run_worker,
-        run_id=run_id,
-        book_id=book_id,
-        layer_values=list(layer_values),
-        llm_client=llm_client,
-        retry_policy=retry_policy or ExtractionRetryPolicy(),
-    )
+    global _RUN_EXECUTOR
+    with _RUN_EXECUTOR_LOCK:
+        if _RUN_EXECUTOR is None:
+            _RUN_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sr_extract")
+        _RUN_EXECUTOR.submit(
+            _background_run_worker,
+            run_id=run_id,
+            book_id=book_id,
+            layer_values=list(layer_values),
+            llm_client=llm_client,
+            retry_policy=retry_policy or ExtractionRetryPolicy(),
+        )
+
+
+def shutdown_style_reference_run_executor(*, wait: bool = False) -> None:
+    """Stop accepting extraction work and let already submitted work drain."""
+
+    global _RUN_EXECUTOR
+    with _RUN_EXECUTOR_LOCK:
+        executor = _RUN_EXECUTOR
+        _RUN_EXECUTOR = None
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=False)
 
 
 def _background_run_worker(
@@ -476,12 +503,17 @@ def _background_run_worker(
             # Re-check at dispatch time: an operator may tighten the book's
             # cloud policy while it is still queued after the HTTP response.
             ensure_cloud_llm_allowed(book, operation="start_extract_run")
-            orch._execute(
-                run_id,
-                book_id,
-                [Layer(value) for value in layer_values],
-                progress_commits=True,
-            )
+            with periodic_heartbeat(
+                lambda: _renew_background_run_heartbeat(run_id),
+                interval_seconds=RUN_HEARTBEAT_INTERVAL_SECONDS,
+                thread_name=f"sr_extract_heartbeat:{run_id}",
+            ):
+                orch._execute(
+                    run_id,
+                    book_id,
+                    [Layer(value) for value in layer_values],
+                    progress_commits=True,
+                )
     except Exception:  # pylint: disable=broad-except
         logger.exception("background extract run %s failed", run_id)
         _mark_background_run_failed(run_id)
@@ -518,6 +550,28 @@ def _mark_background_run_failed(run_id: str) -> None:
                 session.rollback()
     except Exception:  # pragma: no cover - final worker boundary
         logger.exception("failed to persist extraction worker failure for %s", run_id)
+
+
+def _renew_background_run_heartbeat(run_id: str) -> None:
+    """Renew a running worker lease using an independent short transaction."""
+
+    from novel_system.db.session import SessionLocal
+
+    with SessionLocal() as session:
+        touched = session.execute(
+            update(StyleReferenceRun)
+            .where(
+                StyleReferenceRun.run_id == run_id,
+                StyleReferenceRun.status == RunStatus.RUNNING.value,
+                StyleReferenceRun.dispatch_state == "running",
+            )
+            .values(heartbeat_at=_utcnow_iso())
+            .execution_options(synchronize_session=False)
+        )
+        if touched.rowcount == 1:
+            session.commit()
+        else:
+            session.rollback()
 
 
 def _utcnow_iso() -> str:

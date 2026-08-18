@@ -34,23 +34,24 @@ function LIB_loadEdits() {
 
 /* 条目 patch → 各对象的 PATCH/关系 CRUD；调用粒度=单次保存的 edits 全量 diff */
 const libSentEdits = {};
-function LIB_persist(edits) {
-  (async () => {
-    try {
-      for (const id of Object.keys(edits || {})) {
-        const patch = edits[id];
-        if (!patch || JSON.stringify(libSentEdits[id]) === JSON.stringify(patch)) continue;
-        const base = LIB_BY_ID[id];
-        if (!base) continue;
-        await libPushPatch(base, patch);
-        libSentEdits[id] = patch;
-      }
-      libRefetch();
-    } catch (e) {
-      libToast(e, "资料卡保存失败。");
-      libRefetch();
+async function LIB_persist(edits) {
+  try {
+    for (const id of Object.keys(edits || {})) {
+      const patch = edits[id];
+      if (!patch || JSON.stringify(libSentEdits[id]) === JSON.stringify(patch)) continue;
+      const base = LIB_BY_ID[id];
+      if (!base) continue;
+      await libPushPatch(base, patch);
+      // 只有主对象和关系操作都成功后才去重；部分失败必须允许同载荷重试。
+      libSentEdits[id] = patch;
     }
-  })();
+    libRefetch();
+    return true;
+  } catch (e) {
+    libToast(e, "资料卡保存失败。");
+    libRefetch();
+    return false;
+  }
 }
 
 async function libPushPatch(base, patch) {
@@ -89,7 +90,7 @@ async function libSyncLinks(base, nextLinks) {
   const nextIds = new Set((nextLinks || []).map(l => l.id));
   for (const link of prev) {
     if (!nextIds.has(link.id) && link.relationId) {
-      try { await apiDelete(`${libApiBase()}/relations/${link.relationId}`); } catch (e) {}
+      await apiDelete(`${libApiBase()}/relations/${link.relationId}`);
     }
   }
   const prevIds = new Set(prev.map(l => l.id));
@@ -97,12 +98,10 @@ async function libSyncLinks(base, nextLinks) {
     if (prevIds.has(link.id)) continue;
     const target = LIB_BY_ID[link.id];
     if (!target || !target.ref || !base.ref || String(target.ref).startsWith("event:")) continue;
-    try {
-      await apiPost(`${libApiBase()}/relations`, {
-        from_ref: base.ref, to_ref: target.ref,
-        kind: link.type || "related", note: link.rel || "",
-      });
-    } catch (e) {}
+    await apiPost(`${libApiBase()}/relations`, {
+      from_ref: base.ref, to_ref: target.ref,
+      kind: link.type || "related", note: link.rel || "",
+    });
   }
 }
 
@@ -135,49 +134,66 @@ function LIB_applyEdit(entry, edits) {
 function LIB_loadAdds() { return []; }
 
 const libSentAdds = new Set();
-function LIB_persistAdds(adds) {
-  (async () => {
+const libSendingAdds = new Set();
+async function LIB_persistAdds(adds) {
+  let firstError = null;
+  for (const add of adds || []) {
+    if (!add || libSentAdds.has(add.id) || libSendingAdds.has(add.id)) continue;
+    libSendingAdds.add(add.id);
     try {
-      for (const add of adds || []) {
-        if (!add || libSentAdds.has(add.id)) continue;
-        libSentAdds.add(add.id);
-        if (add.cat === "people") {
-          await apiPost(`${libApiBase()}/characters`, {
-            name: add.name, role: add.kind, summary: add.summary || "",
-            details: { blurb: add.blurb, facts: add.facts, glyph: add.glyph },
-          });
-        } else if (add.cat === "events") {
-          await apiPost(`${libApiBase()}/timeline`, {
-            label: add.name, note: add.blurb || add.summary || "",
-          });
-        } else {
-          await apiPost(`${libApiBase()}/entities`, {
-            name: add.name, kind: "concept", summary: add.summary || "",
-            tags: add.tags || [], details: { blurb: add.blurb, facts: add.facts, glyph: add.glyph, code: add.code },
-          });
-        }
+      if (add.cat === "people") {
+        await apiPost(`${libApiBase()}/characters`, {
+          name: add.name, role: add.kind, summary: add.summary || "",
+          details: { blurb: add.blurb, facts: add.facts, glyph: add.glyph },
+        });
+      } else if (add.cat === "events") {
+        await apiPost(`${libApiBase()}/timeline`, {
+          label: add.name, note: add.blurb || add.summary || "",
+        });
+      } else {
+        await apiPost(`${libApiBase()}/entities`, {
+          name: add.name, kind: "concept", summary: add.summary || "",
+          tags: add.tags || [], details: { blurb: add.blurb, facts: add.facts, glyph: add.glyph, code: add.code },
+        });
       }
-      libRefetch();
+      libSentAdds.add(add.id);
     } catch (e) {
-      libToast(e, "新建资料失败。");
-      libRefetch();
+      if (!firstError) firstError = e;
+    } finally {
+      libSendingAdds.delete(add.id);
     }
-  })();
+  }
+  if (firstError) {
+    libToast(firstError, "新建资料失败，可在网络恢复后重试。");
+    libRefetch();
+    return false;
+  }
+  libRefetch();
+  return true;
 }
 
-/* 旧 localStorage 覆盖层（edits/additions）一次性上行 —— 迁不动的丢弃（资料可再编） */
+/* 旧 localStorage 覆盖层（edits/additions）一次性上行；失败不写完成标记，下次重试。 */
+let libMigrationPromise = null;
 function LIB_migrateLegacy() {
-  try {
-    const pid = libProjectId();
-    if (!pid || pid === "__loading__") return;
-    const flag = LIB_K(LIB_MIGRATED_KEY);
-    if (localStorage.getItem(flag)) return;
-    localStorage.setItem(flag, new Date().toISOString());
-    const edits = JSON.parse(localStorage.getItem(LIB_K(LIB_EDIT_KEY)) || "{}");
-    const adds = JSON.parse(localStorage.getItem(LIB_K(LIB_ADD_KEY)) || "[]");
-    if (Object.keys(edits).length) LIB_persist(edits);
-    if (Array.isArray(adds) && adds.length) LIB_persistAdds(adds);
-  } catch (e) {}
+  if (libMigrationPromise) return libMigrationPromise;
+  libMigrationPromise = (async () => {
+    try {
+      const pid = libProjectId();
+      if (!pid || pid === "__loading__") return false;
+      const flag = LIB_K(LIB_MIGRATED_KEY);
+      if (localStorage.getItem(flag)) return true;
+      const edits = JSON.parse(localStorage.getItem(LIB_K(LIB_EDIT_KEY)) || "{}");
+      const adds = JSON.parse(localStorage.getItem(LIB_K(LIB_ADD_KEY)) || "[]");
+      const editsOk = !Object.keys(edits).length || await LIB_persist(edits);
+      const addsOk = !Array.isArray(adds) || !adds.length || await LIB_persistAdds(adds);
+      if (editsOk && addsOk) localStorage.setItem(flag, new Date().toISOString());
+      return editsOk && addsOk;
+    } catch (e) {
+      libToast(e, "旧资料迁移失败，已保留本地数据供下次重试。");
+      return false;
+    }
+  })().finally(() => { libMigrationPromise = null; });
+  return libMigrationPromise;
 }
 /* 构造一个新档案的种子，cat = 类别 id，name = 名称 */
 function LIB_newEntry(cat, name) {

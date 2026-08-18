@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOMClient from "react-dom/client";
 import { I } from "./icons.jsx";
 import { WrRecovery } from "./wr-doc-store.jsx";
+import { sanitizeManuscriptHTML } from "./manuscript-html.js";
 
 const { useEffect, useMemo, useRef, useState } = React;
 
@@ -14,7 +15,7 @@ const TYPE_LABEL = {
 
 function plainText(html) {
   const node = document.createElement("div");
-  node.innerHTML = html || "";
+  node.innerHTML = sanitizeManuscriptHTML(html || "");
   return (node.textContent || "").trim();
 }
 
@@ -115,7 +116,7 @@ function WrRecoveryCenter() {
     if (!open) return undefined;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    requestAnimationFrame(() => (closeRef.current || dialogRef.current)?.focus());
+    const frame = requestAnimationFrame(() => (closeRef.current || dialogRef.current)?.focus());
     const onKey = (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -131,6 +132,7 @@ function WrRecoveryCenter() {
     };
     window.addEventListener("keydown", onKey);
     return () => {
+      cancelAnimationFrame(frame);
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", onKey);
     };

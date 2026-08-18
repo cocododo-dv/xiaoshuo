@@ -59,7 +59,7 @@ def test_projection_suppresses_non_pov_secret_content(session) -> None:
     _state(session, 1, "Y", "location", "码头")
     session.commit()
 
-    proj = PovKnowledgeProjection(session)
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.format_state_for_prompt(
         PROJECT, scene_seq=2, pov_character_id="Y", onstage_character_ids=["X", "Y"],
     )
@@ -74,7 +74,7 @@ def test_projection_keeps_pov_owned_secret(session) -> None:
     _state(session, 1, "Y", "secret_held_by", "Y藏了钥匙")
     session.commit()
 
-    proj = PovKnowledgeProjection(session)
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.format_state_for_prompt(
         PROJECT, scene_seq=2, pov_character_id="Y", onstage_character_ids=["X", "Y"],
     )
@@ -90,7 +90,7 @@ def test_projection_keeps_secret_revealed_to_pov(session) -> None:
            event_type="character_learns")                 # Y 已获知秘密内容
     session.commit()
 
-    proj = PovKnowledgeProjection(session)
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.format_state_for_prompt(
         PROJECT, scene_seq=3, pov_character_id="Y", onstage_character_ids=["X", "Y"],
     )
@@ -104,7 +104,7 @@ def test_projection_pov_false_belief_injected_others_suppressed(session) -> None
     _state(session, 1, "X", "believes_false", "X以为自己没暴露")
     session.commit()
 
-    proj = PovKnowledgeProjection(session)
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.format_state_for_prompt(
         PROJECT, scene_seq=2, pov_character_id="Y", onstage_character_ids=["X", "Y"],
     )
@@ -120,7 +120,7 @@ def test_projection_suspected_marked_not_as_fact(session) -> None:
            payload={"knowledge_status": "suspected"})
     session.commit()
 
-    proj = PovKnowledgeProjection(session)
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.format_state_for_prompt(
         PROJECT, scene_seq=2, pov_character_id="Y", onstage_character_ids=["Y"],
     )
@@ -133,7 +133,7 @@ def test_projection_onstage_derivation_feeds_pov_known(session) -> None:
     _state(session, 1, "Z", "location", "旧仓库")     # Y 在场，可观察 Z 的位置
     session.commit()
 
-    proj = PovKnowledgeProjection(session)
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     known = proj.pov_known_fact_values(PROJECT, scene_seq=2, pov_character_id="Y")
     assert "旧仓库" in known
 
@@ -145,7 +145,7 @@ def test_projection_no_secrets_public_facts_identical_to_full(session) -> None:
     _state(session, 1, "A", "physical_state", "healthy")
     session.commit()
 
-    proj = PovKnowledgeProjection(session)
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     log = NarrativeEventLog(session)
     pov_out = proj.format_state_for_prompt(
         PROJECT, scene_seq=2, pov_character_id="A", onstage_character_ids=["A"],
@@ -171,7 +171,7 @@ def test_asymmetry_digest_pov_hides_other_secret(session) -> None:
     _state(session, 1, "Y", "location", "宴厅")
     session.commit()
 
-    proj = PovKnowledgeProjection(session)
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.information_asymmetry_digest(
         PROJECT, 2, ["X", "Y"], pov_character_id="Y",
     )
@@ -194,7 +194,7 @@ def test_asymmetry_digest_pov_shows_own_exclusive_knowledge(session) -> None:
     )
     session.commit()
 
-    proj = PovKnowledgeProjection(session)
+    proj = PovKnowledgeProjection(session, event_log=NarrativeEventLog(session))
     out = proj.information_asymmetry_digest(
         PROJECT, 2, ["X", "Y"], pov_character_id="Y",
     )

@@ -25,8 +25,8 @@ echo "==> starting backend (log: $LOG_DIR/backend.log)"
 setsid "$SCRIPT_DIR/start-backend-linux.sh" >"$LOG_DIR/backend.log" 2>&1 &
 disown
 
-echo "==> waiting for backend health (${BACKEND_URL}/api/v1/chapters)"
-if ! dev_wait_http_ok "${BACKEND_URL}/api/v1/chapters" 90; then
+echo "==> waiting for backend readiness (${BACKEND_URL}/ready)"
+if ! dev_wait_http_ok "${BACKEND_URL}/ready" 90; then
   echo "!! backend did not become healthy in time; see $LOG_DIR/backend.log" >&2
   exit 1
 fi

@@ -7,8 +7,11 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.project_requests import ProjectCreateRequest
+from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
-from novel_system.services.idempotency import execute_with_idempotency
+from novel_system.services.idempotency import execute_with_idempotency, execute_with_optional_idempotency
 from novel_system.services.project_backtracks import ProjectBacktrackService
 from novel_system.services.projects import (
     OutlinePlannerService,
@@ -52,16 +55,57 @@ class ProjectChapterReopenFinalRequest(BaseModel):
         return reason
 
 
+class ProjectBacktrackResolveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    resolution_note: str | None = Field(default=None, max_length=4000)
+
+
+class ProjectOutlinePlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    target_chapter_count: int | None = Field(default=None, ge=1, le=80)
+
+
+class ProjectChapterSceneDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    scene_id: str | None = Field(default=None, max_length=255)
+    # The service owns the decision vocabulary and its stable domain error.
+    decision: str | None = Field(default=None, max_length=64)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ProjectChapterFinalReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    # Keep optional so an omitted body retains the existing default-approve
+    # behavior and invalid values retain CHAPTER_FINAL_REVIEW_DECISION_INVALID.
+    decision: str | None = Field(default=None, max_length=64)
+    revision_notes: str | None = Field(default=None, max_length=2000)
+    scene_decisions: list[ProjectChapterSceneDecisionRequest] = Field(
+        default_factory=list,
+        max_length=200,
+    )
+
+
+class ProjectReferenceProfileAttachRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    profile_id: str = Field(min_length=1, max_length=255)
+
+
 @router.post("/api/v1/projects")
-def create_project(payload: dict[str, Any], request: Request, session: Session = Depends(get_session)):
+def create_project(payload: ProjectCreateRequest, request: Request, session: Session = Depends(get_session)):
+    body = payload.model_dump(mode="json", exclude_unset=True)
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/projects",
-        payload=payload,
-        action=lambda: ProjectService(session).create(payload),
+        payload=body,
+        action=lambda: ProjectService(session).create(body),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}
@@ -93,11 +137,11 @@ def list_project_backtrack_items(project_id: str, request: Request, session: Ses
 def resolve_project_backtrack_item(
     project_id: str,
     item_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: ProjectBacktrackResolveRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload or {}
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
@@ -115,11 +159,11 @@ def resolve_project_backtrack_item(
 @router.post("/api/v1/projects/{project_id}/outline-plan")
 def generate_outline_plan(
     project_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: ProjectOutlinePlanRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload or {}
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
@@ -138,11 +182,11 @@ def generate_outline_plan(
 def approve_outline_plan(
     project_id: str,
     plan_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload or {}
+    body = payload.model_dump(mode="json") if payload is not None else {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
@@ -161,11 +205,11 @@ def approve_outline_plan(
 def run_project_chapter(
     project_id: str,
     chapter_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload or {}
+    body = payload.model_dump(mode="json") if payload is not None else {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
@@ -188,15 +232,35 @@ def run_project_chapter_job(
     payload: ProjectChapterRunJobRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    offline_demo = payload.offline_demo if payload is not None else False
-    result = ProjectChapterFlowService(session).prepare_chapter_run_job(
-        project_id, chapter_id, offline_demo=offline_demo
+    body = payload.model_dump(mode="json") if payload is not None else {"offline_demo": False}
+    job_to_start: str | None = None
+
+    def prepare() -> dict[str, Any]:
+        nonlocal job_to_start
+        result = ProjectChapterFlowService(session).prepare_chapter_run_job(
+            project_id,
+            chapter_id,
+            offline_demo=bool(body["offline_demo"]),
+        )
+        if bool(result.pop("_start_worker", False)):
+            job_to_start = result["run"]["job_id"]
+        return result
+
+    result, status = execute_with_optional_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method="POST",
+        path_template="/api/v1/projects/{project_id}/chapters/{chapter_id}/run-job",
+        payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
+        action=prepare,
+        actor_ref=getattr(request.state, "operator_ref", None) or "operator",
     )
-    should_start_worker = bool(result.pop("_start_worker", False))
-    session.commit()
-    if should_start_worker:
-        start_project_chapter_run_job_worker(project_id, chapter_id, result["run"]["job_id"])
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    # The closure is populated only when this request executed the action. A
+    # durable replay returns the cached response without launching another worker.
+    if job_to_start is not None:
+        start_project_chapter_run_job_worker(project_id, chapter_id, job_to_start)
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final")
@@ -260,20 +324,27 @@ def confirm_project_chapter_read(
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result = ProjectChapterFlowService(session).confirm_read(project_id, chapter_id, body, actor_ref=actor_ref)
-    session.commit()
-    return ok(result, req_id=getattr(request.state, "request_id", None))
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/projects/{project_id}/chapters/{chapter_id}/read-confirm",
+        payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
+        action=lambda: ProjectChapterFlowService(session).confirm_read(
+            project_id, chapter_id, body, actor_ref=actor_ref
+        ),
+    )
 
 
 @router.post("/api/v1/projects/{project_id}/chapters/{chapter_id}/final-review")
 def review_project_chapter_final(
     project_id: str,
     chapter_id: str,
-    payload: dict[str, Any] | None,
     request: Request,
+    payload: ProjectChapterFinalReviewRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    body = payload or {}
+    body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
@@ -291,18 +362,19 @@ def review_project_chapter_final(
 @router.post("/api/v1/projects/{project_id}/reference-profiles")
 def attach_reference_profile(
     project_id: str,
-    payload: dict[str, Any],
+    payload: ProjectReferenceProfileAttachRequest,
     request: Request,
     session: Session = Depends(get_session),
 ):
+    body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     result, status = execute_with_idempotency(
         session,
         idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/projects/{project_id}/reference-profiles",
-        payload={"project_id": project_id, **payload},
-        action=lambda: ProjectService(session).attach_reference_profile(project_id, str(payload.get("profile_id") or "")),
+        payload={"project_id": project_id, **body},
+        action=lambda: ProjectService(session).attach_reference_profile(project_id, body["profile_id"]),
         actor_ref=actor_ref,
     )
     headers = {"X-Idempotency-Status": status} if status else {}

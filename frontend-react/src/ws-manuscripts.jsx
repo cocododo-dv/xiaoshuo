@@ -344,11 +344,10 @@ function WsManuscripts({ go }) {
     setReturnOpen(false);
     setWorkflowState({ busy: false, error: "", note: "已退回草稿，并生成修订待办。" });
     if (openDeep && go) {
-      go("writer");
-      setTimeout(() => {
-        if (sid) window.dispatchEvent(new CustomEvent("ws:writer-scene", { detail: sid }));
-        window.dispatchEvent(new CustomEvent("ws:writer-posture", { detail: "deep" }));
-      }, 90);
+      go("writer", [
+        ...(sid ? [{ type: "ws:writer-scene", detail: sid }] : []),
+        { type: "ws:writer-posture", detail: "deep" },
+      ]);
     }
   };
 
@@ -629,7 +628,7 @@ function Leg({ tone, label }) {
   return <span className="ms-leg"><span className={`ms-leg-dot tone-${tone}`} />{label}</span>;
 }
 
-/* ---------- 统一导出（真实编译：目录 + 写作器正文） ---------- */
+/* ---------- 统一导出（逐章核验服务端权威正文后编译） ---------- */
 function ManuExport({ ctx }) {
   const [open, setOpen] = useSt9(false);
   const [fmt, setFmt] = useSt9("md");
@@ -639,6 +638,9 @@ function ManuExport({ ctx }) {
   const [exportState, setExportState] = useSt9({ busy: false, error: "", note: "" });
   const ref = useRef9(null);
   const exportBusyRef = useRef9(false);
+  const closeTimerRef = useRef9(null);
+
+  useEf9(() => () => window.clearTimeout(closeTimerRef.current), []);
 
   useEf9(() => {
     if (!open) return;
@@ -684,7 +686,11 @@ function ManuExport({ ctx }) {
       const out = manuCompile(book, catChs, scopeIds, fmt, { toc, appendix });
       if (!manuDownload(out.name, out.content, out.mime)) throw new Error("浏览器未能生成下载文件。");
       setExportState({ busy: false, error: "", note: `已生成「${out.name}」` });
-      setTimeout(() => { setExportState({ busy: false, error: "", note: "" }); setOpen(false); }, 1400);
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = window.setTimeout(() => {
+        setExportState({ busy: false, error: "", note: "" });
+        setOpen(false);
+      }, 1400);
     } catch (e) {
       setExportState({ busy: false, error: (e && e.message) || "导出失败。", note: "" });
     } finally {
@@ -1175,8 +1181,6 @@ function ManuReopenModal({ picked, busy, error, onClose, onConfirm }) {
     </div>
   );
 }
-
-Object.assign(window, { WsManuscripts });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { WsManuscripts };

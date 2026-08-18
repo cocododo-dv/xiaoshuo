@@ -164,3 +164,147 @@ def test_library_creates_honor_idempotency_replay(client):
     missing = client.post(f"/api/v2/projects/{pid}/library/timeline", json={"label": "无键事件"})
     assert missing.status_code == 400
     assert missing.json()["error"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+
+
+def test_library_updates_and_deletes_are_safely_replayable(client):
+    pid = _create_project(client)
+    created = _post(
+        client,
+        f"/api/v2/projects/{pid}/library/entities",
+        {"name": "Replay target", "kind": "location"},
+    )
+    entity_id = created["entity_id"]
+
+    patch_headers = {"X-Idempotency-Key": "lib-idem-patch-1"}
+    patch_body = {"name": "Replay target updated"}
+    first_patch = client.patch(
+        f"/api/v2/projects/{pid}/library/entities/{entity_id}",
+        json=patch_body,
+        headers=patch_headers,
+    )
+    replayed_patch = client.patch(
+        f"/api/v2/projects/{pid}/library/entities/{entity_id}",
+        json=patch_body,
+        headers=patch_headers,
+    )
+
+    assert first_patch.status_code == replayed_patch.status_code == 200
+    assert replayed_patch.headers["X-Idempotency-Status"] == "replayed"
+    assert replayed_patch.json()["data"] == first_patch.json()["data"]
+
+    conflict = client.patch(
+        f"/api/v2/projects/{pid}/library/entities/{entity_id}",
+        json={"name": "Different payload"},
+        headers=patch_headers,
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD"
+
+    delete_headers = {"X-Idempotency-Key": "lib-idem-delete-1"}
+    first_delete = client.delete(
+        f"/api/v2/projects/{pid}/library/entities/{entity_id}",
+        headers=delete_headers,
+    )
+    replayed_delete = client.delete(
+        f"/api/v2/projects/{pid}/library/entities/{entity_id}",
+        headers=delete_headers,
+    )
+
+    assert first_delete.status_code == replayed_delete.status_code == 200
+    assert replayed_delete.headers["X-Idempotency-Status"] == "replayed"
+    assert replayed_delete.json()["data"] == first_delete.json()["data"]
+
+
+def test_derive_rejects_chapter_from_another_project_even_when_llm_is_disabled(client):
+    owner_id = _create_project(client)
+    foreign_id = _create_project(client)
+    chapter = _post(
+        client,
+        f"/api/v2/projects/{owner_id}/catalog/chapters",
+        {"title": "Owner chapter"},
+    )["chapter"]
+
+    response = client.post(
+        f"/api/v2/projects/{foreign_id}/library/derive",
+        json={"chapter_id": chapter["chapter_id"]},
+        headers={"X-Idempotency-Key": "library-cross-project-derive"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "CHAPTER_NOT_FOUND"
+
+
+def test_timeline_rejects_cross_project_entity_references(client):
+    owner_id = _create_project(client)
+    foreign_id = _create_project(client)
+    entity = _post(
+        client,
+        f"/api/v2/projects/{owner_id}/library/entities",
+        {"name": "Owner-only archive", "kind": "location"},
+    )
+
+    response = client.post(
+        f"/api/v2/projects/{foreign_id}/library/timeline",
+        json={"label": "Foreign event", "entity_refs": [entity["ref"]]},
+        headers={"X-Idempotency-Key": "library-cross-project-timeline-ref"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "LIBRARY_ENTITY_NOT_FOUND"
+
+
+def test_character_delete_is_blocked_while_catalog_scene_references_it(client):
+    pid = _create_project(client)
+    character = _post(
+        client,
+        f"/api/v2/projects/{pid}/library/characters",
+        {"name": "Referenced POV"},
+    )
+    chapter = _post(
+        client,
+        f"/api/v2/projects/{pid}/catalog/chapters",
+        {"title": "POV chapter", "with_scene": False},
+    )["chapter"]
+    _post(
+        client,
+        f"/api/v2/projects/{pid}/catalog/chapters/{chapter['chapter_id']}/scenes",
+        {"title": "POV scene", "pov_character_id": character["character_id"]},
+    )
+
+    response = client.delete(
+        f"/api/v2/projects/{pid}/library/characters/{character['character_id']}"
+    )
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "LIBRARY_CHARACTER_IN_USE"
+    assert error["details"]["dependencies"]["catalog_scenes"] == 1
+    overview = client.get(f"/api/v2/projects/{pid}/library").json()["data"]
+    assert any(
+        item["character_id"] == character["character_id"]
+        for item in overview["characters"]
+    )
+
+
+def test_entity_delete_removes_timeline_references(client):
+    pid = _create_project(client)
+    entity = _post(
+        client,
+        f"/api/v2/projects/{pid}/library/entities",
+        {"name": "Temporary place", "kind": "location"},
+    )
+    event = _post(
+        client,
+        f"/api/v2/projects/{pid}/library/timeline",
+        {"label": "Visit", "entity_refs": [entity["ref"]]},
+    )
+
+    deleted = client.delete(
+        f"/api/v2/projects/{pid}/library/entities/{entity['entity_id']}"
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["data"]["timeline_refs_removed"] == 1
+
+    timeline = client.get(f"/api/v2/projects/{pid}/library/timeline").json()["data"]
+    stored = next(item for item in timeline["items"] if item["event_id"] == event["event_id"])
+    assert stored["entity_refs"] == []

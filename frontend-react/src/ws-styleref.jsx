@@ -3,6 +3,15 @@ import { I } from "./icons.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { rvPush } from "./ws-review.jsx";
 import { onRovingTabKeyDown } from "./a11y-tabs.js";
+import { SrValidation } from "./ws-styleref-val.jsx";
+import {
+  apiDelete,
+  apiGet,
+  apiPost,
+  buildUrl,
+  getOperatorRef,
+  getRemoteAccessToken,
+} from "./lib/client.js";
 
 /* global React, I */
 const { useState: useStSR } = React;
@@ -317,7 +326,14 @@ function WsStyleRef({ go }) {
             {stage === "overview"   && <SrOverview book={book} go={setStage} />}
             {stage === "matrix"     && <SrMatrix go={setStage} book={book} />}
             {stage === "profile"    && <SrProfile book={book} go={setStage} />}
-            {stage === "validation" && <window.SrValidation book={book} go={setStage} />}
+            {stage === "validation" && (
+              <SrValidation
+                book={book}
+                go={setStage}
+                deepFor={srDeepFor}
+                loadDeep={srLoadDeep}
+              />
+            )}
             {stage === "apply"      && <SrApply go={setStage} book={book} />}
           </div>
         </section>
@@ -1146,7 +1162,6 @@ function SrApply({ go, book }) {
     let alive = true;
     (async () => {
       try {
-        const { apiGet } = await import("./lib/client.js");
         const [cat, lib] = await Promise.all([
           apiGet(`/api/v2/projects/${pid}/catalog`).catch(() => null),
           apiGet(`/api/v2/projects/${pid}/library`).catch(() => null),
@@ -1190,7 +1205,6 @@ function SrApply({ go, book }) {
   const loadRealBanned = React.useCallback(async () => {
     if (!realProfileId) return;
     try {
-      const { apiGet } = await import("./lib/client.js");
       const r = await apiGet(`/api/v2/style-reference/profiles/${realProfileId}/banned-terms`);
       setRealBanned((r && r.terms) || []);
     } catch { setRealBanned([]); }
@@ -1201,7 +1215,6 @@ function SrApply({ go, book }) {
     if (!t || bannedBusy || !realProfileId) return;
     setBannedBusy(true);
     try {
-      const { apiPost } = await import("./lib/client.js");
       await apiPost(`/api/v2/style-reference/profiles/${realProfileId}/banned-terms`, { term: t, scope: bannedScope });
       setBannedInput("");
       await loadRealBanned();
@@ -1213,7 +1226,6 @@ function SrApply({ go, book }) {
     if (bannedBusy) return;
     setBannedBusy(true);
     try {
-      const { apiDelete } = await import("./lib/client.js");
       await apiDelete(`/api/v2/style-reference/banned-terms/${termId}`);
       await loadRealBanned();
       setPreviewNonce(n => n + 1);
@@ -1228,7 +1240,6 @@ function SrApply({ go, book }) {
     let alive = true;
     (async () => {
       try {
-        const { apiGet } = await import("./lib/client.js");
         const r = await apiGet("/api/v2/style-reference/injection/task-defaults");
         if (alive) setTaskDefaults((r && r.tasks) || null);
       } catch { /* 静态默认兜底 */ }
@@ -1249,7 +1260,6 @@ function SrApply({ go, book }) {
     let alive = true;
     (async () => {
       try {
-        const { apiGet } = await import("./lib/client.js");
         const qs = new URLSearchParams({ project_id: activeProjId, task_type: taskType });
         const sceneB = realBindings.find(b => b.scope === "scene" && b.scope_ref_id);
         if (sceneB) qs.set("scene_id", sceneB.scope_ref_id);
@@ -2255,7 +2265,6 @@ function srMapStatus(s) {
 async function srSyncBooks() {
   let rows = [];
   try {
-    const { apiGet } = await import("./lib/client.js");
     rows = ((await apiGet("/api/v2/style-reference/books")) || {}).books || [];
   } catch (e) { return; }
   if (!rows.length) {
@@ -2292,7 +2301,6 @@ function srImportBook(cloudPolicy = "local_only") {
     const title = (window.prompt("书名（用于书库显示）", f.name.replace(/\.[^.]+$/, "")) || "").trim();
     if (!title) return;
     try {
-      const { buildUrl, getOperatorRef, getRemoteAccessToken } = await import("./lib/client.js");
       const fd = new FormData();
       fd.append("file", f, f.name);
       fd.append("title", title);
@@ -2321,7 +2329,6 @@ function srImportBook(cloudPolicy = "local_only") {
 /* 头部动作（真实书）：重跑抽取 / 重新分类。LLM 未启用时给明确引导。 */
 async function srBookAction(action, bookId, opts = {}) {
   try {
-    const { apiPost } = await import("./lib/client.js");
     if (action === "rerun") {
       // 后台模式：立即返回 run_id，按 coverage_json.progress 轮询(2.5s),
       // 全 16 维抽取可达数分钟,同步等待会撞 HTTP 超时
@@ -2352,32 +2359,55 @@ async function srBookAction(action, bookId, opts = {}) {
   await srSyncBooks();
 }
 
+const srPollRegistry = window.__srStylePollRegistry instanceof Map
+  ? window.__srStylePollRegistry
+  : new Map();
+window.__srStylePollRegistry = srPollRegistry;
+
+function srStopPoll(runId, token) {
+  const current = srPollRegistry.get(runId);
+  if (!current || (token && current.token !== token)) return;
+  clearTimeout(current.timer);
+  srPollRegistry.delete(runId);
+}
+
 /* 后台抽取轮询：层粒度进度，完成/失败时提示并刷新书库。最长轮询 20 分钟。 */
 async function srPollRun(runId) {
-  const { apiGet } = await import("./lib/client.js");
+  if (!runId) return;
+  srStopPoll(runId);
   const startedAt = Date.now();
+  const token = Symbol(runId);
+  const record = { token, timer: null };
+  srPollRegistry.set(runId, record);
+  const schedule = () => {
+    if (srPollRegistry.get(runId)?.token !== token) return;
+    record.timer = setTimeout(tick, 2500);
+  };
   const tick = async () => {
-    if (Date.now() - startedAt > 20 * 60 * 1000) return;
+    if (srPollRegistry.get(runId)?.token !== token) return;
+    if (Date.now() - startedAt > 20 * 60 * 1000) { srStopPoll(runId, token); return; }
     let run = null;
     try { run = ((await apiGet(`/api/v2/style-reference/runs/${runId}`)) || {}).run || null; } catch (e) { /* 网络抖动下一轮再试 */ }
+    if (srPollRegistry.get(runId)?.token !== token) return;
     const status = run && run.status;
     if (status === "done") {
+      srStopPoll(runId, token);
       await srSyncBooks();
       window.alert("风格抽取完成，维度矩阵已可查看。");
       return;
     }
     if (status === "failed" || status === "cancelled") {
+      srStopPoll(runId, token);
       await srSyncBooks();
       window.alert(status === "failed" ? "风格抽取失败，可重试或查看系统日志。" : "风格抽取已取消。");
       return;
     }
-    setTimeout(tick, 2500);
+    schedule();
   };
-  setTimeout(tick, 2500);
+  schedule();
 }
 
 async function srDeleteBook(bookId) {
-  const { buildUrl, getOperatorRef, getRemoteAccessToken } = await import("./lib/client.js");
   const headers = {
     "X-Idempotency-Key": `sr-del-${bookId}-${Date.now().toString(36)}`,
     "X-Operator-Ref": getOperatorRef(),
@@ -2418,7 +2448,6 @@ async function srLoadDeep(bookId, { force = false } = {}) {
       loaded: true, error: null,
     };
     try {
-      const { apiGet } = await import("./lib/client.js");
       // 1. 书详情（stats_json：metrics / input_assessment / 段型分布 / 分类器校准）
       try {
         const r = await apiGet(`/api/v2/style-reference/books/${encodeURIComponent(bookId)}`);
@@ -2476,13 +2505,11 @@ async function srLoadDeep(bookId, { force = false } = {}) {
 
 /* dryrun 注入预览（不写盘）：返回真实 fragments + prefix。失败抛 ApiRequestError。 */
 async function srInjectionPreview(profileId, body) {
-  const { apiPost } = await import("./lib/client.js");
   return apiPost(`/api/v2/style-reference/profiles/${profileId}/injection-preview`, body);
 }
 
 /* 解绑：DELETE binding 后强制重载该 book 的深层数据。 */
 async function srUnbind(bindingId, bookId) {
-  const { apiDelete } = await import("./lib/client.js");
   await apiDelete(`/api/v2/style-reference/bindings/${bindingId}`);
   await srLoadDeep(bookId, { force: true });
   return true;
@@ -2490,7 +2517,6 @@ async function srUnbind(bindingId, bookId) {
 
 /* 合成画像：POST synthesize（需 LLM）后强制重载。LLM 未启用时抛 ApiRequestError(409)。 */
 async function srSynthesize(runId, bookId) {
-  const { apiPost } = await import("./lib/client.js");
   const r = await apiPost(`/api/v2/style-reference/runs/${runId}/synthesize`, {});
   await srLoadDeep(bookId, { force: true });
   return r;
@@ -2498,7 +2524,6 @@ async function srSynthesize(runId, bookId) {
 
 /* finding 审核（approved / rejected / pending）后强制重载。 */
 async function srReviewFinding(findingId, decision, bookId) {
-  const { apiPost } = await import("./lib/client.js");
   await apiPost(`/api/v2/style-reference/findings/${findingId}/review`, { decision });
   await srLoadDeep(bookId, { force: true });
   return true;
@@ -2506,7 +2531,6 @@ async function srReviewFinding(findingId, decision, bookId) {
 
 /* 立项 B — finding 用户反馈(👍/👎):聚合后按阈值调档 confidence,强制重载使 deep 体现。 */
 async function srFindingFeedback(findingId, vote, bookId) {
-  const { apiPost } = await import("./lib/client.js");
   await apiPost(`/api/v2/style-reference/findings/${findingId}/user-feedback`, { vote });
   await srLoadDeep(bookId, { force: true });
   return true;
@@ -2514,14 +2538,19 @@ async function srFindingFeedback(findingId, vote, bookId) {
 
 /* 画像预览：生成 3 段示例 + 自跑回测（需 LLM）。 */
 async function srPreviewSamples(profileId) {
-  const { apiPost } = await import("./lib/client.js");
   return apiPost(`/api/v2/style-reference/profiles/${profileId}/preview`, {});
 }
 
-setTimeout(() => srSyncBooks(), 800); // 启动水合
-window.addEventListener("hashchange", () => {
+if (window.__srStyleGlobalHandlers) {
+  clearTimeout(window.__srStyleGlobalHandlers.hydrateTimer);
+  window.removeEventListener("hashchange", window.__srStyleGlobalHandlers.hashchange);
+}
+const srHydrateTimer = setTimeout(() => srSyncBooks(), 800); // 启动水合
+const srHashChange = () => {
   if ((location.hash || "").indexOf("styleref") >= 0) srSyncBooks();
-});
+};
+window.addEventListener("hashchange", srHashChange);
+window.__srStyleGlobalHandlers = { hydrateTimer: srHydrateTimer, hashchange: srHashChange };
 
 Object.assign(window, {
   WsStyleRef, srSyncBooks, srImportBook, srBookAction, srDeleteBook,

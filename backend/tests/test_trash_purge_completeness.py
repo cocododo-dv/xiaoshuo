@@ -7,36 +7,58 @@ SceneMemory/AuthorDraftRevision/LlmCall 载荷等形式留库，且孤儿行永�
 
 from __future__ import annotations
 
+import pytest
+
 from novel_system.db.models import (
     AttemptTracker,
+    AuthorPreferenceProfile,
     AuthorDraft,
     AuthorDraftEvent,
     AuthorDraftProposal,
     AuthorDraftRevision,
+    ChapterAuditFinding,
+    ChapterContract,
     ChapterGoal,
     ChapterMemory,
     ChapterRollingNote,
+    ChapterRunJob,
     ChapterState,
     FinalScene,
     ForeshadowTracker,
     HumanReviewEvent,
+    InteropArtifact,
     LlmCall,
     LlmCallAttempt,
+    LongformStructureGuidance,
     NarrativeEvent,
     QcReport,
+    ReindexJob,
     ReviewItem,
     SceneBundle,
     SceneCard,
     SceneDraft,
     SceneMemory,
     SceneRunState,
+    SnowflakeChapterPlan,
     SnowflakeRevisionLink,
+    SnowflakeScenePlan,
     StoryProject,
+    StyleRule,
+    StyleReferenceBook,
+    StyleReferenceInjectionBinding,
+    StyleReferenceProfile,
+    StyleReferenceRun,
+    VectorAliasRegistry,
+    VerifyJob,
+    VersionRegistry,
     VolumeSummary,
+    WorkProfile,
     WriterEvaluation,
     utcnow,
 )
 from novel_system.services.trash import TrashService
+from novel_system.services.errors import DomainError
+from novel_system.services.vector_store import InMemoryVectorStore
 from tests.fixture_works import cleanup_fixture_works
 
 
@@ -54,11 +76,62 @@ def _seed_full_project(session) -> None:
     session.add(ChapterGoal(chapter_id=CHAPTER_ID, project_id=PROJECT_ID, chapter_goal="g"))
     session.flush()
     session.add(ChapterState(chapter_id=CHAPTER_ID))
+    session.add(
+        ChapterContract(
+            contract_id="chapter_contract_purge",
+            project_id=PROJECT_ID,
+            chapter_id=CHAPTER_ID,
+        )
+    )
+    session.add(
+        ChapterAuditFinding(
+            finding_id="chapter_finding_purge",
+            project_id=PROJECT_ID,
+            chapter_id=CHAPTER_ID,
+            text="待清理审计项",
+        )
+    )
+    session.add(
+        SnowflakeChapterPlan(
+            chapter_plan_id="chapter_plan_purge",
+            project_id=PROJECT_ID,
+            row_uid="CHAPTER-ROW-1",
+            chapter_seq=1,
+        )
+    )
+    session.add(
+        SnowflakeScenePlan(
+            scene_plan_id="scene_plan_purge",
+            project_id=PROJECT_ID,
+            row_uid="SCENE-ROW-1",
+            scene_id=SCENE_ID,
+            chapter_plan_id="chapter_plan_purge",
+            chapter_id=CHAPTER_ID,
+            scene_seq=1,
+        )
+    )
     session.add(SceneCard(
         scene_id=SCENE_ID, chapter_id=CHAPTER_ID, project_id=PROJECT_ID,
         scene_seq=1, scene_goal="推进",
     ))
     session.flush()
+    session.add_all(
+        [
+            ChapterRunJob(
+                job_id="scene_run_job_purge",
+                chapter_id=CHAPTER_ID,
+                scene_id=SCENE_ID,
+                status="completed",
+                job_type="scene_run_full",
+            ),
+            ChapterRunJob(
+                job_id="chapter_run_job_purge",
+                chapter_id=CHAPTER_ID,
+                status="completed",
+                job_type="chapter_run_full",
+            ),
+        ]
+    )
     session.add(SceneRunState(scene_id=SCENE_ID))
     # —— 正文/运行时派生行（修复前全部漏删）——
     session.add(SceneDraft(
@@ -150,6 +223,72 @@ def _seed_full_project(session) -> None:
     session.add(ReviewItem(
         review_id="ri1", project_id=PROJECT_ID, item_type="fe_card", candidate_text="卡",
     ))
+    # —— 无 project_id 的间接所有权行（scope / version / interop）——
+    session.add(WorkProfile(
+        profile_id="wp_purge", scope_type="global", scope_ref_id=PROJECT_ID,
+        profile_key="controlling_idea", display_name="控制性理念",
+        profile_json={"idea": "作品私有主题"},
+    ))
+    session.add(AuthorPreferenceProfile(
+        profile_id="ap_purge", scope_type="project", scope_ref_id=PROJECT_ID,
+        summary_json={"voice": "作品私有偏好"},
+    ))
+    session.add(LongformStructureGuidance(
+        guidance_id="longform_guidance_purge",
+        scope_type="chapter",
+        scope_ref_id=CHAPTER_ID,
+        content="作品私有长篇结构指导",
+    ))
+    session.add(StyleRule(
+        row_id="style_row_purge", style_rule_set_id="style_rule_purge",
+        scope="project", scope_ref_id=PROJECT_ID, content="作品私有风格规则",
+    ))
+    session.add(VectorAliasRegistry(
+        alias_scope=f"style_rule:project:{PROJECT_ID}",
+        object_type="style_rule", scope="project", scope_ref_id=PROJECT_ID,
+        collection_family=f"style_rule_project_{PROJECT_ID}",
+        active_alias="style_rule_project_purge_active",
+    ))
+    session.add(VersionRegistry(
+        object_type="style_rule", lineage_key="style_rule_purge", version=1,
+        physical_row_id="style_row_purge",
+        alias_scope=f"style_rule:project:{PROJECT_ID}",
+    ))
+    session.add(ReindexJob(
+        job_id="reindex_purge", review_id="ri1", object_type="style_rule",
+        alias_scope=f"style_rule:project:{PROJECT_ID}",
+        target_snapshot_version="snapshot_style_row_purge",
+        target_embedding_version="embed_style_row_purge",
+    ))
+    session.add(VerifyJob(
+        job_id="verify_purge", review_id="ri1", object_type="style_rule",
+        alias_scope=f"style_rule:project:{PROJECT_ID}",
+        target_snapshot_version="snapshot_style_row_purge",
+        target_embedding_version="embed_style_row_purge",
+    ))
+    session.add(InteropArtifact(
+        artifact_id="interop_purge", artifact_kind="bundle_worksheet_import",
+        scene_id=SCENE_ID, chapter_id=CHAPTER_ID, source_bundle_id="b1",
+        file_path="inline://interop/purge.yaml", file_format="yaml",
+        direction="import", metadata_json={"private": "作品私有互操作证据"},
+    ))
+    session.add(StyleReferenceBook(
+        book_id="style_book_shared", title="共享参考书", source_kind="paste",
+        cloud_policy="local_only", text_checksum="style-book-purge-checksum",
+    ))
+    session.flush()
+    session.add(StyleReferenceRun(run_id="style_run_shared", book_id="style_book_shared"))
+    session.flush()
+    session.add(StyleReferenceProfile(
+        profile_id="style_profile_shared", book_id="style_book_shared",
+        run_id="style_run_shared", title="共享画像", status="active",
+    ))
+    session.flush()
+    session.add(StyleReferenceInjectionBinding(
+        binding_id="style_binding_purge", profile_id="style_profile_shared",
+        scope="project", scope_ref_id=PROJECT_ID, task_type="scene_generation",
+        strategy="A", status="active",
+    ))
     # —— 作者草稿链（修订快照/提案修复前漏删）——
     session.add(AuthorDraft(
         draft_id="d1", object_type="scene", object_id=SCENE_ID,
@@ -167,15 +306,40 @@ def _seed_full_project(session) -> None:
 
 def test_purge_project_leaves_no_residual_rows(session):
     _seed_full_project(session)
+    vector_store = InMemoryVectorStore()
+    vector_store.write_collection(
+        f"scenes_{PROJECT_ID}",
+        [{"id": SCENE_ID, "text": "不得在永久清除后残留的正文"}],
+    )
+    vector_store.write_collection(
+        "style_rule_project_purge_active",
+        [{"id": "style_row_purge", "text": "不得残留的作品风格向量"}],
+    )
 
-    TrashService(session).purge_project(PROJECT_ID)
+    result = TrashService(session, vector_store=vector_store).purge_project(PROJECT_ID)
     session.flush()
+
+    assert sorted(result["purged_vector_collections"]) == sorted([
+        f"scenes_{PROJECT_ID}",
+        "style_rule_project_purge_active",
+        f"style_rule_project_{PROJECT_ID}__candidate__style_row_purge",
+    ])
+    assert vector_store.collection_exists(f"scenes_{PROJECT_ID}") is False
+    assert vector_store.collection_exists("style_rule_project_purge_active") is False
 
     residuals: dict[str, int] = {}
     checks = {
         "story_projects": session.query(StoryProject).filter_by(project_id=PROJECT_ID),
         "chapter_goals": session.query(ChapterGoal).filter_by(project_id=PROJECT_ID),
         "chapter_states": session.query(ChapterState).filter_by(chapter_id=CHAPTER_ID),
+        "chapter_run_jobs": session.query(ChapterRunJob).filter(
+            (ChapterRunJob.scene_id == SCENE_ID)
+            | (ChapterRunJob.chapter_id == CHAPTER_ID)
+        ),
+        "chapter_contracts": session.query(ChapterContract).filter_by(project_id=PROJECT_ID),
+        "chapter_audit_findings": session.query(ChapterAuditFinding).filter_by(
+            project_id=PROJECT_ID
+        ),
         "scene_cards": session.query(SceneCard).filter_by(project_id=PROJECT_ID),
         "scene_run_states": session.query(SceneRunState).filter_by(scene_id=SCENE_ID),
         "scene_drafts": session.query(SceneDraft).filter_by(scene_id=SCENE_ID),
@@ -195,6 +359,12 @@ def test_purge_project_leaves_no_residual_rows(session):
         "snowflake_revision_links": session.query(SnowflakeRevisionLink).filter_by(
             project_id=PROJECT_ID
         ),
+        "snowflake_chapter_plans": session.query(SnowflakeChapterPlan).filter_by(
+            project_id=PROJECT_ID
+        ),
+        "snowflake_scene_plans": session.query(SnowflakeScenePlan).filter_by(
+            project_id=PROJECT_ID
+        ),
         "human_review_events": session.query(HumanReviewEvent).filter_by(scene_id=SCENE_ID),
         "narrative_events": session.query(NarrativeEvent).filter_by(project_id=PROJECT_ID),
         "volume_summaries": session.query(VolumeSummary).filter_by(project_id=PROJECT_ID),
@@ -204,12 +374,36 @@ def test_purge_project_leaves_no_residual_rows(session):
         "author_draft_events": session.query(AuthorDraftEvent).filter_by(draft_id="d1"),
         "author_draft_revisions": session.query(AuthorDraftRevision).filter_by(draft_id="d1"),
         "author_draft_proposals": session.query(AuthorDraftProposal).filter_by(draft_id="d1"),
+        "work_profiles": session.query(WorkProfile).filter_by(scope_ref_id=PROJECT_ID),
+        "author_preference_profiles": session.query(AuthorPreferenceProfile).filter_by(
+            scope_ref_id=PROJECT_ID
+        ),
+        "longform_structure_guidance": session.query(LongformStructureGuidance).filter_by(
+            guidance_id="longform_guidance_purge"
+        ),
+        "style_rules": session.query(StyleRule).filter_by(scope_ref_id=PROJECT_ID),
+        "vector_alias_registry": session.query(VectorAliasRegistry).filter_by(
+            scope_ref_id=PROJECT_ID
+        ),
+        "version_registry": session.query(VersionRegistry).filter_by(
+            physical_row_id="style_row_purge"
+        ),
+        "reindex_jobs": session.query(ReindexJob).filter_by(job_id="reindex_purge"),
+        "verify_jobs": session.query(VerifyJob).filter_by(job_id="verify_purge"),
+        "interop_artifacts": session.query(InteropArtifact).filter_by(
+            artifact_id="interop_purge"
+        ),
+        "style_reference_injection_bindings": session.query(
+            StyleReferenceInjectionBinding
+        ).filter_by(binding_id="style_binding_purge"),
     }
     for table, query in checks.items():
         count = query.count()
         if count:
             residuals[table] = count
     assert not residuals, f"purge 后仍有残留: {residuals}"
+    # 参考画像是共享资产；永久清除作品只能移除作品绑定，不能误删画像本体。
+    assert session.get(StyleReferenceProfile, "style_profile_shared") is not None
 
 
 def test_demo_cleanup_deletes_revision_links_before_demo_projects(session):
@@ -240,3 +434,19 @@ def test_demo_cleanup_deletes_revision_links_before_demo_projects(session):
 
     assert session.get(SnowflakeRevisionLink, "demo-revision-link") is None
     assert session.get(StoryProject, "work-a") is None
+
+
+def test_purge_project_fails_closed_when_vector_cleanup_fails(session):
+    _seed_full_project(session)
+
+    class FailingVectorStore(InMemoryVectorStore):
+        def delete_collection(self, collection_name: str) -> None:
+            raise RuntimeError(f"backend unavailable: {collection_name}")
+
+    with pytest.raises(DomainError) as error:
+        TrashService(session, vector_store=FailingVectorStore()).purge_project(PROJECT_ID)
+    assert error.value.code == "PROJECT_VECTOR_PURGE_FAILED"
+
+    # Relational ownership metadata must remain available for a safe retry.
+    assert session.get(StoryProject, PROJECT_ID) is not None
+    assert session.get(InteropArtifact, "interop_purge") is not None

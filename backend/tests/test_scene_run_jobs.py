@@ -8,11 +8,40 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session as SqlAlchemySession
 
-from novel_system.db.models import ChapterRunJob, QcReport, SceneCard, SceneRunState
+from novel_system.db.models import (
+    ChapterGoal,
+    ChapterRunJob,
+    QcReport,
+    SceneCard,
+    SceneRunState,
+)
 from novel_system.db.session import SessionLocal
 from novel_system.services.errors import DomainError
 from novel_system.services.scene_run_jobs import SceneRunJobService
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
+
+
+def _seed_job_scene(
+    session,
+    *,
+    scene_id: str = "SC01",
+    chapter_id: str = "CH_SCENE_JOB",
+) -> None:
+    if session.get(ChapterGoal, chapter_id) is None:
+        session.add(
+            ChapterGoal(chapter_id=chapter_id, chapter_goal=f"goal {chapter_id}")
+        )
+        session.flush()
+    if session.get(SceneCard, scene_id) is None:
+        session.add(
+            SceneCard(
+                scene_id=scene_id,
+                chapter_id=chapter_id,
+                scene_seq=1,
+                scene_goal=f"goal {scene_id}",
+            )
+        )
+        session.flush()
 
 
 def _create_chapter_and_scene(client) -> None:
@@ -84,7 +113,26 @@ def test_scene_run_job_api_creates_pollable_nonblocking_job(client, session) -> 
     assert session.get(ChapterRunJob, job["job_id"]).scene_id == "CHJOB_SC01"
 
 
+def test_scene_run_job_idempotency_replay_does_not_start_a_second_worker(client, monkeypatch) -> None:
+    _create_chapter_and_scene(client)
+    started: list[str] = []
+    monkeypatch.setattr(
+        "novel_system.api.routes.scenes.start_scene_run_job_worker",
+        lambda job_id: started.append(job_id),
+    )
+    headers = {"X-Idempotency-Key": "scene-job-worker-once"}
+
+    first = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs", headers=headers)
+    replay = client.post("/api/v1/scenes/CHJOB_SC01/run/jobs", headers=headers)
+
+    assert first.status_code == replay.status_code == 200
+    assert replay.headers.get("X-Idempotency-Status") == "replayed"
+    assert replay.json()["data"]["job_id"] == first.json()["data"]["job_id"]
+    assert started == [first.json()["data"]["job_id"]]
+
+
 def test_scene_run_job_serialization_prefers_authoritative_scene_column(session) -> None:
+    _seed_job_scene(session, scene_id="SCENE_COLUMN", chapter_id="CHJOB")
     job = ChapterRunJob(
         job_id="scene_run_authoritative_scope",
         chapter_id="CHJOB",
@@ -378,6 +426,7 @@ def test_scene_job_retry_reuses_execution_checkpoint_without_recharging(client, 
 
 @pytest.mark.parametrize("terminal_status", ["completed", "blocked"])
 def test_terminal_scene_job_claim_is_rejected_without_mutation(session, terminal_status: str) -> None:
+    _seed_job_scene(session)
     job = ChapterRunJob(
         job_id=f"job-terminal-{terminal_status}",
         scene_id="SC01",
@@ -469,6 +518,7 @@ def test_duplicate_worker_does_not_reopen_terminal_job(
 
 
 def test_active_scene_job_lease_rejects_another_worker(session) -> None:
+    _seed_job_scene(session)
     now = datetime.now(UTC)
     session.add(
         ChapterRunJob(
@@ -495,6 +545,7 @@ def test_active_scene_job_lease_rejects_another_worker(session) -> None:
 
 
 def test_expired_scene_job_lease_has_one_cas_reclaim_winner(session) -> None:
+    _seed_job_scene(session)
     expired = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
     session.add(
         ChapterRunJob(
@@ -535,6 +586,7 @@ def test_expired_scene_job_lease_has_one_cas_reclaim_winner(session) -> None:
 
 
 def test_expired_scene_job_barrier_has_one_provider_budget_winner(session, monkeypatch) -> None:
+    _seed_job_scene(session)
     expired = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()
     session.add(
         ChapterRunJob(
@@ -598,6 +650,7 @@ def test_expired_scene_job_barrier_has_one_provider_budget_winner(session, monke
 
 
 def test_scene_job_lease_renewal_is_fenced_by_worker_and_attempt(session) -> None:
+    _seed_job_scene(session)
     session.add(
         ChapterRunJob(
             job_id="job-renew-lease",
@@ -622,6 +675,36 @@ def test_scene_job_lease_renewal_is_fenced_by_worker_and_attempt(session) -> Non
     with pytest.raises(DomainError) as lost:
         owner.renew(lease_seconds=120)
     assert lost.value.code == "RUN_OWNER_LEASE_LOST"
+
+
+def test_scene_job_detached_renewal_is_visible_to_other_sessions(session) -> None:
+    _seed_job_scene(session)
+    session.add(
+        ChapterRunJob(
+            job_id="job-renew-detached",
+            scene_id="SC01",
+            status="queued",
+            job_type="scene_run_full",
+            attempt_no=0,
+        )
+    )
+    session.commit()
+    owner = SceneRunJobService(session).claim_running(
+        "job-renew-detached",
+        worker_id="worker-a",
+        current_step="neutral_running",
+        lease_seconds=1,
+    )
+    session.commit()
+    before = owner.lease_expires_at
+
+    renewed = owner.renew_detached(lease_seconds=120)
+
+    with SessionLocal() as observer:
+        persisted = observer.get(ChapterRunJob, "job-renew-detached")
+        assert persisted is not None
+        assert persisted.lease_expires_at == renewed
+        assert persisted.lease_expires_at > before
 
 
 def test_scene_run_states_listing_backs_fe_queue_recovery(client, session) -> None:

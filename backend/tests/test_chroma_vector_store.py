@@ -30,6 +30,14 @@ def test_chroma_vector_store_persists_and_queries_documents(tmp_path: Path) -> N
 
     assert [item["id"] for item in results] == ["doc-1"]
 
+    store.delete_documents(collection_name, ["doc-1"])
+    assert store.load_collection(collection_name) == [documents[1]]
+
+    store.delete_collection(collection_name)
+    assert store.collection_exists(collection_name) is False
+    # Missing collections are idempotent, but backend failures must propagate.
+    store.delete_collection(collection_name)
+
 
 def test_get_vector_store_returns_in_memory_backend_for_tests(tmp_path: Path) -> None:
     store = get_vector_store(backend="memory", persist_directory=tmp_path / "ignored")

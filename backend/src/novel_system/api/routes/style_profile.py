@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.request_types import BoundedJsonObject
 from novel_system.api.response import ok
 from novel_system.db.models import ReviewItem
 from novel_system.services.errors import DomainError
@@ -21,23 +23,33 @@ router = APIRouter(tags=["style_profile"])
 
 
 class StyleProfileExtractRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    sample_texts: list[str] = Field(default_factory=list)
-    style_rules: list[str] = Field(default_factory=list)
-    style_observations: list[str] = Field(default_factory=list)
-    calibration_lines: list[str] = Field(default_factory=list)
-    banned_moves: list[str] = Field(default_factory=list)
+    sample_texts: list[
+        Annotated[str, Field(max_length=500_000)]
+    ] = Field(default_factory=list, max_length=64)
+    style_rules: list[
+        Annotated[str, Field(max_length=20_000)]
+    ] = Field(default_factory=list, max_length=256)
+    style_observations: list[
+        Annotated[str, Field(max_length=20_000)]
+    ] = Field(default_factory=list, max_length=256)
+    calibration_lines: list[
+        Annotated[str, Field(max_length=20_000)]
+    ] = Field(default_factory=list, max_length=256)
+    banned_moves: list[
+        Annotated[str, Field(max_length=20_000)]
+    ] = Field(default_factory=list, max_length=256)
 
 
 class StyleProfileReviewCandidateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
-    profile: dict[str, Any] | None = None
-    profile_yaml: str | None = None
-    scope: str = "global"
-    scope_ref_id: str = "global"
-    lineage_key: str | None = None
+    profile: BoundedJsonObject | None = None
+    profile_yaml: str | None = Field(default=None, max_length=2_000_000)
+    scope: str = Field(default="global", min_length=1, max_length=64)
+    scope_ref_id: str = Field(default="global", min_length=1, max_length=255)
+    lineage_key: str | None = Field(default=None, max_length=255)
     active_on_approve: int = Field(default=0, ge=0, le=1)
 
 
@@ -172,7 +184,12 @@ def extract_style_profile(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    return ok(
-        StyleProfileExtractionService(session).extract(payload.model_dump()),
-        req_id=getattr(request.state, "request_id", None),
+    body = payload.model_dump(mode="json")
+    return optional_idempotent_response(
+        request,
+        session,
+        method="POST",
+        path_template="/api/v1/style-profile/extract",
+        payload=body,
+        action=lambda: StyleProfileExtractionService(session).extract(body),
     )

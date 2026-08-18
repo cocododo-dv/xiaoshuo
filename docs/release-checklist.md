@@ -6,38 +6,40 @@ Use this checklist before converting a Draft PR to ready state or treating the c
 
 - GitHub Actions **Backend Tests** job passed.
 - GitHub Actions **Frontend Tests (React mainline)** job passed (vitest + build for `frontend-react`) — this is the authoritative frontend gate.
+- GitHub Actions **React Contract E2E** job passed (fresh Alembic migration, isolated fixture database, real Chromium).
 - GitHub Actions **Legacy Vue Frontend Tests** job passed.
 
 ## Required local checks on this machine
 
-- Run `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`
+- Run `powershell -ExecutionPolicy Bypass -File scripts/verify_windows.ps1`. The backend lane uses the same deterministic four-way file sharding as CI and writes one JUnit file per shard under `backend/.test-results/`; every shard must pass.
 - Treat the backend pytest half of `scripts/verify_windows.ps1` as the required true-generation backend lane:
   `backend/tests/test_scene_generation.py` for fake-provider generation,
   `backend/tests/test_qc_engine.py` for fake-provider QC,
   and `backend/tests/test_chapter_runner.py` plus `backend/tests/test_chapter_runtime.py` for the current chapter runner/runtime path.
 - Run the **React mainline contract E2E** (default release gate for the production frontend):
   `powershell -ExecutionPolicy Bypass -File scripts/verify_react_e2e.ps1` — spins up an isolated
-  seeded `:8009` backend + React `:5174`, runs `run-smokes.mjs` (smoke-phase2..7 + ai-settings),
-  then tears the process tree down. Also runs automatically inside `scripts/verify_release.ps1`.
+  seeded `:8009` backend + React `:5174`, runs `run-smokes.mjs` (acceptance, phase2..7,
+  ai-settings, and qa2-ui), then tears the process tree down. Also runs automatically inside
+  `scripts/verify_release.ps1`; Linux uses `bash scripts/verify_react_e2e.sh`.
 - Run `cd frontend && npm run test:e2e` only for the legacy Vue lane (or pass `-IncludeLegacyVue` to `verify_release.ps1`).
 - Run `wsl -d Ubuntu-24.04 bash -lc "cd <current-checkout-in-wsl> && bash scripts/verify_wsl_strict.sh"`
+- Before that lane, prepare its isolated WSL environment with
+  `cd backend && UV_PROJECT_ENVIRONMENT=.venv-wsl uv sync --locked --extra dev --extra chroma`; the default Windows environment and hashed install intentionally exclude Chroma.
 - Replace `<current-checkout-in-wsl>` with the checkout/worktree root under review so the WSL lane verifies the same tree as the Windows lane.
-- Fake-provider/deterministic verification is required in CI.
+- Deterministic fixture verification is required in CI; the React contract E2E job enforces it.
 - Real-provider smoke tests are local-only evidence until secrets handling is formalized; if you run one, label it separately from CI-required coverage.
 
 ## Seeded browser E2E acceptance
 
 - Record the `scripts/verify_react_e2e.ps1` result in the PR; this is the production React browser gate.
 - If the optional legacy Vue lane was also run, record `cd frontend && npm run test:e2e` separately and label it as compatibility evidence.
-- Record the fixture operator identities: `ops.chapter.e2e`, `ops.scene-llm.e2e`, `ops.runtime.e2e`, `ops.knowledge.e2e`, and `ops.interop.e2e`
-- Confirm the lane covers `Scene Workbench` chapter runtime backfill / manual hold / final aggregate on `CH200_SC01`
-- Confirm the lane covers the focused `Scene Workbench` LLM pipeline on `CH001_SC01`: run button -> deterministic generation evidence -> hard/soft QC pass -> final archive
-- Confirm the lane covers `Scene Workbench`, `Review Inbox`, `Index Console`, due promotions, recovery sweep, human-review follow-up, Knowledge Console workflow/provenance, and the Interop Center preview/import/export/replay path
-- Confirm the lane checks actor identity, linked-target identity, and cross-view target focus via receipts plus target activity
-- Confirm the Knowledge Console slice checks object / scope / scope-ref / status filters, detail reset on empty filters, linked review refs, and linked bundle refs
-- Confirm the Interop Center slice checks strict YAML preview, import receipt, worksheet export, final-scene replay, source-ref comparisons, and jump targets back to `Scene Workbench` / `Knowledge Console`
-- Confirm the browser lane is recorded as deterministic offline/fake-provider evidence rather than a real-provider smoke run
-- Note whether domain API decomposition and dual pagination evidence came from browser E2E, automated route/helper tests, or both
+- Confirm the lane covers project creation/profile, catalog and prose persistence, trash restore/purge,
+  review effects and dedupe, library projection, longform adjudication/archive, AI settings, cache-loss
+  recovery, deep links, and a console-error sweep.
+- Confirm every suite reseeded successfully; reseed failures must fail closed rather than reuse dirty state.
+- Record the browser lane as deterministic offline fixture evidence, not a real-provider generation run.
+- Treat the optional legacy Vue Playwright lane as separate compatibility evidence; do not attribute its
+  runtime-ops/interop assertions to the React contract lane.
 - Use the manual walkthrough from the README only if the automated E2E lane fails or extra exploratory validation is needed
 
 ## PR evidence

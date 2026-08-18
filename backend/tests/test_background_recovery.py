@@ -9,9 +9,11 @@ from fastapi.testclient import TestClient
 
 from novel_system.api.app import create_app
 from novel_system.db.models import (
+    ChapterGoal,
     ChapterRunJob,
     LlmCall,
     LlmCallAttempt,
+    SceneCard,
     StyleReferenceBook,
     StyleReferenceProfile,
     StyleReferenceRun,
@@ -35,7 +37,42 @@ from novel_system.services.style_reference.run_orchestrator import (
 )
 
 
+def _seed_run_job_parents(
+    session,
+    *,
+    chapter_ids: tuple[str, ...] = (),
+    scene_ids: tuple[str, ...] = (),
+) -> None:
+    existing_chapters = set(chapter_ids)
+    scene_chapter_id = "C_SCENE_RECOVERY"
+    if scene_ids:
+        existing_chapters.add(scene_chapter_id)
+    session.add_all(
+        [
+            ChapterGoal(chapter_id=chapter_id, chapter_goal=f"goal {chapter_id}")
+            for chapter_id in sorted(existing_chapters)
+        ]
+    )
+    session.add_all(
+        [
+            SceneCard(
+                scene_id=scene_id,
+                chapter_id=scene_chapter_id,
+                scene_seq=index,
+                scene_goal=f"goal {scene_id}",
+            )
+            for index, scene_id in enumerate(scene_ids, start=1)
+        ]
+    )
+    session.flush()
+
+
 def test_run_job_recovery_dispatches_missing_or_expired_leases_and_skips_active(session) -> None:
+    _seed_run_job_parents(
+        session,
+        chapter_ids=("C1", "C2", "C3"),
+        scene_ids=("S1", "S2", "S3"),
+    )
     now = datetime(2026, 7, 16, 8, 0, tzinfo=UTC)
     expired = (now - timedelta(seconds=1)).isoformat()
     active = (now + timedelta(minutes=5)).isoformat()
@@ -103,6 +140,7 @@ def test_run_job_recovery_dispatches_missing_or_expired_leases_and_skips_active(
 
 
 def test_scene_running_without_lease_has_one_recovery_owner(session) -> None:
+    _seed_run_job_parents(session, scene_ids=("S1",))
     session.add(
         ChapterRunJob(
             job_id="scene-no-lease-cas",

@@ -478,7 +478,4 @@ function QualityChapterSet({ go }) {
   );
 }
 
-Object.assign(window, { WsQuality, qLoadOverview, qAnalyzeText, qChapterSetReview, qSnapshot, QUALITY_DIMS, QUALITY_SEV });
-
-/* ESM 导出（与既有视图一致：window.* 赋值过渡期保留） */
 export { WsQuality, qLoadOverview, qAnalyzeText, qChapterSetReview, qSnapshot, useQualityState, QUALITY_DIMS, QUALITY_DIM_KEYS, QUALITY_SEV, QUALITY_TEXT_LAYERS };

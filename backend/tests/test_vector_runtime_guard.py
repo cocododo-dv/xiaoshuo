@@ -10,8 +10,10 @@ from novel_system.services.vector_store import _DeterministicEmbeddingFunction, 
 from novel_system.settings import get_settings
 
 
-def test_non_integration_tests_default_to_memory_backend() -> None:
-    assert get_settings().vector_backend == "memory"
+def test_application_defaults_to_memory_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NOVEL_SYSTEM_VECTOR_BACKEND", raising=False)
+
+    assert get_settings(include_runtime_config=False).vector_backend == "memory"
 
 
 def test_native_windows_chroma_backend_fails_fast(tmp_path: Path) -> None:

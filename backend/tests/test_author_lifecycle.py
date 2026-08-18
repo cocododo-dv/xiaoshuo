@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from novel_system.db.models import ChapterGoal, HumanReviewEvent, SceneBundle, SceneCard, SceneRunState
+from novel_system.db.models import (
+    ChapterGoal,
+    HumanReviewEvent,
+    SceneBundle,
+    SceneCard,
+    SceneRunState,
+    StoryProject,
+)
+from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.vector_store import InMemoryVectorStore
 
 
 def _create_chapter(client, chapter_id: str, *, goal: str = "Author a chapter") -> None:
@@ -56,6 +65,49 @@ def _create_scene(
         headers={"X-Idempotency-Key": f"create-{scene_id}"},
     )
     assert response.status_code == 200
+
+
+def test_scene_purge_removes_only_its_project_vector_document(session) -> None:
+    project_id = "project_vector_purge"
+    chapter_id = "chapter_vector_purge"
+    scene_id = "scene_vector_purge"
+    session.add(StoryProject(
+        project_id=project_id,
+        title="Vector purge",
+        outline_text="",
+        planning_mode="snowflake",
+    ))
+    session.flush()
+    session.add(ChapterGoal(
+        chapter_id=chapter_id,
+        project_id=project_id,
+        chapter_goal="Purge one vector",
+    ))
+    session.flush()
+    session.add(SceneCard(
+        scene_id=scene_id,
+        chapter_id=chapter_id,
+        project_id=project_id,
+        scene_seq=1,
+        scene_goal="Purge",
+        trashed_flag=1,
+    ))
+    session.flush()
+    store = InMemoryVectorStore()
+    store.write_collection(
+        f"scenes_{project_id}",
+        [
+            {"id": scene_id, "text": "delete me"},
+            {"id": "another_scene", "text": "keep me"},
+        ],
+    )
+
+    result = AuthorLifecycleService(session, vector_store=store).purge_scenes([scene_id])
+
+    assert result == {"processed": [{"scene_id": scene_id}], "blocked": []}
+    assert store.load_collection(f"scenes_{project_id}") == [
+        {"id": "another_scene", "text": "keep me"}
+    ]
 
 
 def test_scene_trash_hides_records_from_active_views_and_surfaces_them_in_author_trash(client) -> None:
@@ -126,6 +178,46 @@ def test_scene_trash_hides_records_from_active_views_and_surfaces_them_in_author
     workbench_response = client.get("/api/v1/scenes/CH600_SC02/workbench")
     assert workbench_response.status_code == 409
     assert workbench_response.json()["error"]["code"] == "SCENE_TRASHED"
+
+
+def test_scene_restore_preserves_original_position_and_shifts_active_collision(client, session) -> None:
+    _create_chapter(client, "CH605", goal="Restore a scene to its original position")
+    _create_scene(client, "CH605_SC01", chapter_id="CH605", scene_seq=1)
+    _create_scene(client, "CH605_SC02", chapter_id="CH605", scene_seq=2)
+    _create_scene(client, "CH605_SC03", chapter_id="CH605", scene_seq=3, is_chapter_last=1)
+
+    trashed = client.post(
+        "/api/v1/scenes/trash",
+        json={"scene_ids": ["CH605_SC02"]},
+        headers={"X-Idempotency-Key": "trash-ch605-sc02"},
+    )
+    assert trashed.status_code == 200, trashed.text
+
+    reordered = client.post(
+        "/api/v1/chapters/CH605/scene-order",
+        json={"scene_ids": ["CH605_SC03", "CH605_SC01"], "last_scene_id": "CH605_SC01"},
+        headers={"X-Idempotency-Key": "reorder-ch605-active-scenes"},
+    )
+    assert reordered.status_code == 200, reordered.text
+
+    restored = client.post(
+        "/api/v1/scenes/restore",
+        json={"scene_ids": ["CH605_SC02"]},
+        headers={"X-Idempotency-Key": "restore-ch605-sc02"},
+    )
+    assert restored.status_code == 200, restored.text
+
+    scenes = session.execute(
+        select(SceneCard)
+        .where(SceneCard.chapter_id == "CH605", SceneCard.trashed_flag == 0)
+        .order_by(SceneCard.scene_seq.asc())
+    ).scalars().all()
+    assert [(scene.scene_id, scene.scene_seq) for scene in scenes] == [
+        ("CH605_SC03", 1),
+        ("CH605_SC02", 2),
+        ("CH605_SC01", 3),
+    ]
+    assert [scene.is_chapter_last for scene in scenes] == [0, 0, 1]
 
 
 def test_chapter_trash_is_blocked_when_it_has_previously_trashed_child_scenes(client) -> None:

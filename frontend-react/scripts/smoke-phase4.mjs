@@ -4,7 +4,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 
-const require = createRequire(path.join(process.cwd(), "package.json"));
+const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
 const BASE = process.argv[2] || "http://127.0.0.1:5174/";
@@ -60,9 +60,9 @@ await check("回收站可见整部条目 → 恢复 → 数据无损", async () 
   await page.waitForTimeout(1800);
   const projects = await api("/api/v2/projects");
   if (!projects.items.some(i => i.project_id === "work-b")) throw new Error("not restored in backend");
-  const tree = await api("/api/v2/projects/salt/catalog");
+  const tree = await api("/api/v2/projects/work-b/catalog");
   if (tree.chapters.length !== 3) throw new Error(`salt chapters: ${tree.chapters.length}`);
-  const stats = await api("/api/v2/projects/salt/writing-stats");
+  const stats = await api("/api/v2/projects/work-b/writing-stats");
   if (stats.words_total <= 0) throw new Error("stats lost");
 });
 
@@ -77,14 +77,14 @@ await check("删场景 → 回收站条目 → 恢复（正文保留）", async 
     await new Promise(r => setTimeout(r, 1500));
     return victim.backendId;
   });
-  const trash = await api("/api/v2/trash?project_id=tide");
+  const trash = await api("/api/v2/trash?project_id=work-a");
   const entry = trash.items.find(i => i.id === `scene:${sceneId}`);
   if (!entry) throw new Error("scene entry missing in trash");
   await page.evaluate(() => { location.hash = "#trash"; });
   await page.waitForTimeout(1200);
   await page.click('tbody tr:has-text("场景") button:has-text("恢复")');
   await page.waitForTimeout(1500);
-  const tree = await api("/api/v2/projects/tide/catalog");
+  const tree = await api("/api/v2/projects/work-a/catalog");
   const restored = tree.chapters[7].scenes.some(s => s.scene_id === sceneId);
   if (!restored) throw new Error("scene not restored");
 });

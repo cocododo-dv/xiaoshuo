@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from novel_system.accounting_contract import DEFAULT_PROVIDER_ATTEMPT_BUDGET
 from novel_system.api.app import create_app
-from novel_system.db.models import LlmCall, LlmCallAttempt, SystemSecret
+from novel_system.db.models import LlmCall, LlmCallAttempt, SystemConfigSnapshot, SystemSecret
 from novel_system.services.settings_helpers import llm_generation_mode
 from novel_system.services.llm_audit import fingerprint_identifier
 from novel_system.services.llm_client import load_model_routing_config
@@ -185,6 +185,46 @@ def test_system_config_write_requires_admin_token(client, monkeypatch) -> None:
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "ADMIN_TOKEN_REQUIRED"
+
+
+def test_system_config_draft_honors_idempotency_key(client, session, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+    headers = {**ADMIN_HEADERS, "X-Idempotency-Key": "system-config-draft-once"}
+    body = {
+        "category": "models",
+        "yaml_raw": "task_routing: {}\nretry_budget: {}\njob_runtime: {}\n",
+    }
+
+    created = client.post("/api/v1/system-config/drafts", headers=headers, json=body)
+    replayed = client.post("/api/v1/system-config/drafts", headers=headers, json=body)
+
+    assert created.status_code == 200, created.text
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.headers["X-Idempotency-Status"] == "replayed"
+    assert replayed.json()["data"] == created.json()["data"]
+    session.expire_all()
+    assert session.query(SystemConfigSnapshot).filter_by(category="models").count() == 1
+
+
+def test_system_config_draft_rejects_same_key_with_different_payload(client, monkeypatch) -> None:
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+    headers = {**ADMIN_HEADERS, "X-Idempotency-Key": "system-config-draft-conflict"}
+    first = {
+        "category": "models",
+        "yaml_raw": "task_routing: {}\nretry_budget: {}\njob_runtime: {}\n",
+    }
+    changed = {
+        "category": "models",
+        "yaml_raw": "task_routing: {}\nretry_budget: {max_attempts: 2}\njob_runtime: {}\n",
+    }
+
+    assert client.post("/api/v1/system-config/drafts", headers=headers, json=first).status_code == 200
+    conflict = client.post("/api/v1/system-config/drafts", headers=headers, json=changed)
+
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD"
 
 
 def test_system_config_local_setup_mode_allows_loopback_writes_without_admin_token(monkeypatch) -> None:
@@ -558,8 +598,8 @@ llm:
     assert settings.llm_api_key == "super-secret-key"
 
 
-def test_api_config_without_timeout_leaves_generation_unbounded(client, monkeypatch) -> None:
-    """省略 llm.timeout_seconds = 不给生成设上限,而不是偷偷装回 30s。"""
+def test_api_config_without_timeout_uses_safe_generation_ceiling(client, monkeypatch) -> None:
+    """省略 timeout 使用 15 分钟安全上限，而不是历史上过短的 30 秒。"""
 
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
@@ -588,13 +628,13 @@ llm:
     )
     assert draft_response.status_code == 200
     snapshot_id = draft_response.json()["data"]["snapshot"]["snapshot_id"]
-    assert draft_response.json()["data"]["snapshot"]["parsed"]["llm"]["timeout_seconds"] == 0.0
+    assert draft_response.json()["data"]["snapshot"]["parsed"]["llm"]["timeout_seconds"] == 900.0
 
     activate_response = client.post(
         f"/api/v1/system-config/{snapshot_id}/activate", headers=ADMIN_HEADERS
     )
     assert activate_response.status_code == 200
-    assert get_settings().llm_timeout_seconds == 0.0
+    assert get_settings().llm_timeout_seconds == 900.0
 
 
 def test_api_config_rejects_a_negative_timeout(client, monkeypatch) -> None:
@@ -1171,7 +1211,7 @@ def test_llm_config_normalizes_host_only_openai_compatible_base_url_to_v1(client
     assert overview.json()["data"]["providers"]["cli_proxy"]["base_url"] == "http://127.0.0.1:8317/v1"
 
 
-def test_llm_provider_probe_uses_active_llm_timeout_seconds(client, monkeypatch) -> None:
+def test_llm_provider_probe_caps_active_llm_timeout_at_probe_ceiling(client, monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
     monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
 
@@ -1210,14 +1250,14 @@ llm:
     def fake_models(url: str, *, headers: dict[str, str], timeout: float, trust_env: bool):
         assert url == "https://local-llm.test/v1/models"
         assert headers == {}
-        assert timeout == 180.0
+        assert timeout == 30.0
         assert trust_env is True
         return httpx.Response(200, json={"data": [{"id": "qwen3:14b"}]})
 
     def fake_completion(url: str, *, headers: dict[str, str], json: dict, timeout: float, trust_env: bool):
         assert url == "https://local-llm.test/v1/chat/completions"
         assert headers == {}
-        assert timeout == 180.0
+        assert timeout == 30.0
         assert trust_env is True
         assert json["model"] == "qwen3:14b"
         return httpx.Response(200, json={"choices": [{"message": {"content": "pong"}}]})

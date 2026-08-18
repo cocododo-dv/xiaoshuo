@@ -208,8 +208,9 @@
 .home-card-title .ic { color: var(--crimson); display: grid; place-items: center; }
 .home-card-go { color: var(--ink-3); display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; transition: color var(--t-fast); }
 .home-card:hover .home-card-go { color: var(--crimson); }
-.home-card-go-btn { cursor: pointer; }
+.home-card-go-btn { cursor: pointer; border: 0; background: transparent; padding: 3px 2px; font: inherit; }
 .home-card-go-btn:hover { color: var(--crimson); }
+.home-card-go-btn:focus-visible { outline: 2px solid var(--crimson); outline-offset: 2px; border-radius: var(--r-xs); }
 
 /* snowflake mini progress */
 .home-snow-track { display: flex; gap: 5px; margin-bottom: 16px; }
@@ -790,3 +791,38 @@
   .ws-nw-row2 { grid-template-columns: 1fr; }
   .hm-start-grid { grid-template-columns: 1fr; }
 }
+
+.ws-view-loading,
+.ws-view-error,
+.ws-project-required {
+  min-height: min(72vh, 680px);
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 36px;
+  text-align: center;
+  color: var(--ink-2);
+}
+.ws-view-loading strong { color: var(--ink-1); font: 600 19px/1.4 var(--font-serif); }
+.ws-view-loading > span:last-child { color: var(--ink-3); font-size: 12px; }
+.ws-view-loading-mark {
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--line-2);
+  border-top-color: var(--crimson);
+  border-radius: 50%;
+  animation: ws-view-spin .8s linear infinite;
+}
+.ws-view-error { max-width: 620px; margin: 0 auto; }
+.ws-project-required { max-width: 620px; margin: 0 auto; }
+.ws-view-error-kicker,
+.ws-project-required-kicker { color: var(--crimson); font-size: 10px; font-weight: 800; letter-spacing: .16em; }
+.ws-view-error h2,
+.ws-project-required h2 { margin: 0; color: var(--ink-1); font: 600 24px/1.35 var(--font-serif); }
+.ws-view-error p,
+.ws-project-required p { max-width: 540px; margin: 0; color: var(--ink-3); font-size: 13px; line-height: 1.8; }
+.ws-view-error-actions,
+.ws-project-required-actions { display: flex; justify-content: center; gap: 9px; margin-top: 8px; flex-wrap: wrap; }
+@keyframes ws-view-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ws-view-loading-mark { animation: none; } }

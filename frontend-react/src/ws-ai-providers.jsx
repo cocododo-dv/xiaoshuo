@@ -7,7 +7,7 @@ import { apiAdminDelete, apiAdminGet, apiAdminPost, apiGet } from "./lib/client.
    后端真相:/api/v1/system-config/llm 系列接口(Provider CRUD、
    探活、模型列表、分工槽位、节点路由)。管理面板低频写,统一采用
    「写后重拉 overview」而非乐观更新;唯一本地持久化是管理令牌
-   (localStorage novel-system-admin-token,与旧 Vue 高级界面共享)。
+   （sessionStorage novel-system-admin-token，仅在当前浏览器会话保留）。
    ========================================================== */
 
 const ADMIN_TOKEN_KEY = "novel-system-admin-token";
@@ -33,7 +33,14 @@ function aipBusy(key, on) {
 }
 
 function adminToken() {
-  try { return (localStorage.getItem(ADMIN_TOKEN_KEY) || "").trim(); } catch (e) { return ""; }
+  try {
+    const current = (sessionStorage.getItem(ADMIN_TOKEN_KEY) || "").trim();
+    const legacy = (localStorage.getItem(ADMIN_TOKEN_KEY) || "").trim();
+    localStorage.removeItem(ADMIN_TOKEN_KEY);
+    if (current) return current;
+    if (legacy) sessionStorage.setItem(ADMIN_TOKEN_KEY, legacy);
+    return legacy;
+  } catch (e) { return ""; }
 }
 
 const WsAiProviders = {
@@ -44,8 +51,9 @@ const WsAiProviders = {
   setAdminToken(value) {
     try {
       const v = (value || "").trim();
-      if (v) localStorage.setItem(ADMIN_TOKEN_KEY, v);
-      else localStorage.removeItem(ADMIN_TOKEN_KEY);
+      localStorage.removeItem(ADMIN_TOKEN_KEY);
+      if (v) sessionStorage.setItem(ADMIN_TOKEN_KEY, v);
+      else sessionStorage.removeItem(ADMIN_TOKEN_KEY);
     } catch (e) {}
     aipNotify();
   },
@@ -216,7 +224,4 @@ function useAiProviders() {
   return AIP;
 }
 
-Object.assign(window, { WsAiProviders, useAiProviders });
-
-/* ESM 导出(window.* 赋值过渡期保留) */
 export { WsAiProviders, useAiProviders };

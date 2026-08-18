@@ -1,7 +1,7 @@
 """FE-ALIGN Phase 3: 目录 API（/api/v2/projects/{id}/catalog…）。"""
 from __future__ import annotations
 
-from novel_system.db.models import AuthorDraft, ChapterGoal, StoryProject
+from novel_system.db.models import AuthorDraft, ChapterGoal, SceneCard, StoryProject
 
 _seq = 0
 
@@ -45,6 +45,64 @@ def test_create_first_chapter_becomes_writing_and_current(client):
     tree = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
     assert [c["slug"] for c in tree["chapters"]] == ["ch01", "ch02"]
     assert tree["chapters"][0]["current"] is True
+
+
+def test_project_scoped_restore_rejects_foreign_chapter_and_scene(client, session):
+    owner = _create_project(client)
+    foreign = _create_project(client)
+    owner_id = owner["project_id"]
+    foreign_id = foreign["project_id"]
+    chapter = _post(
+        client,
+        f"/api/v2/projects/{owner_id}/catalog/chapters",
+        {"title": "只能由所属项目恢复"},
+    )["chapter"]
+    chapter_id = chapter["chapter_id"]
+    scene_id = chapter["scenes"][0]["scene_id"]
+
+    trashed_chapter = client.delete(
+        f"/api/v2/projects/{owner_id}/catalog/chapters/{chapter_id}",
+        headers={"X-Idempotency-Key": "catalog-trash-owned-chapter"},
+    )
+    assert trashed_chapter.status_code == 200, trashed_chapter.text
+
+    wrong_chapter_restore = client.post(
+        f"/api/v2/projects/{foreign_id}/catalog/chapters/{chapter_id}/restore",
+        json={},
+        headers={"X-Idempotency-Key": "catalog-foreign-chapter-restore"},
+    )
+    assert wrong_chapter_restore.status_code == 404
+    assert wrong_chapter_restore.json()["error"]["code"] == "CHAPTER_NOT_FOUND"
+    assert session.get(ChapterGoal, chapter_id).trashed_flag == 1
+
+    correct_chapter_restore = client.post(
+        f"/api/v2/projects/{owner_id}/catalog/chapters/{chapter_id}/restore",
+        json={},
+        headers={"X-Idempotency-Key": "catalog-owner-chapter-restore"},
+    )
+    assert correct_chapter_restore.status_code == 200, correct_chapter_restore.text
+
+    trashed_scene = client.delete(
+        f"/api/v2/projects/{owner_id}/catalog/scenes/{scene_id}",
+        headers={"X-Idempotency-Key": "catalog-trash-owned-scene"},
+    )
+    assert trashed_scene.status_code == 200, trashed_scene.text
+
+    wrong_scene_restore = client.post(
+        f"/api/v2/projects/{foreign_id}/catalog/scenes/{scene_id}/restore",
+        json={},
+        headers={"X-Idempotency-Key": "catalog-foreign-scene-restore"},
+    )
+    assert wrong_scene_restore.status_code == 404
+    assert wrong_scene_restore.json()["error"]["code"] == "SCENE_NOT_FOUND"
+    assert session.get(SceneCard, scene_id).trashed_flag == 1
+
+    correct_scene_restore = client.post(
+        f"/api/v2/projects/{owner_id}/catalog/scenes/{scene_id}/restore",
+        json={},
+        headers={"X-Idempotency-Key": "catalog-owner-scene-restore"},
+    )
+    assert correct_scene_restore.status_code == 200, correct_scene_restore.text
 
 
 def test_patch_chapter_narrative_and_state(client):
@@ -356,3 +414,44 @@ def test_scene_pov_by_existing_id_bad_id_and_clear(client):
 
     clr = client.patch(f"/api/v2/projects/{pid}/catalog/scenes/{sid}", json={"pov_character_id": ""})
     assert clr.status_code == 200 and clr.json()["data"]["scene"]["pov_character_id"] == ""
+
+
+def test_scene_handoff_fields_persist_on_create_and_update(client):
+    project = _create_project(client)
+    pid = project["project_id"]
+    chapter = _post(
+        client,
+        f"/api/v2/projects/{pid}/catalog/chapters",
+        {"title": "Handoff chapter", "with_scene": False},
+    )["chapter"]
+
+    created = _post(
+        client,
+        f"/api/v2/projects/{pid}/catalog/chapters/{chapter['chapter_id']}/scenes",
+        {
+            "title": "Handoff scene",
+            "exit_change": "The witness changes sides.",
+            "hook": "A sealed letter arrives.",
+            "pov_character_name": "Lin Shen",
+        },
+    )["scene"]
+    assert created["exit_change"] == "The witness changes sides."
+    assert created["hook"] == "A sealed letter arrives."
+    assert created["pov_character_name"] == "Lin Shen"
+
+    updated = client.patch(
+        f"/api/v2/projects/{pid}/catalog/scenes/{created['scene_id']}",
+        json={
+            "exit_change": "The witness retracts the statement.",
+            "hook": "The letter is forged.",
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    scene = updated.json()["data"]["scene"]
+    assert scene["exit_change"] == "The witness retracts the statement."
+    assert scene["hook"] == "The letter is forged."
+
+    reloaded = client.get(f"/api/v2/projects/{pid}/catalog").json()["data"]
+    persisted = reloaded["chapters"][0]["scenes"][0]
+    assert persisted["exit_change"] == scene["exit_change"]
+    assert persisted["hook"] == scene["hook"]

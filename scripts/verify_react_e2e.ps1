@@ -4,7 +4,7 @@
 # reseeds between suites), then tears the whole process tree down. This is the default
 # release-lane regression gate for the production frontend (frontend-react).
 #
-# Prereq: Playwright installed in frontend/ (run-smokes uses require("playwright") and
+# Prereq: Playwright installed in frontend-react/ (run-smokes uses require("playwright") and
 # its cached browsers). Manual run:
 #   powershell -ExecutionPolicy Bypass -File scripts\verify_react_e2e.ps1
 #
@@ -80,17 +80,20 @@ function Stop-Tree {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $backendDir = Join-Path $repoRoot "backend"
+$backendPython = Join-Path $backendDir ".venv\Scripts\python.exe"
 $reactDir = Join-Path $repoRoot "frontend-react"
-$frontendDir = Join-Path $repoRoot "frontend"   # Playwright host for run-smokes
 $runDir = Join-Path $repoRoot ".codex-run\e2e"
 New-Item -ItemType Directory -Path $runDir -Force | Out-Null
 
 # --- Preflight ---
 if (-not (Test-PortBindable -Port $BackendPort)) { throw "Backend port $BackendPort is busy; stop whatever holds it first." }
 if (-not (Test-PortBindable -Port $ReactPort)) { throw "React port $ReactPort is busy; stop whatever holds it first." }
-$playwrightProbe = Join-Path $frontendDir "node_modules\playwright\package.json"
+$playwrightProbe = Join-Path $reactDir "node_modules\playwright\package.json"
 if (-not (Test-Path $playwrightProbe)) {
-    throw "run-smokes needs Playwright installed in frontend/ (cd frontend; npm ci). Probe missing: $playwrightProbe"
+    throw "run-smokes needs Playwright installed in frontend-react/ (cd frontend-react; npm ci). Probe missing: $playwrightProbe"
+}
+if (-not (Test-Path -LiteralPath $backendPython -PathType Leaf)) {
+    throw "Locked backend Python is missing: $backendPython. Run: cd backend; uv sync --locked --extra dev"
 }
 
 # --- Isolated runtime: dedicated e2e sqlite + in-memory vector backend ---
@@ -100,15 +103,17 @@ $dbUrl = "sqlite:///" + ($dbPath -replace "\\", "/")
 $configSecret = "e2e-" + ([guid]::NewGuid().ToString("N"))
 $backendUrl = "http://127.0.0.1:$BackendPort"
 $reactUrl = "http://127.0.0.1:$ReactPort/"
-$healthUrl = "$backendUrl/api/v1/chapters"
+$healthUrl = "$backendUrl/ready"
 
 # Session env: the alembic migration and run-smokes' node-spawned reseed(python) both
 # inherit it, so migration / backend / per-suite reseed all share the same e2e DB.
 $env:PYTHONPATH = "src"
+$env:NOVEL_SYSTEM_PYTHON = $backendPython
 $env:NOVEL_SYSTEM_VECTOR_BACKEND = "memory"
 $env:NOVEL_SYSTEM_DATABASE_URL = $dbUrl
 $env:NOVEL_SYSTEM_CONFIG_SECRET = $configSecret
 $env:NOVEL_SYSTEM_LLM_ENABLED = "false"
+$env:NOVEL_SYSTEM_CORS_ORIGINS = $reactUrl.TrimEnd("/")
 
 Write-Step -Message "E2E runtime DB: $dbUrl"
 
@@ -126,7 +131,7 @@ $env:STYLE_REFERENCE_REPO_ROOT = $repoShim
 Write-Step -Message "alembic upgrade head (e2e db)"
 Push-Location $backendDir
 try {
-    python -m alembic upgrade head
+    & $backendPython -m alembic upgrade head
     if ($LASTEXITCODE -ne 0) { throw "alembic upgrade head failed for the e2e database." }
 }
 finally { Pop-Location }
@@ -137,7 +142,7 @@ $smokeExit = 1
 try {
     # --- Start isolated backend (no --reload, so the process tree stays simple to kill) ---
     Write-Step -Message "Starting seeded backend on $backendUrl"
-    $backendCommand = '$env:PYTHONPATH = ''src''; $env:NOVEL_SYSTEM_VECTOR_BACKEND = ''memory''; $env:NOVEL_SYSTEM_DATABASE_URL = ''{0}''; $env:NOVEL_SYSTEM_CONFIG_SECRET = ''{1}''; $env:NOVEL_SYSTEM_LLM_ENABLED = ''false''; python -m uvicorn novel_system.api.app:create_app --factory --host 127.0.0.1 --port {2} --app-dir src' -f $dbUrl, $configSecret, $BackendPort
+    $backendCommand = '$env:PYTHONPATH = ''src''; $env:NOVEL_SYSTEM_VECTOR_BACKEND = ''memory''; $env:NOVEL_SYSTEM_DATABASE_URL = ''{0}''; $env:NOVEL_SYSTEM_CONFIG_SECRET = ''{1}''; $env:NOVEL_SYSTEM_LLM_ENABLED = ''false''; $env:NOVEL_SYSTEM_CORS_ORIGINS = ''{2}''; & ''{3}'' -m uvicorn novel_system.api.app:create_app --factory --host 127.0.0.1 --port {4} --app-dir src' -f $dbUrl, $configSecret, $reactUrl.TrimEnd("/"), ($backendPython -replace "'", "''"), $BackendPort
     $backendProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $backendCommand) -WorkingDirectory $backendDir -RedirectStandardOutput "$runDir\backend.out.log" -RedirectStandardError "$runDir\backend.err.log" -PassThru
 
     # --- Start React (dev server; inject the e2e backend as default API base) ---
@@ -148,11 +153,11 @@ try {
     Wait-Until -Label "backend health ($healthUrl)" -Condition { Test-UrlHealthy -Url $healthUrl } -TimeoutSeconds $ReadyTimeoutSeconds
     Wait-Until -Label "react home ($reactUrl)" -Condition { Test-UrlHealthy -Url $reactUrl } -TimeoutSeconds $ReadyTimeoutSeconds
 
-    # --- Run contract smokes (cwd=frontend for its Playwright; env carries the e2e DB) ---
+    # --- Run contract smokes from the React package that owns Playwright. ---
     Write-Step -Message "Running contract smokes (run-smokes.mjs)"
-    Push-Location $frontendDir
+    Push-Location $reactDir
     try {
-        node ../frontend-react/scripts/run-smokes.mjs $reactUrl $backendUrl
+        node scripts/run-smokes.mjs $reactUrl $backendUrl
         $smokeExit = $LASTEXITCODE
     }
     finally { Pop-Location }

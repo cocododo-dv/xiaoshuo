@@ -1,18 +1,17 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { apiGet, apiPost } from "./lib/client.js";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { rvCustomList, rvIsResolved } from "./ws-review.jsx";
-import { WsWorks, wsKey } from "./ws-works.jsx";
-import { s2ExportState } from "./ws-snow.jsx";
-import { wrSeedHTML, wrNotesSeed } from "./ws-writer.jsx";
+import { WsWorks } from "./ws-works.jsx";
 
 /* global React, I */
 const { useState: useSt12 } = React;
 
 /* ==========================================================
    发布索引 — Index Console（真实数据流）
-   由目录（章节状态）、收件箱（审核条目）与导入导出记录实时派生：
-   整本书有什么已经「发布生效」（终稿、拍板过的应用、导出的数据包），
+   由目录（章节状态）与收件箱（审核条目）实时派生：
+   整本书有什么已经「发布生效」（终稿、拍板过的应用），
    什么还卡在等你处理。每一行都能跳到它的来源模块，没有死按钮。
    ========================================================== */
 
@@ -37,9 +36,6 @@ function idxDerive() {
       const ok = rvIsResolved && rvIsResolved(it.id);
       rows.push({ id: "rv-" + it.id, target: `review_item · ${it.title}`, action: it.source || "审核", state: ok ? "done" : "pending", note: ok ? "已拍板生效" : "等待你在收件箱拍板", at: it.at, nav: "review", cta: ok ? "查看" : "去拍板" });
     });
-  } catch (e) {}
-  try {
-    ioLog().forEach((e, i) => rows.push({ id: "io-" + i, target: `bundle · ${e.file}`, action: e.kind === "export" ? "export" : "import", state: "done", note: e.kind === "export" ? "已导出到本机" : "已恢复为新作品", at: e.at, nav: "interop", cta: "查看" }));
   } catch (e) {}
   const w = { pending: 0, running: 1, done: 2 };
   return rows.sort((a, b) => (w[a.state] - w[b.state]) || ((b.at || 0) - (a.at || 0)));
@@ -70,7 +66,7 @@ function WsIndex({ go }) {
           <div>
             <div className="page-eyebrow">发布索引</div>
             <h1 className="page-title">整本书里，什么已生效、什么在等你</h1>
-            <p className="page-subtitle">由章节目录、待办收件箱与导入导出记录实时派生——点任意一行可跳到它的来源模块处理。</p>
+            <p className="page-subtitle">由章节目录与待办收件箱实时派生——点任意一行可跳到它的来源模块处理。</p>
           </div>
         </header>
 
@@ -90,7 +86,7 @@ function WsIndex({ go }) {
           <div className="idx-stat-spacer">
             <div className="idx-flow">
               <I.Database size={12} />
-              <span>目录 · 收件箱 · 数据包 → 实时派生</span>
+              <span>目录 · 收件箱 → 实时派生</span>
             </div>
             <div className="text-muted text-sm">处理清「待你处理」，整条流水线就单向往前。</div>
           </div>
@@ -105,7 +101,7 @@ function WsIndex({ go }) {
 
         {jobs.length === 0 ? (
           <div className="card" style={{ padding: "36px 24px", textAlign: "center", color: "var(--ink-3)", fontSize: 13 }}>
-            这一类暂时没有条目。目录里的章节、收件箱的审核、导出的数据包都会出现在这里。
+            这一类暂时没有条目。目录里的章节与收件箱中的审核会出现在这里。
           </div>
         ) : (
           <div className="card" style={{padding:0}}>
@@ -158,11 +154,10 @@ function JobState({ s }) {
 }
 
 /* ==========================================================
-   导入导出 — Interop Center（真实数据流）
-   · 全书稿 Markdown：目录（WsCatalog）+ 写作器正文编译下载
-   · 作品数据包 JSON：当前作品全部持久化状态（目录/雪花/正文/
-     旁注/待办/回收站…）打包备份
-   · 导入：数据包恢复为新作品，不覆盖现有内容
+   互操作与导出 — Interop Center（真实数据流）
+   · 服务端成稿导出统一交给 WsManuscripts 的权威正文链路
+   · 场景 bundle worksheet 通过后端 preview/import/export/replay 接口
+   · 浏览器缓存仅可导出诊断快照，不冒充数据库备份或迁移包
    ========================================================== */
 
 const IO_LOG_LS = "ws_io_log_v1";
@@ -187,32 +182,9 @@ function ioDownload(name, text, type) {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   return blob.size;
 }
-function ioHtmlToText(html) {
-  const div = document.createElement("div");
-  div.innerHTML = html || "";
-  const blocks = [...div.querySelectorAll("p, blockquote")];
-  const txt = blocks.length
-    ? blocks.map(p => (p.tagName === "BLOCKQUOTE" ? "> " : "") + p.innerText.trim()).filter(Boolean).join("\n\n")
-    : (div.innerText || "").trim();
-  return txt === "在这里开始写这一场……" ? "" : txt;
-}
-function ioBuildMarkdown() {
-  const work = WsWorks.active();
-  const chs = WsCatalog ? WsCatalog.get() : [];
-  let md = `# ${work.title}\n\n> ${work.genre || ""}${work.sub ? " · " + work.sub : ""}\n`;
-  chs.forEach(c => {
-    md += `\n\n## 第 ${c.n} 章 · ${c.title}\n`;
-    (c.scenes || []).forEach((s, i) => {
-      md += `\n### ${String(i + 1).padStart(2, "0")} · ${s.title}\n\n`;
-      let txt = "";
-      try { txt = ioHtmlToText(localStorage.getItem(wsKey("wr-doc:" + s.sid)) || ""); } catch (e) {}
-      md += (txt || "（本场尚无正文）") + "\n";
-    });
-  });
-  return md;
-}
-function ioCollectWorkKeys() {
-  const id = WsWorks.activeId();
+function ioCollectWorkKeys(workId = WsWorks.activeId()) {
+  const id = String(workId || "");
+  if (!id || id === "__loading__") return {};
   const suffix = "::" + id;
   const keys = {};
   for (let i = 0; i < localStorage.length; i++) {
@@ -221,68 +193,60 @@ function ioCollectWorkKeys() {
   }
   return keys;
 }
-function ioExportMarkdown(setToast) {
-  const work = WsWorks.active();
-  const md = ioBuildMarkdown();
-  const file = `${work.title} · 全书稿.md`;
-  const size = ioDownload(file, md, "text/markdown;charset=utf-8");
-  ioLogPush({ kind: "export", file, size });
-  setToast(`已导出「${file}」`);
-}
-function ioExportBundle(setToast) {
-  const work = WsWorks.active();
-  const keys = ioCollectWorkKeys();
-  /* 运行时真相强制入包：种子作品没编辑过的部分不在 localStorage 里，
-     只抄键会导出一部空书。这里把目录与有种子文的正文一并物化进包。 */
-  try { if (WsCatalog) keys["arr.chapters.v2"] = JSON.stringify(WsCatalog.get()); } catch (e) {}
-  try { if (s2ExportState) { const s = s2ExportState(); if (s) keys["ws_snow_state_v2"] = JSON.stringify(s); } } catch (e) {}
-  try {
-    const chs = WsCatalog ? WsCatalog.get() : [];
-    chs.forEach(c => (c.scenes || []).forEach(s => {
-      if (!s.sid) return;
-      if (keys["wr-doc:" + s.sid] == null) {
-        const seeded = wrSeedHTML ? wrSeedHTML(s.sid) : null;
-        if (seeded && !/^<p>在这里开始写/.test(seeded)) keys["wr-doc:" + s.sid] = seeded;
-      }
-      if (keys["wr-notes:" + s.sid] == null) {
-        const ns = wrNotesSeed ? wrNotesSeed(s.sid) : "";
-        if (ns) keys["wr-notes:" + s.sid] = ns;
-      }
-    }));
-  } catch (e) {}
-  const payload = {
-    __ws_backup: 2,
-    app: "tide-workbench",
+function ioBuildCacheSnapshot() {
+  const work = (WsWorks && WsWorks.active && WsWorks.active()) || {};
+  return {
+    __ws_cache_snapshot: 1,
+    app: "novel-system-workbench",
     exportedAt: new Date().toISOString(),
-    work: { title: work.title, genre: work.genre, sub: work.sub, mark: work.mark, accent: work.accent, wordsTarget: work.wordsTarget, chaptersTotal: work.chaptersTotal },
-    keys,
+    boundary: {
+      authoritative: false,
+      import_supported: false,
+      includes_server_database: false,
+      note: "仅包含当前浏览器中带作品后缀的缓存键，不是完整项目备份。",
+    },
+    work: {
+      projectId: work.id || "",
+      title: work.title || "未命名作品",
+      genre: work.genre || "",
+      sub: work.sub || "",
+    },
+    keys: ioCollectWorkKeys(work.id),
   };
-  const file = `${work.title} · 数据包.json`;
-  const size = ioDownload(file, JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
-  ioLogPush({ kind: "export", file, size });
-  setToast(`已导出「${file}」（含 ${Object.keys(payload.keys).length} 项状态）`);
 }
-function ioImportBundle(fileObj, setToast) {
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const data = JSON.parse(reader.result);
-      if (!data || data.__ws_backup == null || !data.keys) { setToast("这不是本工作台导出的数据包（缺少标记）。"); return; }
-      const meta = data.work || {};
-      if (!window.confirm(`将「${meta.title || "未命名作品"}」恢复为一部新作品？不会覆盖现有内容。`)) return;
-      const w = WsWorks.create({ title: meta.title, genre: meta.genre, sub: meta.sub, wordsTarget: meta.wordsTarget, accent: meta.accent });
-      Object.keys(data.keys).forEach(base => {
-        try { localStorage.setItem(base + "::" + w.id, data.keys[base]); } catch (e) {}
-      });
-      if (meta.chaptersTotal) WsWorks.update(w.id, { chaptersTotal: meta.chaptersTotal });
-      ioLogPush({ kind: "import", file: fileObj.name, size: fileObj.size });
-      setToast(`已恢复为新作品「${meta.title || "未命名作品"}」，正在进入…`);
-      setTimeout(() => { location.hash = "#home"; location.reload(); }, 900);
-    } catch (e) {
-      setToast("导入失败：文件不是有效的 JSON。");
-    }
+function ioExportCacheSnapshot(setToast) {
+  const payload = ioBuildCacheSnapshot();
+  const file = `${payload.work.title} · 浏览器缓存快照.json`;
+  const size = ioDownload(file, JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
+  ioLogPush({ kind: "cache-export", file, size });
+  setToast(`已导出「${file}」（${Object.keys(payload.keys).length} 个本机缓存键；不含服务端数据库）`);
+}
+
+function ioExtractEnvelope(payload) {
+  if (payload && payload.envelope) return payload.envelope;
+  if (!payload || !payload.bundle_id) return null;
+  return {
+    bundle_id: payload.bundle_id,
+    scene_id: payload.scene_id,
+    chapter_id: payload.chapter_id,
+    bundle_snapshot_hash: payload.bundle_snapshot_hash,
+    hash_contract_version: payload.hash_contract_version,
+    hash_alg: payload.hash_alg,
+    execution_mode: payload.execution_mode,
+    created_by_action: payload.created_by_action,
+    snapshot: payload.snapshot,
   };
-  reader.readAsText(fileObj);
+}
+
+function ioResultFromPayload(payload, mode) {
+  return {
+    mode,
+    envelope: ioExtractEnvelope(payload),
+    receipt: (payload && payload.artifact_receipt) || null,
+    comparisons: Array.isArray(payload && payload.source_ref_comparisons)
+      ? payload.source_ref_comparisons
+      : [],
+  };
 }
 function ioFmtSize(b) {
   if (b == null) return "—";
@@ -293,8 +257,15 @@ function ioFmtSize(b) {
 
 function WsInterop({ go }) {
   const [toast, setToast] = useSt12(null);
-  const [drag, setDrag] = useSt12(false);
-  const fileRef = React.useRef(null);
+  const [worksheetYaml, setWorksheetYaml] = useSt12("");
+  const [preview, setPreview] = useSt12(null);
+  const [previewedYaml, setPreviewedYaml] = useSt12("");
+  const [bundleId, setBundleId] = useSt12("");
+  const [finalRowId, setFinalRowId] = useSt12("");
+  const [draftRowId, setDraftRowId] = useSt12("");
+  const [activeResult, setActiveResult] = useSt12(null);
+  const [busy, setBusy] = useSt12("");
+  const [error, setError] = useSt12("");
   const [, force] = useSt12(0);
   React.useEffect(() => {
     if (!toast) return;
@@ -305,74 +276,223 @@ function WsInterop({ go }) {
   const work = WsWorks ? WsWorks.active() : { title: "—" };
   const totals = WsCatalog ? WsCatalog.totals() : { words: 0, planned: 0 };
   const recent = ioLog();
+  const canImport = !!(
+    preview
+    && worksheetYaml.trim()
+    && worksheetYaml.trim() === previewedYaml
+  );
 
-  const onFile = (f) => { if (f) ioImportBundle(f, note); };
+  const runAction = async (actionId, action) => {
+    if (busy) return null;
+    setBusy(actionId);
+    setError("");
+    try {
+      return await action();
+    } catch (e) {
+      setError((e && e.message) || "互操作请求失败。");
+      return null;
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const previewWorksheet = () => runAction("preview", async () => {
+    const yaml = worksheetYaml.trim();
+    if (!yaml) throw new Error("请先粘贴场景工作表 YAML。");
+    const payload = await apiPost("/api/v1/interop/preview/bundle-worksheet", { worksheet_yaml: yaml });
+    setPreview(payload);
+    setPreviewedYaml(yaml);
+    setActiveResult(ioResultFromPayload(payload, "preview"));
+    if (payload && payload.envelope && payload.envelope.bundle_id) setBundleId(payload.envelope.bundle_id);
+    note(`工作表 ${payload && payload.envelope ? payload.envelope.bundle_id : ""} 已通过预览校验。`);
+    return payload;
+  });
+
+  const importWorksheet = () => runAction("import", async () => {
+    const yaml = worksheetYaml.trim();
+    if (!canImport || yaml !== previewedYaml) throw new Error("工作表内容已变化，请重新预览后再导入。");
+    const payload = await apiPost("/api/v1/interop/import/bundle-worksheet", { worksheet_yaml: yaml });
+    const envelope = ioExtractEnvelope(payload);
+    setActiveResult(ioResultFromPayload(payload, "import"));
+    if (envelope && envelope.bundle_id) setBundleId(envelope.bundle_id);
+    ioLogPush({ kind: "worksheet-import", file: (envelope && envelope.bundle_id) || "bundle worksheet" });
+    note(`已导入场景工作表 ${envelope && envelope.bundle_id ? envelope.bundle_id : ""}。`);
+    return payload;
+  });
+
+  const loadInteropResult = (actionId, value, path, mode, logKind, label) => runAction(actionId, async () => {
+    const id = String(value || "").trim();
+    if (!id) throw new Error(`请先填写${label}。`);
+    const payload = await apiGet(`${path}/${encodeURIComponent(id)}`);
+    const result = ioResultFromPayload(payload, mode);
+    setActiveResult(result);
+    if (result.envelope && result.envelope.bundle_id) setBundleId(result.envelope.bundle_id);
+    ioLogPush({ kind: logKind, file: id });
+    note(`${label} ${id} 已加载。`);
+    return payload;
+  });
+
+  const downloadEnvelope = () => {
+    const envelope = activeResult && activeResult.envelope;
+    if (!envelope) return;
+    const file = `${envelope.bundle_id || "bundle"} · bundle-worksheet.json`;
+    const size = ioDownload(file, JSON.stringify(envelope, null, 2), "application/json;charset=utf-8");
+    ioLogPush({ kind: "worksheet-export", file, size });
+    note(`已下载「${file}」。JSON 同时也是合法 YAML，可重新粘贴预览。`);
+  };
 
   return (
-    <div className="page" data-screen-label="interop">
+    <div className="page" data-screen-label="interop" data-testid="interop-center-view">
       <div className="page-narrow">
         <header className="page-header">
           <div>
-            <div className="page-eyebrow">导入导出</div>
-            <h1 className="page-title">把作品搬进搬出</h1>
-            <p className="page-subtitle">当前作品：《{work.title}》· {totals.planned} 章 · {(totals.words / 10000).toFixed(1)} 万字。导出随时可做，导入不会覆盖现有内容。</p>
+            <div className="page-eyebrow">互操作与导出</div>
+            <h1 className="page-title">导出成稿、检查工作表与保存本机快照</h1>
+            <p className="page-subtitle">当前作品：《{work.title}》· {totals.planned} 章 · {(totals.words / 10000).toFixed(1)} 万字。正文、场景工作表与浏览器缓存各走独立且明确的边界。</p>
           </div>
         </header>
 
-        {/* Export cards */}
         <section style={{marginBottom: 28}}>
           <h2 className="text-serif" style={{fontSize:17, margin:"0 0 12px", color:"var(--ink-2)"}}>导出</h2>
           <div className="io-grid">
             <ExportCard
               icon="FileText" tone="crimson"
-              title="全书稿"
-              desc="目录 + 写作器正文编译成一份可读文档"
-              formats={["Markdown"]}
-              onExport={() => ioExportMarkdown(note)}
+              title="服务端成稿"
+              desc="前往成稿中心逐章核验服务端权威正文，再导出全书或指定章节"
+              formats={["Markdown", "TXT", "Word"]}
+              actionLabel="前往成稿中心"
+              onExport={() => go && go("manuscripts")}
             />
             <ExportCard
               icon="Database" tone="slate"
-              title="作品数据包"
-              desc="章节目录、雪花构思、正文与旁注、待办、回收站……当前作品的全部状态，可备份可迁移"
+              title="浏览器缓存快照"
+              desc="只保存当前浏览器中属于本作品的缓存键，供诊断或人工取证；不含服务端数据库"
               formats={["JSON"]}
-              onExport={() => ioExportBundle(note)}
+              actionLabel="导出本机快照"
+              onExport={() => ioExportCacheSnapshot(note)}
             />
           </div>
         </section>
 
-        {/* Import zone */}
         <section style={{marginBottom: 28}}>
-          <h2 className="text-serif" style={{fontSize:17, margin:"0 0 12px", color:"var(--ink-2)"}}>导入</h2>
+          <h2 className="text-serif" style={{fontSize:17, margin:"0 0 12px", color:"var(--ink-2)"}}>场景工作表互操作</h2>
+          <div className="io-workspace">
+            <article className="io-panel">
+              <div className="io-panel-head">
+                <div>
+                  <h3 className="text-serif">预览并导入 bundle worksheet</h3>
+                  <p className="text-muted text-sm">粘贴严格的 YAML/JSON 信封。后端先验证结构、哈希与来源引用；只有内容未变化时才允许导入 P0/P1 包。</p>
+                </div>
+                <span className="pill text-xs">worksheet_yaml</span>
+              </div>
+              <textarea
+                className="io-editor"
+                data-testid="interop-worksheet-input"
+                aria-label="场景工作表 YAML"
+                value={worksheetYaml}
+                onChange={(e) => setWorksheetYaml(e.target.value)}
+                placeholder="bundle_id: bundle_CH001_SC01"
+              />
+              <div className="io-actions">
+                <button className="btn btn-ghost btn-sm" data-testid="interop-preview-button" disabled={!!busy} onClick={previewWorksheet}>
+                  {busy === "preview" ? "预览中…" : "预览工作表"}
+                </button>
+                <button className="btn btn-accent btn-sm" data-testid="interop-import-button" disabled={!canImport || !!busy} onClick={importWorksheet}>
+                  {busy === "import" ? "导入中…" : "导入工作表"}
+                </button>
+              </div>
+              {preview && preview.summary && (
+                <div className="io-summary" data-testid="interop-preview-summary">
+                  <span><b>包</b> {preview.summary.bundle_id}</span>
+                  <span><b>场景</b> {preview.summary.scene_id}</span>
+                  <span><b>章节</b> {preview.summary.chapter_id}</span>
+                  <span><b>对比项</b> {preview.summary.comparison_count}</span>
+                </div>
+              )}
+            </article>
+
+            <article className="io-panel">
+              <div className="io-panel-head">
+                <div>
+                  <h3 className="text-serif">导出与回放</h3>
+                  <p className="text-muted text-sm">按服务端持久化 ID 加载 bundle 信封，或回放终稿/草稿关联的冻结输入。</p>
+                </div>
+                <span className="pill text-xs">服务端接口</span>
+              </div>
+              <InteropQuery label="Bundle ID" value={bundleId} onChange={setBundleId} placeholder="bundle_CH001_SC01"
+                testId="interop-export-bundle-id" buttonTestId="interop-export-button" buttonLabel={busy === "export" ? "加载中…" : "加载导出结果"}
+                disabled={!!busy} onRun={() => loadInteropResult("export", bundleId, "/api/v1/interop/export/bundle-worksheet", "export", "worksheet-load", "Bundle ID")} />
+              <InteropQuery label="终稿场景行 ID" value={finalRowId} onChange={setFinalRowId} placeholder="final_scene_CH001_SC01"
+                testId="interop-replay-final-row-id" buttonTestId="interop-replay-final-button" buttonLabel={busy === "replay-final" ? "加载中…" : "回放终稿"}
+                disabled={!!busy} onRun={() => loadInteropResult("replay-final", finalRowId, "/api/v1/replay/final-scene", "replay-final", "replay-final", "终稿场景行 ID")} />
+              <InteropQuery label="草稿行 ID" value={draftRowId} onChange={setDraftRowId} placeholder="draft_scene_CH001_SC01"
+                testId="interop-replay-draft-row-id" buttonLabel={busy === "replay-draft" ? "加载中…" : "回放草稿"}
+                disabled={!!busy} onRun={() => loadInteropResult("replay-draft", draftRowId, "/api/v1/replay/draft", "replay-draft", "replay-draft", "草稿行 ID")} />
+            </article>
+          </div>
+          {error && <div className="io-error" role="alert">{error}</div>}
+        </section>
+
+        {activeResult && activeResult.envelope && (
+          <section className="io-result" data-testid="interop-envelope-panel" style={{marginBottom: 28}}>
+            <div className="io-panel-head">
+              <div>
+                <h2 className="text-serif">结果信封</h2>
+                <p className="text-muted text-sm">{activeResult.mode} · {activeResult.envelope.bundle_id}</p>
+              </div>
+              <button className="btn btn-quiet btn-sm" onClick={downloadEnvelope}><I.Download size={13} /> 下载信封 JSON</button>
+            </div>
+            <div className="io-summary">
+              <span><b>场景</b> {activeResult.envelope.scene_id || "—"}</span>
+              <span><b>章节</b> {activeResult.envelope.chapter_id || "—"}</span>
+              <span><b>模式</b> {activeResult.envelope.execution_mode || "—"}</span>
+              <span><b>哈希</b> {activeResult.envelope.bundle_snapshot_hash || "—"}</span>
+            </div>
+            {activeResult.receipt && <p className="text-muted text-xs">服务端回执：{activeResult.receipt.artifact_id} · {activeResult.receipt.artifact_kind}</p>}
+            {!!activeResult.comparisons.length && (
+              <div className="io-comparisons">
+                {activeResult.comparisons.map((item, i) => (
+                  <article className="io-comparison" key={`${item.object_type || "ref"}:${item.lineage_key || i}:${item.source_ref_key || i}`}>
+                    <div className="fw-600">{item.object_type || "source"} · {item.lineage_key || item.source_ref_key || "—"}</div>
+                    <div className="text-muted text-xs">版本：{item.version_status || "—"} · 文本：{item.text_status || "—"}</div>
+                  </article>
+                ))}
+              </div>
+            )}
+            <details className="io-details">
+              <summary>查看完整信封</summary>
+              <pre className="io-json">{JSON.stringify(activeResult.envelope, null, 2)}</pre>
+            </details>
+          </section>
+        )}
+
+        <section style={{marginBottom: 28}}>
+          <h2 className="text-serif" style={{fontSize:17, margin:"0 0 12px", color:"var(--ink-2)"}}>备份与恢复边界</h2>
           <div className="io-import">
-            <div className={`io-import-zone ${drag ? "is-drag" : ""}`}
-              style={drag ? { borderColor: "var(--crimson)", background: "var(--crimson-wash)" } : undefined}
-              onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
-              onDragLeave={() => setDrag(false)}
-              onDrop={(e) => { e.preventDefault(); setDrag(false); onFile(e.dataTransfer.files && e.dataTransfer.files[0]); }}>
-              <I.UploadCloud size={28} />
-              <div className="fw-600 mt-2">把数据包拖到这里</div>
-              <div className="text-muted text-sm">支持本工作台导出的 · 数据包.json</div>
-              <button className="btn btn-ghost btn-sm mt-3" onClick={() => fileRef.current && fileRef.current.click()}>选择文件…</button>
-              <input ref={fileRef} type="file" accept=".json,application/json" style={{ display: "none" }}
-                onChange={(e) => { onFile(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+            <div className="io-import-tips">
+              <h3 className="text-serif fw-600 mb-2" style={{fontSize:15}}>完整项目备份</h3>
+              <ul className="io-tip-list">
+                <li><I.Check size={13} /> 权威作品、章节、正文、审核与运行记录都在服务端数据库</li>
+                <li><I.Check size={13} /> 完整备份与恢复必须使用带完整性、外键及 SHA-256 校验的数据库工具</li>
+                <li><I.AlertTriangle size={13} className="warn" /> 恢复是停机运维操作，不能在浏览器里用 JSON 覆盖运行库</li>
+              </ul>
             </div>
             <div className="io-import-tips">
-              <h3 className="text-serif fw-600 mb-2" style={{fontSize:15}}>导入会做什么</h3>
+              <h3 className="text-serif fw-600 mb-2" style={{fontSize:15}}>浏览器缓存快照</h3>
               <ul className="io-tip-list">
-                <li><I.Check size={13} /> 数据包会恢复为一部新作品，出现在左上角书架里</li>
-                <li><I.Check size={13} /> 章节、正文、构思、待办、回收站一并恢复</li>
-                <li><I.AlertTriangle size={13} className="warn" /> 不会覆盖任何现有作品；示例作品的演示装饰（审批人、版本号等）不随包迁移</li>
+                <li><I.Check size={13} /> 可帮助诊断当前设备的界面缓存与未同步恢复记录</li>
+                <li><I.AlertTriangle size={13} className="warn" /> 不包含完整服务端数据，也不支持导入成新作品</li>
+                <li><I.AlertTriangle size={13} className="warn" /> 不能替代数据库备份、恢复演练或成稿导出</li>
               </ul>
             </div>
           </div>
         </section>
 
-        {/* Recent activity — 真实记录 */}
         <section>
           <h2 className="text-serif" style={{fontSize:17, margin:"0 0 12px", color:"var(--ink-2)"}}>最近</h2>
           {recent.length === 0 ? (
             <div className="card" style={{ padding: "28px 24px", textAlign: "center", color: "var(--ink-3)", fontSize: 13 }}>
-              还没有导入导出记录——导出一份数据包就是最好的备份习惯。
+              还没有互操作或本机快照记录。
             </div>
           ) : (
             <div className="card" style={{padding:0}}>
@@ -410,7 +530,19 @@ function WsInterop({ go }) {
   );
 }
 
-function ExportCard({ icon, tone, title, desc, formats, onExport }) {
+function InteropQuery({ label, value, onChange, placeholder, testId, buttonTestId, buttonLabel, disabled, onRun }) {
+  return (
+    <div className="io-query-row">
+      <label>
+        <span>{label}</span>
+        <input className="control-input" data-testid={testId} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} />
+      </label>
+      <button className="btn btn-ghost btn-sm" data-testid={buttonTestId} disabled={disabled || !String(value || "").trim()} onClick={onRun}>{buttonLabel}</button>
+    </div>
+  );
+}
+
+function ExportCard({ icon, tone, title, desc, formats, actionLabel = "导出", onExport }) {
   const Ic = I[icon] || I.Dot;
   return (
     <div className={`io-card tone-${tone}`}>
@@ -420,23 +552,24 @@ function ExportCard({ icon, tone, title, desc, formats, onExport }) {
       <div className="io-card-formats">
         {formats.map(f => <span key={f} className="pill text-xs">{f}</span>)}
       </div>
-      <button className="btn btn-quiet btn-sm io-card-btn" onClick={onExport}>导出 <I.ArrowRight size={13} /></button>
+      <button className="btn btn-quiet btn-sm io-card-btn" onClick={onExport}>{actionLabel} <I.ArrowRight size={13} /></button>
     </div>
   );
 }
 
 function IoKind({ k }) {
   const map = {
-    export: { tone: "crimson", label: "导出" },
-    import: { tone: "slate",   label: "导入" },
-    replay: { tone: "gold",    label: "回放" },
+    "cache-export": { tone: "slate", label: "缓存快照" },
+    "worksheet-import": { tone: "sage", label: "工作表导入" },
+    "worksheet-export": { tone: "crimson", label: "信封下载" },
+    "worksheet-load": { tone: "crimson", label: "信封加载" },
+    "replay-final": { tone: "gold", label: "终稿回放" },
+    "replay-draft": { tone: "gold", label: "草稿回放" },
+    export: { tone: "crimson", label: "旧版导出" },
+    import: { tone: "slate", label: "旧版导入" },
   };
-  const m = map[k] || map.import;
+  const m = map[k] || { tone: "slate", label: "记录" };
   return <span className={`pill pill-${m.tone} text-xs`}><span className="pill-dot" />{m.label}</span>;
 }
 
-Object.assign(window, { WsIndex, WsInterop });
-
-
-/* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsIndex, WsInterop };
+export { WsIndex, WsInterop, ioBuildCacheSnapshot, ioExtractEnvelope, ioResultFromPayload };

@@ -454,6 +454,4 @@ function ArrAiHealthBlock({ ch, locked }) {
   );
 }
 
-Object.assign(window, { ArrBlueprintCard, ArrPlanPanel, ArrAiHealthBlock });
-
 export { ArrBlueprintCard, ArrPlanPanel, ArrAiHealthBlock, cpPatchRows, cpRowsToPatch };

@@ -14,6 +14,8 @@ from sqlalchemy import inspect as sqlalchemy_inspect, text
 from sqlalchemy.exc import OperationalError
 
 from novel_system.api.response import error
+from novel_system.api.openapi_contract import install_api_openapi_contract
+from novel_system.api.request_limits import RequestBodyLimitMiddleware
 from novel_system.api.routes import (
     author_drafts,
     author_desk,
@@ -51,15 +53,15 @@ from novel_system.api.routes import (
 )
 from novel_system.db import models  # noqa: F401
 from novel_system.db.base import Base
+from novel_system.db.schema_contract import CURRENT_SCHEMA_REVISION
 from novel_system.db.session import engine
 from novel_system.services.database_errors import is_database_busy_error
 from novel_system.services.errors import DomainError
 from novel_system.settings import get_settings
-from novel_system.tools.database_preflight import REVISION_SEQUENCE, SCHEMA_PROFILES
 
 
 logger = logging.getLogger(__name__)
-SUPPORTED_DATABASE_REVISION = REVISION_SEQUENCE[-1]
+SUPPORTED_DATABASE_REVISION = CURRENT_SCHEMA_REVISION
 
 
 @asynccontextmanager
@@ -71,7 +73,18 @@ async def _lifespan(_app: FastAPI):
     from novel_system.services.background_recovery import run_startup_recovery
 
     run_startup_recovery()
-    yield
+    try:
+        yield
+    finally:
+        from novel_system.services.style_reference.run_orchestrator import (
+            shutdown_style_reference_run_executor,
+        )
+        from novel_system.services.style_reference.validation.runner import (
+            shutdown_style_reference_validation_executor,
+        )
+
+        shutdown_style_reference_run_executor(wait=False)
+        shutdown_style_reference_validation_executor(wait=False)
 
 
 def _is_loopback_host(host: str | None) -> bool:
@@ -85,7 +98,14 @@ def _is_loopback_host(host: str | None) -> bool:
         return False
 
 
-def _operator_ref_from_request(request: Request) -> str:
+REMOTE_ACCESS_OPERATOR_REF = "remote-access-token"
+
+
+def _operator_ref_from_request(request: Request, *, trust_client_header: bool) -> str:
+    if not trust_client_header:
+        # The remote access token is shared authentication, not an identity
+        # provider. Never let its holder forge an arbitrary audit principal.
+        return REMOTE_ACCESS_OPERATOR_REF
     actor_ref = (request.headers.get("X-Operator-Ref") or "").strip()
     return actor_ref or "operator"
 
@@ -101,6 +121,13 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Novel System P2", lifespan=_lifespan)
     allow_origins = list(app_settings.cors_origins)
     allow_credentials = app_settings.cors_allow_credentials and "*" not in allow_origins
+    # Register the body limiter before CORS. Starlette inserts new middleware
+    # at the front, so CORS can still decorate a 413 response and the request-id
+    # middleware declared below remains the outermost boundary.
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        max_bytes=app_settings.max_request_body_bytes,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allow_origins,
@@ -113,7 +140,10 @@ def create_app() -> FastAPI:
     async def request_id_middleware(request: Request, call_next):
         started_at = time.perf_counter()
         request.state.request_id = f"req_{uuid.uuid4().hex[:12]}"
-        request.state.operator_ref = _operator_ref_from_request(request)
+        request.state.operator_ref = _operator_ref_from_request(
+            request,
+            trust_client_header=app_settings.local_only,
+        )
         peer_host = request.client.host if request.client is not None else None
 
         def finalize(response):
@@ -192,9 +222,10 @@ def create_app() -> FastAPI:
                 )
                 inspector = sqlalchemy_inspect(connection)
                 available_tables = set(inspector.get_table_names())
-                _required_tables, required_columns = SCHEMA_PROFILES[
-                    SUPPORTED_DATABASE_REVISION
-                ]
+                required_columns = {
+                    table_name: tuple(column.name for column in table.columns)
+                    for table_name, table in Base.metadata.tables.items()
+                }
                 missing_required_columns = {
                     table_name: sorted(
                         set(expected_columns)
@@ -398,4 +429,5 @@ def create_app() -> FastAPI:
     app.include_router(literary_quality.router)
     app.include_router(style_profile.router)
     app.include_router(style_reference.router)
+    install_api_openapi_contract(app)
     return app

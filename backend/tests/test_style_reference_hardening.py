@@ -478,6 +478,31 @@ def test_recent_running_run_not_reaped():
         assert orch._reap_stale_runs(book_id) == 0
 
 
+def test_stale_queued_run_is_not_reaped_before_worker_claims_it():
+    """队列背压不是 worker 中断，queued 即使等待很久也必须保留。"""
+
+    book_id = _seed_book("reaper_queued", cloud_policy="segments_only")
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_run(
+            run_id="sr_run_hd_stale_queued",
+            book_id=book_id,
+            status="running",
+            phase="extract",
+            dispatch_state="queued",
+            heartbeat_at="2020-01-01T00:00:00+00:00",
+            started_at="2020-01-01T00:00:00+00:00",
+        )
+        session.commit()
+        orch = RunOrchestrator(session, llm_client=object(), llm_enabled=True)
+        assert orch._reap_stale_runs(book_id) == 0
+        session.expire_all()
+        run = repo.get_run("sr_run_hd_stale_queued")
+        assert run is not None
+        assert run.status == "running"
+        assert run.dispatch_state == "queued"
+
+
 # ---------------------------------------------------------------------------
 # 7. 路由层:上传上限 / 孤儿报告回收 / LLMRequired 409
 # ---------------------------------------------------------------------------
@@ -817,6 +842,38 @@ def test_fresh_pending_report_stays_pending_on_poll():
     report = resp.json()["data"]["report"]
     assert report["verdict"] == ""
     assert report["status"] == "pending"
+
+
+def test_old_explicitly_queued_report_is_not_reaped_by_polling():
+    """轮询端点不能把正常线程池背压误判为孤儿。"""
+
+    from novel_system.api.routes.style_reference import _reap_orphan_report
+    from novel_system.db.models import StyleReferenceValidationReport
+
+    book_id = _seed_book("queued_report", cloud_policy="segments_only")
+    profile_id = _seed_profile_for_book("queued_report", book_id)
+    with SessionLocal() as session:
+        report = StyleReferenceRepository(session).create_validation_report(
+            report_id="sr_rep_hd_queued_old",
+            profile_id=profile_id,
+            target_kind="manual",
+            target_ref_id=None,
+            verdict="",
+            quantitative_json=[],
+            semantic_json=[],
+            plagiarism_json={},
+            forbidden_hits_json=[],
+            mode_executed="async_full",
+            status="queued",
+            heartbeat_at="2020-01-01T00:00:00+00:00",
+        )
+        report.created_at = "2020-01-01T00:00:00+00:00"
+        session.commit()
+    with SessionLocal() as session:
+        report = session.get(StyleReferenceValidationReport, "sr_rep_hd_queued_old")
+        _reap_orphan_report(session, report)
+        assert report.verdict == ""
+        assert report.status == "queued"
 
 
 # ---------------------------------------------------------------------------

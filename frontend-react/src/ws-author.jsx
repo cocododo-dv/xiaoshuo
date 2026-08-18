@@ -9,6 +9,7 @@ import { wsKey, WsWorks } from "./ws-works.jsx";
 import { ArrChapterRunAction } from "./ws-chapter-run.jsx";
 import { ArrBlueprintCard, ArrPlanPanel, ArrAiHealthBlock } from "./ws-author-plan.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
+import { navigateWithViewIntent } from "./ws-view-intents.js";
 
 /* global React, I, ARR_ACTS, ARR_CH_STATE, ARR_SCENE_STATE, ARR_THREAD_ROLE, ARR_ARCHIVED, ArrThreadLoom, ArrPacingLens, ArrThreadMini, arrDeriveThreads, ArrDoctor */
 const { useState: useStA, useRef: useRefA, useEffect: useEfA, useMemo: useMemoA } = React;
@@ -379,14 +380,11 @@ function ArrSceneRow({ s, n, picked, onPick, onCycleKind, onDelete, onEdit, drag
   /* 分流执行：同一张场景卡，自己写去写作台，或交给 AI 起草台排队 */
   const forkWrite = (e) => {
     e.stopPropagation();
-    location.hash = "#writer";
-    setTimeout(() => window.dispatchEvent(new CustomEvent("ws:writer-scene", { detail: s.sid })), 80);
+    navigateWithViewIntent("writer", "ws:writer-scene", s.sid);
   };
   const forkAI = (e) => {
     e.stopPropagation();
-    window.__scnEnqueue = { sid: s.sid };
-    location.hash = "#scene";
-    setTimeout(() => window.dispatchEvent(new CustomEvent("ws:scene-enqueue", { detail: { sid: s.sid } })), 80);
+    navigateWithViewIntent("scene", "ws:scene-enqueue", { sid: s.sid });
   };
   return (
     <li className={`arr-scene s-${s.state} ${picked ? "is-active" : ""} ${selected ? "is-selected" : ""} ${selectMode ? "is-selecting" : ""}`} {...dropZone}
@@ -1215,7 +1213,6 @@ function WsAuthor({ go }) {
   );
 }
 
-Object.assign(window, { WsAuthor });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
 export { WsAuthor };

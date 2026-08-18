@@ -151,11 +151,7 @@ class InteropCenterService:
         bundle = self.session.get(SceneBundle, bundle_id)
         if bundle is None:
             raise DomainError("INTEROP_BUNDLE_NOT_FOUND", f"bundle {bundle_id} not found", status_code=404)
-        return self._bundle_payload(
-            bundle,
-            artifact_kind="bundle_worksheet_export",
-            file_path=f"api://interop/export/bundle-worksheet/{bundle_id}",
-        )
+        return self._bundle_payload(bundle)
 
     def replay_final_scene(self, row_id: str) -> dict[str, Any]:
         final = self.session.get(FinalScene, row_id)
@@ -164,11 +160,7 @@ class InteropCenterService:
         bundle = self.session.get(SceneBundle, final.source_bundle_id)
         if bundle is None:
             raise DomainError("INTEROP_BUNDLE_NOT_FOUND", f"bundle {final.source_bundle_id} not found", status_code=404)
-        return self._bundle_payload(
-            bundle,
-            artifact_kind="scene_replay_export",
-            file_path=f"api://replay/final-scene/{row_id}",
-        )
+        return self._bundle_payload(bundle)
 
     def replay_draft(self, row_id: str) -> dict[str, Any]:
         draft = self.session.get(SceneDraft, row_id)
@@ -177,33 +169,19 @@ class InteropCenterService:
         bundle = self.session.get(SceneBundle, draft.source_bundle_id)
         if bundle is None:
             raise DomainError("INTEROP_BUNDLE_NOT_FOUND", f"bundle {draft.source_bundle_id} not found", status_code=404)
-        return self._bundle_payload(
-            bundle,
-            artifact_kind="scene_replay_export",
-            file_path=f"api://replay/draft/{row_id}",
-        )
+        return self._bundle_payload(bundle)
 
-    def _bundle_payload(self, bundle: SceneBundle, *, artifact_kind: str, file_path: str) -> dict[str, Any]:
+    def _bundle_payload(self, bundle: SceneBundle) -> dict[str, Any]:
         envelope = self._envelope_from_bundle(bundle)
         comparisons = self._build_source_ref_comparisons(envelope.snapshot)
-        artifact = self._record_artifact(
-            artifact_kind=artifact_kind,
-            scene_id=bundle.scene_id,
-            chapter_id=bundle.chapter_id,
-            source_bundle_id=bundle.bundle_id,
-            file_path=file_path,
-            file_format="json",
-            file_checksum=self._checksum(canonical_json(envelope.model_dump(mode="json"))),
-            direction="export",
-            metadata_json={
-                "bundle_snapshot_hash": bundle.bundle_snapshot_hash,
-                "execution_mode": bundle.execution_mode,
-                "created_by_action": envelope.created_by_action,
-            },
-        )
         payload = envelope.model_dump(mode="json")
         payload["envelope"] = envelope.model_dump(mode="json")
-        payload["artifact_receipt"] = self._artifact_receipt(artifact).model_dump(mode="json")
+        # Export and replay are GET endpoints.  Keep them observationally pure:
+        # callers may retry, prefetch, or cache a GET and must not create a new
+        # business artifact as a side effect.  The nullable key preserves the
+        # response shape used by both frontends; import still returns a durable
+        # artifact receipt from its POST transaction.
+        payload["artifact_receipt"] = None
         payload["source_ref_comparisons"] = [item.model_dump(mode="json") for item in comparisons]
         return payload
 

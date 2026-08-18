@@ -14,7 +14,7 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from novel_system.tools.llm_accounting_audit import (
+from novel_system.services.accounting_audit_schema import (
     REQUIRED_COLUMNS as ACCOUNTING_AUDIT_REQUIRED_COLUMNS,
 )
 

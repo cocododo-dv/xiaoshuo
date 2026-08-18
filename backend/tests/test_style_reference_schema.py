@@ -217,7 +217,7 @@ def test_downgrade_0038_removes_statement_hash(
     """0038 downgrade 后 statement_hash 列消失,旧 UNIQUE 3 列恢复。"""
     db_url = f"sqlite:///{isolated_database}"
     cfg = _alembic_config(db_url)
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, REVISION_FINDINGS_HASH)
     command.downgrade(cfg, REVISION_NEW_SCHEMA)
     columns = _list_columns(db_url, "style_reference_findings")
     assert "statement_hash" not in columns
@@ -229,7 +229,7 @@ def test_downgrade_drops_new_tables_then_recreates_legacy(
 ) -> None:
     db_url = f"sqlite:///{isolated_database}"
     cfg = _alembic_config(db_url)
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, REVISION_NEW_SCHEMA)
     assert "style_reference_books" in _existing_tables(db_url)
 
     # 退到 0036(11 张新表消失,旧表仍不存在)
@@ -268,14 +268,14 @@ def test_head_drops_story_project_reference_profile_ids_column(
     assert "reference_profile_ids_json" not in story_project_columns
 
 
-def test_downgrade_from_head_to_0039_restores_story_project_reference_profile_ids(
+def test_downgrade_0040_to_0039_restores_story_project_reference_profile_ids(
     isolated_database: Path,
     fake_backup: Path,
 ) -> None:
     db_url = f"sqlite:///{isolated_database}"
     cfg = _alembic_config(db_url)
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, REVISION_DROP_PROJECT_REFERENCE_PROFILE_IDS)
     command.downgrade(cfg, REVISION_METRIC_EVENTS)
 
     story_project_columns = _list_columns(db_url, "story_projects")

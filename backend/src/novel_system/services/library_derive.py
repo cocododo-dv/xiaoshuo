@@ -25,6 +25,7 @@ from novel_system.db.models import (
 from novel_system.services.catalog import chapter_title
 from novel_system.services.errors import DomainError
 from novel_system.services.llm_accounting import LLMCallContext
+from novel_system.services.projects import ProjectService
 from novel_system.services.review_cards import ReviewCardService
 from novel_system.settings import get_settings
 
@@ -39,8 +40,21 @@ class LibraryDeriveService:
         self._llm_client = llm_client
 
     def derive_from_chapter(self, project_id: str, chapter_id: str) -> dict[str, Any]:
+        chapter_id = str(chapter_id or "").strip()
         if not chapter_id:
             raise DomainError("LIBRARY_DERIVE_CHAPTER_REQUIRED", "chapter_id is required", status_code=400)
+        project = ProjectService(self.session).require_project(project_id)
+        chapter = self.session.get(ChapterGoal, chapter_id)
+        if (
+            chapter is None
+            or chapter.project_id != project.project_id
+            or chapter.trashed_flag == 1
+        ):
+            raise DomainError(
+                "CHAPTER_NOT_FOUND",
+                "chapter not found in project",
+                status_code=404,
+            )
         settings = get_settings()
         if not settings.llm_enabled:
             # author_action 模式：提示而不阻塞
