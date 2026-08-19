@@ -26,7 +26,8 @@ MERGED_HISTORY_REVISION = "20260802_0077"
 CORE_INTEGRITY_REVISION = "20260802_0078"
 SCENE_AUTHOR_NOTES_REVISION = "20260802_0079"
 SCENE_DEEP_REVIEW_REVISION = "20260802_0080"
-CURRENT_SCHEMA_REVISION = "20260805_0081"
+FOREIGN_KEY_INDEX_REVISION = "20260805_0081"
+CURRENT_SCHEMA_REVISION = "20260818_0082"
 
 
 def _migrate_database(
@@ -675,7 +676,8 @@ def test_revision_aliases_select_the_canonical_schema_profiles(tmp_path):
         ("0078", CORE_INTEGRITY_REVISION),
         ("0079", SCENE_AUTHOR_NOTES_REVISION),
         ("0080", SCENE_DEEP_REVIEW_REVISION),
-        ("0081", CURRENT_SCHEMA_REVISION),
+        ("0081", FOREIGN_KEY_INDEX_REVISION),
+        ("0082", CURRENT_SCHEMA_REVISION),
     ],
 )
 def test_new_revision_aliases_resolve_to_canonical_revisions(alias, canonical):
@@ -762,7 +764,7 @@ def test_fresh_current_head_passes_complete_preflight(tmp_path, monkeypatch):
         tmp_path=tmp_path,
     )
 
-    result = inspect_database(database_path, "0081")
+    result = inspect_database(database_path, "0082")
 
     assert result["revision"] == CURRENT_SCHEMA_REVISION
     assert result["expected_revision_canonical"] == CURRENT_SCHEMA_REVISION

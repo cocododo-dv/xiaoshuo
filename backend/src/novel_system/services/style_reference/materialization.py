@@ -54,6 +54,7 @@ class MaterializeResult:
     binding_id: str
     review_ids: list[str] = field(default_factory=list)
     item_type_counts: dict[str, int] = field(default_factory=dict)
+    rag_index: dict[str, Any] = field(default_factory=dict)
 
 
 class MaterializationService:
@@ -90,6 +91,19 @@ class MaterializationService:
                 f"profile {profile_id!r} not found",
                 status_code=404,
             )
+        coverage = profile.coverage_json or {}
+        if coverage.get("stale"):
+            raise DomainError(
+                "STYLE_REFERENCE_PROFILE_STALE",
+                "profile source findings changed after synthesis; synthesize a new profile before applying",
+                status_code=409,
+            )
+        if profile.status == ProfileStatus.ARCHIVED.value:
+            raise DomainError(
+                "STYLE_REFERENCE_PROFILE_ARCHIVED",
+                "archived profile cannot be applied",
+                status_code=409,
+            )
 
         # 1. finding → ReviewItem(按 sub_dim layer 分发)
         review_ids: list[str] = []
@@ -101,9 +115,7 @@ class MaterializationService:
                 logger.warning("finding %s not found, skipping", finding_id)
                 continue
             item_type = _classify_finding_item_type(finding)
-            review_id = _make_review_id(
-                REVIEW_PREFIX, profile_id, finding_id
-            )
+            review_id = _make_review_id(REVIEW_PREFIX, profile_id, finding_id)
             self._upsert_review_item(
                 review_id=review_id,
                 item_type=item_type,
@@ -157,16 +169,34 @@ class MaterializationService:
         #    硬要求 profile.status=="active"，导致真实流程(导入→抽取→合成→应用)后
         #    风格注入恒为空(no-op)——整个风格参考在生成期失效。apply 即"让该 profile
         #    在某 scope 生效"，随 active binding 一并激活 profile，使绑定与注入一致生效。
-        #    ARCHIVED 不复活。
-        if profile.status != ProfileStatus.ARCHIVED.value:
-            profile.status = ProfileStatus.ACTIVE.value
-            self.session.flush()
+        profile.status = ProfileStatus.ACTIVE.value
+        self.session.flush()
+
+        # 5. v2 内容克制 RAG 索引就绪检查。新画像在 synthesize 时通常已建好；
+        #    老画像或曾中断的部分索引在 apply/re-apply 时自动、幂等升级。向量后端
+        #    属于增强能力，失败不得撤销已经合法完成的绑定与 ReviewItem 写入。
+        try:
+            from novel_system.services.style_reference.rag import ensure_rag_index
+
+            rag_index = ensure_rag_index(
+                self.session,
+                profile,
+                book_id=profile.book_id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "rag index ensure failed for profile %s",
+                profile.profile_id,
+                exc_info=True,
+            )
+            rag_index = {"skipped": "build_failed"}
 
         return MaterializeResult(
             profile_id=profile_id,
             binding_id=binding_id,
             review_ids=review_ids,
             item_type_counts=counts,
+            rag_index=rag_index,
         )
 
     # ------------------------------------------------------------- internals
@@ -214,7 +244,9 @@ class MaterializationService:
         strategy_value = _enum_value(strategy)
         # 同 (profile, scope, scope_ref_id, task_type) 已存在则复用,
         # 重复 apply 更新 strategy / config(滑块调整后重新应用即生效)
-        existing = self.repo.list_bindings(profile_id=profile_id, task_type=task_type_value)
+        existing = self.repo.list_bindings(
+            profile_id=profile_id, task_type=task_type_value
+        )
         for b in existing:
             if b.scope == scope_value and b.scope_ref_id == scope_ref_id:
                 b.strategy = strategy_value

@@ -17,9 +17,10 @@ few_shot_k: 3
 few_shot_quote_max_chars: 120
 few_shot_block_max_chars: 480
 
-# 立项 C — Strategy C(RAG)三粒度向量召回预算(services/style_reference/rag.py)。
-# 召回 + rerank 全程无 LLM(§11 风险6:inject<50ms);rerank 用 query 字符覆盖率
-# × 粒度权重(确定性)。snippet 引用参考书原文,故注入时红线段必随注并按下列上限截断。
+# 立项 C — Strategy C(RAG)三粒度内容克制风格召回预算。
+# ANN 只索引句段形状/标点/虚词等风格签名,不索引原文题材词;候选池再按连续
+# 风格距离确定性重排。内容二元组重叠只施加负向惩罚,绝不增加召回分。
+# snippet 最终仍引用参考书原文,故注入时红线段必随注并按下列上限截断。
 rag_top_k: 3                  # 每粒度(sentence/paragraph/scene)向量召回条数
 rag_inject_max: 5             # 合并去重后注入到 prompt 的总条数上限
 rag_quote_max_chars: 100      # 单条样例截断(防注入大段原文)
@@ -28,7 +29,13 @@ rag_scene_target_chars: 600   # scene 粒度:连续段落累加到该字数封�
 rag_min_sentence_chars: 8     # 过短句(标点/语气词)不入 sentence 索引
 rag_min_paragraph_chars: 8    # 过短段不入 paragraph 索引
 rag_context_query_max_chars: 2000  # 续写防漂移:取最近 N 字作检索 query
-# 粒度权重(覆盖率已长度归一,权重仅微调 "更完整肌理优先")
+rag_signature_candidate_pool_min: 24       # ANN shortlist 最少候选数
+rag_signature_candidate_pool_multiplier: 8 # shortlist = max(top_k×此值,最少候选数)
+rag_paragraph_query_chars: 400              # 无显式换段时 paragraph query 取末尾字数
+rag_style_min_score: 0.45                   # 低于此 [0,1] 最终风格分不注入
+rag_content_overlap_penalty_threshold: 0.18 # 内容二元组 Jaccard 超此值开始负向惩罚
+rag_content_overlap_penalty_max: 0.25       # 内容重叠最多折损 25%,不能正向加分
+# 粒度权重(签名特征已归一,权重仅微调 "更完整肌理优先")
 rag_weight_sentence: 1.0
 rag_weight_paragraph: 1.1
 rag_weight_scene: 1.15

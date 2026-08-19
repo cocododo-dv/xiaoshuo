@@ -27,6 +27,15 @@ const ARCHIVED_DETAIL = {
     missing_scene_ids: [],
   },
   aggregate: null,
+  canon_continuity: {
+    complete: true,
+    scene_count: 1,
+    synced_scene_count: 1,
+    pending_scene_ids: [],
+    missing_final_scene_ids: [],
+    pending_candidate_count: 0,
+    scenes: [],
+  },
   scenes: [
     {
       scene_id: "s1",
@@ -46,6 +55,15 @@ const EMPTY_DETAIL = {
   completion_status: "empty",
   assembled: { content: "", char_count: 0, scene_count: 1, generated_scene_count: 0, missing_scene_ids: ["s1"] },
   aggregate: null,
+  canon_continuity: {
+    complete: false,
+    scene_count: 1,
+    synced_scene_count: 0,
+    pending_scene_ids: ["s1"],
+    missing_final_scene_ids: ["s1"],
+    pending_candidate_count: 0,
+    scenes: [],
+  },
   scenes: [{ scene_id: "s1", scene_seq: 1, final_scene: null }],
 };
 
@@ -89,6 +107,7 @@ describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
     expect(body.scenes[0].sceneId).toBe("s1");
     expect(body.scenes[0].paras).toEqual(["潮水退去，她看清了闸门上的名字。"]);
     expect(body.scenes[0].live).toBe(true);
+    expect(body.canonContinuity.complete).toBe(true);
     expect(mod.WsManuStore.snapshot("c1").status).toBe("ready");
   });
 
@@ -187,6 +206,23 @@ describe("WsManuStore（成稿中心正文换源到后端聚合）", () => {
 
     expect(client.apiPost).toHaveBeenNthCalledWith(1, "/api/v1/projects/p1/chapters/c1/read-confirm", { note: "已核对人物与时间线" });
     expect(client.apiPost).toHaveBeenNthCalledWith(2, "/api/v1/projects/p1/chapters/c1/approve-final", { revision_notes: "下一章承接盐钟线索" });
+  });
+
+  it("正史候选裁决后刷新同章权威状态", async () => {
+    const { mod, client } = await loadStore();
+    client.apiPost.mockResolvedValue({ candidate: { candidate_id: "fc1", status: "accepted" } });
+    client.apiGet.mockClear();
+
+    await mod.WsManuStore.decideCanonCandidate("p1", "c1", "fc1", {
+      action: "accept",
+      expected_final_scene_row_id: "final_s1_v1",
+    });
+
+    expect(client.apiPost).toHaveBeenCalledWith(
+      "/api/v1/projects/p1/canon/candidates/fc1/decision",
+      { action: "accept", expected_final_scene_row_id: "final_s1_v1" },
+    );
+    expect(client.apiGet).toHaveBeenCalledWith("/api/v1/chapter-manuscripts/c1");
   });
 
   it("重新打开终稿必须给出理由并调用项目级审计端点", async () => {

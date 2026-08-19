@@ -55,6 +55,8 @@ def _log(session, *, entity: str, key: str, value: str) -> NarrativeEventLog:
         entity_id=entity,
         fact_key=key,
         fact_value=value,
+        authority_status="accepted",
+        source_kind="test_fixture",
     )
     session.commit()
     return log
@@ -112,6 +114,8 @@ def test_limb_and_item_actions_must_belong_to_the_affected_character(session) ->
         entity_id="顾舟",
         fact_key="has_item",
         fact_value="lost:盐钟",
+        authority_status="accepted",
+        source_kind="test_fixture",
     )
     session.commit()
 

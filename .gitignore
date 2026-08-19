@@ -18,6 +18,7 @@ __pycache__/
 backend/.pytest_cache/
 backend/.test-results/
 backend/.vector_store/
+backend/.style-benchmark/
 backend/.venv/
 backend/.venv-wsl/
 backend/novel_system.db

@@ -17,6 +17,7 @@ from novel_system.db.models import (
     ReviewItem,
     SceneCard,
     SceneMemory,
+    SceneRunState,
     StagedBackfill,
 )
 from novel_system.services.aggregator import Aggregator
@@ -390,8 +391,16 @@ class ChapterRuntimeService:
         final_scenes = self.session.execute(
             select(FinalScene).where(FinalScene.chapter_id == staged.chapter_id, FinalScene.scene_id == staged.scene_id)
         ).scalars().all()
+        state = self.session.get(SceneRunState, staged.scene_id)
+        changed_current_final: FinalScene | None = None
         for final_scene in final_scenes:
-            final_scene.content = self._replace_marker_token(final_scene.content, staged)
+            rewritten = self._replace_marker_token(final_scene.content, staged)
+            if rewritten == final_scene.content:
+                continue
+            final_scene.content = rewritten
+            final_scene.content_hash = hashlib.sha256((rewritten or "").encode("utf-8")).hexdigest()
+            if state is not None and state.current_final_scene_row_id == final_scene.row_id:
+                changed_current_final = final_scene
 
         scene_memories = self.session.execute(
             select(SceneMemory).where(
@@ -417,6 +426,19 @@ class ChapterRuntimeService:
             if isinstance(text, str):
                 payload["text"] = self._replace_marker_token(text, staged)
                 review.candidate_payload_json = payload
+
+        if changed_current_final is not None:
+            # Backfill used to edit canonical prose in place without invalidating
+            # its hash-bound continuity proof. Quarantine that proof immediately.
+            from novel_system.services.canon_continuity import CanonContinuityService
+
+            try:
+                CanonContinuityService(self.session).mark_archive_pending(
+                    changed_current_final.row_id
+                )
+            except DomainError as exc:
+                if exc.code != "SCENE_PROJECT_REQUIRED":
+                    raise
 
     def _replace_marker_token(self, text: str | None, staged: StagedBackfill) -> str | None:
         if text is None:

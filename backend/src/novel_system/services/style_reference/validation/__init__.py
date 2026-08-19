@@ -7,6 +7,7 @@ from novel_system.services.style_reference.validation.core import (
     _load_plagiarism_corpus,
     clear_plagiarism_corpus_cache,
     run_sync_validate,
+    run_sync_validate_profiles,
 )
 from novel_system.services.style_reference.validation.forbidden_local import check_forbidden_local
 from novel_system.services.style_reference.validation.forbidden_semantic import check_forbidden_semantic
@@ -23,6 +24,7 @@ __all__ = [
     "ValidationOrchestrator",
     "start_style_reference_validation_worker",
     "run_sync_validate",
+    "run_sync_validate_profiles",
     "check_plagiarism",
     "check_forbidden_local",
     "check_quantitative",

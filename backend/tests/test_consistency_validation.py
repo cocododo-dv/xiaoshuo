@@ -118,7 +118,12 @@ def _seed_character_state(log: NarrativeEventLog) -> None:
 
     Foreshadow FS-007: planted (将军的刀上有毒)
     """
-    common = dict(project_id=PROJECT_ID, chapter_id=CHAPTER_ID)
+    common = dict(
+        project_id=PROJECT_ID,
+        chapter_id=CHAPTER_ID,
+        authority_status="accepted",
+        source_kind="test_fixture",
+    )
 
     # --- Scene 1: introduce characters and locations ---
     log.log_event(

@@ -1914,6 +1914,86 @@
   margin: 44px 0 0;
 }
 
+/* Canon ledger — an editorial proof desk, not a generic settings panel. */
+.ms-canon {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 28px 34px 64px;
+  background:
+    linear-gradient(90deg, transparent 0 31px, color-mix(in srgb, var(--crimson) 12%, transparent) 31px 32px, transparent 32px),
+    var(--paper-0);
+}
+.ms-canon-empty {
+  flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; gap: 9px;
+  color: var(--ink-3); font-size: 13px;
+}
+.ms-canon-empty.is-error { color: var(--crimson); }
+.ms-canon-overview {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 18px;
+  max-width: 980px; margin: 0 auto 18px; padding: 18px 20px;
+  border: 1px solid var(--line-2); border-radius: var(--r-md); background: var(--paper-1); box-shadow: var(--shadow-sm);
+}
+.ms-canon-overview.is-complete { border-color: color-mix(in srgb, var(--sage) 42%, var(--line-1)); }
+.ms-canon-seal {
+  width: 48px; height: 48px; display: grid; place-items: center; border-radius: 50%;
+  color: var(--crimson); background: var(--crimson-wash); border: 1px solid color-mix(in srgb, var(--crimson) 24%, var(--line-1));
+}
+.ms-canon-overview.is-complete .ms-canon-seal { color: var(--sage); background: color-mix(in srgb, var(--sage) 10%, var(--paper-1)); border-color: color-mix(in srgb, var(--sage) 32%, var(--line-1)); }
+.ms-canon-kicker { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.15em; color: var(--ink-4); }
+.ms-canon-overview h2 { margin: 3px 0 4px; font-size: 20px; color: var(--ink-1); }
+.ms-canon-overview p { margin: 0; max-width: 650px; font-size: 12px; line-height: 1.65; color: var(--ink-3); }
+.ms-canon-counts { display: grid; gap: 5px; min-width: 138px; padding-left: 18px; border-left: 1px solid var(--line-1); font-size: 11px; color: var(--ink-3); }
+.ms-canon-counts b { color: var(--ink-1); font-family: var(--font-mono); font-size: 13px; }
+.ms-canon-feedback { max-width: 980px; margin: 0 auto 14px; padding: 9px 12px; border-radius: var(--r-sm); font-size: 12px; }
+.ms-canon-feedback.is-error { color: var(--crimson); background: var(--crimson-wash); border: 1px solid color-mix(in srgb, var(--crimson) 25%, var(--line-1)); }
+.ms-canon-feedback.is-ok { color: var(--sage); background: color-mix(in srgb, var(--sage) 8%, var(--paper-1)); border: 1px solid color-mix(in srgb, var(--sage) 25%, var(--line-1)); }
+.ms-canon-scenes { max-width: 980px; margin: 0 auto; display: grid; gap: 12px; }
+.ms-canon-scene { border: 1px solid var(--line-2); border-radius: var(--r-md); background: var(--paper-1); overflow: hidden; }
+.ms-canon-scene.status-synced { border-left: 3px solid var(--sage); }
+.ms-canon-scene.status-pending_review, .ms-canon-scene.status-pending_extraction { border-left: 3px solid var(--gold); }
+.ms-canon-scene.status-degraded { border-left: 3px solid var(--crimson); }
+.ms-canon-scene > header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 13px 16px; border-bottom: 1px solid var(--line-1); }
+.ms-canon-scene > header > div { display: flex; align-items: center; gap: 11px; }
+.ms-canon-scene > header strong { font-family: var(--font-serif); font-size: 15px; }
+.ms-canon-scene-no { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.12em; color: var(--crimson); }
+.ms-canon-status { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: var(--r-pill); font-size: 10.5px; }
+.ms-canon-status.is-complete { color: var(--sage); background: color-mix(in srgb, var(--sage) 9%, var(--paper-0)); }
+.ms-canon-status.is-pending { color: var(--gold); background: var(--gold-wash); }
+.ms-canon-extract-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; background: color-mix(in srgb, var(--gold-wash) 58%, var(--paper-1)); color: var(--ink-3); font-family: var(--font-mono); font-size: 10.5px; border-bottom: 1px solid var(--line-1); }
+.ms-canon-candidates { display: grid; gap: 9px; padding: 12px; }
+.ms-canon-candidates:empty { display: none; }
+.ms-canon-candidate { padding: 13px 14px; border: 1px solid var(--line-1); border-radius: var(--r-sm); background: var(--paper-0); }
+.ms-canon-candidate.is-accepted { border-color: color-mix(in srgb, var(--sage) 30%, var(--line-1)); }
+.ms-canon-candidate.is-rejected { opacity: 0.62; }
+.ms-canon-candidate-top { display: flex; justify-content: space-between; margin-bottom: 9px; color: var(--ink-4); font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; }
+.ms-canon-fact { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--ink-2); font-size: 13px; }
+.ms-canon-fact b { color: var(--ink-1); font-family: var(--font-serif); font-size: 15px; }
+.ms-canon-fact span { padding: 2px 7px; border-radius: var(--r-pill); background: var(--paper-2); color: var(--ink-3); font-family: var(--font-mono); font-size: 10px; }
+.ms-canon-fact strong { color: var(--crimson); font-weight: 600; }
+.ms-canon-candidate blockquote { margin: 10px 0 0; padding: 8px 11px; border-left: 2px solid var(--line-3); background: var(--paper-1); color: var(--ink-3); font-family: var(--font-serif); font-size: 12.5px; line-height: 1.65; }
+.ms-canon-evidence-warning { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--crimson); font-size: 10.5px; }
+.ms-canon-entity { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 280px); align-items: center; gap: 12px; margin-top: 10px; padding: 9px 10px; background: var(--gold-wash); border-radius: var(--r-sm); font-size: 11px; color: var(--ink-2); }
+.ms-canon-entity select, .ms-canon-manual select, .ms-canon-manual input, .ms-canon-manual textarea, .ms-canon-verify textarea { width: 100%; border: 1px solid var(--line-2); border-radius: var(--r-sm); background: var(--paper-0); color: var(--ink-1); padding: 7px 9px; font: inherit; }
+.ms-canon-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 11px; }
+.ms-canon-verify { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 12px 16px 15px; border-top: 1px dashed var(--line-2); }
+.ms-canon-verify label { font-size: 11px; font-weight: 600; color: var(--ink-2); }
+.ms-canon-verify textarea { min-height: 38px; max-height: 100px; resize: vertical; font-size: 11.5px; line-height: 1.5; }
+.ms-canon-manual { max-width: 980px; margin: 14px auto 0; padding: 13px 15px; border: 1px dashed var(--line-2); border-radius: var(--r-md); background: color-mix(in srgb, var(--paper-1) 82%, transparent); }
+.ms-canon-manual summary { display: flex; align-items: center; gap: 7px; cursor: pointer; color: var(--ink-2); font-size: 12px; font-weight: 600; }
+.ms-canon-manual-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; margin: 14px 0 11px; }
+.ms-canon-manual-grid label { display: grid; gap: 5px; }
+.ms-canon-manual-grid label.is-wide { grid-column: 1 / -1; }
+.ms-canon-manual-grid label > span { color: var(--ink-3); font-size: 10.5px; }
+.ms-canon-manual textarea { min-height: 70px; resize: vertical; }
+
+@media (max-width: 980px) {
+  .ms-canon { padding-inline: 20px; }
+  .ms-canon-overview { grid-template-columns: auto 1fr; }
+  .ms-canon-counts { grid-column: 1 / -1; grid-template-columns: repeat(2, 1fr); padding: 10px 0 0; border-left: 0; border-top: 1px solid var(--line-1); }
+  .ms-canon-verify { grid-template-columns: 1fr; }
+}
+
 /* Empty / Writing placeholders */
 .ms-empty, .ms-writing {
   flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;

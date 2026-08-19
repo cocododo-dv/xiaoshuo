@@ -9,7 +9,7 @@ from alembic.config import Config
 
 
 PREVIOUS_HEAD = "20260802_0079"
-CURRENT_HEAD = "20260805_0081"
+CURRENT_HEAD = "20260818_0082"
 
 
 def _config() -> Config:

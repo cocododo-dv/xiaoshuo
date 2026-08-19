@@ -10,11 +10,12 @@ The 8 paragraph-type ratio metrics (dialogue_ratio, psychology_ratio, etc.) are
 excluded because they require LLM-based paragraph classification unavailable at
 drift-detection time.
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -31,42 +32,48 @@ _LOGGER = logging.getLogger(__name__)
 DRIFT_THRESHOLD = 0.25
 MAX_CORRECTIVE_DIMENSIONS = 5
 
-_TYPE_RATIO_METRICS = frozenset({
-    "dialogue_ratio",
-    "psychology_ratio",
-    "description_env_ratio",
-    "description_char_ratio",
-    "action_ratio",
-    "narration_ratio",
-    "transition_ratio",
-    "flashback_ratio",
-})
+_TYPE_RATIO_METRICS = frozenset(
+    {
+        "dialogue_ratio",
+        "psychology_ratio",
+        "description_env_ratio",
+        "description_char_ratio",
+        "action_ratio",
+        "narration_ratio",
+        "transition_ratio",
+        "flashback_ratio",
+    }
+)
 
 _DRIFTABLE_METRICS = tuple(m for m in METRIC_NAMES if m not in _TYPE_RATIO_METRICS)
 
-_LANGUAGE_METRICS = frozenset({
-    "avg_sentence_length",
-    "sentence_length_std",
-    "short_sentence_ratio",
-    "long_sentence_ratio",
-    "punctuation_density_per_1k",
-    "dash_em_density_per_1k",
-    "ellipsis_density_per_1k",
-    "semicolon_density_per_1k",
-    "question_density_per_1k",
-    "classical_word_ratio",
-    "colloquial_marker_ratio",
-    "metaphor_density_per_1k",
-    "personification_density_per_1k",
-})
+_LANGUAGE_METRICS = frozenset(
+    {
+        "avg_sentence_length",
+        "sentence_length_std",
+        "short_sentence_ratio",
+        "long_sentence_ratio",
+        "punctuation_density_per_1k",
+        "dash_em_density_per_1k",
+        "ellipsis_density_per_1k",
+        "semicolon_density_per_1k",
+        "question_density_per_1k",
+        "classical_word_ratio",
+        "colloquial_marker_ratio",
+        "metaphor_density_per_1k",
+        "personification_density_per_1k",
+    }
+)
 
-_SENSORY_METRICS = frozenset({
-    "sensory_visual_per_1k",
-    "sensory_auditory_per_1k",
-    "sensory_olfactory_per_1k",
-    "sensory_tactile_per_1k",
-    "sensory_gustatory_per_1k",
-})
+_SENSORY_METRICS = frozenset(
+    {
+        "sensory_visual_per_1k",
+        "sensory_auditory_per_1k",
+        "sensory_olfactory_per_1k",
+        "sensory_tactile_per_1k",
+        "sensory_gustatory_per_1k",
+    }
+)
 
 _DIMENSION_ADVICE: dict[str, str] = {
     "avg_sentence_length": "Adjust average sentence length — mix short punchy sentences with longer flowing ones",
@@ -122,7 +129,7 @@ class DriftReport:
 def detect_chapter_drift(
     session: Session,
     chapter_id: str,
-    baseline_metrics: dict[str, float] | None = None,
+    baseline_metrics: Mapping[str, Any] | None = None,
 ) -> DriftReport:
     """Compare chapter's aggregate metrics against baseline profile.
 
@@ -130,16 +137,20 @@ def detect_chapter_drift(
     5 sensory-layer).  Paragraph-type ratio metrics are excluded as they
     require LLM classification not available at drift-detection time.
     """
-    scenes = session.execute(
-        select(FinalScene)
-        .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
-        .where(
-            FinalScene.chapter_id == chapter_id,
-            FinalScene.status.in_(("approved", "near_final_ready", "archived")),
-            SceneCard.trashed_flag == 0,
+    scenes = (
+        session.execute(
+            select(FinalScene)
+            .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
+            .where(
+                FinalScene.chapter_id == chapter_id,
+                FinalScene.status.in_(("approved", "near_final_ready", "archived")),
+                SceneCard.trashed_flag == 0,
+            )
+            .order_by(SceneCard.scene_seq.asc())
         )
-        .order_by(SceneCard.scene_seq.asc())
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     if not scenes:
         return DriftReport(chapter_id=chapter_id)
@@ -155,17 +166,29 @@ def detect_chapter_drift(
     report = DriftReport(chapter_id=chapter_id, metrics_computed=len(current))
     for dim in _DRIFTABLE_METRICS:
         cur_val = current.get(dim)
-        base_val = baseline_metrics.get(dim)
-        if cur_val is None or base_val is None or base_val == 0:
+        raw_base = baseline_metrics.get(dim)
+        # Profile baselines are normally structured as ``{mean, std}``, while
+        # older callers passed a scalar.  Accept both forms, but compare only
+        # against the mean; feeding the whole mapping into arithmetic used to
+        # make production drift detection degrade silently.
+        if isinstance(raw_base, Mapping):
+            raw_base = raw_base.get("mean")
+        try:
+            base_val = float(raw_base)
+        except (TypeError, ValueError):
+            continue
+        if cur_val is None or base_val == 0:
             continue
         deviation = abs(cur_val - base_val) / max(abs(base_val), 0.01)
         if deviation >= DRIFT_THRESHOLD:
-            report.drifts.append(DimensionDrift(
-                dimension=dim,
-                baseline_value=base_val,
-                current_value=cur_val,
-                deviation=round(deviation, 3),
-            ))
+            report.drifts.append(
+                DimensionDrift(
+                    dimension=dim,
+                    baseline_value=base_val,
+                    current_value=cur_val,
+                    deviation=round(deviation, 3),
+                )
+            )
 
     report.drifts.sort(key=lambda d: d.deviation, reverse=True)
     report.drifts = report.drifts[:MAX_CORRECTIVE_DIMENSIONS]
@@ -177,7 +200,9 @@ def format_drift_correction_prompt(report: DriftReport) -> str | None:
     if not report.has_drift:
         return None
     lines = ["## Style Drift Correction (auto-detected from previous chapter)"]
-    lines.append("The following dimensions drifted from the reference profile baseline.")
+    lines.append(
+        "The following dimensions drifted from the reference profile baseline."
+    )
     lines.append("Adjust the next chapter to steer back toward the target:\n")
 
     for drift in report.drifts:
@@ -210,7 +235,11 @@ _DIMENSION_PREFERRED_PTYPES: dict[str, tuple[str, ...]] = {
     "classical_word_ratio": ("narration", "description_env", "description_char"),
     "colloquial_marker_ratio": ("dialogue", "narration", "action"),
     "metaphor_density_per_1k": ("description_env", "description_char", "narration"),
-    "personification_density_per_1k": ("description_env", "description_char", "narration"),
+    "personification_density_per_1k": (
+        "description_env",
+        "description_char",
+        "narration",
+    ),
     "sensory_visual_per_1k": ("description_env", "description_char", "action"),
     "sensory_auditory_per_1k": ("description_env", "action", "narration"),
     "sensory_olfactory_per_1k": ("description_env", "narration", "description_char"),
@@ -238,7 +267,9 @@ def drift_corrective_ptype_priority(report: DriftReport) -> list[str]:
     return sorted(ptype_scores, key=lambda p: ptype_scores[p], reverse=True)
 
 
-def format_drift_dimensions_for_bundle(report: DriftReport) -> list[dict[str, Any]] | None:
+def format_drift_dimensions_for_bundle(
+    report: DriftReport,
+) -> list[dict[str, Any]] | None:
     """Serialize drifted dimensions for injection into the generation bundle.
 
     The bundle builder passes this to the style injection service, which overrides
@@ -265,6 +296,8 @@ def _compute_metrics(text: str) -> dict[str, float]:
     paragraphs_raw = [p.strip() for p in text.split("\n") if p.strip()]
     if not paragraphs_raw:
         return {}
-    paragraphs = [ParagraphRecord(text=p, paragraph_type="narration") for p in paragraphs_raw]
+    paragraphs = [
+        ParagraphRecord(text=p, paragraph_type="narration") for p in paragraphs_raw
+    ]
     engine = MetricsEngine()
     return engine.compute_all(paragraphs)

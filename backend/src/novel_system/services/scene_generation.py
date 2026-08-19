@@ -10,11 +10,21 @@ from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import AttemptTracker, LlmCall, SceneCard, SceneDraft, SceneRunState
+from novel_system.db.models import (
+    AttemptTracker,
+    LlmCall,
+    SceneCard,
+    SceneDraft,
+    SceneRunState,
+)
 from novel_system.services.errors import DomainError
 from novel_system.services.author_instructions import render_author_note_instruction
 from novel_system.services.hash_engine import canonical_json
-from novel_system.services.literary_quality import DIMENSION_WEIGHTS, QUALITY_DIMENSIONS, analyze_literary_quality
+from novel_system.services.literary_quality import (
+    DIMENSION_WEIGHTS,
+    QUALITY_DIMENSIONS,
+    analyze_literary_quality,
+)
 from novel_system.services.llm_audit import sanitize_audit_summary
 from novel_system.services.llm_client import LLMResponse
 from novel_system.services.llm_accounting import LLMAccountingRejected
@@ -32,6 +42,10 @@ from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.style_reference.injection import (
     InjectionService,
     ordered_character_ids,
+)
+from novel_system.services.style_reference.runtime_contract import (
+    extract_style_generation_context,
+    resolve_style_runtime_contract_state,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -92,6 +106,7 @@ class StyleGenerationResult:
     bundle_hash: str
     execution_step_key: str | None = None
     artifact_execution_id: str | None = None
+    ranking_audit: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -131,6 +146,7 @@ def _seal_continuation_descriptor(descriptor: dict[str, Any]) -> dict[str, Any]:
     sealed["descriptor_hash"] = _continuation_json_hash(sealed)
     return sealed
 
+
 # §6.3 multi-strategy diversification prompts for low-dispersion retry
 _DIVERSIFICATION_PROMPT = (
     "[DIVERSIFICATION] 前一轮生成的候选在表达上高度相似。请刻意尝试不同的叙述入口：\n"
@@ -152,7 +168,9 @@ _STYLE_EMPHASIS_ROTATION: list[str] = [
 ]
 
 
-def _progressive_top_up_variants(base_temp: float) -> list[tuple[float, str | None, str]]:
+def _progressive_top_up_variants(
+    base_temp: float,
+) -> list[tuple[float, str | None, str]]:
     """Wave 3（§5.5）渐进补候选的变体轮换：温度加宽 → 发散提示 → 风格侧重轮换。
 
     返回 (temperature, extra_system_prefix, strategy_label) 序列；补候选按序取用，
@@ -160,16 +178,26 @@ def _progressive_top_up_variants(base_temp: float) -> list[tuple[float, str | No
     """
     variants: list[tuple[float, str | None, str]] = [
         (round(min(2.0, base_temp + 0.15), 3), None, "temperature_widen"),
-        (round(min(2.0, base_temp + 0.10), 3), _DIVERSIFICATION_PROMPT, "prompt_variation"),
+        (
+            round(min(2.0, base_temp + 0.10), 3),
+            _DIVERSIFICATION_PROMPT,
+            "prompt_variation",
+        ),
     ]
     for idx, prefix in enumerate(_STYLE_EMPHASIS_ROTATION):
         variants.append(
-            (round(min(2.0, base_temp + 0.05 * (idx + 1)), 3), prefix, f"style_emphasis_{idx}")
+            (
+                round(min(2.0, base_temp + 0.05 * (idx + 1)), 3),
+                prefix,
+                f"style_emphasis_{idx}",
+            )
         )
     return variants
 
 
-def versioned_scene_artifact_id(prefix: str, scene_id: str, bundle: dict[str, Any]) -> str:
+def versioned_scene_artifact_id(
+    prefix: str, scene_id: str, bundle: dict[str, Any]
+) -> str:
     bundle_id = str(bundle.get("bundle_id") or "")
     bundle_prefix = f"bundle_{scene_id}_"
     if bundle_id.startswith(bundle_prefix):
@@ -177,7 +205,11 @@ def versioned_scene_artifact_id(prefix: str, scene_id: str, bundle: dict[str, An
     if bundle_id == f"bundle_{scene_id}":
         return f"{prefix}_{scene_id}"
     bundle_hash = str(bundle.get("bundle_snapshot_hash") or "")
-    suffix = bundle_hash[:12] if bundle_hash else hashlib.sha256(canonical_json(bundle).encode("utf-8")).hexdigest()[:12]
+    suffix = (
+        bundle_hash[:12]
+        if bundle_hash
+        else hashlib.sha256(canonical_json(bundle).encode("utf-8")).hexdigest()[:12]
+    )
     return f"{prefix}_{scene_id}_{suffix}"
 
 
@@ -243,7 +275,9 @@ class SceneGenerationService:
             )
             raise
 
-        prompt = self._inject_style_reference(prompt, scene, task_type="scene_generation", bundle=bundle)
+        # neutral_draft 的职责是固定事件、因果与连续性。风格参考只在后续
+        # style_draft / rewrite 阶段注入；否则会同时收到“保持中性”和“贴合
+        # 参考风格”两组冲突指令，并让同一风格在两阶段重复施压。
 
         try:
             node_result = self._llm_runner.run(
@@ -292,7 +326,10 @@ class SceneGenerationService:
                 step="neutral_draft",
                 status="completed",
                 source_bundle_id=bundle["bundle_id"],
-                details_json={"row_id": neutral_row_id, "llm_call_id": node_result.llm_call_id},
+                details_json={
+                    "row_id": neutral_row_id,
+                    "llm_call_id": node_result.llm_call_id,
+                },
             )
         )
         self.session.flush()
@@ -323,7 +360,9 @@ class SceneGenerationService:
         neutral_content: str,
         author_note: str | None = None,
         resume_base: StyleGenerationResult | None = None,
-        product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None = None,
+        product_callback: (
+            Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None
+        ) = None,
         step_reconciler: Callable[[str], None] | None = None,
     ) -> StyleGenerationResult:
         scene = self.session.get(SceneCard, scene_id)
@@ -365,41 +404,63 @@ class SceneGenerationService:
         n_candidates: int = 3,
         max_candidates: int | None = None,
         resume_candidates: list[StyleGenerationResult] | None = None,
-        candidate_checkpoint: Callable[[int, StyleGenerationResult], None] | None = None,
+        candidate_checkpoint: (
+            Callable[[int, StyleGenerationResult], None] | None
+        ) = None,
         step_reconciler: Callable[[str], None] | None = None,
         resume_bases: dict[str, StyleGenerationResult] | None = None,
         resume_products: dict[str, StyleGenerationResult] | None = None,
-        product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None = None,
+        product_callback: (
+            Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None
+        ) = None,
     ) -> list[StyleGenerationResult]:
-        """Generate N style-draft candidates sorted by adversarial quality (best first).
+        """Generate N style-draft candidates with evidence-gated style reranking.
 
         Wave 3（治理 §5.5）：低分散补救为**渐进补候选**——初始 n_candidates，
         分散度 <0.15 时在预算允许下逐个补到 max_candidates（关键 3→5、标准
         2→3），不再一次生成后整批无上限重试。
+
+        风格评分默认 shadow，仅落可审计诊断；只有冻结的人评证据授权后，才可在
+        adversarial 质量差距受限的候选间改序。连续复刻参考原文的候选由独立硬
+        guard 后置，不依赖未校准的风格分数。
         """
-        from novel_system.services.literary_quality import adversarial_rank_score, get_dimension_weights
+        from novel_system.services.literary_quality import (
+            adversarial_rank_score,
+            get_dimension_weights,
+        )
 
         scene = self.session.get(SceneCard, scene_id)
         state = self.session.get(SceneRunState, scene_id)
 
         # §6 dynamic quality weights — project-level style profile can shift
         # which adversarial dimensions matter most for this particular work.
-        _project_weights = get_dimension_weights(
-            scene.project_id, self.session,
-        ) if scene and scene.project_id else None
+        _project_weights = (
+            get_dimension_weights(
+                scene.project_id,
+                self.session,
+            )
+            if scene and scene.project_id
+            else None
+        )
         quality_strategy_audit: dict[str, Any] = {
             "status": "project_or_builtin_weights",
             "matched_policy_id": None,
         }
         if scene is not None:
             try:
-                from novel_system.services.quality_strategy import QualityStrategyResolver
+                from novel_system.services.quality_strategy import (
+                    QualityStrategyResolver,
+                )
 
-                resolved_strategy = QualityStrategyResolver(self.session).resolve_for_scene(scene)
+                resolved_strategy = QualityStrategyResolver(
+                    self.session
+                ).resolve_for_scene(scene)
                 quality_strategy_audit = {
                     "status": "resolved",
                     "matched_policy_id": resolved_strategy.matched_policy_id,
-                    "fallback_level": getattr(resolved_strategy, "fallback_level", None),
+                    "fallback_level": getattr(
+                        resolved_strategy, "fallback_level", None
+                    ),
                     "blockers": list(getattr(resolved_strategy, "blockers", ()) or ()),
                 }
                 if resolved_strategy.matched_policy_id is not None:
@@ -445,14 +506,20 @@ class SceneGenerationService:
                 for index, candidate in enumerate(resume_candidates or [])
             )
         candidates: list[tuple[StyleGenerationResult, float]] = [
-            (candidate, adversarial_rank_score(candidate.content, weights=_project_weights))
+            (
+                candidate,
+                adversarial_rank_score(candidate.content, weights=_project_weights),
+            )
             for candidate in durable_products.values()
         ]
         for idx, temp in enumerate(temperatures):
             slot_key = f"initial:{idx}"
             if slot_key in durable_products:
                 continue
-            cand_row_id = versioned_scene_artifact_id("draft_style_cand", scene_id, bundle) + f"_{idx}"
+            cand_row_id = (
+                versioned_scene_artifact_id("draft_style_cand", scene_id, bundle)
+                + f"_{idx}"
+            )
             try:
                 if step_reconciler is not None and slot_key not in durable_bases:
                     step_reconciler(f"style_draft:{idx}")
@@ -493,20 +560,28 @@ class SceneGenerationService:
                 if candidate_checkpoint is not None:
                     candidate_checkpoint(idx, result)
             except (DomainError, LLMNodeExecutionError):
-                _LOGGER.warning("candidate %d/%d failed for scene %s", idx + 1, n_candidates, scene_id)
+                _LOGGER.warning(
+                    "candidate %d/%d failed for scene %s",
+                    idx + 1,
+                    n_candidates,
+                    scene_id,
+                )
                 if candidate_checkpoint is not None or product_callback is not None:
                     raise
                 continue
 
         if not candidates:
-            return [self.generate_style_draft(
-                scene_id, bundle,
-                neutral_draft_row_id=neutral_draft_row_id,
-                neutral_content=neutral_content,
-                author_note=author_note,
-                product_callback=product_callback,
-                step_reconciler=step_reconciler,
-            )]
+            return [
+                self.generate_style_draft(
+                    scene_id,
+                    bundle,
+                    neutral_draft_row_id=neutral_draft_row_id,
+                    neutral_content=neutral_content,
+                    author_note=author_note,
+                    product_callback=product_callback,
+                    step_reconciler=step_reconciler,
+                )
+            ]
 
         candidates.sort(key=lambda pair: pair[1], reverse=True)
 
@@ -520,24 +595,32 @@ class SceneGenerationService:
             known_top_up_indices = {
                 int(slot_key.rsplit(":", 1)[-1])
                 for slot_key in {*durable_products, *durable_bases}
-                if slot_key.startswith("topup:") and slot_key.rsplit(":", 1)[-1].isdigit()
+                if slot_key.startswith("topup:")
+                and slot_key.rsplit(":", 1)[-1].isdigit()
             }
             pending_top_up_indices = sorted(
                 index
                 for index in known_top_up_indices
-                if f"topup:{index}" in durable_bases and f"topup:{index}" not in durable_products
+                if f"topup:{index}" in durable_bases
+                and f"topup:{index}" not in durable_products
             )
             top_up_index = max(known_top_up_indices, default=0)
             while len(candidates) < candidate_cap:
                 dispersion = _candidate_dispersion([c.content for c, _ in candidates])
-                pending_top_up_index = pending_top_up_indices.pop(0) if pending_top_up_indices else None
+                pending_top_up_index = (
+                    pending_top_up_indices.pop(0) if pending_top_up_indices else None
+                )
                 if pending_top_up_index is None and dispersion >= 0.15:
                     break
-                if pending_top_up_index is None and not can_spend(state, budget_unit(state)):
+                if pending_top_up_index is None and not can_spend(
+                    state, budget_unit(state)
+                ):
                     _LOGGER.warning(
                         "budget exhausted — stop progressive candidate top-up for scene %s "
                         "(dispersion=%.3f, %d candidates)",
-                        scene_id, dispersion, len(candidates),
+                        scene_id,
+                        dispersion,
+                        len(candidates),
                     )
                     break
                 if pending_top_up_index is None:
@@ -547,7 +630,10 @@ class SceneGenerationService:
                 temp, prefix, strategy = variants[(top_up_index - 1) % len(variants)]
                 _LOGGER.warning(
                     "low candidate dispersion (%.3f) for scene %s — progressive top-up #%d via %s (§5.5)",
-                    dispersion, scene_id, top_up_index, strategy,
+                    dispersion,
+                    scene_id,
+                    top_up_index,
+                    strategy,
                 )
                 top_up_row_id = (
                     versioned_scene_artifact_id("draft_style_cand", scene_id, bundle)
@@ -558,9 +644,14 @@ class SceneGenerationService:
                     if step_reconciler is not None and slot_key not in durable_bases:
                         step_reconciler(f"style_draft:topup:{top_up_index}")
                     result = self._run_style_generation(
-                        scene=scene, state=state, bundle=bundle,
-                        row_id=top_up_row_id, stage="style_draft", llm_step="style_draft",
-                        neutral_content=neutral_content, source_label="Approved Neutral Draft",
+                        scene=scene,
+                        state=state,
+                        bundle=bundle,
+                        row_id=top_up_row_id,
+                        stage="style_draft",
+                        llm_step="style_draft",
+                        neutral_content=neutral_content,
+                        source_label="Approved Neutral Draft",
                         source_row_id=neutral_draft_row_id,
                         extra_instruction=(
                             "Apply the style prompt template without changing the approved facts."
@@ -588,16 +679,70 @@ class SceneGenerationService:
                         product_callback=product_callback,
                         step_reconciler=step_reconciler,
                     )
-                    candidates.append((result, adversarial_rank_score(result.content, weights=_project_weights)))
+                    candidates.append(
+                        (
+                            result,
+                            adversarial_rank_score(
+                                result.content, weights=_project_weights
+                            ),
+                        )
+                    )
                     if candidate_checkpoint is not None:
                         candidate_checkpoint(len(candidates) - 1, result)
                 except (DomainError, LLMNodeExecutionError):
                     # 失败即停：不无上限重试（Wave 3 项 5）
-                    _LOGGER.warning("progressive top-up #%d failed for scene %s — stop", top_up_index, scene_id)
+                    _LOGGER.warning(
+                        "progressive top-up #%d failed for scene %s — stop",
+                        top_up_index,
+                        scene_id,
+                    )
                     if candidate_checkpoint is not None or product_callback is not None:
                         raise
                     break
             candidates.sort(key=lambda pair: pair[1], reverse=True)
+
+        quality_scores = {result.row_id: score for result, score in candidates}
+        try:
+            from novel_system.services.style_reference.candidate_rerank import (
+                StyleCandidateReranker,
+            )
+
+            rerank = StyleCandidateReranker(self.session).rerank(
+                scene,
+                bundle,
+                [result for result, _score in candidates],
+                quality_scores=quality_scores,
+            )
+            for result in rerank.ordered_candidates:
+                assessment = rerank.assessments[result.row_id].to_audit_dict()
+                result.ranking_audit = {**assessment, "rerank": rerank.audit}
+            candidates = [
+                (result, quality_scores[result.row_id])
+                for result in rerank.ordered_candidates
+            ]
+        except Exception as exc:
+            # Candidate generation must remain deliverable if the optional local
+            # scorer degrades.  Preserve the established quality order and expose
+            # a typed, non-sensitive audit reason instead of silently changing it.
+            _LOGGER.warning(
+                "style candidate reranking degraded for scene %s",
+                scene_id,
+                exc_info=True,
+            )
+            for rank, (result, score) in enumerate(candidates):
+                result.ranking_audit = {
+                    "row_id": result.row_id,
+                    "quality_score": round(float(score), 6),
+                    "style_score": None,
+                    "rank": rank,
+                    "selected": rank == 0,
+                    "selection_reason": "quality_order_rerank_degraded",
+                    "rerank": {
+                        "applied_mode": "off",
+                        "reason": "reranker_internal_error",
+                        "error_code": getattr(exc, "code", exc.__class__.__name__),
+                    },
+                }
 
         best_result = candidates[0][0]
         state.current_style_draft_row_id = best_result.row_id
@@ -667,7 +812,9 @@ class SceneGenerationService:
             scene=scene,
             state=state,
             bundle=bundle,
-            row_id=versioned_scene_artifact_id("draft_near_final_rewrite", scene_id, bundle),
+            row_id=versioned_scene_artifact_id(
+                "draft_near_final_rewrite", scene_id, bundle
+            ),
             stage="near_final_rewrite",
             llm_step="scene_literary_rewrite",
             neutral_content=source_content,
@@ -697,9 +844,10 @@ class SceneGenerationService:
         source_draft_row_id: str,
         source_content: str,
         target_continuation_chars: int,
-        segment_checkpoint: Callable[
-            [int, LongFormContinuationSegmentResult, dict[str, Any]], None
-        ] | None = None,
+        segment_checkpoint: (
+            Callable[[int, LongFormContinuationSegmentResult, dict[str, Any]], None]
+            | None
+        ) = None,
         step_reconciler: Callable[[str], None] | None = None,
         resume_segments: list[LongFormContinuationSegmentResult] | None = None,
         resume_cumulative_descriptor: dict[str, Any] | None = None,
@@ -715,9 +863,8 @@ class SceneGenerationService:
         has_checkpoint_callback = segment_checkpoint is not None
         has_step_reconciler = step_reconciler is not None
         has_resume_input = bool(resume_segments) or bool(resume_cumulative_descriptor)
-        if (
-            has_checkpoint_callback != has_step_reconciler
-            or (has_resume_input and not (has_checkpoint_callback and has_step_reconciler))
+        if has_checkpoint_callback != has_step_reconciler or (
+            has_resume_input and not (has_checkpoint_callback and has_step_reconciler)
         ):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
@@ -731,7 +878,9 @@ class SceneGenerationService:
         prompt: dict[str, Any] | None = None
 
         try:
-            prompt = self._prompt_builder().build(bundle["snapshot"], "long_form_continuation")
+            prompt = self._prompt_builder().build(
+                bundle["snapshot"], "long_form_continuation"
+            )
         except Exception as exc:
             self._persist_generation_failure(
                 scene=scene,
@@ -753,7 +902,9 @@ class SceneGenerationService:
         target_chars = max(1, int(target_continuation_chars))
         segment_count = 1
         if refresh_every_chars > 0:
-            segment_count = max(1, (target_chars + refresh_every_chars - 1) // refresh_every_chars)
+            segment_count = max(
+                1, (target_chars + refresh_every_chars - 1) // refresh_every_chars
+            )
         # 立项 C §12 — 首段注入用源稿尾部作 RAG query;后续每段按已生成正文刷新(防漂移)
         parameters = {
             "source_draft_row_id": source_draft_row_id,
@@ -772,12 +923,16 @@ class SceneGenerationService:
             parameters_hash=parameters_hash,
             resume_segments=resume_segments,
             resume_cumulative_descriptor=resume_cumulative_descriptor,
-            require_durable_owner=segment_checkpoint is not None or resume_segments is not None,
+            require_durable_owner=segment_checkpoint is not None
+            or resume_segments is not None,
         )
         continuation_parts = [segment.content for segment in resumed]
         all_segments = list(resumed)
         active_prompt = self._inject_style_reference(
-            prompt, scene, task_type="long_form_continuation",
+            prompt,
+            scene,
+            task_type="long_form_continuation",
+            bundle=bundle,
             context_text=(source_content or "")[-2000:],
         )
         for completed_index in range(len(continuation_parts)):
@@ -787,6 +942,7 @@ class SceneGenerationService:
                     prompt,
                     scene,
                     task_type="long_form_continuation",
+                    bundle=bundle,
                     context_text=(f"{source_content}\n{accumulated}".strip())[-2000:],
                 )
 
@@ -857,7 +1013,9 @@ class SceneGenerationService:
                     parameters_hash=parameters_hash,
                 )
             )
-            cumulative_descriptor["cumulative_content_hash"] = _continuation_text_hash(cumulative_content)
+            cumulative_descriptor["cumulative_content_hash"] = _continuation_text_hash(
+                cumulative_content
+            )
             cumulative_descriptor = _seal_continuation_descriptor(cumulative_descriptor)
             if segment_checkpoint is not None:
                 if not isinstance(segment_result.artifact_execution_id, str):
@@ -866,17 +1024,26 @@ class SceneGenerationService:
                         "durable continuation callback requires an execution owner",
                         status_code=409,
                     )
-                segment_checkpoint(segment_index, segment_result, deepcopy(cumulative_descriptor))
+                segment_checkpoint(
+                    segment_index, segment_result, deepcopy(cumulative_descriptor)
+                )
             if segment_index + 1 < segment_count:
                 # 防漂移:用累计已生成正文尾部重做 RAG 召回 → 样例随上下文变化
                 accumulated = "".join(continuation_parts)
                 active_prompt = self._inject_style_reference(
-                    prompt, scene, task_type="long_form_continuation",
+                    prompt,
+                    scene,
+                    task_type="long_form_continuation",
+                    bundle=bundle,
                     context_text=(f"{source_content}\n{accumulated}".strip())[-2000:],
                 )
 
         if len(all_segments) != segment_count:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation segment prefix is incomplete", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "continuation segment prefix is incomplete",
+                status_code=409,
+            )
         return self._persist_long_form_final(
             scene=scene,
             state=state,
@@ -902,12 +1069,19 @@ class SceneGenerationService:
         llm_call_ids = [segment.llm_call_id for segment in segments]
         if (
             len(segments) != parameters["segment_count"]
-            or cumulative_descriptor.get("cumulative_content_hash") != _continuation_text_hash(content)
+            or cumulative_descriptor.get("cumulative_content_hash")
+            != _continuation_text_hash(content)
             or cumulative_descriptor.get("parameters_hash") != parameters_hash
             or cumulative_descriptor.get("parameters") != parameters
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation final does not match its segment ledger", status_code=409)
-        row_id = versioned_scene_artifact_id("draft_long_form_continuation", scene.scene_id, bundle)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "continuation final does not match its segment ledger",
+                status_code=409,
+            )
+        row_id = versioned_scene_artifact_id(
+            "draft_long_form_continuation", scene.scene_id, bundle
+        )
         existing = self.session.get(SceneDraft, row_id)
         if existing is None:
             self.session.add(
@@ -939,9 +1113,13 @@ class SceneGenerationService:
                         "source_draft_row_id": parameters["source_draft_row_id"],
                         "source_content_hash": parameters["source_content_hash"],
                         "refresh_every_chars": parameters["refresh_every_chars"],
-                        "target_continuation_chars": parameters["target_continuation_chars"],
+                        "target_continuation_chars": parameters[
+                            "target_continuation_chars"
+                        ],
                         "parameters_hash": parameters_hash,
-                        "cumulative_descriptor_hash": cumulative_descriptor["descriptor_hash"],
+                        "cumulative_descriptor_hash": cumulative_descriptor[
+                            "descriptor_hash"
+                        ],
                     },
                 )
             )
@@ -970,9 +1148,14 @@ class SceneGenerationService:
             or details.get("content_hash") != _continuation_text_hash(content)
             or details.get("llm_call_ids") != llm_call_ids
             or details.get("parameters_hash") != parameters_hash
-            or details.get("cumulative_descriptor_hash") != cumulative_descriptor["descriptor_hash"]
+            or details.get("cumulative_descriptor_hash")
+            != cumulative_descriptor["descriptor_hash"]
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation final identity/hash mismatch", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "continuation final identity/hash mismatch",
+                status_code=409,
+            )
         state.current_style_draft_row_id = row_id
         state.latest_valid_draft_row_id = row_id
         state.current_bundle_id = bundle["bundle_id"]
@@ -1004,7 +1187,9 @@ class SceneGenerationService:
     ) -> LongFormContinuationSegmentResult:
         execution_step_key = f"long_form_continuation:{segment_index}"
         row_id = (
-            versioned_scene_artifact_id("draft_long_form_continuation_segment", scene.scene_id, bundle)
+            versioned_scene_artifact_id(
+                "draft_long_form_continuation_segment", scene.scene_id, bundle
+            )
             + f"_{segment_index}"
         )
         self.session.add(
@@ -1100,7 +1285,9 @@ class SceneGenerationService:
                 "cumulative_content_hash": _continuation_text_hash(""),
             }
             return [], _seal_continuation_descriptor(descriptor)
-        if not isinstance(resume_segments, list) or not isinstance(resume_cumulative_descriptor, dict):
+        if not isinstance(resume_segments, list) or not isinstance(
+            resume_cumulative_descriptor, dict
+        ):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
                 "continuation resume segments and descriptor must be supplied together",
@@ -1110,7 +1297,8 @@ class SceneGenerationService:
         supplied_hash = descriptor.get("descriptor_hash")
         if (
             not isinstance(supplied_hash, str)
-            or _seal_continuation_descriptor(descriptor).get("descriptor_hash") != supplied_hash
+            or _seal_continuation_descriptor(descriptor).get("descriptor_hash")
+            != supplied_hash
             or descriptor.get("version") != 1
             or descriptor.get("parameters") != parameters
             or descriptor.get("parameters_hash") != parameters_hash
@@ -1118,15 +1306,27 @@ class SceneGenerationService:
             or len(descriptor["segments"]) != len(resume_segments)
             or len(resume_segments) > parameters["segment_count"]
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation resume descriptor is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "continuation resume descriptor is invalid",
+                status_code=409,
+            )
         accumulated = ""
         for index, (segment, segment_descriptor) in enumerate(
             zip(resume_segments, descriptor["segments"], strict=True)
         ):
-            if not isinstance(segment, LongFormContinuationSegmentResult) or not isinstance(segment_descriptor, dict):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation segment cursor is invalid", status_code=409)
+            if not isinstance(
+                segment, LongFormContinuationSegmentResult
+            ) or not isinstance(segment_descriptor, dict):
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "continuation segment cursor is invalid",
+                    status_code=409,
+                )
             expected_row_id = (
-                versioned_scene_artifact_id("draft_long_form_continuation_segment", scene.scene_id, bundle)
+                versioned_scene_artifact_id(
+                    "draft_long_form_continuation_segment", scene.scene_id, bundle
+                )
                 + f"_{index}"
             )
             expected_step_key = f"long_form_continuation:{index}"
@@ -1163,7 +1363,11 @@ class SceneGenerationService:
                 or row.source_bundle_hash != bundle["bundle_snapshot_hash"]
                 or row.generation_llm_call_id != segment.llm_call_id
             ):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation segment identity/hash mismatch", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "continuation segment identity/hash mismatch",
+                    status_code=409,
+                )
             self._validate_long_form_segment_ledgers(
                 scene=scene,
                 bundle=bundle,
@@ -1171,8 +1375,14 @@ class SceneGenerationService:
                 descriptor=segment_descriptor,
                 require_durable_owner=require_durable_owner,
             )
-        if descriptor.get("cumulative_content_hash") != _continuation_text_hash(accumulated):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation cumulative hash mismatch", status_code=409)
+        if descriptor.get("cumulative_content_hash") != _continuation_text_hash(
+            accumulated
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "continuation cumulative hash mismatch",
+                status_code=409,
+            )
         return list(resume_segments), descriptor
 
     def _validate_long_form_segment_ledgers(
@@ -1215,7 +1425,11 @@ class SceneGenerationService:
             or call.budget_charged_tokens > call.reserved_tokens
             or call.total_tokens != call.prompt_tokens + call.completion_tokens
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation segment call ledger is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "continuation segment call ledger is invalid",
+                status_code=409,
+            )
         matching_attempts = []
         for attempt in self.session.query(AttemptTracker).filter_by(
             scene_id=scene.scene_id,
@@ -1228,9 +1442,12 @@ class SceneGenerationService:
                 details.get("row_id") == segment.row_id
                 and details.get("llm_call_id") == segment.llm_call_id
                 and details.get("segment_index") == segment.segment_index
-                and details.get("source_draft_row_id") == descriptor["source_draft_row_id"]
-                and details.get("source_content_hash") == descriptor["source_content_hash"]
-                and details.get("prior_cumulative_hash") == descriptor["prior_cumulative_hash"]
+                and details.get("source_draft_row_id")
+                == descriptor["source_draft_row_id"]
+                and details.get("source_content_hash")
+                == descriptor["source_content_hash"]
+                and details.get("prior_cumulative_hash")
+                == descriptor["prior_cumulative_hash"]
                 and details.get("cumulative_hash") == descriptor["cumulative_hash"]
                 and details.get("parameters_hash") == descriptor["parameters_hash"]
                 and details.get("execution_step_key") == segment.execution_step_key
@@ -1238,7 +1455,11 @@ class SceneGenerationService:
             ):
                 matching_attempts.append(attempt)
         if len(matching_attempts) != 1:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "continuation segment attempt ledger is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "continuation segment attempt ledger is invalid",
+                status_code=409,
+            )
 
     def _run_style_generation(
         self,
@@ -1264,7 +1485,9 @@ class SceneGenerationService:
         product_slot_key: str | None = None,
         product_slot_order: int | None = None,
         resume_base: StyleGenerationResult | None = None,
-        product_callback: Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None = None,
+        product_callback: (
+            Callable[[str, str, StyleGenerationResult, dict[str, Any]], None] | None
+        ) = None,
         step_reconciler: Callable[[str], None] | None = None,
     ) -> StyleGenerationResult:
         fallback_llm_call_id = f"llm_call_{scene.scene_id}_{uuid.uuid4().hex[:12]}"
@@ -1272,7 +1495,11 @@ class SceneGenerationService:
         prompt: dict[str, Any] | None = None
 
         try:
-            template_name = "scene_literary_rewrite" if llm_step == "scene_literary_rewrite" else "style_draft"
+            template_name = (
+                "scene_literary_rewrite"
+                if llm_step == "scene_literary_rewrite"
+                else "style_draft"
+            )
             prompt = self._prompt_builder().build(bundle["snapshot"], template_name)
         except Exception as exc:
             self._persist_generation_failure(
@@ -1291,12 +1518,20 @@ class SceneGenerationService:
             )
             raise
 
-        prompt = self._inject_style_reference(prompt, scene, task_type="scene_generation", bundle=bundle)
+        prompt = self._inject_style_reference(
+            prompt,
+            scene,
+            task_type="scene_generation",
+            bundle=bundle,
+            context_text=neutral_content,
+        )
 
         # §6.3 diversification: prepend caller-supplied system prefix (prompt variation / style emphasis)
         if extra_system_prefix and prompt is not None:
             injected = dict(prompt)
-            injected["system_prompt"] = extra_system_prefix + (prompt.get("system_prompt") or "")
+            injected["system_prompt"] = extra_system_prefix + (
+                prompt.get("system_prompt") or ""
+            )
             prompt = injected
 
         user_prompt = self._build_style_user_prompt(
@@ -1361,6 +1596,17 @@ class SceneGenerationService:
                         "row_id": row_id,
                         "llm_call_id": node_result.llm_call_id,
                         "source_draft_row_id": source_draft_row_id,
+                        **(
+                            {
+                                "style_reference_runtime": deepcopy(
+                                    prompt["_style_reference_runtime_audit"]
+                                )
+                            }
+                            if isinstance(
+                                prompt.get("_style_reference_runtime_audit"), dict
+                            )
+                            else {}
+                        ),
                         **(attempt_details_extra or {}),
                     },
                 )
@@ -1408,9 +1654,13 @@ class SceneGenerationService:
             style_content = resume_base.content
 
         if stage == "style_draft":
-            quality_gate = _anti_template_quality_gate(style_content, scene_id=scene.scene_id, chapter_id=scene.chapter_id)
+            quality_gate = _anti_template_quality_gate(
+                style_content, scene_id=scene.scene_id, chapter_id=scene.chapter_id
+            )
             if quality_gate["triggered"]:
-                de_template_step_key = f"{execution_step_key}:de_template" if execution_step_key else None
+                de_template_step_key = (
+                    f"{execution_step_key}:de_template" if execution_step_key else None
+                )
                 if step_reconciler is not None and de_template_step_key is not None:
                     step_reconciler(de_template_step_key)
                 de_template_result, de_template_outcome = self._run_de_template_pass(
@@ -1518,8 +1768,14 @@ class SceneGenerationService:
                 "status": "failed",
                 "llm_call_id": exc.llm_call_id,
                 "execution_step_key": execution_step_key,
-                "artifact_execution_id": call.execution_id if call is not None else current_llm_execution_id(),
-                "accounting_status": call.accounting_status if call is not None else None,
+                "artifact_execution_id": (
+                    call.execution_id
+                    if call is not None
+                    else current_llm_execution_id()
+                ),
+                "accounting_status": (
+                    call.accounting_status if call is not None else None
+                ),
                 "error_code": exc.error_code,
             }
 
@@ -1549,6 +1805,17 @@ class SceneGenerationService:
                     "llm_call_id": node_result.llm_call_id,
                     "source_style_draft_row_id": source_row_id,
                     "quality_gate": quality_gate,
+                    **(
+                        {
+                            "style_reference_runtime": deepcopy(
+                                prompt["_style_reference_runtime_audit"]
+                            )
+                        }
+                        if isinstance(
+                            prompt.get("_style_reference_runtime_audit"), dict
+                        )
+                        else {}
+                    ),
                 },
             )
         )
@@ -1679,30 +1946,105 @@ class SceneGenerationService:
         # §9 Defect B: read drift_ptype_priority from bundle (set by bundle_builder
         # when drift guidance includes structured dimension data) so the few-shot
         # selection prioritizes exemplars relevant to drifted dimensions ("show > tell")
-        if bundle and isinstance(bundle, dict):
-            drift_priority = (bundle.get("inline_digests") or {}).get("_drift_ptype_priority")
+        snapshot = (
+            bundle.get("snapshot")
+            if bundle
+            and isinstance(bundle, dict)
+            and isinstance(bundle.get("snapshot"), dict)
+            else bundle
+        )
+        if isinstance(snapshot, dict):
+            drift_priority = (snapshot.get("inline_digests") or {}).get(
+                "_drift_ptype_priority"
+            )
             if drift_priority and isinstance(drift_priority, list):
                 svc.drift_ptype_priority = drift_priority
-        # 立项 C — RAG 检索 query 来源(续写防漂移按最新正文重召回)
-        if context_text:
-            svc.context_text = context_text
+        # All callers now share one bounded prose-context extractor. The initial
+        # style pass supplies the neutral draft; continuation calls supply the
+        # latest accumulated prose.
+        from novel_system.services.style_reference.rag import load_rag_config
+
+        context = extract_style_generation_context(
+            context_text,
+            source_kind="generation_source" if context_text else "profile_fallback",
+            max_chars=int(load_rag_config().get("rag_context_query_max_chars", 2000)),
+        )
+        runtime_contract = None
+        contract_state = None
         try:
-            fragments = svc.fragments_for(
-                project_id, task_type, character_ids=character_ids, scene_id=scene_id,
+            contract_state = resolve_style_runtime_contract_state(
+                bundle,
+                task_type=task_type,
             )
+            runtime_contract = contract_state.contract
+            if contract_state.error_code is not None:
+                raise ValueError(contract_state.error_code)
+            if runtime_contract is not None:
+                fragments = svc.fragments_for_contract(
+                    runtime_contract,
+                    project_id=project_id,
+                    context=context,
+                    drift_ptype_priority=svc.drift_ptype_priority,
+                )
+            elif contract_state.mode == "absent":
+                # This new bundle explicitly froze "no style binding". A binding
+                # added later must not alter replay of the already-built scene.
+                return prompt
+            else:
+                # Backward compatibility for old bundles created before the frozen
+                # runtime contract. New bundles never re-resolve live bindings here.
+                svc.context_text = context.query_text
+                fragments = svc.fragments_for(
+                    project_id,
+                    task_type,
+                    character_ids=character_ids,
+                    scene_id=scene_id,
+                )
             prefix = fragments.to_system_prompt_prefix()
         except Exception as exc:  # noqa: BLE001
             # 风格注入是可选增强：召回/渲染失败时吞掉并回退到基础 prompt，不阻断 LLM 生成
             # 流程（顾问型降级，与离线退役无关）。
             _LOGGER.warning(
                 "style_reference injection skipped for scene %s task %s: %s",
-                getattr(scene, "scene_id", None), task_type, exc,
+                getattr(scene, "scene_id", None),
+                task_type,
+                exc,
             )
-            return prompt
-        if not prefix:
+            degraded = dict(prompt)
+            degraded["_style_reference_runtime_audit"] = {
+                "outcome": "degraded",
+                "task_type": task_type,
+                "context": context.audit_dict(),
+                "runtime_contract_status": (
+                    contract_state.status if contract_state is not None else None
+                ),
+                "runtime_contract_mode": (
+                    contract_state.mode if contract_state is not None else None
+                ),
+                "error_code": (
+                    contract_state.error_code
+                    if contract_state is not None
+                    and contract_state.error_code is not None
+                    else getattr(exc, "code", exc.__class__.__name__)
+                ),
+            }
+            return degraded
+        if not prefix and runtime_contract is None:
+            # Preserve the established strict no-op contract for legacy scenes
+            # with no applicable binding. The miss is already recorded by the
+            # injection metric; there is no frozen lineage to attach to the LLM
+            # request or attempt record.
             return prompt
         injected = dict(prompt)
-        injected["system_prompt"] = prefix + (prompt.get("system_prompt") or "")
+        if prefix:
+            injected["system_prompt"] = prefix + (prompt.get("system_prompt") or "")
+        if svc.last_runtime_audit is not None:
+            assert contract_state is not None
+            injected["_style_reference_runtime_audit"] = {
+                **svc.last_runtime_audit,
+                "runtime_contract_status": contract_state.status,
+                "runtime_contract_mode": contract_state.mode,
+            }
         return injected
 
     def _record_runner_failure_attempt(
@@ -1726,6 +2068,10 @@ class SceneGenerationService:
         if prompt is not None:
             details_json["template_name"] = prompt.get("template_name")
             details_json["template_version"] = prompt.get("template_version")
+            if isinstance(prompt.get("_style_reference_runtime_audit"), dict):
+                details_json["style_reference_runtime"] = deepcopy(
+                    prompt["_style_reference_runtime_audit"]
+                )
         if source_draft_row_id is not None:
             details_json["source_draft_row_id"] = source_draft_row_id
         if isinstance(exc, LLMNodeContinuityError):
@@ -1792,7 +2138,9 @@ class SceneGenerationService:
                 reasoning_level=getattr(task_config, "reasoning_level", None),
                 native_reasoning_json=None,
                 credential_mode=getattr(task_config, "credential_mode", None),
-                prompt_hash=prompt.get("prompt_hash") if isinstance(prompt, dict) else None,
+                prompt_hash=(
+                    prompt.get("prompt_hash") if isinstance(prompt, dict) else None
+                ),
                 step=step,
                 scene_id=scene.scene_id,
                 chapter_id=scene.chapter_id,
@@ -1853,7 +2201,7 @@ def _candidate_dispersion(texts: list[str]) -> float:
         return 1.0
 
     def _char_ngrams(text: str, n: int = 4) -> set[str]:
-        return {text[i:i + n] for i in range(max(0, len(text) - n + 1))}
+        return {text[i : i + n] for i in range(max(0, len(text) - n + 1))}
 
     ngram_sets = [_char_ngrams(t) for t in texts]
     distances: list[float] = []
@@ -1880,9 +2228,17 @@ def _extract_scene_text(response: LLMResponse) -> str:
     )
 
 
-def _anti_template_quality_gate(text: str, *, scene_id: str, chapter_id: str) -> dict[str, Any]:
+def _anti_template_quality_gate(
+    text: str, *, scene_id: str, chapter_id: str
+) -> dict[str, Any]:
     signals, findings = analyze_literary_quality(text)
-    score = round(sum(signals[dimension]["score"] * DIMENSION_WEIGHTS[dimension] for dimension in QUALITY_DIMENSIONS), 4)
+    score = round(
+        sum(
+            signals[dimension]["score"] * DIMENSION_WEIGHTS[dimension]
+            for dimension in QUALITY_DIMENSIONS
+        ),
+        4,
+    )
     risky_findings = [
         {
             **finding,
@@ -1899,7 +2255,9 @@ def _anti_template_quality_gate(text: str, *, scene_id: str, chapter_id: str) ->
         "rewrite_pass": 1 if triggered else 0,
         "score": score,
         "risk_dimensions": [finding["dimension"] for finding in risky_findings],
-        "quality_signal_ids": [finding["quality_signal_id"] for finding in risky_findings],
+        "quality_signal_ids": [
+            finding["quality_signal_id"] for finding in risky_findings
+        ],
         "findings": risky_findings,
     }
 

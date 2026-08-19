@@ -13,6 +13,28 @@ from novel_system.services.style_reference.repository import StyleReferenceRepos
 from novel_system.services.style_reference.schemas import BannedTermScope, ForbiddenHit
 
 
+def check_forbidden_terms(
+    generated_text: str,
+    terms: list[str],
+) -> list[ForbiddenHit]:
+    """Pure literal check used by both live and frozen runtime validation."""
+
+    if not generated_text:
+        return []
+    hits: list[ForbiddenHit] = []
+    for term in dict.fromkeys(str(value or "").strip() for value in terms):
+        if not term or term not in generated_text:
+            continue
+        hits.append(
+            ForbiddenHit(
+                pattern_statement=term,
+                matched_excerpt=term,
+                severity="error",
+            )
+        )
+    return hits
+
+
 def check_forbidden_local(
     generated_text: str,
     profile_id: str,
@@ -25,16 +47,7 @@ def check_forbidden_local(
     terms = repo.list_banned_terms(
         profile_id, scope=BannedTermScope.GENERATION.value
     )
-    hits: list[ForbiddenHit] = []
-    for term in terms:
-        if not term.term:
-            continue
-        if term.term in generated_text:
-            hits.append(
-                ForbiddenHit(
-                    pattern_statement=term.term,
-                    matched_excerpt=term.term,
-                    severity="error",
-                )
-            )
-    return hits
+    return check_forbidden_terms(
+        generated_text,
+        [str(term.term or "") for term in terms],
+    )

@@ -11,8 +11,11 @@ Windows 确定性后端;``chroma`` 走 WSL 集成测试)。索引在 profile **s
 
 设计硬约束:
 - **inject 热路径无 LLM**(§11 风险 6:inject < 50ms,库内拼装)。因此召回用
-  向量近邻 + **确定性 rerank**(query 字符覆盖率 × 粒度权重),而非 LLM rerank。
+  内容克制的风格签名近邻 + **确定性风格距离 rerank**,而非 LLM rerank。
   ``style_ref_rag_rerank`` LLM 节点仅作为离线/预览增强 hook 落地,不在热路径调用。
+- **内容独立**:原文与 query 题材词不进入正向检索键。索引 document 只保存
+  句段形状、标点节奏、虚词/代词与文字系统比例的量化签名;原文仅作为最终 payload。
+  内容二元组重叠只可施加负向安全惩罚,绝不增加召回分。
 - **反抄袭**(§A.5):RAG 注入参考书原文片段,与 few-shot(B)同性质——调用方
   (``injection._render``)在 rag_block 非空时强制随注红线段;此处再按 budget 截断,
   避免注入大段原文。
@@ -22,6 +25,7 @@ Windows 确定性后端;``chroma`` 走 WSL 集成测试)。索引在 profile **s
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -30,6 +34,14 @@ from typing import Any
 from novel_system.services.errors import DomainError
 from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from novel_system.services.style_reference.style_signature import (
+    STYLE_SIGNATURE_VERSION,
+    content_shingle_overlap,
+    extract_style_signature,
+    parse_style_signature,
+    query_view_for_granularity,
+    style_signature_similarity,
+)
 from novel_system.services.vector_store import VectorStore, get_vector_store
 
 logger = logging.getLogger(__name__)
@@ -45,15 +57,21 @@ RAG_RERANK_NODE_ID = "style_ref_rag_rerank"
 
 # 配置兜底:``config/style_reference/injection_budget.yaml`` 缺 rag.* 键时使用。
 _DEFAULT_RAG: dict[str, Any] = {
-    "rag_top_k": 3,                 # 每粒度向量召回条数
-    "rag_inject_max": 5,            # 注入到 prompt 的合并后总条数上限
-    "rag_quote_max_chars": 100,     # 单条样例截断
-    "rag_block_max_chars": 600,     # 整个 [风格检索样例] block 上限
+    "rag_top_k": 3,  # 每粒度向量召回条数
+    "rag_inject_max": 5,  # 注入到 prompt 的合并后总条数上限
+    "rag_quote_max_chars": 100,  # 单条样例截断
+    "rag_block_max_chars": 600,  # 整个 [风格检索样例] block 上限
     "rag_scene_target_chars": 600,  # scene 聚合的目标块长(连续段落累加阈值)
-    "rag_min_sentence_chars": 8,    # 过短句(标点/语气词)不入 sentence 索引
-    "rag_min_paragraph_chars": 8,   # 过短段不入 paragraph 索引
+    "rag_min_sentence_chars": 8,  # 过短句(标点/语气词)不入 sentence 索引
+    "rag_min_paragraph_chars": 8,  # 过短段不入 paragraph 索引
     "rag_context_query_max_chars": 2000,  # 续写防漂移 query 取最近 N 字
-    # 粒度权重:覆盖率已做长度归一,权重仅微调 "更完整肌理优先"。
+    "rag_signature_candidate_pool_min": 24,  # ANN 只作 shortlist;随后精确风格距离重排
+    "rag_signature_candidate_pool_multiplier": 8,
+    "rag_paragraph_query_chars": 400,
+    "rag_style_min_score": 0.45,
+    "rag_content_overlap_penalty_threshold": 0.18,
+    "rag_content_overlap_penalty_max": 0.25,
+    # 粒度权重:签名特征已归一,权重仅微调 "更完整肌理优先"。
     "rag_weight_sentence": 1.0,
     "rag_weight_paragraph": 1.1,
     "rag_weight_scene": 1.15,
@@ -134,7 +152,9 @@ def aggregate_scenes(
             {
                 "text": text,
                 "paragraph_type": ptype,
-                "paragraph_index": buf_first_index if buf_first_index is not None else 0,
+                "paragraph_index": (
+                    buf_first_index if buf_first_index is not None else 0
+                ),
             }
         )
         buf_texts, buf_types, buf_first_index, buf_len = [], [], None, 0
@@ -175,7 +195,12 @@ def _dominant(values: list[str]) -> str | None:
 
 
 def rag_collection_name(profile_id: str, granularity: str) -> str:
-    return f"style_ref_rag_{profile_id}_{granularity}"
+    # v2 collection 与旧的原文向量索引物理隔离,避免升级后误把内容相似当风格相似。
+    return f"style_ref_rag_v2_{profile_id}_{granularity}"
+
+
+def rag_manifest_collection_name(profile_id: str) -> str:
+    return f"style_ref_rag_v2_{profile_id}_manifest"
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +233,9 @@ def build_rag_index(
     - paragraph:每段一文档;
     - scene:连续段落按字数窗口聚合,逐块一文档。
 
-    幂等:``write_collection`` 内部先 reset 同名 collection,重复构建覆盖旧索引。
+    向量 document 是无题材词的风格签名搜索码;原文放在 ``source_text`` metadata,
+    仅在召回完成后用于注入。幂等:``write_collection`` 内部先 reset 同名
+    collection,重复构建覆盖旧索引。
     向量后端不可用时返回 ``{"skipped": <reason>}``(不抛,调用方 synthesize 不阻断)。
     """
     store = _resolve_store(vector_store)
@@ -220,6 +247,10 @@ def build_rag_index(
     config = load_rag_config()
     repo = StyleReferenceRepository(session)
     paragraphs = repo.list_paragraphs(book)
+
+    # Remove the completion marker before any destructive reset. A failed write
+    # can therefore never leave a partial index looking healthy on the next apply.
+    store.delete_collection(rag_manifest_collection_name(profile_id))
 
     min_sent = int(config["rag_min_sentence_chars"])
     min_para = int(config["rag_min_paragraph_chars"])
@@ -235,36 +266,36 @@ def build_rag_index(
         pindex = getattr(para, "paragraph_index", 0)
         if len(ptext) >= min_para:
             paragraph_docs.append(
-                {
-                    "id": f"p_{pid}",
-                    "text": ptext,
-                    "granularity": "paragraph",
-                    "paragraph_type": ptype,
-                    "paragraph_index": pindex,
-                }
+                _style_index_document(
+                    doc_id=f"p_{pid}",
+                    source_text=ptext,
+                    granularity="paragraph",
+                    paragraph_type=ptype,
+                    paragraph_index=pindex,
+                )
             )
         for si, sent in enumerate(split_sentences(ptext, min_chars=min_sent)):
             sentence_docs.append(
-                {
-                    "id": f"s_{pid}_{si}",
-                    "text": sent,
-                    "granularity": "sentence",
-                    "paragraph_type": ptype,
-                    "paragraph_index": pindex,
-                }
+                _style_index_document(
+                    doc_id=f"s_{pid}_{si}",
+                    source_text=sent,
+                    granularity="sentence",
+                    paragraph_type=ptype,
+                    paragraph_index=pindex,
+                )
             )
 
     scene_blocks = aggregate_scenes(
         paragraphs, target_chars=int(config["rag_scene_target_chars"])
     )
     scene_docs: list[dict[str, Any]] = [
-        {
-            "id": f"sc_{book}_{blk['paragraph_index']}_{i}",
-            "text": blk["text"],
-            "granularity": "scene",
-            "paragraph_type": blk["paragraph_type"],
-            "paragraph_index": blk["paragraph_index"],
-        }
+        _style_index_document(
+            doc_id=f"sc_{book}_{blk['paragraph_index']}_{i}",
+            source_text=blk["text"],
+            granularity="scene",
+            paragraph_type=blk["paragraph_type"],
+            paragraph_index=blk["paragraph_index"],
+        )
         for i, blk in enumerate(scene_blocks)
     ]
 
@@ -278,7 +309,94 @@ def build_rag_index(
         store.write_collection(rag_collection_name(profile_id, gran), docs)
         counts[gran] = len(docs)
     counts["profile_id"] = profile_id
+    counts["signature_version"] = STYLE_SIGNATURE_VERSION
+    store.write_collection(
+        rag_manifest_collection_name(profile_id),
+        [
+            {
+                "id": "manifest",
+                "text": STYLE_SIGNATURE_VERSION,
+                "profile_id": profile_id,
+                "signature_version": STYLE_SIGNATURE_VERSION,
+                "counts_json": json.dumps(counts, ensure_ascii=False, sort_keys=True),
+            }
+        ],
+    )
     return counts
+
+
+def ensure_rag_index(
+    session: Any,
+    profile: Any,
+    *,
+    book_id: str | None = None,
+    vector_store: VectorStore | None = None,
+) -> dict[str, Any]:
+    """Ensure a complete v2 index exists without rebuilding healthy collections.
+
+    The version is part of the collection name and a completion marker is written
+    only after all three collections succeed. Missing or partial collections
+    trigger one idempotent full rebuild.
+    """
+    store = _resolve_store(vector_store)
+    if store is None:
+        return {"skipped": "vector_store_unavailable"}
+    profile_id = str(profile.profile_id)
+    try:
+        collections_ready = all(
+            store.collection_exists(rag_collection_name(profile_id, granularity))
+            for granularity in GRANULARITIES
+        )
+        manifest_rows = store.load_collection(rag_manifest_collection_name(profile_id))
+        manifest_ready = bool(
+            manifest_rows
+            and manifest_rows[0].get("profile_id") == profile_id
+            and manifest_rows[0].get("signature_version") == STYLE_SIGNATURE_VERSION
+        )
+        ready = collections_ready and manifest_ready
+    except Exception:  # noqa: BLE001 — readiness probe must not block apply
+        logger.warning(
+            "rag index readiness probe failed for profile %s",
+            profile_id,
+            exc_info=True,
+        )
+        ready = False
+    if ready:
+        return {
+            "profile_id": profile_id,
+            "status": "ready",
+            "signature_version": STYLE_SIGNATURE_VERSION,
+        }
+    rebuilt = build_rag_index(
+        session,
+        profile,
+        book_id=book_id,
+        vector_store=store,
+    )
+    return {**rebuilt, "status": "rebuilt"}
+
+
+def _style_index_document(
+    *,
+    doc_id: str,
+    source_text: str,
+    granularity: str,
+    paragraph_type: str | None,
+    paragraph_index: int,
+) -> dict[str, Any]:
+    signature = extract_style_signature(source_text, granularity=granularity)
+    return {
+        "id": doc_id,
+        # Vector backends index only the encoded style bins.  Topic/content words
+        # are held separately and cannot contribute positive retrieval similarity.
+        "text": signature.search_text(),
+        "source_text": source_text,
+        "style_signature_json": signature.to_json(),
+        "signature_version": STYLE_SIGNATURE_VERSION,
+        "granularity": granularity,
+        "paragraph_type": paragraph_type,
+        "paragraph_index": paragraph_index,
+    }
 
 
 def delete_rag_index(
@@ -292,12 +410,24 @@ def delete_rag_index(
         return {"skipped": "vector_store_unavailable"}
     deleted = []
     for gran in GRANULARITIES:
-        name = rag_collection_name(profile_id, gran)
-        try:
-            store.delete_collection(name)
+        names = (
+            rag_collection_name(profile_id, gran),
+            f"style_ref_rag_{profile_id}_{gran}",  # v1 原文向量索引清理
+        )
+        removed = False
+        for name in names:
+            try:
+                existed = store.collection_exists(name)
+                store.delete_collection(name)
+                removed = removed or existed
+            except Exception:  # noqa: BLE001 — 删除是尽力而为
+                logger.warning("failed deleting rag collection %s", name)
+        if removed:
             deleted.append(gran)
-        except Exception:  # noqa: BLE001 — 删除是尽力而为
-            logger.warning("failed deleting rag collection %s", name)
+    try:
+        store.delete_collection(rag_manifest_collection_name(profile_id))
+    except Exception:  # noqa: BLE001 — 删除是尽力而为
+        logger.warning("failed deleting rag manifest for %s", profile_id)
     return {"deleted": deleted, "profile_id": profile_id}
 
 
@@ -313,6 +443,9 @@ class RagSnippet:
     granularity: str
     paragraph_type: str | None
     score: float
+    style_score: float = 0.0
+    content_overlap: float = 0.0
+    retrieval_version: str = STYLE_SIGNATURE_VERSION
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -321,10 +454,13 @@ class RagSnippet:
             "granularity": self.granularity,
             "paragraph_type": self.paragraph_type,
             "score": round(self.score, 6),
+            "style_score": round(self.style_score, 6),
+            "content_overlap": round(self.content_overlap, 6),
+            "retrieval_version": self.retrieval_version,
         }
 
 
-def _coverage_score(snippet_text: str, query_chars: set[str]) -> float:
+def legacy_content_coverage_score(snippet_text: str, query_chars: set[str]) -> float:
     """query 字符覆盖率 ∈ [0,1]:|set(query) ∩ set(snippet)| / |set(query)|。
 
     对长文本做了天然归一(分母只与 query 有关),避免 scene 块仅因更长而霸榜;
@@ -336,14 +472,60 @@ def _coverage_score(snippet_text: str, query_chars: set[str]) -> float:
     return len(query_chars & snippet_chars) / len(query_chars)
 
 
+def content_restrained_style_score(
+    query_text: str,
+    snippet_text: str,
+    *,
+    granularity: str,
+    config: dict[str, Any] | None = None,
+) -> dict[str, float]:
+    """Pure treatment score used by production retrieval and frozen A/B evaluation."""
+    cfg = config or load_rag_config()
+    query_signature = extract_style_signature(query_text, granularity=granularity)
+    snippet_signature = extract_style_signature(snippet_text, granularity=granularity)
+    style_score = style_signature_similarity(query_signature, snippet_signature)
+    overlap = content_shingle_overlap(query_text, snippet_text)
+    final_score = _apply_content_penalty(
+        style_score,
+        overlap,
+        granularity=granularity,
+        config=cfg,
+    )
+    return {
+        "style_score": style_score,
+        "content_overlap": overlap,
+        "final_score": final_score,
+    }
+
+
+def _apply_content_penalty(
+    style_score: float,
+    content_overlap: float,
+    *,
+    granularity: str,
+    config: dict[str, Any],
+) -> float:
+    threshold = float(config["rag_content_overlap_penalty_threshold"])
+    max_penalty = float(config["rag_content_overlap_penalty_max"])
+    if content_overlap <= threshold:
+        penalty = 0.0
+    else:
+        normalized = (content_overlap - threshold) / max(1e-9, 1.0 - threshold)
+        penalty = min(max_penalty, max_penalty * normalized)
+    # Granularity is only a small completeness preference; raw content overlap
+    # can reduce a score but can never increase it.
+    weights = _granularity_weights(config)
+    weighted = style_score * weights.get(granularity, 1.0) * (1.0 - penalty)
+    return min(1.0, max(0.0, weighted))
+
+
 class RagRetriever:
-    """三粒度召回 + 确定性 rerank。无 LLM,供 inject 热路径直接调用。"""
+    """三粒度内容克制风格召回 + 确定性 rerank。无 LLM。"""
 
     def __init__(self, session: Any, *, vector_store: VectorStore | None = None):
         self.session = session
         self._store = vector_store
         self._config = load_rag_config()
-        self._weights = _granularity_weights(self._config)
 
     # -- 评测/调试:按粒度分别返回(供 hit@k 独立测量) --------------------
     def retrieve_per_granularity(
@@ -353,24 +535,58 @@ class RagRetriever:
         if store is None or not (query_text or "").strip():
             return {gran: [] for gran in GRANULARITIES}
         k = int(top_k if top_k is not None else self._config["rag_top_k"])
-        query_chars = set(query_text)
         out: dict[str, list[RagSnippet]] = {}
         for gran in GRANULARITIES:
             name = rag_collection_name(profile_id, gran)
-            hits = self._query_collection(store, name, query_text, k)
-            snippets = [
-                RagSnippet(
-                    snippet_id=str(h.get("id", "")),
-                    text=str(h.get("text", "")),
+            query_view = query_view_for_granularity(
+                query_text,
+                gran,
+                paragraph_chars=int(self._config["rag_paragraph_query_chars"]),
+                scene_chars=int(self._config["rag_scene_target_chars"]),
+            )
+            query_signature = extract_style_signature(query_view, granularity=gran)
+            pool_size = max(
+                k * int(self._config["rag_signature_candidate_pool_multiplier"]),
+                int(self._config["rag_signature_candidate_pool_min"]),
+            )
+            hits = self._query_collection(
+                store, name, query_signature.search_text(), pool_size
+            )
+            snippets: list[RagSnippet] = []
+            for hit in hits:
+                signature = parse_style_signature(hit.get("style_signature_json", ""))
+                source_text = str(hit.get("source_text", "") or "")
+                if (
+                    signature is None
+                    or signature.granularity != gran
+                    or not source_text
+                ):
+                    # v1/raw-text documents are deliberately not a fallback: using
+                    # them would silently reintroduce topic matching after upgrade.
+                    continue
+                style_score = style_signature_similarity(query_signature, signature)
+                overlap = content_shingle_overlap(query_view, source_text)
+                final_score = _apply_content_penalty(
+                    style_score,
+                    overlap,
                     granularity=gran,
-                    paragraph_type=h.get("paragraph_type"),
-                    score=_coverage_score(str(h.get("text", "")), query_chars)
-                    * self._weights.get(gran, 1.0),
+                    config=self._config,
                 )
-                for h in hits
-            ]
+                if final_score < float(self._config["rag_style_min_score"]):
+                    continue
+                snippets.append(
+                    RagSnippet(
+                        snippet_id=str(hit.get("id", "")),
+                        text=source_text,
+                        granularity=gran,
+                        paragraph_type=hit.get("paragraph_type"),
+                        score=final_score,
+                        style_score=style_score,
+                        content_overlap=overlap,
+                    )
+                )
             snippets.sort(key=lambda s: (-s.score, s.snippet_id))
-            out[gran] = snippets
+            out[gran] = snippets[: max(0, k)]
         return out
 
     # -- inject 热路径:合并三粒度 → 全局 rerank → 截断 --------------------
@@ -392,7 +608,9 @@ class RagRetriever:
                 continue
             seen_texts.add(key)
             deduped.append(s)
-        limit = int(inject_max if inject_max is not None else self._config["rag_inject_max"])
+        limit = int(
+            inject_max if inject_max is not None else self._config["rag_inject_max"]
+        )
         return deduped[: max(0, limit)]
 
     def _query_collection(

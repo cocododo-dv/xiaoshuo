@@ -59,6 +59,8 @@ def _event(log: NarrativeEventLog, scene_id: str, value: str, *, confidence: str
         fact_key="location",
         fact_value=value,
         confidence=confidence,
+        authority_status="accepted",
+        source_kind="test_fixture",
     )
 
 
@@ -168,6 +170,8 @@ def test_obligation_boundary_crosses_chapters(session) -> None:
         fact_key="status",
         fact_value="planted",
         obligation_ids=["OB_A"],
+        authority_status="accepted",
+        source_kind="test_fixture",
     )
     log.log_event(
         project_id=PROJECT,
@@ -178,6 +182,8 @@ def test_obligation_boundary_crosses_chapters(session) -> None:
         entity_id="OB_A",
         fact_key="status",
         fact_value="resolved",
+        authority_status="accepted",
+        source_kind="test_fixture",
     )
     session.commit()
 

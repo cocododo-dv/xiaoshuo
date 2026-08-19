@@ -290,6 +290,7 @@ class TestHybridConsistency:
             project_id="proj_w2", chapter_id="ch_c", scene_id="s1",
             event_type="character_state", entity_type="character", entity_id="林远",
             fact_key="missing_limb", fact_value="right_arm",
+            authority_status="accepted", source_kind="test_fixture",
         )
         session.flush()
         return log

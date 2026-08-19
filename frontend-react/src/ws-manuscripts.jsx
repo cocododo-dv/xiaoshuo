@@ -33,6 +33,8 @@ function manuCanonicalComplete(snapshot) {
     && body.completion === "complete"
     && Array.isArray(body.missingSceneIds)
     && body.missingSceneIds.length === 0
+    && body.canonContinuity
+    && body.canonContinuity.complete === true
   );
 }
 
@@ -42,6 +44,11 @@ function manuCanonicalBlockReason(snapshot) {
   if (snapshot.status === "error") return (snapshot.error && snapshot.error.message) || "服务端正文加载失败，请重试。";
   const missing = (snapshot.body && snapshot.body.missingSceneIds) || [];
   if (missing.length) return `服务端仍缺 ${missing.length} 场归档正文。`;
+  const canon = snapshot.body && snapshot.body.canonContinuity;
+  if (!canon) return "服务端尚未返回本章正史核验状态。";
+  if ((canon.missing_final_scene_ids || []).length) return `仍有 ${canon.missing_final_scene_ids.length} 场缺少终稿，无法核验正史。`;
+  if ((canon.pending_scene_ids || []).length) return `仍有 ${canon.pending_scene_ids.length} 场正史待核对。`;
+  if (Number(canon.pending_candidate_count || 0) > 0) return `仍有 ${canon.pending_candidate_count} 条事实候选待裁决。`;
   return "服务端尚未将本章标记为可流转稿。";
 }
 
@@ -495,14 +502,13 @@ function WsManuscripts({ go }) {
                   {aggregateState.busy ? "汇总中…" : "生成/刷新章节汇总"}
                 </button>
               )}
-              {picked.state !== "writing" && (
-                <div className="seg">
-                  <button className={`seg-btn ${view === "read" ? "is-active" : ""}`} onClick={() => setView("read")}>正文</button>
-                  <button className={`seg-btn ${view === "structure" ? "is-active" : ""}`} onClick={() => setView("structure")}>结构</button>
-                  {(picked.state === "approved" || picked.state === "review") && catPicked && (catPicked.scenes || []).length > 0 &&
-                    <button className={`seg-btn ${view === "diff" ? "is-active" : ""}`} onClick={() => setView("diff")}>对比</button>}
-                </div>
-              )}
+              <div className="seg">
+                <button className={`seg-btn ${view === "read" ? "is-active" : ""}`} onClick={() => setView("read")}>{picked.state === "writing" ? "进度" : "正文"}</button>
+                {picked.state !== "writing" && <button className={`seg-btn ${view === "structure" ? "is-active" : ""}`} onClick={() => setView("structure")}>结构</button>}
+                <button className={`seg-btn ${view === "canon" ? "is-active" : ""}`} data-testid="manuscript-canon-tab" onClick={() => setView("canon")}>正史</button>
+                {(picked.state === "approved" || picked.state === "review") && catPicked && (catPicked.scenes || []).length > 0 &&
+                  <button className={`seg-btn ${view === "diff" ? "is-active" : ""}`} onClick={() => setView("diff")}>对比</button>}
+              </div>
             </div>
           </header>
           {(aggregateState.error || aggregateState.note || workflowState.error || workflowState.note || chapterExportState.error || chapterExportState.note) && (
@@ -520,15 +526,22 @@ function WsManuscripts({ go }) {
             <div className="ms-canonical-loading" role="status"><I.Refresh size={13} className="sf-spin" /> 正在从服务端核验本章正文…</div>
           )}
 
-          {picked.state === "writing"
-            ? <ManuWriting picked={picked} go={go} gate={auditPending(picked) ? (gateArm ? "armed" : "pending") : null} onSubmit={submitToReview} canSubmit={canonicalComplete && !workflowState.busy} blockReason={canonicalBlockReason} />
-            : (
+          {view === "canon"
+            ? <ManuCanon
+                projectId={projectId}
+                chapterId={catPicked && catPicked.backendId}
+                canonical={canonical}
+                onChanged={() => manuBump(n => n + 1)}
+              />
+            : picked.state === "writing"
+              ? <ManuWriting picked={picked} go={go} gate={auditPending(picked) ? (gateArm ? "armed" : "pending") : null} onSubmit={submitToReview} canSubmit={canonicalComplete && !workflowState.busy} blockReason={canonicalBlockReason} />
+              : (
               <>
                 {view === "read"      && <ManuRead picked={picked} body={body} loadState={canonical} onRetry={retryCanonical} />}
                 {view === "structure" && <ManuStructure picked={picked} body={body} catCh={catPicked} />}
                 {view === "diff"      && <ManuDiff picked={picked} catCh={catPicked} />}
               </>
-            )}
+              )}
 
           <footer className="ms-reader-foot">
             <ManuFootNote picked={picked} canonical={canonical} canonicalComplete={canonicalComplete} />
@@ -561,6 +574,256 @@ function WsManuscripts({ go }) {
       {returnOpen && <ManuReturnModal picked={picked} catCh={catPicked} busy={workflowState.busy} error={workflowState.error} onClose={() => !workflowState.busy && setReturnOpen(false)} onConfirm={doReturn} />}
       {approvalOpen && <ManuApprovalModal picked={picked} busy={workflowState.busy} error={workflowState.error} onClose={() => !workflowState.busy && setApprovalOpen(false)} onConfirm={approveFinal} />}
       {reopenOpen && <ManuReopenModal picked={picked} busy={workflowState.busy} error={workflowState.error} onClose={() => !workflowState.busy && setReopenOpen(false)} onConfirm={reopenFinal} />}
+    </div>
+  );
+}
+
+/* ---------- 正史审核台：抽取只是候选，作者裁决后才进入后续写作上下文 ---------- */
+const CANON_EVENT_LABELS = {
+  character_state: "人物状态",
+  character_learns: "人物获知",
+  location_change: "位置变化",
+  relation_change: "关系变化",
+  item_change: "物品变化",
+  foreshadow_plant: "伏笔埋设",
+  foreshadow_reinforce: "伏笔强化",
+  foreshadow_resolve: "伏笔兑现",
+};
+
+const CANON_STATUS_LABELS = {
+  synced: "已提交正史",
+  pending_review: "等待作者裁决",
+  pending_extraction: "等待提取或人工确认",
+  degraded: "自动提取降级",
+  missing_final: "缺少终稿",
+};
+
+function ManuCanon({ projectId, chapterId, canonical, onChanged }) {
+  const [busyKey, setBusyKey] = useSt9("");
+  const [feedback, setFeedback] = useSt9({ error: "", note: "" });
+  const [entityChoice, setEntityChoice] = useSt9({});
+  const [verifyNotes, setVerifyNotes] = useSt9({});
+  const [manualSceneId, setManualSceneId] = useSt9("");
+  const [manual, setManual] = useSt9({
+    event_type: "character_state",
+    raw_entity_ref: "",
+    fact_key: "",
+    fact_value: "",
+    evidence_text: "",
+  });
+
+  useEf9(() => {
+    setBusyKey("");
+    setFeedback({ error: "", note: "" });
+    setEntityChoice({});
+    setVerifyNotes({});
+    setManualSceneId("");
+  }, [chapterId]);
+
+  if (!canonical || canonical.status === "idle" || canonical.status === "loading") {
+    return <div className="ms-canon-empty" role="status"><I.Refresh size={15} className="sf-spin" /> 正在读取正史提交状态…</div>;
+  }
+  if (canonical.status === "error") {
+    return <div className="ms-canon-empty is-error"><I.AlertTriangle size={17} /> {(canonical.error && canonical.error.message) || "正史状态加载失败。"}</div>;
+  }
+
+  const canon = canonical.body && canonical.body.canonContinuity;
+  if (!canon) {
+    return <div className="ms-canon-empty is-error"><I.AlertTriangle size={17} /> 服务端没有返回正史核验结果，终稿流转已安全暂停。</div>;
+  }
+
+  const scenes = canon.scenes || [];
+  const run = async (key, action, successNote) => {
+    if (busyKey) return;
+    setBusyKey(key);
+    setFeedback({ error: "", note: "" });
+    try {
+      await action();
+      setFeedback({ error: "", note: successNote });
+      if (onChanged) onChanged();
+    } catch (e) {
+      setFeedback({ error: (e && e.message) || "正史操作失败。", note: "" });
+    } finally {
+      setBusyKey("");
+    }
+  };
+
+  const decide = (scene, candidate, action) => {
+    const selected = entityChoice[candidate.candidate_id] || null;
+    return run(
+      `candidate:${candidate.candidate_id}`,
+      () => WsManuStore.decideCanonCandidate(projectId, chapterId, candidate.candidate_id, {
+        action,
+        selected_entity_id: selected,
+        expected_final_scene_row_id: scene.final_scene_row_id,
+      }),
+      action === "accept" ? "事实已接受；完成整场确认后才会进入正史。" : "候选已驳回，不会进入后续写作上下文。",
+    );
+  };
+
+  const verify = (scene) => {
+    const note = String(verifyNotes[scene.scene_id] || "").trim();
+    if (!note) {
+      setFeedback({ error: "请写明你核对了什么，再确认本场正史。", note: "" });
+      return;
+    }
+    return run(
+      `verify:${scene.scene_id}`,
+      () => WsManuStore.verifySceneCanon(projectId, chapterId, scene.scene_id, {
+        note,
+        expected_final_scene_row_id: scene.final_scene_row_id,
+      }),
+      `第 ${scene.scene_seq} 场正史已由作者确认。`,
+    );
+  };
+
+  const extract = (scene) => run(
+    `extract:${scene.scene_id}`,
+    () => WsManuStore.extractSceneCanon(projectId, chapterId, scene.scene_id),
+    `第 ${scene.scene_seq} 场已重新提取，请逐条裁决。`,
+  );
+
+  const addManual = () => {
+    if (!manualSceneId) {
+      setFeedback({ error: "请先选择要补录事实的场景。", note: "" });
+      return;
+    }
+    const payload = Object.fromEntries(Object.entries(manual).map(([key, value]) => [key, String(value || "").trim()]));
+    if (!payload.raw_entity_ref || !payload.fact_key || !payload.fact_value || !payload.evidence_text) {
+      setFeedback({ error: "实体、事实键、事实值和正文证据都必须填写。", note: "" });
+      return;
+    }
+    return run(
+      `manual:${manualSceneId}`,
+      () => WsManuStore.createCanonCandidate(projectId, chapterId, manualSceneId, payload),
+      "人工事实候选已加入，请继续接受或驳回。",
+    );
+  };
+
+  return (
+    <div className="ms-canon" data-testid="manuscript-canon-panel">
+      <section className={`ms-canon-overview ${canon.complete ? "is-complete" : "is-pending"}`}>
+        <div className="ms-canon-seal">{canon.complete ? <I.ShieldCheck size={24} /> : <I.Database size={22} />}</div>
+        <div>
+          <div className="ms-canon-kicker">CANON LEDGER · 正史账本</div>
+          <h2 className="text-serif">{canon.complete ? "本章事实已经提交" : "本章仍有事实需要你落槌"}</h2>
+          <p>AI 只能从终稿提出候选；只有你逐条裁决并完成整场确认后，人物状态、知识、关系与时间线才会原子进入后续章节。</p>
+        </div>
+        <div className="ms-canon-counts">
+          <span><b>{canon.synced_scene_count || 0}</b> / {canon.scene_count || 0} 场已提交</span>
+          <span><b>{canon.pending_candidate_count || 0}</b> 条待裁决</span>
+        </div>
+      </section>
+
+      {(feedback.error || feedback.note) && (
+        <div className={`ms-canon-feedback ${feedback.error ? "is-error" : "is-ok"}`} role={feedback.error ? "alert" : "status"}>
+          {feedback.error || feedback.note}
+        </div>
+      )}
+
+      <div className="ms-canon-scenes">
+        {scenes.map(scene => {
+          const pending = (scene.candidates || []).filter(candidate => candidate.status === "pending");
+          const extraction = scene.extraction || {};
+          return (
+            <section className={`ms-canon-scene status-${scene.status}`} key={scene.scene_id} data-testid="canon-scene-card">
+              <header>
+                <div>
+                  <span className="ms-canon-scene-no">SCENE {String(scene.scene_seq || "—").padStart(2, "0")}</span>
+                  <strong>{CANON_STATUS_LABELS[scene.status] || scene.status}</strong>
+                </div>
+                <span className={`ms-canon-status ${scene.complete ? "is-complete" : "is-pending"}`}>
+                  {scene.complete ? <I.CheckCircle size={13} /> : <I.Clock size={13} />}
+                  {scene.complete ? "已提交" : `${pending.length} 条待裁决`}
+                </span>
+              </header>
+
+              {!scene.complete && (extraction.extraction_outcome || ["pending_extraction", "degraded"].includes(scene.status)) && (
+                <div className="ms-canon-extract-note">
+                  <span>
+                    提取结果：{extraction.extraction_outcome || "not_invoked"}
+                    {extraction.extraction_reason ? ` · ${extraction.extraction_reason}` : ""}
+                    {extraction.requires_empty_confirmation
+                      ? " · 模型未发现持久变化，仍需你通读确认"
+                      : extraction.requires_scene_confirmation
+                        ? " · 候选裁决完成后仍需通读确认没有漏项"
+                        : ""}
+                  </span>
+                  {["pending_extraction", "degraded"].includes(scene.status) && (
+                    <button className="btn btn-quiet btn-sm" data-testid="canon-scene-extract" disabled={Boolean(busyKey)} onClick={() => extract(scene)}>
+                      {busyKey === `extract:${scene.scene_id}` ? <I.Refresh size={12} className="sf-spin" /> : <I.Sparkles size={12} />}
+                      用模型重新提取
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div className="ms-canon-candidates">
+                {(scene.candidates || []).map(candidate => {
+                  const needsEntity = ["ambiguous", "unresolved"].includes(candidate.entity_resolution_status);
+                  const evidenceGrounded = !candidate.evidence || candidate.evidence.grounded !== false;
+                  const selected = entityChoice[candidate.candidate_id] || "";
+                  const canAccept = evidenceGrounded && (!needsEntity || Boolean(selected));
+                  return (
+                    <article className={`ms-canon-candidate is-${candidate.status}`} key={candidate.candidate_id} data-testid="canon-candidate">
+                      <div className="ms-canon-candidate-top">
+                        <span>{CANON_EVENT_LABELS[candidate.event_type] || candidate.event_type}</span>
+                        <span>{candidate.status === "pending" ? "候选" : candidate.status === "accepted" ? "已接受 · 待整场确认" : "已驳回"}</span>
+                      </div>
+                      <div className="ms-canon-fact">
+                        <b>{candidate.raw_entity_ref}</b>
+                        <span>{candidate.fact_key}</span>
+                        <I.ArrowRight size={13} />
+                        <strong>{candidate.fact_value}</strong>
+                      </div>
+                      <blockquote>“{(candidate.evidence && candidate.evidence.text) || "无证据摘录"}”</blockquote>
+                      {!evidenceGrounded && <div className="ms-canon-evidence-warning"><I.AlertTriangle size={12} /> 这段引文不在当前终稿中，只能驳回后重新补录。</div>}
+                      {candidate.status === "pending" && needsEntity && (
+                        <label className="ms-canon-entity">
+                          <span>{candidate.entity_resolution_status === "ambiguous" ? "同名/别名冲突，请指定实体" : "未识别实体；可驳回后用规范名称补录"}</span>
+                          {(candidate.entity_options || []).length > 0 && (
+                            <select value={selected} onChange={event => setEntityChoice(current => ({ ...current, [candidate.candidate_id]: event.target.value }))}>
+                              <option value="">选择正史实体…</option>
+                              {(candidate.entity_options || []).map(option => <option value={option.entity_id} key={option.entity_id}>{option.label}</option>)}
+                            </select>
+                          )}
+                        </label>
+                      )}
+                      {candidate.status === "pending" && (
+                        <div className="ms-canon-actions">
+                          <button className="btn btn-ghost btn-sm" disabled={Boolean(busyKey)} onClick={() => decide(scene, candidate, "reject")}>驳回</button>
+                          <button className="btn btn-accent btn-sm" data-testid="canon-candidate-accept" disabled={Boolean(busyKey) || !canAccept} onClick={() => decide(scene, candidate, "accept")}><I.Check size={13} /> 接受此事实</button>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+
+              {!scene.complete && pending.length === 0 && scene.final_scene_row_id && (
+                <div className="ms-canon-verify">
+                  <label htmlFor={`canon-note-${scene.scene_id}`}>通读确认</label>
+                  <textarea id={`canon-note-${scene.scene_id}`} value={verifyNotes[scene.scene_id] || ""} onChange={event => setVerifyNotes(current => ({ ...current, [scene.scene_id]: event.target.value }))} placeholder="例如：已通读本场，没有新的持久状态变化；人物伤势与上一场一致。" />
+                  <button className="btn btn-accent btn-sm" data-testid="canon-scene-verify" disabled={Boolean(busyKey)} onClick={() => verify(scene)}><I.ShieldCheck size={13} /> 确认本场正史</button>
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
+
+      {scenes.some(scene => scene.final_scene_row_id && !scene.complete) && <details className="ms-canon-manual">
+        <summary><I.Plus size={13} /> 模型漏掉了事实？从终稿证据手工补录</summary>
+        <div className="ms-canon-manual-grid">
+          <label><span>场景</span><select value={manualSceneId} onChange={event => setManualSceneId(event.target.value)}><option value="">选择场景…</option>{scenes.filter(scene => scene.final_scene_row_id && !scene.complete).map(scene => <option key={scene.scene_id} value={scene.scene_id}>第 {scene.scene_seq} 场</option>)}</select></label>
+          <label><span>类型</span><select value={manual.event_type} onChange={event => setManual(current => ({ ...current, event_type: event.target.value }))}>{Object.entries(CANON_EVENT_LABELS).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+          <label><span>实体规范名</span><input value={manual.raw_entity_ref} onChange={event => setManual(current => ({ ...current, raw_entity_ref: event.target.value }))} placeholder="如：林远" /></label>
+          <label><span>事实键</span><input value={manual.fact_key} onChange={event => setManual(current => ({ ...current, fact_key: event.target.value }))} placeholder="如：injury" /></label>
+          <label className="is-wide"><span>事实值</span><input value={manual.fact_value} onChange={event => setManual(current => ({ ...current, fact_value: event.target.value }))} placeholder="如：右臂骨折，需要固定六周" /></label>
+          <label className="is-wide"><span>终稿原文证据（必须逐字存在）</span><textarea value={manual.evidence_text} onChange={event => setManual(current => ({ ...current, evidence_text: event.target.value }))} placeholder="粘贴当前终稿中的原句" /></label>
+        </div>
+        <button className="btn btn-ghost btn-sm" disabled={Boolean(busyKey)} onClick={addManual}>加入待审核候选</button>
+      </details>}
     </div>
   );
 }

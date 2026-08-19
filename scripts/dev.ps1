@@ -2,7 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("start", "stop", "restart")]
     [string]$Action,
-    # Legacy Vue frontend (5173) is no longer started by default; pass -IncludeLegacyVue to start it too (reversible).
+    # Legacy Vue frontend (preferred port 5173) is no longer started by default; pass -IncludeLegacyVue to start it too (reversible).
     [switch]$IncludeLegacyVue
 )
 
@@ -117,11 +117,12 @@ function Resolve-AvailablePort {
         [int]$PreferredPort,
         [Parameter(Mandatory = $true)]
         [string]$Label,
+        [int[]]$ReservedPorts = @(),
         [int]$ScanLimit = 200
     )
 
     for ($port = $PreferredPort; $port -le ($PreferredPort + $ScanLimit); $port++) {
-        if (Test-PortBindable -Port $port) {
+        if (($ReservedPorts -notcontains $port) -and (Test-PortBindable -Port $port)) {
             if ($port -ne $PreferredPort) {
                 Write-Step -Message ("{0} preferred port {1} is unavailable; using {2}." -f $Label, $PreferredPort, $port)
             }
@@ -250,19 +251,6 @@ function Stop-TrackedServices {
 
     Start-Sleep -Seconds 2
     Remove-RunState
-}
-
-function Assert-PortAvailable {
-    param(
-        [Parameter(Mandatory = $true)]
-        [int]$Port,
-        [Parameter(Mandatory = $true)]
-        [string]$Label
-    )
-
-    if (-not (Test-PortBindable -Port $Port)) {
-        throw ("{0} port {1} is unavailable. Run .\\stop-dev.cmd or .\\restart-dev.cmd first, or choose another port." -f $Label, $Port)
-    }
 }
 
 function Invoke-BackendBootstrap {
@@ -399,10 +387,14 @@ function Start-TrackedServices {
     $script:BackendPort = Resolve-AvailablePort -PreferredPort $script:BackendPreferredPort -Label "Backend"
     $script:BackendUrl = "http://127.0.0.1:$script:BackendPort"
     $script:BackendHealthUrl = "$script:BackendUrl/ready"
+    $reservedPorts = @($script:BackendPort)
     if ($script:IncludeLegacyVue) {
-        Assert-PortAvailable -Port $script:FrontendPort -Label "Frontend"
+        $script:FrontendPort = Resolve-AvailablePort -PreferredPort $script:FrontendPreferredPort -Label "Frontend" -ReservedPorts $reservedPorts
+        $script:FrontendUrl = "http://127.0.0.1:$script:FrontendPort"
+        $reservedPorts += $script:FrontendPort
     }
-    Assert-PortAvailable -Port $script:ReactPort -Label "React frontend"
+    $script:ReactPort = Resolve-AvailablePort -PreferredPort $script:ReactPreferredPort -Label "React frontend" -ReservedPorts $reservedPorts
+    $script:ReactUrl = "http://127.0.0.1:$script:ReactPort"
 
     New-Item -ItemType Directory -Path $script:RunDir -Force | Out-Null
     Clear-PreviousLogs
@@ -481,15 +473,17 @@ $script:FrontendErrLog = Join-Path $script:RunDir "frontend.err.log"
 $script:ReactOutLog = Join-Path $script:RunDir "frontend-react.out.log"
 $script:ReactErrLog = Join-Path $script:RunDir "frontend-react.err.log"
 $script:BackendPreferredPort = 8000
+$script:FrontendPreferredPort = 5173
+$script:ReactPreferredPort = 5174
 $script:PythonExe = Join-Path $script:BackendDir ".venv\Scripts\python.exe"
 $script:BackendPort = $script:BackendPreferredPort
-$script:FrontendPort = 5173
-$script:ReactPort = 5174
+$script:FrontendPort = $script:FrontendPreferredPort
+$script:ReactPort = $script:ReactPreferredPort
 $script:IncludeLegacyVue = [bool]$IncludeLegacyVue
 $script:BackendUrl = "http://127.0.0.1:$script:BackendPort"
 $script:BackendHealthUrl = "$script:BackendUrl/ready"
-$script:FrontendUrl = "http://127.0.0.1:5173"
-$script:ReactUrl = "http://127.0.0.1:5174"
+$script:FrontendUrl = "http://127.0.0.1:$script:FrontendPort"
+$script:ReactUrl = "http://127.0.0.1:$script:ReactPort"
 
 switch ($Action) {
     "start" {

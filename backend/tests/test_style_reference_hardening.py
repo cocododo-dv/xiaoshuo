@@ -210,7 +210,7 @@ def test_ingest_local_only_falls_back_to_heuristic_classification():
 
 
 def test_async_full_skips_semantic_for_local_only_book():
-    """local_only 的书 async_full 跳过语义路:LLM 不被调用,verdict 不因此降级。"""
+    """local_only 不出云；async_full 缺语义证据时只能给 partial。"""
     book_id = _seed_book("async_local", cloud_policy="local_only")
     profile_id = _seed_profile_for_book("async_local", book_id)
     sentinel = _SentinelLLM()
@@ -231,7 +231,7 @@ def test_async_full_skips_semantic_for_local_only_book():
                 semantic_json = row.semantic_json
                 break
         time.sleep(0.05)
-    assert verdict == "pass"
+    assert verdict == "partial"
     assert semantic_json == []
     assert not sentinel.called
 

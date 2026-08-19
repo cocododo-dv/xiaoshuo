@@ -511,7 +511,7 @@ describe("WrDocs 提升权威正文", () => {
       {
         base_revision_no: 2,
         expected_current_final_scene_row_id: "final-old",
-        narrative_effect: "facts_unchanged",
+        narrative_effect: "requires_reconcile",
         accepted_warning_codes: [],
       },
     );

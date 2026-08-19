@@ -10,8 +10,17 @@ from novel_system.db.models import (
     SceneCard,
 )
 from novel_system.services.narrative_event_log import (
-    NarrativeEventLog,
+    NarrativeEventLog as _BaseNarrativeEventLog,
 )
+
+
+class NarrativeEventLog(_BaseNarrativeEventLog):
+    """Legacy projection fixtures explicitly represent author-accepted facts."""
+
+    def log_event(self, **kwargs):
+        kwargs.setdefault("authority_status", "accepted")
+        kwargs.setdefault("source_kind", "test_fixture")
+        return super().log_event(**kwargs)
 
 
 def _seed_project(session) -> None:
@@ -29,7 +38,7 @@ def _seed_project(session) -> None:
 
 def test_log_event_creates_row(session) -> None:
     _seed_project(session)
-    log = NarrativeEventLog(session)
+    log = _BaseNarrativeEventLog(session)
     evt = log.log_event(
         project_id="PROJ1",
         scene_id="CH_EVT01_SC01",
@@ -46,6 +55,8 @@ def test_log_event_creates_row(session) -> None:
     row = session.get(NarrativeEvent, evt.event_id)
     assert row is not None
     assert row.fact_value == "北境"
+    assert row.authority_status == "planned"
+    assert row.source_kind == "legacy_plan"
 
 
 def test_project_character_state_replays_events(session) -> None:

@@ -139,8 +139,26 @@ class Archiver:
         # 治理 §5.2 状态词表统一：归档态由本事务写入的权威状态表示，
         # 下游（章节聚合/回放）不再依赖 approved/near_final_ready 的字符串巧合
         final_scene.status = "archived"
+        state.current_final_scene_row_id = final_scene.row_id
         if finalize_scene_status:
             state.scene_status = "archived"
+        # 正文归档与正史完成是两个不同的状态。新终稿先进入待抽取，只有
+        # FactCandidate 经裁决并形成 CanonCommit 后才恢复 narrative_sync=synced。
+        # 无 project 所属的历史单元数据保留兼容，但正式作品必须进入该闭环。
+        from novel_system.services.canon_continuity import CanonContinuityService
+
+        try:
+            canon_continuity = CanonContinuityService(self.session).mark_archive_pending(
+                final_scene.row_id
+            )
+        except DomainError as exc:
+            if exc.code != "SCENE_PROJECT_REQUIRED":
+                raise
+            canon_continuity = {
+                "status": "unavailable",
+                "complete": False,
+                "reason": "projectless_legacy_scene",
+            }
         archive_attempts = self.session.execute(
             select(AttemptTracker).where(
                 AttemptTracker.scene_id == scene_id,
@@ -202,6 +220,7 @@ class Archiver:
             ),
             "finality": dict(final_text_gate.get("finality") or {}),
             "final_text_gate": final_text_gate,
+            "canon_continuity": canon_continuity,
         }
 
 

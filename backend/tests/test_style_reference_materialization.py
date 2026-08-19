@@ -121,6 +121,10 @@ def test_apply_dispatches_findings_to_4_item_types() -> None:
     assert result.item_type_counts.get("narrative_pattern") == 2
     assert result.item_type_counts.get("banned_rule_cluster") == 1
     assert result.item_type_counts.get("calibration_candidate") == 2
+    assert result.rag_index["signature_version"].startswith(
+        "zh_content_restrained_style_signature_"
+    )
+    assert result.rag_index["status"] in {"ready", "rebuilt"}
 
 
 def test_review_id_prefix_style_ref() -> None:
@@ -133,9 +137,9 @@ def test_review_id_prefix_style_ref() -> None:
         session.commit()
 
     for rid in result.review_ids:
-        assert rid.startswith(REVIEW_PREFIX) or rid.startswith(REVIEW_CALIB_PREFIX), (
-            f"review_id {rid!r} 应以 style_ref 前缀开头"
-        )
+        assert rid.startswith(REVIEW_PREFIX) or rid.startswith(
+            REVIEW_CALIB_PREFIX
+        ), f"review_id {rid!r} 应以 style_ref 前缀开头"
 
 
 def test_apply_activates_profile_for_injection() -> None:
@@ -152,12 +156,16 @@ def test_apply_activates_profile_for_injection() -> None:
 
     with SessionLocal() as session:
         svc = MaterializationService(session)
-        svc.apply_profile(profile_id, scope=BindingScope.PROJECT, scope_ref_id="proj_activate")
+        svc.apply_profile(
+            profile_id, scope=BindingScope.PROJECT, scope_ref_id="proj_activate"
+        )
         session.commit()
 
     with SessionLocal() as session:
         repo = StyleReferenceRepository(session)
-        assert repo.get_profile(profile_id).status == "active"  # 修复后：apply 激活 → 注入可生效
+        assert (
+            repo.get_profile(profile_id).status == "active"
+        )  # 修复后：apply 激活 → 注入可生效
 
 
 def test_apply_creates_binding_row() -> None:
@@ -203,15 +211,15 @@ def test_review_items_written_with_correct_target_collection() -> None:
     profile_id = _seed_profile_with_findings("target_col")
     with SessionLocal() as session:
         svc = MaterializationService(session)
-        svc.apply_profile(
-            profile_id, scope=BindingScope.PROJECT, scope_ref_id="proj_t"
-        )
+        svc.apply_profile(profile_id, scope=BindingScope.PROJECT, scope_ref_id="proj_t")
         session.commit()
     with SessionLocal() as session:
         reviews = list(
             session.execute(
                 select(ReviewItem).where(ReviewItem.review_id.like(f"{REVIEW_PREFIX}%"))
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
     target_collections = {r.target_collection for r in reviews}
     assert "style_rules" in target_collections
@@ -231,6 +239,49 @@ def test_apply_profile_not_found() -> None:
                 scope_ref_id="proj_x",
             )
         assert exc_info.value.code == "STYLE_REFERENCE_PROFILE_NOT_FOUND"
+
+
+def test_apply_rejects_profile_invalidated_by_source_finding_change() -> None:
+    from novel_system.services.errors import DomainError
+
+    profile_id = _seed_profile_with_findings("stale")
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        profile = repo.get_profile(profile_id)
+        profile.coverage_json = {
+            **(profile.coverage_json or {}),
+            "stale": True,
+            "stale_reason": "source_finding_membership_changed",
+        }
+        session.commit()
+
+    with SessionLocal() as session:
+        with pytest.raises(DomainError) as exc_info:
+            MaterializationService(session).apply_profile(
+                profile_id,
+                scope=BindingScope.PROJECT,
+                scope_ref_id="proj_stale",
+            )
+        assert exc_info.value.code == "STYLE_REFERENCE_PROFILE_STALE"
+
+
+def test_apply_rejects_archived_profile_instead_of_creating_dead_binding() -> None:
+    from novel_system.services.errors import DomainError
+
+    profile_id = _seed_profile_with_findings("archived")
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.get_profile(profile_id).status = "archived"
+        session.commit()
+
+    with SessionLocal() as session:
+        with pytest.raises(DomainError) as exc_info:
+            MaterializationService(session).apply_profile(
+                profile_id,
+                scope=BindingScope.PROJECT,
+                scope_ref_id="proj_archived",
+            )
+        assert exc_info.value.code == "STYLE_REFERENCE_PROFILE_ARCHIVED"
 
 
 def test_apply_profile_requires_scope_ref_id() -> None:

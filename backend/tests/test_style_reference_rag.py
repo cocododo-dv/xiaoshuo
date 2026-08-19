@@ -1,19 +1,28 @@
 """立项 C — Strategy C(RAG)三粒度向量召回测试。
 
-确定性单测(memory 向量后端):索引构建 / 切句 / scene 聚合 / 三粒度召回 /
-确定性 rerank / C 策略注入(红线随注)/ 防漂移随上下文变化 / 优雅退化 / 清理 /
-hit 命中。chroma 集成由 WSL 跑(本文件全部用 memory,Windows 安全)。
+确定性单测(memory 向量后端):内容克制索引构建 / 切句 / scene 聚合 /
+三粒度召回 / 风格距离 rerank / C 策略注入(红线随注)/ 防漂移随上下文变化 /
+优雅退化 / 清理。chroma 集成由 WSL 跑(本文件全部用 memory,Windows 安全)。
 """
 
 from __future__ import annotations
 
+import pytest
+
 from novel_system.services.style_reference import rag
 from novel_system.services.style_reference.cleanup import purge_derived_data
 from novel_system.services.style_reference.injection import InjectionService
+from novel_system.services.style_reference.rag_evaluation import (
+    load_rag_ab_manifest,
+    run_rag_content_independence_ab,
+)
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from novel_system.services.style_reference.style_signature import (
+    STYLE_SIGNATURE_VERSION,
+)
 from novel_system.services.vector_store import InMemoryVectorStore
 
-# 参考语料:刻意用区分度高的句子,memory 后端按字符集交集打分可确定性命中。
+# 参考语料:覆盖对话、环境、动作、心理与叙述的不同结构。
 _PARAGRAPHS = [
     ("p0", "dialogue", "“你来了。”他轻声说，没有回头。"),
     ("p1", "description_env", "窗外的雨下个不停，青灰色的瓦檐滴着水珠。"),
@@ -24,19 +33,32 @@ _PARAGRAPHS = [
 
 
 def _seed_book_with_paragraphs(
-    session, *, seed: str, status: str = "active", cloud_policy: str = "allow_full_cloud"
+    session,
+    *,
+    seed: str,
+    status: str = "active",
+    cloud_policy: str = "allow_full_cloud",
 ):
     repo = StyleReferenceRepository(session)
     book_id = f"sr_book_{seed}"
     run_id = f"sr_run_{seed}"
     profile_id = f"sr_profile_{seed}"
     repo.create_book(
-        book_id=book_id, title="t", source_kind="upload", cloud_policy=cloud_policy,
-        text_checksum=f"chk_{seed}", total_chars=200, status="ready",
+        book_id=book_id,
+        title="t",
+        source_kind="upload",
+        cloud_policy=cloud_policy,
+        text_checksum=f"chk_{seed}",
+        total_chars=200,
+        status="ready",
         stats_json=(
-            {"rights_declaration": {
-                "declared": True, "analysis_rights": True, "send_rights": True,
-            }}
+            {
+                "rights_declaration": {
+                    "declared": True,
+                    "analysis_rights": True,
+                    "send_rights": True,
+                }
+            }
             if cloud_policy != "local_only"
             else {}
         ),
@@ -44,15 +66,28 @@ def _seed_book_with_paragraphs(
     repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
     for i, (pid, ptype, text) in enumerate(_PARAGRAPHS):
         repo.create_paragraph(
-            paragraph_id=f"{seed}_{pid}", book_id=book_id, paragraph_index=i,
-            paragraph_type=ptype, start_offset=0, end_offset=len(text),
-            text=text, char_count=len(text), classifier_confidence=0.9,
+            paragraph_id=f"{seed}_{pid}",
+            book_id=book_id,
+            paragraph_index=i,
+            paragraph_type=ptype,
+            start_offset=0,
+            end_offset=len(text),
+            text=text,
+            char_count=len(text),
+            classifier_confidence=0.9,
         )
     profile = repo.create_profile(
-        profile_id=profile_id, book_id=book_id, run_id=run_id, title="t",
+        profile_id=profile_id,
+        book_id=book_id,
+        run_id=run_id,
+        title="t",
         status=status,
-        profile_json={"narrative_summary": "雨夜离别的克制叙事", "style_features": ["短句"]},
-        coverage_json={}, source_finding_ids_json=[],
+        profile_json={
+            "narrative_summary": "雨夜离别的克制叙事",
+            "style_features": ["短句"],
+        },
+        coverage_json={},
+        source_finding_ids_json=[],
     )
     session.flush()
     return profile
@@ -71,7 +106,11 @@ def test_aggregate_scenes_windows_by_chars():
         def __init__(self, idx, t, txt):
             self.paragraph_index, self.paragraph_type, self.text = idx, t, txt
 
-    paras = [P(0, "narration", "甲" * 400), P(1, "dialogue", "乙" * 400), P(2, "action", "丙" * 100)]
+    paras = [
+        P(0, "narration", "甲" * 400),
+        P(1, "dialogue", "乙" * 400),
+        P(2, "action", "丙" * 100),
+    ]
     blocks = rag.aggregate_scenes(paras, target_chars=600)
     # 前两段累加 800≥600 封一块;第三段单独成块(flush 尾部)
     assert len(blocks) == 2
@@ -90,7 +129,9 @@ def test_build_rag_index_creates_three_granularities(session):
     assert counts["sentence"] >= len(_PARAGRAPHS)  # 每段至少一句
     assert counts["scene"] >= 1
     for gran in rag.GRANULARITIES:
-        assert store.collection_exists(rag.rag_collection_name(profile.profile_id, gran))
+        assert store.collection_exists(
+            rag.rag_collection_name(profile.profile_id, gran)
+        )
 
 
 def test_retrieve_per_granularity_hits_relevant(session):
@@ -99,7 +140,9 @@ def test_retrieve_per_granularity_hits_relevant(session):
     rag.build_rag_index(session, profile, vector_store=store)
     retriever = rag.RagRetriever(session, vector_store=store)
     # query 取自 p2(动作段)文字 → 该段应在 paragraph 粒度命中 top1
-    per = retriever.retrieve_per_granularity(profile.profile_id, "她推开门冲进漆黑的走廊")
+    per = retriever.retrieve_per_granularity(
+        profile.profile_id, "她推开门冲进漆黑的走廊"
+    )
     assert set(per.keys()) == set(rag.GRANULARITIES)
     para_texts = [s.text for s in per["paragraph"]]
     assert any("推开门" in t for t in para_texts)
@@ -162,7 +205,12 @@ def test_delete_rag_index_removes_collections(session):
     rag.build_rag_index(session, profile, vector_store=store)
     rag.delete_rag_index(profile.profile_id, vector_store=store)
     for gran in rag.GRANULARITIES:
-        assert not store.collection_exists(rag.rag_collection_name(profile.profile_id, gran))
+        assert not store.collection_exists(
+            rag.rag_collection_name(profile.profile_id, gran)
+        )
+    assert not store.collection_exists(
+        rag.rag_manifest_collection_name(profile.profile_id)
+    )
 
 
 # --------------------------------------------------------------------------- C 策略注入(env memory 后端)
@@ -171,9 +219,14 @@ def test_delete_rag_index_removes_collections(session):
 def _bind_c_strategy(session, profile, *, project_id):
     repo = StyleReferenceRepository(session)
     repo.create_binding(
-        binding_id=f"bind_{profile.profile_id}", profile_id=profile.profile_id,
-        scope="project", scope_ref_id=project_id,
-        task_type="scene_generation", strategy="C", config_json={}, status="active",
+        binding_id=f"bind_{profile.profile_id}",
+        profile_id=profile.profile_id,
+        scope="project",
+        scope_ref_id=project_id,
+        task_type="scene_generation",
+        strategy="C",
+        config_json={},
+        status="active",
     )
     session.flush()
 
@@ -201,7 +254,7 @@ def test_c_strategy_drift_changes_snippets_with_context(session):
     svc.context_text = "窗外的雨下个不停，青灰色的瓦檐"  # 偏 description_env
     block_env = svc.fragments_for("proj_cdrift", "scene_generation").rag_block
     svc2 = InjectionService(session)
-    svc2.context_text = "她猛地推开门，冲进漆黑的走廊"   # 偏 action
+    svc2.context_text = "她猛地推开门，冲进漆黑的走廊"  # 偏 action
     block_act = svc2.fragments_for("proj_cdrift", "scene_generation").rag_block
     assert block_env and block_act
     assert block_env != block_act  # 召回随上下文变化(防漂移真实生效)
@@ -224,9 +277,13 @@ def test_purge_derived_data_deletes_rag_index(session):
     from novel_system.services.vector_store import get_vector_store
 
     store = get_vector_store()
-    assert store.collection_exists(rag.rag_collection_name(profile.profile_id, "paragraph"))
+    assert store.collection_exists(
+        rag.rag_collection_name(profile.profile_id, "paragraph")
+    )
     purge_derived_data(session, "sr_book_cpurge")
-    assert not store.collection_exists(rag.rag_collection_name(profile.profile_id, "paragraph"))
+    assert not store.collection_exists(
+        rag.rag_collection_name(profile.profile_id, "paragraph")
+    )
 
 
 # --------------------------------------------------------------------------- 审查补强:退化路径 / 红线契约 / 隐私
@@ -235,14 +292,16 @@ def test_purge_derived_data_deletes_rag_index(session):
 def test_c_strategy_local_only_skips_rag(session):
     # 附录 B — local_only 的书:RAG 原文片段不得送往云端 LLM,C 跳过 RAG;
     # 但抽象正向特征(positive)仍注入。
-    profile = _seed_book_with_paragraphs(session, seed="clocal", cloud_policy="local_only")
+    profile = _seed_book_with_paragraphs(
+        session, seed="clocal", cloud_policy="local_only"
+    )
     rag.build_rag_index(session, profile)
     _bind_c_strategy(session, profile, project_id="proj_clocal")
     svc = InjectionService(session)
     svc.context_text = "她推开门冲进漆黑的走廊"
     frags = svc.fragments_for("proj_clocal", "scene_generation")
-    assert frags.rag_block == ""       # local_only:原文不注入
-    assert frags.positive_block        # 抽象特征仍注入
+    assert frags.rag_block == ""  # local_only:原文不注入
+    assert frags.positive_block  # 抽象特征仍注入
 
 
 def test_c_strategy_inactive_profile_no_injection(session):
@@ -290,23 +349,43 @@ def test_anti_plagiarism_omitted_when_all_blocks_empty(session):
     # 所有风格块全空 ⟹ 红线段不输出,整体 no-op
     repo = StyleReferenceRepository(session)
     repo.create_book(
-        book_id="sr_book_empty", title="t", source_kind="upload",
-        cloud_policy="allow_full_cloud", text_checksum="chk_empty",
-        total_chars=0, status="ready",
-        stats_json={"rights_declaration": {
-            "declared": True, "analysis_rights": True, "send_rights": True,
-        }},
+        book_id="sr_book_empty",
+        title="t",
+        source_kind="upload",
+        cloud_policy="allow_full_cloud",
+        text_checksum="chk_empty",
+        total_chars=0,
+        status="ready",
+        stats_json={
+            "rights_declaration": {
+                "declared": True,
+                "analysis_rights": True,
+                "send_rights": True,
+            }
+        },
     )
-    repo.create_run(run_id="sr_run_empty", book_id="sr_book_empty", status="done", phase="done")
+    repo.create_run(
+        run_id="sr_run_empty", book_id="sr_book_empty", status="done", phase="done"
+    )
     profile = repo.create_profile(
-        profile_id="sr_profile_empty", book_id="sr_book_empty", run_id="sr_run_empty",
-        title="t", status="active", profile_json={}, coverage_json={}, source_finding_ids_json=[],
+        profile_id="sr_profile_empty",
+        book_id="sr_book_empty",
+        run_id="sr_run_empty",
+        title="t",
+        status="active",
+        profile_json={},
+        coverage_json={},
+        source_finding_ids_json=[],
     )
     session.flush()
     _bind_c_strategy(session, profile, project_id="proj_empty")
     svc = InjectionService(session)
     frags = svc.fragments_for("proj_empty", "scene_generation")
-    assert frags.rag_block == "" and frags.positive_block == "" and frags.anti_plagiarism_block == ""
+    assert (
+        frags.rag_block == ""
+        and frags.positive_block == ""
+        and frags.anti_plagiarism_block == ""
+    )
     assert frags.to_system_prompt_prefix() == ""
 
 
@@ -316,8 +395,13 @@ def test_drift_retrieve_snippet_sets_differ_by_context(session):
     store = InMemoryVectorStore()
     rag.build_rag_index(session, profile, vector_store=store)
     r = rag.RagRetriever(session, vector_store=store)
-    env_ids = {s.snippet_id for s in r.retrieve(profile.profile_id, "窗外的雨青灰色瓦檐滴水珠")}
-    act_ids = {s.snippet_id for s in r.retrieve(profile.profile_id, "她推开门冲进漆黑走廊脚步急促")}
+    env_ids = {
+        s.snippet_id for s in r.retrieve(profile.profile_id, "窗外的雨青灰色瓦檐滴水珠")
+    }
+    act_ids = {
+        s.snippet_id
+        for s in r.retrieve(profile.profile_id, "她推开门冲进漆黑走廊脚步急促")
+    }
     assert env_ids and act_ids
     assert env_ids != act_ids
 
@@ -330,33 +414,146 @@ def test_retrieve_inject_max_zero_returns_empty(session):
     assert r.retrieve(profile.profile_id, "推开门", inject_max=0) == []
 
 
-# --------------------------------------------------------------------------- 召回质量地板(Windows memory 守门)
+# --------------------------------------------------------------------------- 内容独立风格召回 A/B
 
 
-def test_paragraph_recall_quality_floor_top1(session):
-    """召回质量地板(Windows memory 后端):每段取前 60% 文本作 query,源段应在
-    paragraph 粒度 rerank 后排第 1。阈值 top-1 命中率 ≥ 0.8(5 段至少 4 命中)。
-
-    这是 chroma_integration 里 ``assert hit_rate >= 0.7``
-    (test_style_reference_rag_chroma.py,Windows 跳过)的 memory 后端等价质量守门:
-    memory query 走字符集交集打分 + rag ``_coverage_score`` rerank,二者都保留词面重叠,
-    故确定性可断言。本文件其余 RAG 测试只验「召回非空/去重/确定性」机制,不验召回
-    *质量*——本测试补上这颗牙:破坏 rerank 排序键/打分即 top-1 崩、断言翻红。
-    (top_k 取语料段数,使所有候选都进 rerank,从而隔离并守住 rerank 正确性。)
-    """
-    profile = _seed_book_with_paragraphs(session, seed="qfloor")
+def test_index_search_documents_contain_style_bins_not_source_prose(session):
+    profile = _seed_book_with_paragraphs(session, seed="signaturedocs")
     store = InMemoryVectorStore()
     rag.build_rag_index(session, profile, vector_store=store)
-    retriever = rag.RagRetriever(session, vector_store=store)
+    docs = store.load_collection(
+        rag.rag_collection_name(profile.profile_id, "paragraph")
+    )
 
-    top1 = 0
-    for _pid, _ptype, text in _PARAGRAPHS:
-        query = text[: max(8, round(len(text) * 0.6))]
-        para_hits = retriever.retrieve_per_granularity(
-            profile.profile_id, query, top_k=len(_PARAGRAPHS)
-        )["paragraph"]
-        assert para_hits, f"paragraph 粒度对 query「{query}」零召回"
-        if para_hits[0].text == text:
-            top1 += 1
-    rate = top1 / len(_PARAGRAPHS)
-    assert rate >= 0.8, f"paragraph top-1 召回质量={rate:.2f} < 0.8(rerank/打分可能被破坏)"
+    assert docs
+    for doc in docs:
+        assert doc["signature_version"] == STYLE_SIGNATURE_VERSION
+        assert doc["source_text"] in {text for _pid, _ptype, text in _PARAGRAPHS}
+        assert doc["source_text"] not in doc["text"]
+        assert all("\ue000" <= char <= "\uf8ff" for char in doc["text"])
+
+
+def test_ensure_rag_index_rebuilds_partial_v2_then_becomes_ready(session):
+    profile = _seed_book_with_paragraphs(session, seed="ensurev2")
+    store = InMemoryVectorStore()
+    store.write_collection(
+        rag.rag_collection_name(profile.profile_id, "sentence"),
+        [],
+    )
+
+    rebuilt = rag.ensure_rag_index(session, profile, vector_store=store)
+
+    assert rebuilt["status"] == "rebuilt"
+    assert rebuilt["signature_version"] == STYLE_SIGNATURE_VERSION
+    assert all(
+        store.collection_exists(
+            rag.rag_collection_name(profile.profile_id, granularity)
+        )
+        for granularity in rag.GRANULARITIES
+    )
+    assert store.collection_exists(rag.rag_manifest_collection_name(profile.profile_id))
+
+    ready = rag.ensure_rag_index(session, profile, vector_store=store)
+    assert ready == {
+        "profile_id": profile.profile_id,
+        "status": "ready",
+        "signature_version": STYLE_SIGNATURE_VERSION,
+    }
+
+
+def test_failed_index_build_never_leaves_completion_marker(session):
+    profile = _seed_book_with_paragraphs(session, seed="atomicmarker")
+
+    class FailOnParagraphStore(InMemoryVectorStore):
+        def write_collection(self, collection_name, documents):
+            if collection_name.endswith("_paragraph"):
+                raise RuntimeError("synthetic paragraph write failure")
+            super().write_collection(collection_name, documents)
+
+    store = FailOnParagraphStore()
+
+    with pytest.raises(RuntimeError, match="synthetic paragraph write failure"):
+        rag.build_rag_index(session, profile, vector_store=store)
+
+    assert not store.collection_exists(
+        rag.rag_manifest_collection_name(profile.profile_id)
+    )
+
+
+def test_retriever_refuses_legacy_raw_text_documents(session):
+    profile_id = "legacy_raw_profile"
+    store = InMemoryVectorStore()
+    store.write_collection(
+        rag.rag_collection_name(profile_id, "paragraph"),
+        [
+            {
+                "id": "legacy_raw",
+                "text": "雨夜窗纸旧信",
+                "granularity": "paragraph",
+                "paragraph_type": "narration",
+            }
+        ],
+    )
+
+    hits = rag.RagRetriever(session, vector_store=store).retrieve_per_granularity(
+        profile_id,
+        "雨夜窗纸旧信",
+    )
+
+    assert hits["paragraph"] == []
+
+
+def test_frozen_content_independence_ab_beats_legacy_content_control():
+    report = run_rag_content_independence_ab()
+
+    assert report["case_count"] == 6
+    assert report["control"]["style_hit_at_1"] == 0.0
+    assert report["treatment"]["style_hit_at_1"] == 1.0
+    assert report["treatment"]["content_distractor_rate"] == 0.0
+    assert report["treatment"]["mean_style_margin"] >= 0.05
+    assert report["passed"] is True
+    assert report["human_verified"] is False
+    assert report["policy_evidence_eligible"] is False
+
+
+def test_real_retriever_selects_different_topic_same_style_over_content_distractor(
+    session,
+):
+    case = load_rag_ab_manifest()["cases"][0]
+    granularity = case["granularity"]
+    profile_id = "rag_ab_profile"
+    target = case["style_target"]
+    distractor = case["content_distractor"]
+    store = InMemoryVectorStore()
+    store.write_collection(
+        rag.rag_collection_name(profile_id, granularity),
+        [
+            rag._style_index_document(
+                doc_id=target["id"],
+                source_text=target["text"],
+                granularity=granularity,
+                paragraph_type="narration",
+                paragraph_index=0,
+            ),
+            rag._style_index_document(
+                doc_id=distractor["id"],
+                source_text=distractor["text"],
+                granularity=granularity,
+                paragraph_type="narration",
+                paragraph_index=1,
+            ),
+        ],
+    )
+
+    hits = rag.RagRetriever(session, vector_store=store).retrieve_per_granularity(
+        profile_id,
+        case["query"],
+        top_k=2,
+    )[granularity]
+
+    assert [hit.snippet_id for hit in hits] == [
+        "different_topic_same_style",
+        "same_topic_wrong_style",
+    ]
+    assert hits[0].style_score > hits[1].style_score
+    assert hits[0].content_overlap < hits[1].content_overlap

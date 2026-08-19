@@ -484,7 +484,19 @@ class TimelineEvent(Base):
     """
 
     __tablename__ = "timeline_events"
-    __table_args__ = (Index("ix_timeline_events_project", "project_id"),)
+    __table_args__ = (
+        Index("ix_timeline_events_project", "project_id"),
+        Index("ix_timeline_events_realized_canon_commit_id", "realized_canon_commit_id"),
+        Index("ix_timeline_events_realized_scene_id", "realized_scene_id"),
+        CheckConstraint(
+            "event_mode IN ('planned','recorded')",
+            name="ck_timeline_events_event_mode",
+        ),
+        CheckConstraint(
+            "realization_status IN ('planned','realized')",
+            name="ck_timeline_events_realization_status",
+        ),
+    )
 
     event_id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
@@ -494,6 +506,16 @@ class TimelineEvent(Base):
     entity_refs_json: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True, default=list)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     display_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # planned = 作者意图；recorded = 仅作历史展示。正文真正兑现后通过
+    # realized_canon_commit_id 指向不可变正史提交，不再靠双表内容猜测。
+    event_mode: Mapped[str] = mapped_column(String, default="planned")
+    realization_status: Mapped[str] = mapped_column(String, default="planned")
+    realized_canon_commit_id: Mapped[str | None] = mapped_column(
+        ForeignKey("canon_commits.commit_id"), nullable=True
+    )
+    realized_scene_id: Mapped[str | None] = mapped_column(
+        ForeignKey("scene_cards.scene_id"), nullable=True
+    )
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
     updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
@@ -2145,6 +2167,16 @@ class NarrativeEvent(Base):
     # Blueprint §2: forward-pointing obligation IDs (foreshadow / causal obligations)
     obligation_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=list)
     source_text_excerpt: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Fail closed: unspecified writes are plans, never runtime canon. Extractor
+    # rows explicitly use pending; only the canon service may promote to accepted.
+    authority_status: Mapped[str] = mapped_column(String, default="planned")
+    source_kind: Mapped[str] = mapped_column(String, default="legacy_plan")
+    final_scene_row_id: Mapped[str | None] = mapped_column(
+        ForeignKey("final_scenes.row_id"), nullable=True
+    )
+    canon_commit_id: Mapped[str | None] = mapped_column(
+        ForeignKey("canon_commits.commit_id"), nullable=True
+    )
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[str] = mapped_column(String, default=utcnow)
 
@@ -2163,7 +2195,178 @@ class NarrativeEvent(Base):
             "entity_id",
             "scene_id",
         ),
+        Index(
+            "ix_narrative_events_authority_project_scene",
+            "authority_status",
+            "project_id",
+            "scene_id",
+        ),
+        Index("ix_narrative_events_final_scene", "final_scene_row_id"),
+        Index("ix_narrative_events_canon_commit", "canon_commit_id"),
+        CheckConstraint(
+            "authority_status IN ('accepted','pending','rejected','planned','superseded')",
+            name="ck_narrative_events_authority_status",
+        ),
     )
+
+
+class CanonCommit(Base):
+    """正文事实经过作者/规则裁决后的不可变正史提交。"""
+
+    __tablename__ = "canon_commits"
+    __table_args__ = (
+        Index(
+            "ix_canon_commits_project_scene_final",
+            "project_id",
+            "scene_id",
+            "final_scene_row_id",
+        ),
+        Index("ix_canon_commits_chapter", "chapter_id"),
+        Index("ix_canon_commits_scene", "scene_id"),
+        Index("ix_canon_commits_final_scene", "final_scene_row_id"),
+        Index("ix_canon_commits_source_final_scene", "source_final_scene_row_id"),
+        CheckConstraint(
+            "status IN ('active','superseded')",
+            name="ck_canon_commits_status",
+        ),
+        CheckConstraint(
+            "commit_kind IN ('candidate_acceptance','author_verification','facts_unchanged')",
+            name="ck_canon_commits_commit_kind",
+        ),
+    )
+
+    commit_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    chapter_id: Mapped[str] = mapped_column(ForeignKey("chapter_goals.chapter_id"))
+    scene_id: Mapped[str] = mapped_column(ForeignKey("scene_cards.scene_id"))
+    final_scene_row_id: Mapped[str] = mapped_column(ForeignKey("final_scenes.row_id"))
+    final_content_hash: Mapped[str] = mapped_column(String)
+    commit_kind: Mapped[str] = mapped_column(String, default="candidate_acceptance")
+    candidate_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source_final_scene_row_id: Mapped[str | None] = mapped_column(
+        ForeignKey("final_scenes.row_id"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String, default="active")
+    actor_ref: Mapped[str] = mapped_column(String, default="operator")
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+
+
+class FactCandidate(Base):
+    """从终稿抽取、尚未成为事实的可审计候选。"""
+
+    __tablename__ = "fact_candidates"
+    __table_args__ = (
+        Index(
+            "ix_fact_candidates_project_chapter_status",
+            "project_id",
+            "chapter_id",
+            "status",
+        ),
+        Index("ix_fact_candidates_scene_status", "scene_id", "status"),
+        Index("ix_fact_candidates_final_scene", "final_scene_row_id"),
+        Index("ix_fact_candidates_chapter", "chapter_id"),
+        Index("ix_fact_candidates_planned_timeline", "planned_timeline_event_id"),
+        Index("ix_fact_candidates_canon_commit", "canon_commit_id"),
+        UniqueConstraint("staged_event_id", name="ux_fact_candidates_staged_event"),
+        CheckConstraint(
+            "status IN ('pending','accepted','rejected','superseded')",
+            name="ck_fact_candidates_status",
+        ),
+        CheckConstraint(
+            "entity_resolution_status IN ('exact','alias','ambiguous','unresolved','manual')",
+            name="ck_fact_candidates_entity_resolution_status",
+        ),
+    )
+
+    candidate_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    chapter_id: Mapped[str] = mapped_column(ForeignKey("chapter_goals.chapter_id"))
+    scene_id: Mapped[str] = mapped_column(ForeignKey("scene_cards.scene_id"))
+    final_scene_row_id: Mapped[str] = mapped_column(ForeignKey("final_scenes.row_id"))
+    staged_event_id: Mapped[str | None] = mapped_column(
+        ForeignKey("narrative_events.event_id"), nullable=True
+    )
+    event_type: Mapped[str] = mapped_column(String)
+    entity_type: Mapped[str] = mapped_column(String)
+    raw_entity_ref: Mapped[str] = mapped_column(String)
+    resolved_entity_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    entity_resolution_status: Mapped[str] = mapped_column(String, default="unresolved")
+    entity_candidates_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    fact_key: Mapped[str] = mapped_column(String)
+    fact_value: Mapped[str] = mapped_column(Text)
+    evidence_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_kind: Mapped[str] = mapped_column(String, default="prose_extraction")
+    confidence: Mapped[str] = mapped_column(String, default="extracted")
+    criticality: Mapped[str] = mapped_column(String, default="critical")
+    planned_timeline_event_id: Mapped[str | None] = mapped_column(
+        ForeignKey("timeline_events.event_id"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String, default="pending")
+    canon_commit_id: Mapped[str | None] = mapped_column(
+        ForeignKey("canon_commits.commit_id"), nullable=True
+    )
+    decided_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    decided_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    decision_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
+
+
+class ContinuitySnapshot(Base):
+    """可重建的结构化连续性投影；原始正文仍由 FinalScene 保存。"""
+
+    __tablename__ = "continuity_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "scope_type",
+            "scope_id",
+            name="ux_continuity_snapshots_scope",
+        ),
+        Index("ix_continuity_snapshots_chapter", "chapter_id", "scope_type"),
+        Index("ix_continuity_snapshots_scene", "scene_id"),
+        Index("ix_continuity_snapshots_final_scene", "final_scene_row_id"),
+        Index("ix_continuity_snapshots_latest_commit", "latest_commit_id"),
+        CheckConstraint(
+            "scope_type IN ('scene','chapter')",
+            name="ck_continuity_snapshots_scope_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending','complete','degraded','superseded')",
+            name="ck_continuity_snapshots_status",
+        ),
+    )
+
+    snapshot_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("story_projects.project_id"))
+    scope_type: Mapped[str] = mapped_column(String)
+    scope_id: Mapped[str] = mapped_column(String)
+    chapter_id: Mapped[str] = mapped_column(ForeignKey("chapter_goals.chapter_id"))
+    scene_id: Mapped[str | None] = mapped_column(
+        ForeignKey("scene_cards.scene_id"), nullable=True
+    )
+    final_scene_row_id: Mapped[str | None] = mapped_column(
+        ForeignKey("final_scenes.row_id"), nullable=True
+    )
+    latest_commit_id: Mapped[str | None] = mapped_column(
+        ForeignKey("canon_commits.commit_id"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String, default="pending")
+    summary_text: Mapped[str] = mapped_column(Text, default="")
+    state_deltas_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    knowledge_deltas_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    relationship_deltas_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    item_deltas_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    timeline_deltas_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    open_obligations_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    entity_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    source_commit_ids_json: Mapped[list[str]] = mapped_column(JSON, default=list)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[str] = mapped_column(String, default=utcnow)
+    updated_at: Mapped[str] = mapped_column(String, default=utcnow, onupdate=utcnow)
 
 
 class ReconcileFault(Base):

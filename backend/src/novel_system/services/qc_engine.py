@@ -18,17 +18,26 @@ from novel_system.db.models import (
     LlmCall,
     LlmCallAttempt,
     QcReport,
+    SceneBundle,
     SceneCard,
     SceneRunState,
 )
 from novel_system.services.human_review_manager import HumanReviewManager
-from novel_system.services.llm_task_runner import LLMNodeContinuityError, LLMNodeExecutionError, LLMNodeRunner
+from novel_system.services.llm_task_runner import (
+    LLMNodeContinuityError,
+    LLMNodeExecutionError,
+    LLMNodeRunner,
+)
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.character_continuity import (
     detect_character_pronoun_drift,
     detect_mechanical_required_beat_listing,
 )
-from novel_system.services.quality_classifier import classify_issue, classify_issues, has_blocking
+from novel_system.services.quality_classifier import (
+    classify_issue,
+    classify_issues,
+    has_blocking,
+)
 from novel_system.services.qc_constraints import (
     contains_forbidden_term,
     issue_mentions_source,
@@ -43,11 +52,20 @@ _LOGGER = logging.getLogger(__name__)
 
 CONTINUITY_BUDGET_ISSUE_KEY = "continuity_budget_exceeded"
 CONTINUITY_BUDGET_MESSAGE = "Prompt still exceeds the safe input budget after deterministic continuity compaction."
-CONTINUITY_BUDGET_REWRITE = "Split the scene and retry QC with a smaller continuity scope."
+CONTINUITY_BUDGET_REWRITE = (
+    "Split the scene and retry QC with a smaller continuity scope."
+)
 HARD_QC_REQUIRED_ISSUE_KEYS = {"missing_required_text", "missing_hard_constraint"}
-HARD_QC_STYLE_ONLY_ISSUE_KEYS = {"style_compliance", "style_rule_violation", "style_profile_drift"}
+HARD_QC_STYLE_ONLY_ISSUE_KEYS = {
+    "style_compliance",
+    "style_rule_violation",
+    "style_profile_drift",
+}
 HARD_QC_NON_BLOCKING_LLM_ISSUE_KEYS = {"character_role_inconsistency"}
-UNSUBSTANTIATED_PRONOUN_CONTINUITY_KEYS = {"character_pronoun_ambiguity", "character_pronoun_continuity"}
+UNSUBSTANTIATED_PRONOUN_CONTINUITY_KEYS = {
+    "character_pronoun_ambiguity",
+    "character_pronoun_continuity",
+}
 
 _QC_CONTROL_PLANE_ERROR_CODES = {
     "CONTINUITY_BUDGET_EXCEEDED",
@@ -103,7 +121,9 @@ def _is_proven_dispatched_provider_failure(
             .order_by(LlmCallAttempt.provider_attempt_no)
         )
     )
-    if not attempts or [row.provider_attempt_no for row in attempts] != list(range(len(attempts))):
+    if not attempts or [row.provider_attempt_no for row in attempts] != list(
+        range(len(attempts))
+    ):
         return False
 
     aggregate_fields = (
@@ -144,11 +164,14 @@ def _is_proven_dispatched_provider_failure(
             or parent_value != sum(getattr(attempt, field) for attempt in attempts)
         ):
             return False
-    if parent.usage_is_estimate != any(attempt.usage_is_estimate for attempt in attempts):
+    if parent.usage_is_estimate != any(
+        attempt.usage_is_estimate for attempt in attempts
+    ):
         return False
     if (
         parent.estimated_tokens > parent.reserved_tokens
-        or parent.budget_charged_tokens != min(parent.total_tokens, parent.reserved_tokens)
+        or parent.budget_charged_tokens
+        != min(parent.total_tokens, parent.reserved_tokens)
     ):
         return False
 
@@ -203,13 +226,16 @@ def _is_proven_undispatched_continuity_rejection(
         )
     ):
         return False
-    return session.scalar(
-        select(LlmCallAttempt.attempt_id)
-        .where(
-            LlmCallAttempt.llm_call_id == parent.llm_call_id,
+    return (
+        session.scalar(
+            select(LlmCallAttempt.attempt_id)
+            .where(
+                LlmCallAttempt.llm_call_id == parent.llm_call_id,
+            )
+            .limit(1)
         )
-        .limit(1)
-    ) is None
+        is None
+    )
 
 
 def _build_qc_report_id(
@@ -280,7 +306,13 @@ def _content_hash(content: str) -> str:
 
 
 def _scene_card_source_texts(scene: SceneCard) -> list[str]:
-    texts = [scene.must_include_text, scene.hook, scene.exit_change, scene.scene_goal, scene.location]
+    texts = [
+        scene.must_include_text,
+        scene.hook,
+        scene.exit_change,
+        scene.scene_goal,
+        scene.location,
+    ]
     beats = scene.beats_json if isinstance(scene.beats_json, list) else []
     texts.extend(item for item in beats if isinstance(item, str))
     return [text for text in texts if isinstance(text, str) and text.strip()]
@@ -306,9 +338,14 @@ def _named_scene_card_source_texts(scene: SceneCard) -> list[tuple[str, str]]:
 
 def _terms_from_qc_text(text: str) -> list[str]:
     terms: list[str] = []
-    terms.extend(match.strip() for match in re.findall(r"[\"'“”‘’]([^\"'“”‘’]{2,40})[\"'“”‘’]", text))
+    terms.extend(
+        match.strip()
+        for match in re.findall(r"[\"'“”‘’]([^\"'“”‘’]{2,40})[\"'“”‘’]", text)
+    )
     terms.extend(match.strip() for match in re.findall(r"[\u4e00-\u9fff]{2,12}", text))
-    terms.extend(match.strip() for match in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,40}", text))
+    terms.extend(
+        match.strip() for match in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,40}", text)
+    )
     seen: set[str] = set()
     unique: list[str] = []
     for term in terms:
@@ -395,7 +432,9 @@ def _evidence_spans_for_text(content: str, text: str) -> list[dict[str, Any]]:
     return spans
 
 
-def _annotate_qc_issues(scene: SceneCard, source_content: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _annotate_qc_issues(
+    scene: SceneCard, source_content: str, payload: dict[str, Any]
+) -> dict[str, Any]:
     issues = payload.get("issues")
     if not isinstance(issues, list):
         return payload
@@ -407,21 +446,34 @@ def _annotate_qc_issues(scene: SceneCard, source_content: str, payload: dict[str
         blob = " ".join(str(issue.get(key) or "") for key in ("issue_key", "message"))
         conflicts = _constraint_conflicts_for_text(scene, blob)
         evidence_spans = _evidence_spans_for_text(source_content, blob)
-        severity = "high" if conflicts else ("medium" if not payload.get("pass_flag") else "low")
+        severity = (
+            "high"
+            if conflicts
+            else ("medium" if not payload.get("pass_flag") else "low")
+        )
         annotated.append(
             {
                 **issue,
                 "evidence_spans": issue.get("evidence_spans") or evidence_spans,
-                "constraint_source": conflicts[0]["constraint_source"] if conflicts else issue.get("constraint_source", "source_draft"),
+                "constraint_source": (
+                    conflicts[0]["constraint_source"]
+                    if conflicts
+                    else issue.get("constraint_source", "source_draft")
+                ),
                 "conflicts_with": issue.get("conflicts_with") or conflicts,
                 "severity": issue.get("severity") or severity,
-                "human_readable_reason": issue.get("human_readable_reason") or issue.get("message") or issue.get("issue_key") or "QC issue",
+                "human_readable_reason": issue.get("human_readable_reason")
+                or issue.get("message")
+                or issue.get("issue_key")
+                or "QC issue",
             }
         )
     return {**payload, "issues": annotated}
 
 
-def _promote_constraint_conflicts_to_human_review(payload: dict[str, Any]) -> dict[str, Any]:
+def _promote_constraint_conflicts_to_human_review(
+    payload: dict[str, Any]
+) -> dict[str, Any]:
     issues = payload.get("issues")
     if not isinstance(issues, list):
         return payload
@@ -431,7 +483,11 @@ def _promote_constraint_conflicts_to_human_review(payload: dict[str, Any]) -> di
     )
     if not has_conflict or payload.get("next_action") == "human_review_required":
         return payload
-    rewrite_brief = payload.get("rewrite_brief") if isinstance(payload.get("rewrite_brief"), list) else []
+    rewrite_brief = (
+        payload.get("rewrite_brief")
+        if isinstance(payload.get("rewrite_brief"), list)
+        else []
+    )
     return {
         **payload,
         "resolution_code": "hard_block_human",
@@ -449,9 +505,15 @@ def _reported_duplicate_appears_once(issue_blob: str, content: str) -> bool:
     return bool(quoted) and all(content.count(fragment) <= 1 for fragment in quoted)
 
 
-def _deterministic_quality_issues(scene: SceneCard, bundle: dict[str, Any], content: str) -> list[dict[str, Any]]:
+def _deterministic_quality_issues(
+    scene: SceneCard, bundle: dict[str, Any], content: str
+) -> list[dict[str, Any]]:
     inline_digests = bundle.get("snapshot", {}).get("inline_digests", {})
-    character_contract = inline_digests.get("character_contract") if isinstance(inline_digests, dict) else None
+    character_contract = (
+        inline_digests.get("character_contract")
+        if isinstance(inline_digests, dict)
+        else None
+    )
     issues = detect_character_pronoun_drift(content, character_contract)
     listing_issue = detect_mechanical_required_beat_listing(
         content=content,
@@ -475,6 +537,7 @@ def _theme_relevance_issues(scene: SceneCard) -> list[dict[str, Any]]:
     try:
         from novel_system.services.theme_anchor import ThemeAnchorService
         from novel_system.db.session import SessionLocal
+
         session = SessionLocal()
         try:
             project_id = require_scene_project_id(session, scene)
@@ -485,18 +548,20 @@ def _theme_relevance_issues(scene: SceneCard) -> list[dict[str, Any]]:
             check = svc.check_scene_relevance(scene, idea)
             if check.relevant:
                 return []
-            return [{
-                "issue_key": "theme_relevance_warning",
-                "severity": "low",
-                "message": (
-                    f"Scene has no visible connection to the controlling idea: '{idea}'. "
-                    f"{check.suggestion}"
-                ),
-                "details": {
-                    "controlling_idea": idea,
-                    "connection": check.connection,
-                },
-            }]
+            return [
+                {
+                    "issue_key": "theme_relevance_warning",
+                    "severity": "low",
+                    "message": (
+                        f"Scene has no visible connection to the controlling idea: '{idea}'. "
+                        f"{check.suggestion}"
+                    ),
+                    "details": {
+                        "controlling_idea": idea,
+                        "connection": check.connection,
+                    },
+                }
+            ]
         finally:
             session.close()
     except Exception:
@@ -519,6 +584,7 @@ def _tension_curve_issues(scene: SceneCard) -> list[dict[str, Any]]:
     try:
         from novel_system.services.tension_curve import TensionCurveService
         from novel_system.db.session import SessionLocal
+
         session = SessionLocal()
         try:
             svc = TensionCurveService(session)
@@ -533,31 +599,35 @@ def _tension_curve_issues(scene: SceneCard) -> list[dict[str, Any]]:
                     if v.violation_type == "adjacent_tag_repeat"
                     else "tension_monotony"
                 )
-                issues.append({
-                    "issue_key": issue_key,
-                    "severity": "low",
-                    "message": f"§10 rhythm issue: {v.message}",
-                    "details": {
-                        "violation_type": v.violation_type,
-                        "scene_id": v.scene_id,
-                        "chapter_id": report.chapter_id,
-                    },
-                })
+                issues.append(
+                    {
+                        "issue_key": issue_key,
+                        "severity": "low",
+                        "message": f"§10 rhythm issue: {v.message}",
+                        "details": {
+                            "violation_type": v.violation_type,
+                            "scene_id": v.scene_id,
+                            "chapter_id": report.chapter_id,
+                        },
+                    }
+                )
             # Also check hook violations for chapter-ending scenes
             if getattr(scene, "is_chapter_last", 0) == 1:
                 hook_violations = svc.validate_chapter_hooks(scene.chapter_id)
                 for hv in hook_violations:
                     if hv.scene_id != scene.scene_id:
                         continue
-                    issues.append({
-                        "issue_key": "tension_hook_type_missing",
-                        "severity": "low",
-                        "message": f"§10 hook issue: {hv.message}",
-                        "details": {
-                            "violation_type": hv.violation_type,
-                            "scene_id": hv.scene_id,
-                        },
-                    })
+                    issues.append(
+                        {
+                            "issue_key": "tension_hook_type_missing",
+                            "severity": "low",
+                            "message": f"§10 hook issue: {hv.message}",
+                            "details": {
+                                "violation_type": hv.violation_type,
+                                "scene_id": hv.scene_id,
+                            },
+                        }
+                    )
             return issues
         finally:
             session.close()
@@ -571,11 +641,14 @@ def _tension_curve_issues(scene: SceneCard) -> list[dict[str, Any]]:
         return []
 
 
-def _event_log_consistency_issues(scene: SceneCard, content: str) -> list[dict[str, Any]]:
+def _event_log_consistency_issues(
+    scene: SceneCard, content: str
+) -> list[dict[str, Any]]:
     """Blueprint §15/§13 Step 6: check hard facts from event log against generated text."""
     try:
         from novel_system.services.narrative_event_log import NarrativeEventLog
         from novel_system.db.session import SessionLocal
+
         session = SessionLocal()
         try:
             log = NarrativeEventLog(session)
@@ -584,7 +657,9 @@ def _event_log_consistency_issues(scene: SceneCard, content: str) -> list[dict[s
 
             # --- Event log fact consistency (§15: hard facts only) ---
             report = log.check_consistency(
-                content, project_id, scene.scene_id,
+                content,
+                project_id,
+                scene.scene_id,
                 character_ids=scene.onstage_chars_json or [],
             )
             if report.violations:
@@ -596,11 +671,19 @@ def _event_log_consistency_issues(scene: SceneCard, content: str) -> list[dict[s
                             if getattr(v, "source", "keyword") == "keyword"
                             else "event_log_consistency_llm_flag"
                         ),
-                        "severity": "high" if getattr(v, "source", "keyword") == "keyword" else "medium",
+                        "severity": (
+                            "high"
+                            if getattr(v, "source", "keyword") == "keyword"
+                            else "medium"
+                        ),
                         "message": (
                             f"Event log contradiction: {v.entity_id}.{v.fact_key} "
                             f"expected '{v.expected}' but text suggests '{v.actual}'"
-                            + ("" if getattr(v, "source", "keyword") == "keyword" else " (LLM advisory — human spot-check)")
+                            + (
+                                ""
+                                if getattr(v, "source", "keyword") == "keyword"
+                                else " (LLM advisory — human spot-check)"
+                            )
                         ),
                         "details": {
                             "entity_id": v.entity_id,
@@ -617,7 +700,9 @@ def _event_log_consistency_issues(scene: SceneCard, content: str) -> list[dict[s
             return issues
         finally:
             session.close()
-    except Exception as exc:  # noqa: BLE001 - surface availability without leaking details
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - surface availability without leaking details
         return [
             {
                 "issue_key": "continuity_validation_unavailable",
@@ -649,7 +734,10 @@ def _drop_unsubstantiated_pronoun_continuity_issue(
     deterministic_issues: list[dict[str, Any]],
     qc_type: str,
 ) -> dict[str, Any]:
-    if any(issue.get("issue_key") == "character_pronoun_drift" for issue in deterministic_issues):
+    if any(
+        issue.get("issue_key") == "character_pronoun_drift"
+        for issue in deterministic_issues
+    ):
         return payload
 
     issues = payload.get("issues")
@@ -659,7 +747,11 @@ def _drop_unsubstantiated_pronoun_continuity_issue(
     kept_issues: list[Any] = []
     removed = False
     for issue in issues:
-        if isinstance(issue, dict) and str(issue.get("issue_key") or "").strip() in UNSUBSTANTIATED_PRONOUN_CONTINUITY_KEYS:
+        if (
+            isinstance(issue, dict)
+            and str(issue.get("issue_key") or "").strip()
+            in UNSUBSTANTIATED_PRONOUN_CONTINUITY_KEYS
+        ):
             removed = True
             continue
         kept_issues.append(issue)
@@ -699,15 +791,23 @@ def _rewrite_briefs_for_deterministic_issues(issues: list[dict[str, Any]]) -> li
         if issue_key == "character_pronoun_drift":
             display_name = issue.get("display_name") or "角色"
             expected = issue.get("expected_pronoun") or "既定代词"
-            briefs.append(f"修正{display_name}的代词连续性，保持使用{expected}；若指代不清，请重复角色姓名。")
+            briefs.append(
+                f"修正{display_name}的代词连续性，保持使用{expected}；若指代不清，请重复角色姓名。"
+            )
         elif issue_key == "mechanical_required_beat_listing":
-            briefs.append("将必须出现的剧情节拍自然织入动作和因果，不要在段尾追加清单。")
+            briefs.append(
+                "将必须出现的剧情节拍自然织入动作和因果，不要在段尾追加清单。"
+            )
     return briefs
 
 
-def _append_unique_rewrite_briefs(existing: list[Any], additions: list[str]) -> list[Any]:
+def _append_unique_rewrite_briefs(
+    existing: list[Any], additions: list[str]
+) -> list[Any]:
     merged = list(existing)
-    seen = {str(item).strip() for item in merged if isinstance(item, str) and item.strip()}
+    seen = {
+        str(item).strip() for item in merged if isinstance(item, str) and item.strip()
+    }
     for addition in additions:
         if addition.strip() and addition.strip() not in seen:
             merged.append(addition.strip())
@@ -746,7 +846,9 @@ class HardQcEngine:
         # Q2 警告 issue 继续管线；确定性 gates 照跑，verified Q0/Q1 仍能阻断。
         try:
             prompt = self.prompt_builder.build(bundle["snapshot"], "hard_qc")
-            final_user_prompt = self._build_user_prompt(prompt["user_prompt"], neutral_content)
+            final_user_prompt = self._build_user_prompt(
+                prompt["user_prompt"], neutral_content
+            )
             node_result = self._llm_runner.run(
                 scene_id=scene_id,
                 chapter_id=scene.chapter_id,
@@ -810,7 +912,9 @@ class HardQcEngine:
                 )
 
         payload = self._apply_deterministic_sanity(scene, neutral_content, payload)
-        payload = self._apply_deterministic_quality_gates(scene, bundle, neutral_content, payload)
+        payload = self._apply_deterministic_quality_gates(
+            scene, bundle, neutral_content, payload
+        )
         payload = _annotate_qc_issues(scene, neutral_content, payload)
         payload = _promote_constraint_conflicts_to_human_review(payload)
         payload = self._apply_quality_grading(scene, neutral_content, payload)
@@ -842,7 +946,10 @@ class HardQcEngine:
                 )
                 qc_report.resolution_code = "style_validation_plagiarism"
                 qc_report.next_action = "human_review_required"
-                qc_report.issues_json = [*(qc_report.issues_json or []), plagiarism_issue]
+                qc_report.issues_json = [
+                    *(qc_report.issues_json or []),
+                    plagiarism_issue,
+                ]
                 self.session.flush()
                 self._apply_issue_tracking(state, qc_report.issues_json)
                 self._apply_branch_counters(state, "human_review_required")
@@ -884,7 +991,9 @@ class HardQcEngine:
                 neutral_draft_row_id=neutral_draft_row_id,
                 qc_report=qc_report,
                 branch=branch,
-                failure_reason=self._failure_reason_for_circuit_breaker(circuit_breaker_reason, branch),
+                failure_reason=self._failure_reason_for_circuit_breaker(
+                    circuit_breaker_reason, branch
+                ),
                 trigger_reason=circuit_breaker_reason,
                 llm_call_id=llm_call_id,
                 execution_step_key=execution_step_key,
@@ -969,7 +1078,9 @@ class HardQcEngine:
             "rewrite_brief": [],
         }
 
-    def _apply_quality_grading(self, scene: SceneCard, neutral_content: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _apply_quality_grading(
+        self, scene: SceneCard, neutral_content: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """Wave 2（§5.4）：统一分级 + 阻断裁决单一来源。
 
         全部 issue 过分类器（LLM 提案无确定性复核自动降 Q2）。存在 verified
@@ -977,21 +1088,33 @@ class HardQcEngine:
         非 pass 意见降级为 pass，原意见以 Q2/Q3 警告随报告交付（G-03：软性
         意见不再让作者无稿可用）。
         """
-        classified = classify_issues(payload.get("issues") or [], scene=scene, content=neutral_content)
+        classified = classify_issues(
+            payload.get("issues") or [], scene=scene, content=neutral_content
+        )
         graded = {**payload, "issues": classified}
         if has_blocking(classified):
             if graded.get("next_action") == "pass":
-                rewrite_brief = graded.get("rewrite_brief") if isinstance(graded.get("rewrite_brief"), list) else []
+                rewrite_brief = (
+                    graded.get("rewrite_brief")
+                    if isinstance(graded.get("rewrite_brief"), list)
+                    else []
+                )
                 return {
                     **graded,
                     "resolution_code": "hard_fail_partial",
                     "pass_flag": False,
                     "next_action": "partial_rewrite",
-                    "rewrite_brief": rewrite_brief or ["Resolve the verified hard-fact issue before continuing."],
+                    "rewrite_brief": rewrite_brief
+                    or ["Resolve the verified hard-fact issue before continuing."],
                 }
             return graded
         if graded.get("next_action") != "pass":
-            return {**graded, "resolution_code": "hard_pass", "pass_flag": True, "next_action": "pass"}
+            return {
+                **graded,
+                "resolution_code": "hard_pass",
+                "pass_flag": True,
+                "next_action": "pass",
+            }
         return graded
 
     @staticmethod
@@ -1026,18 +1149,24 @@ class HardQcEngine:
                 return issue_key
         return None
 
-    def _apply_deterministic_sanity(self, scene: SceneCard, neutral_content: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _apply_deterministic_sanity(
+        self, scene: SceneCard, neutral_content: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         issues = payload.get("issues")
         if not isinstance(issues, list) or not issues:
             return payload
         rewrite_brief = payload.get("rewrite_brief")
-        issue_blob = _issue_blob(issues, rewrite_brief if isinstance(rewrite_brief, list) else [])
+        issue_blob = _issue_blob(
+            issues, rewrite_brief if isinstance(rewrite_brief, list) else []
+        )
         filtered = [
             issue
             for issue in issues
             if not (
                 isinstance(issue, dict)
-                and self._issue_contradicts_deterministic_scene_card(scene, neutral_content, issue, issue_blob)
+                and self._issue_contradicts_deterministic_scene_card(
+                    scene, neutral_content, issue, issue_blob
+                )
             )
         ]
         if len(filtered) == len(issues):
@@ -1060,7 +1189,9 @@ class HardQcEngine:
         neutral_content: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        deterministic_issues = _deterministic_quality_issues(scene, bundle, neutral_content)
+        deterministic_issues = _deterministic_quality_issues(
+            scene, bundle, neutral_content
+        )
         payload = _drop_unsubstantiated_pronoun_continuity_issue(
             payload=payload,
             deterministic_issues=deterministic_issues,
@@ -1070,8 +1201,14 @@ class HardQcEngine:
             return payload
         # Wave 2：gate 只做合并——是否改判分支由分级器统一裁决（只有 verified Q0/Q1
         # 才升级为 partial_rewrite；theme/tension 等 Q2/Q3 不再强制重写）。
-        existing_issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
-        rewrite_brief = payload.get("rewrite_brief") if isinstance(payload.get("rewrite_brief"), list) else []
+        existing_issues = (
+            payload.get("issues") if isinstance(payload.get("issues"), list) else []
+        )
+        rewrite_brief = (
+            payload.get("rewrite_brief")
+            if isinstance(payload.get("rewrite_brief"), list)
+            else []
+        )
         merged_issues = _dedupe_issues([*existing_issues, *deterministic_issues])
         return {
             **payload,
@@ -1099,13 +1236,19 @@ class HardQcEngine:
         ):
             return True
         if issue_key in HARD_QC_REQUIRED_ISSUE_KEYS:
-            return self._source_field_satisfies_reported_issue(scene.must_include_text, neutral_content, issue_blob) or any(
-                self._source_field_satisfies_reported_issue(source_text, neutral_content, issue_blob)
+            return self._source_field_satisfies_reported_issue(
+                scene.must_include_text, neutral_content, issue_blob
+            ) or any(
+                self._source_field_satisfies_reported_issue(
+                    source_text, neutral_content, issue_blob
+                )
                 for source_text in _scene_card_source_texts(scene)
             )
         if issue_key == "unsupported_event":
             return any(
-                self._source_field_satisfies_reported_issue(source_text, neutral_content, issue_blob)
+                self._source_field_satisfies_reported_issue(
+                    source_text, neutral_content, issue_blob
+                )
                 for source_text in _scene_card_source_texts(scene)
             )
         if issue_key == "duplicate_text":
@@ -1113,10 +1256,14 @@ class HardQcEngine:
         return False
 
     @staticmethod
-    def _source_field_satisfies_reported_issue(source_text: Any, neutral_content: str, issue_blob: str) -> bool:
+    def _source_field_satisfies_reported_issue(
+        source_text: Any, neutral_content: str, issue_blob: str
+    ) -> bool:
         if not isinstance(source_text, str) or not source_text.strip():
             return False
-        return source_field_satisfied(source_text, neutral_content) and issue_mentions_source(issue_blob, source_text)
+        return source_field_satisfied(
+            source_text, neutral_content
+        ) and issue_mentions_source(issue_blob, source_text)
 
     def _apply_style_validation_gate(
         self, scene: SceneCard, neutral_content: str
@@ -1132,7 +1279,9 @@ class HardQcEngine:
             InjectionService,
             ordered_character_ids,
         )
-        from novel_system.services.style_reference.metrics_recorder import MetricsRecorder
+        from novel_system.services.style_reference.metrics_recorder import (
+            MetricsRecorder,
+        )
         from novel_system.services.style_reference.schemas import (
             ValidateRequest,
             ValidationMode,
@@ -1150,16 +1299,60 @@ class HardQcEngine:
         )
         # PR-15 — scene scope 用 scene_id 匹配(优先级最高)
         scene_id = getattr(scene, "scene_id", None)
-        if not neutral_content or (not project_id and not character_ids and not scene_id):
+        if not neutral_content or (
+            not project_id and not character_ids and not scene_id
+        ):
             return None
         started_at = _time.perf_counter()
         verdict: str | None = None
         profile_id: str | None = None
         binding_id: str | None = None
+        runtime_contract_hash: str | None = None
         try:
+            from novel_system.services.style_reference.runtime_contract import (
+                contract_profile_objects,
+                resolve_style_runtime_contract_state,
+            )
+            from novel_system.services.style_reference.validation import (
+                run_sync_validate_profiles,
+            )
+
+            state = self.session.get(SceneRunState, scene.scene_id)
+            bundle_row = (
+                self.session.get(SceneBundle, state.current_bundle_id)
+                if state is not None and state.current_bundle_id
+                else None
+            )
+            frozen_snapshot = (
+                bundle_row.frozen_snapshot_json if bundle_row is not None else None
+            )
+            contract_state = resolve_style_runtime_contract_state(
+                frozen_snapshot
+            )
+            runtime_contract = contract_state.contract
+            if contract_state.error_code is not None:
+                raise ValueError(contract_state.error_code)
+            if runtime_contract is not None:
+                profiles = contract_profile_objects(runtime_contract)
+                profile_id = str(runtime_contract["profile_ids"][-1])
+                binding_id = str(runtime_contract["binding_ids"][-1])
+                runtime_contract_hash = str(runtime_contract["contract_hash"])
+                response_report = run_sync_validate_profiles(
+                    neutral_content,
+                    profiles,
+                    self.session,
+                )
+                verdict = response_report.verdict.value
+                return verdict
+            if contract_state.mode == "absent":
+                return None
+
             # PR-14/15/18 — 复用 InjectionService 单点选取(scene > character > project > global)
             active = InjectionService(self.session).resolve_active_binding(
-                project_id, "scene_generation", character_ids=character_ids, scene_id=scene_id,
+                project_id,
+                "scene_generation",
+                character_ids=character_ids,
+                scene_id=scene_id,
             )
             if active is None:
                 return None
@@ -1179,9 +1372,13 @@ class HardQcEngine:
                 return None
             verdict = response.sync_result.verdict.value
             return verdict
-        except Exception:  # noqa: BLE001 — gate 不阻塞主流程，但降级必须可见（审计 P-11）
+        except (
+            Exception
+        ):  # noqa: BLE001 — gate 不阻塞主流程，但降级必须可见（审计 P-11）
             _LOGGER.warning(
-                "style validation gate degraded for scene %s", scene.scene_id, exc_info=True
+                "style validation gate degraded for scene %s",
+                scene.scene_id,
+                exc_info=True,
             )
             return None
         finally:
@@ -1196,6 +1393,7 @@ class HardQcEngine:
                     binding_id=binding_id,
                     outcome=verdict or "error",
                     latency_ms=int((_time.perf_counter() - started_at) * 1000),
+                    context={"runtime_contract_hash": runtime_contract_hash},
                 )
 
     def _persist_qc_report(
@@ -1231,7 +1429,9 @@ class HardQcEngine:
         state.current_qc_report_id = qc_report.qc_report_id
         return qc_report
 
-    def _apply_issue_tracking(self, state: SceneRunState, issues: list[dict[str, Any]]) -> None:
+    def _apply_issue_tracking(
+        self, state: SceneRunState, issues: list[dict[str, Any]]
+    ) -> None:
         issue_key = self._primary_issue_key(issues)
         if issue_key is None:
             state.repeat_issue_key = None
@@ -1267,7 +1467,9 @@ class HardQcEngine:
         if trigger_reason == "repeat_issue_key_limit":
             return "hard_qc surfaced the same issue key at least twice; human review is required."
         if trigger_reason == "hard_partial_rewrite_limit":
-            return "hard_qc exceeded the partial rewrite limit; human review is required."
+            return (
+                "hard_qc exceeded the partial rewrite limit; human review is required."
+            )
         if trigger_reason == "hard_full_rewrite_limit":
             return "hard_qc exceeded the full rewrite limit; human review is required."
         if trigger_reason == "attempt_budget_exhausted":
@@ -1399,6 +1601,7 @@ class HardQcEngine:
             execution_step_key=execution_step_key,
         )
 
+
 class SoftQcEngine:
     def __init__(
         self,
@@ -1430,7 +1633,9 @@ class SoftQcEngine:
         # 继续交付；确定性 gates 照跑，verified Q0/Q1 仍能阻断。
         try:
             prompt = self.prompt_builder.build(bundle["snapshot"], "soft_qc")
-            final_user_prompt = self._build_user_prompt(prompt["user_prompt"], source_draft_content)
+            final_user_prompt = self._build_user_prompt(
+                prompt["user_prompt"], source_draft_content
+            )
             node_result = self._llm_runner.run(
                 scene_id=scene_id,
                 chapter_id=scene.chapter_id,
@@ -1492,7 +1697,9 @@ class SoftQcEngine:
                     message=f"soft QC payload validation failed: {exc}",
                 )
 
-        payload = self._apply_deterministic_quality_gates(scene, bundle, source_draft_content, payload)
+        payload = self._apply_deterministic_quality_gates(
+            scene, bundle, source_draft_content, payload
+        )
         payload = self._apply_quality_grading(scene, source_draft_content, payload)
         validate_qc_report("soft_qc", payload)  # 组合合法性校验（不回写 dump）
         branch = self._branch_for(payload["next_action"])
@@ -1518,7 +1725,11 @@ class SoftQcEngine:
 
         if branch == "human_review_required":
             blocking_issue = has_blocking(payload.get("issues", []))
-            trigger_reason = "blocking_soft_qc_issue" if blocking_issue else "soft_qc_requested_human_review"
+            trigger_reason = (
+                "blocking_soft_qc_issue"
+                if blocking_issue
+                else "soft_qc_requested_human_review"
+            )
             source_draft_content_hash = _content_hash(source_draft_content)
             accepted_waiver = self.human_review_manager.accepted_soft_risk_waiver(
                 scene_id=scene.scene_id,
@@ -1644,7 +1855,9 @@ class SoftQcEngine:
             "carry_note_text": f"soft QC degraded ({issue_key}): {message}"[:500],
         }
 
-    def _apply_quality_grading(self, scene: SceneCard, source_draft_content: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _apply_quality_grading(
+        self, scene: SceneCard, source_draft_content: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """Wave 2（§5.4）：统一分级 + 阻断裁决单一来源（软 QC 侧）。
 
         - 全部 issue 过分类器；确定性 Q1/Q2 在 LLM 说 pass 时仍触发一次受控补丁
@@ -1652,13 +1865,20 @@ class SoftQcEngine:
         - LLM 主动要求人工审阅但无 verified Q0/Q1 → 降级为 waive 携带 carry note，
           正文照常交付（G-03）。
         """
-        classified = classify_issues(payload.get("issues") or [], scene=scene, content=source_draft_content)
+        classified = classify_issues(
+            payload.get("issues") or [], scene=scene, content=source_draft_content
+        )
         graded = {**payload, "issues": classified}
         if graded.get("next_action") == "pass" and any(
-            issue.get("source") == "deterministic" and issue.get("quality_level") in ("Q1", "Q2")
+            issue.get("source") == "deterministic"
+            and issue.get("quality_level") in ("Q1", "Q2")
             for issue in classified
         ):
-            rewrite_brief = [item for item in graded.get("rewrite_brief", []) if isinstance(item, str) and item.strip()]
+            rewrite_brief = [
+                item
+                for item in graded.get("rewrite_brief", [])
+                if isinstance(item, str) and item.strip()
+            ]
             rewrite_brief = _append_unique_rewrite_briefs(
                 rewrite_brief, _rewrite_briefs_for_deterministic_issues(classified)
             ) or ["修复确定性质检发现的问题后重检。"]
@@ -1672,20 +1892,28 @@ class SoftQcEngine:
                 "note_scope": None,
                 "carry_note_text": None,
             }
-        if graded.get("next_action") == "human_review_required" and not has_blocking(classified):
+        if graded.get("next_action") == "human_review_required" and not has_blocking(
+            classified
+        ):
             graded = self._waive_no_blocking_payload(graded)
         return graded
 
     @staticmethod
     def _waive_no_blocking_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        briefs = [item.strip() for item in payload.get("rewrite_brief", []) if isinstance(item, str) and item.strip()]
+        briefs = [
+            item.strip()
+            for item in payload.get("rewrite_brief", [])
+            if isinstance(item, str) and item.strip()
+        ]
         if not briefs:
             briefs = [
                 str(issue.get("message") or issue.get("issue_key") or "").strip()
                 for issue in payload.get("issues", [])
                 if isinstance(issue, dict)
             ][:3]
-        summary = "; ".join(item for item in briefs if item) or "soft QC advisory retained"
+        summary = (
+            "; ".join(item for item in briefs if item) or "soft QC advisory retained"
+        )
         return {
             **payload,
             "resolution_code": "soft_waive",
@@ -1693,7 +1921,9 @@ class SoftQcEngine:
             "next_action": "pass_with_notes",
             "carry_forward_note": True,
             "note_scope": "scene_memory",
-            "carry_note_text": f"软性质检意见无确定性 Q0/Q1 佐证，正文照常交付；意见随行：{summary}"[:500],
+            "carry_note_text": f"软性质检意见无确定性 Q0/Q1 佐证，正文照常交付；意见随行：{summary}"[
+                :500
+            ],
         }
 
     @staticmethod
@@ -1703,7 +1933,9 @@ class SoftQcEngine:
         source_draft_content: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        deterministic_issues = _deterministic_quality_issues(scene, bundle, source_draft_content)
+        deterministic_issues = _deterministic_quality_issues(
+            scene, bundle, source_draft_content
+        )
         payload = _drop_unsubstantiated_pronoun_continuity_issue(
             payload=payload,
             deterministic_issues=deterministic_issues,
@@ -1712,8 +1944,14 @@ class SoftQcEngine:
         if not deterministic_issues:
             return payload
         # Wave 2：gate 只做合并——是否触发补丁/阻断由分级器统一裁决。
-        existing_issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
-        rewrite_brief = payload.get("rewrite_brief") if isinstance(payload.get("rewrite_brief"), list) else []
+        existing_issues = (
+            payload.get("issues") if isinstance(payload.get("issues"), list) else []
+        )
+        rewrite_brief = (
+            payload.get("rewrite_brief")
+            if isinstance(payload.get("rewrite_brief"), list)
+            else []
+        )
         merged_issues = _dedupe_issues([*existing_issues, *deterministic_issues])
         return {
             **payload,
@@ -1726,7 +1964,11 @@ class SoftQcEngine:
 
     @staticmethod
     def _block_repeat_patch_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        rewrite_brief = [item for item in payload.get("rewrite_brief", []) if isinstance(item, str) and item.strip()]
+        rewrite_brief = [
+            item
+            for item in payload.get("rewrite_brief", [])
+            if isinstance(item, str) and item.strip()
+        ]
         if not rewrite_brief:
             rewrite_brief = ["阻塞级质量问题仍未解决，请人工复核后再归档。"]
         return {
@@ -1742,8 +1984,14 @@ class SoftQcEngine:
 
     @staticmethod
     def _waive_repeat_patch_payload(payload: dict[str, Any]) -> dict[str, Any]:
-        rewrite_brief = [item for item in payload.get("rewrite_brief", []) if isinstance(item, str) and item.strip()]
-        carry_note_text = "Repeated soft QC patch request after one controlled patch pass."
+        rewrite_brief = [
+            item
+            for item in payload.get("rewrite_brief", [])
+            if isinstance(item, str) and item.strip()
+        ]
+        carry_note_text = (
+            "Repeated soft QC patch request after one controlled patch pass."
+        )
         if rewrite_brief:
             carry_note_text = f"{carry_note_text} Carry forward: {'; '.join(item.strip() for item in rewrite_brief)}"
         return {
@@ -1819,7 +2067,9 @@ class SoftQcEngine:
         state.current_qc_report_id = qc_report.qc_report_id
         return qc_report
 
-    def _apply_issue_tracking(self, state: SceneRunState, issues: list[dict[str, Any]]) -> None:
+    def _apply_issue_tracking(
+        self, state: SceneRunState, issues: list[dict[str, Any]]
+    ) -> None:
         issue_key = self._primary_issue_key(issues)
         if issue_key is None:
             state.repeat_issue_key = None
@@ -1923,7 +2173,8 @@ class SoftQcEngine:
             replay_context["continuity_warning"] = continuity_warning
         allow_soft_risk_acceptance = (
             source_draft_content_hash is not None
-            and trigger_reason in {"blocking_soft_qc_issue", "soft_qc_requested_human_review"}
+            and trigger_reason
+            in {"blocking_soft_qc_issue", "soft_qc_requested_human_review"}
         )
         event = self.human_review_manager.create_generation_blocker_event(
             scene_id=scene.scene_id,

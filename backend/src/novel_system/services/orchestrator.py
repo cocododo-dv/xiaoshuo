@@ -54,9 +54,21 @@ from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
 from novel_system.services.author_instructions import normalize_author_note
 from novel_system.services.bundle_builder import BundleBuilder
-from novel_system.services.llm_task_runner import LLMNodeRunner, begin_llm_execution, end_llm_execution
-from novel_system.services.near_final import NearFinalAcceptanceService, NearFinalPlanningService
-from novel_system.services.qc_engine import HardQcDecision, HardQcEngine, SoftQcDecision, SoftQcEngine
+from novel_system.services.llm_task_runner import (
+    LLMNodeRunner,
+    begin_llm_execution,
+    end_llm_execution,
+)
+from novel_system.services.near_final import (
+    NearFinalAcceptanceService,
+    NearFinalPlanningService,
+)
+from novel_system.services.qc_engine import (
+    HardQcDecision,
+    HardQcEngine,
+    SoftQcDecision,
+    SoftQcEngine,
+)
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_generation import (
@@ -66,7 +78,10 @@ from novel_system.services.scene_generation import (
     StyleGenerationResult,
     versioned_scene_artifact_id,
 )
-from novel_system.services.scene_run_checkpoint import RUN_CHECKPOINT_ORDER, SceneRunCheckpointService
+from novel_system.services.scene_run_checkpoint import (
+    RUN_CHECKPOINT_ORDER,
+    SceneRunCheckpointService,
+)
 from novel_system.services.scene_ownership import require_scene_project_id
 from novel_system.services.version_manager import VersionManager
 
@@ -92,13 +107,26 @@ class Orchestrator:
         self.version_manager = VersionManager(session)
         llm_runner = LLMNodeRunner(session)
         self.llm_runner = llm_runner
-        self.scene_generation_service = scene_generation_service or SceneGenerationService(session, llm_runner=llm_runner)
-        self.hard_qc_engine = hard_qc_engine or HardQcEngine(session, llm_runner=llm_runner)
-        self.soft_qc_engine = soft_qc_engine or SoftQcEngine(session, llm_runner=llm_runner)
-        self.scene_blueprint_service = SceneBlueprintService(session, llm_runner=llm_runner)
+        self.scene_generation_service = (
+            scene_generation_service
+            or SceneGenerationService(session, llm_runner=llm_runner)
+        )
+        self.hard_qc_engine = hard_qc_engine or HardQcEngine(
+            session, llm_runner=llm_runner
+        )
+        self.soft_qc_engine = soft_qc_engine or SoftQcEngine(
+            session, llm_runner=llm_runner
+        )
+        self.scene_blueprint_service = SceneBlueprintService(
+            session, llm_runner=llm_runner
+        )
         self.execution_contract_service = SceneExecutionContractService(session)
-        self.planning_service = planning_service or NearFinalPlanningService(session, llm_runner=llm_runner)
-        self.near_final_service = near_final_service or NearFinalAcceptanceService(session, llm_runner=llm_runner)
+        self.planning_service = planning_service or NearFinalPlanningService(
+            session, llm_runner=llm_runner
+        )
+        self.near_final_service = near_final_service or NearFinalAcceptanceService(
+            session, llm_runner=llm_runner
+        )
         self._execution_id: str | None = None
         self._run_job_id: str | None = None
         self._checkpoint_service: SceneRunCheckpointService | None = None
@@ -255,7 +283,9 @@ class Orchestrator:
             state = SceneRunState(scene_id=scene_id, scene_status="ready")
             self.session.add(state)
             self.session.flush()
-        contract = self.execution_contract_service.get_or_create(scene_id, actor_ref="orchestrator")
+        contract = self.execution_contract_service.get_or_create(
+            scene_id, actor_ref="orchestrator"
+        )
         if contract.status != "active":
             detail_reason = "scene execution contract is not ready for drafting"
             if contract.status == "blocked":
@@ -294,7 +324,9 @@ class Orchestrator:
             self._save_run_checkpoint(
                 "budget_ready",
                 artifact_refs={"scene_token_budget": state.scene_token_budget},
-                artifact_hashes={"budget_basis": self._json_hash(state.scene_budget_basis_json or {})},
+                artifact_hashes={
+                    "budget_basis": self._json_hash(state.scene_budget_basis_json or {})
+                },
             )
         else:
             self._validate_budget_checkpoint(state)
@@ -343,11 +375,14 @@ class Orchestrator:
                 self._save_run_checkpoint(
                     "planning_ready",
                     sub_index=0,
-                    artifact_refs=blueprint_refs | {"scene_blueprint": blueprint_payload},
+                    artifact_refs=blueprint_refs
+                    | {"scene_blueprint": blueprint_payload},
                     artifact_hashes={
                         "planning_scene_blueprint": self._json_hash(blueprint_payload),
                         "planning_scene_blueprint_provenance": self._json_hash(
-                            self._planning_provenance(blueprint_refs, "planning_scene_blueprint")
+                            self._planning_provenance(
+                                blueprint_refs, "planning_scene_blueprint"
+                            )
                         ),
                         "scene_blueprint": self._json_hash(blueprint_payload),
                     },
@@ -445,11 +480,18 @@ class Orchestrator:
             )
         else:
             bundle = self._load_checkpoint_bundle(scene_id)
-            self._assert_author_note_matches_bundle(bundle, author_note, scene_id=scene_id)
+            self._assert_author_note_matches_bundle(
+                bundle, author_note, scene_id=scene_id
+            )
 
         from novel_system.services.scene_criticality import classify_scene
+
         chapter = self.session.get(ChapterGoal, scene.chapter_id)
-        chapter_seq = chapter.display_order if chapter and chapter.display_order is not None else None
+        chapter_seq = (
+            chapter.display_order
+            if chapter and chapter.display_order is not None
+            else None
+        )
         # §6.4 / §16: feed consecutive transition count and constraint_intensity
         _consecutive_trans = self._consecutive_transition_count(scene)
         criticality = classify_scene(
@@ -460,7 +502,10 @@ class Orchestrator:
         )
         _LOGGER.info(
             "scene %s criticality=%s reasons=%s best_of_n=%d",
-            scene_id, criticality.level, criticality.reasons, criticality.best_of_n,
+            scene_id,
+            criticality.level,
+            criticality.reasons,
+            criticality.best_of_n,
         )
         # §6 Defect D: persist criticality classification for API exposure
         state.criticality_level = criticality.level
@@ -489,7 +534,8 @@ class Orchestrator:
                 artifact_refs={
                     "neutral_draft_row_id": neutral_generation.row_id,
                     "neutral_llm_call_id": neutral_generation.llm_call_id,
-                    "neutral_execution_step_key": neutral_generation.execution_step_key or "neutral_draft",
+                    "neutral_execution_step_key": neutral_generation.execution_step_key
+                    or "neutral_draft",
                     "neutral_artifact_execution_id": self._execution_id,
                     "bundle_id": neutral_generation.bundle_id,
                 },
@@ -538,7 +584,9 @@ class Orchestrator:
                 },
                 artifact_hashes={
                     "hard_qc_decision": self._json_hash(hard_decision),
-                    "hard_qc_report": self._json_hash(self._qc_report_snapshot(hard_report)),
+                    "hard_qc_report": self._json_hash(
+                        self._qc_report_snapshot(hard_report)
+                    ),
                 },
                 strategy=hard_qc.resolution_code,
                 branch=hard_qc.branch,
@@ -546,21 +594,25 @@ class Orchestrator:
         if not hard_qc.should_continue:
             self.session.flush()
             # Wave 2 项 5：所有早退结果都携带 author_state 契约（含 latest_valid 指针）
-            return self._with_author_projection(scene_id, state, {
-                "scene_status": state.scene_status,
-                "current_bundle_id": bundle["bundle_id"],
-                "current_bundle_hash": bundle["bundle_snapshot_hash"],
-                "current_qc_report_id": state.current_qc_report_id,
-                "current_human_review_event_id": state.current_human_review_event_id,
-                "hard_qc": {
-                    "branch": hard_qc.branch,
-                    "qc_report_id": hard_qc.qc_report_id,
-                    "human_review_event_id": hard_qc.human_review_event_id,
-                    "resolution_code": hard_qc.resolution_code,
-                    "next_action": hard_qc.next_action,
-                    "stop_reason": hard_qc.stop_reason,
+            return self._with_author_projection(
+                scene_id,
+                state,
+                {
+                    "scene_status": state.scene_status,
+                    "current_bundle_id": bundle["bundle_id"],
+                    "current_bundle_hash": bundle["bundle_snapshot_hash"],
+                    "current_qc_report_id": state.current_qc_report_id,
+                    "current_human_review_event_id": state.current_human_review_event_id,
+                    "hard_qc": {
+                        "branch": hard_qc.branch,
+                        "qc_report_id": hard_qc.qc_report_id,
+                        "human_review_event_id": hard_qc.human_review_event_id,
+                        "resolution_code": hard_qc.resolution_code,
+                        "next_action": hard_qc.next_action,
+                        "stop_reason": hard_qc.stop_reason,
+                    },
                 },
-            })
+            )
 
         # Wave 3（§5.5 成本分配）：初始 N（关键 3/标准 2/过渡 1），低分散在预算内
         # 渐进补候选至上限（关键 5/标准 3）——不再一次生成后整批无上限重试。
@@ -579,7 +631,9 @@ class Orchestrator:
                 scene_id,
                 expected_initial_count=n_candidates,
             )
-            resume_bases, resume_products = self._style_resume_products(style_work_items, scene_id=scene_id)
+            resume_bases, resume_products = self._style_resume_products(
+                style_work_items, scene_id=scene_id
+            )
 
             def _style_product_checkpoint(
                 slot_key: str,
@@ -595,38 +649,62 @@ class Orchestrator:
                     metadata=metadata,
                     neutral_draft_row_id=neutral_generation.row_id,
                 )
-                completed = [item["final"] for item in style_work_items if item.get("final") is not None]
+                completed = [
+                    item["final"]
+                    for item in style_work_items
+                    if item.get("final") is not None
+                ]
                 slot_order = metadata.get("slot_order")
                 if not isinstance(slot_order, int):
-                    raise DomainError("RUN_CHECKPOINT_CORRUPT", "style product slot order is invalid", status_code=409)
+                    raise DomainError(
+                        "RUN_CHECKPOINT_CORRUPT",
+                        "style product slot order is invalid",
+                        status_code=409,
+                    )
                 self._save_run_checkpoint(
                     "hard_qc_ready",
                     sub_index=slot_order * 2 + (1 if phase == "final" else 0),
                     artifact_refs={
                         "style_work_items": deepcopy(style_work_items),
                         "style_initial_candidate_count": n_candidates,
-                        "style_candidate_row_ids": [item["row_id"] for item in completed],
-                        "style_candidate_llm_call_ids": [item["llm_call_id"] for item in completed],
-                        "style_candidate_step_keys": [item["execution_step_key"] for item in completed],
-                        "style_candidate_execution_ids": [item["artifact_execution_id"] for item in completed],
+                        "style_candidate_row_ids": [
+                            item["row_id"] for item in completed
+                        ],
+                        "style_candidate_llm_call_ids": [
+                            item["llm_call_id"] for item in completed
+                        ],
+                        "style_candidate_step_keys": [
+                            item["execution_step_key"] for item in completed
+                        ],
+                        "style_candidate_execution_ids": [
+                            item["artifact_execution_id"] for item in completed
+                        ],
                     },
-                    artifact_hashes={"style_work_items": self._json_hash(style_work_items)},
-                    strategy="best_of_n_in_progress" if n_candidates > 1 else "single_in_progress",
+                    artifact_hashes={
+                        "style_work_items": self._json_hash(style_work_items)
+                    },
+                    strategy=(
+                        "best_of_n_in_progress"
+                        if n_candidates > 1
+                        else "single_in_progress"
+                    ),
                 )
 
             if n_candidates > 1:
-                candidates = self.scene_generation_service.generate_style_draft_candidates(
-                    scene_id,
-                    bundle,
-                    neutral_draft_row_id=neutral_generation.row_id,
-                    neutral_content=neutral_content,
-                    author_note=author_note,
-                    n_candidates=n_candidates,
-                    max_candidates=authorized_max_candidates,
-                    step_reconciler=self._reconcile_execution_step,
-                    resume_bases=resume_bases,
-                    resume_products=resume_products,
-                    product_callback=_style_product_checkpoint,
+                candidates = (
+                    self.scene_generation_service.generate_style_draft_candidates(
+                        scene_id,
+                        bundle,
+                        neutral_draft_row_id=neutral_generation.row_id,
+                        neutral_content=neutral_content,
+                        author_note=author_note,
+                        n_candidates=n_candidates,
+                        max_candidates=authorized_max_candidates,
+                        step_reconciler=self._reconcile_execution_step,
+                        resume_bases=resume_bases,
+                        resume_products=resume_products,
+                        product_callback=_style_product_checkpoint,
+                    )
                 )
             else:
                 if "initial:0" not in resume_bases:
@@ -642,40 +720,70 @@ class Orchestrator:
                     step_reconciler=self._reconcile_execution_step,
                 )
                 candidates = [style_generation]
-            # 标准场景：机器下限选择（adversarial #1）继续管线；关键场景在下方暂停终选。
-            from novel_system.services.literary_quality import adversarial_rank_score
-            for idx, cand in enumerate(candidates):
+            style_generation = candidates[0]
+
+        # 标准场景：机器下限 + 受约束风格信号继续管线；关键场景在下方暂停终选。
+        # 从 checkpoint 恢复时也重建同一摘要，避免审计信息因一次进程中断消失。
+        from novel_system.services.literary_quality import adversarial_rank_score
+
+        for idx, cand in enumerate(candidates):
+            ranking = cand.ranking_audit or {}
+            cand_score = ranking.get("quality_score")
+            if not isinstance(cand_score, (int, float)):
                 cand_score = adversarial_rank_score(cand.content)
-                candidate_summaries.append({
+            rerank_audit = (
+                ranking.get("rerank") if isinstance(ranking.get("rerank"), dict) else {}
+            )
+            candidate_summaries.append(
+                {
                     "row_id": cand.row_id,
                     "rank": idx,
                     "adversarial_score": round(cand_score, 3),
+                    "style_score": ranking.get("style_score"),
+                    "style_confidence": ranking.get("style_confidence"),
+                    "style_rerank_mode": rerank_audit.get("applied_mode"),
+                    "plagiarism_passed": ranking.get("plagiarism_passed"),
+                    "selection_reason": ranking.get(
+                        "selection_reason", "quality_order"
+                    ),
                     "content_preview": (cand.content or "")[:300],
                     "selected": idx == 0,
-                })
-
-            style_generation = candidates[0]
+                }
+            )
         if not self._checkpoint_reached("style_ready"):
+            style_candidate_rankings = [
+                candidate.ranking_audit for candidate in candidates
+            ]
             self._save_run_checkpoint(
                 "style_ready",
                 artifact_refs={
                     "style_draft_row_id": style_generation.row_id,
                     "candidate_row_ids": [candidate.row_id for candidate in candidates],
                     "llm_call_ids": [candidate.llm_call_id for candidate in candidates],
-                    "style_execution_step_keys": [candidate.execution_step_key for candidate in candidates],
+                    "style_execution_step_keys": [
+                        candidate.execution_step_key for candidate in candidates
+                    ],
                     "style_artifact_execution_ids": [
-                        candidate.artifact_execution_id or self._execution_id for candidate in candidates
+                        candidate.artifact_execution_id or self._execution_id
+                        for candidate in candidates
                     ],
                     "style_llm_call_id": style_generation.llm_call_id,
                     "style_execution_step_key": style_generation.execution_step_key,
-                    "style_artifact_execution_id": style_generation.artifact_execution_id or self._execution_id,
+                    "style_artifact_execution_id": style_generation.artifact_execution_id
+                    or self._execution_id,
                     "bundle_id": style_generation.bundle_id,
+                    "style_candidate_rankings": style_candidate_rankings,
                 },
                 artifact_hashes={
                     "selected_draft": self._text_hash(style_generation.content),
                     "bundle": style_generation.bundle_hash,
+                    "style_candidate_rankings": self._json_hash(
+                        style_candidate_rankings
+                    ),
                     **{
-                        f"style_ready_candidate_{index}": self._text_hash(candidate.content)
+                        f"style_ready_candidate_{index}": self._text_hash(
+                            candidate.content
+                        )
                         for index, candidate in enumerate(candidates)
                     },
                 },
@@ -695,9 +803,13 @@ class Orchestrator:
         # 匿名终选 gate；作者选择后经 resume-after-selection 从批判修订/QC 继续。
         # 「§6.3 终选决定质量上界，归人」从推荐信号升级为强制暂停。
         if criticality.human_gate and len(candidates) > 1:
-            offered_row_ids = self._offer_candidates_for_selection(scene, state, bundle, candidates)
+            offered_row_ids = self._offer_candidates_for_selection(
+                scene, state, bundle, candidates
+            )
             if offered_row_ids is not None:
-                content_by_row_id = {candidate.row_id: candidate.content for candidate in candidates}
+                content_by_row_id = {
+                    candidate.row_id: candidate.content for candidate in candidates
+                }
                 self._save_run_checkpoint(
                     "selection_wait",
                     artifact_refs={
@@ -705,24 +817,30 @@ class Orchestrator:
                         "selection_candidate_row_ids": offered_row_ids,
                     },
                     artifact_hashes={
-                        f"selection_candidate_{index}": self._text_hash(content_by_row_id[row_id])
+                        f"selection_candidate_{index}": self._text_hash(
+                            content_by_row_id[row_id]
+                        )
                         for index, row_id in enumerate(offered_row_ids)
                     },
                     strategy="human_selection",
                 )
-                return self._with_author_projection(scene_id, state, {
-                    "scene_status": state.scene_status,
-                    "current_bundle_id": bundle["bundle_id"],
-                    "current_bundle_hash": bundle["bundle_snapshot_hash"],
-                    "current_qc_report_id": state.current_qc_report_id,
-                    "current_human_review_event_id": state.current_human_review_event_id,
-                    "hard_qc": hard_qc_payload,
-                    "planning": planning,
-                    "run_policy": run_policy,
-                    # 盲化：暂停响应只报数量，不带分数/预览（候选经盲化视图取用）
-                    "candidate_count": len(offered_row_ids),
-                    "candidate_selection_required": True,
-                })
+                return self._with_author_projection(
+                    scene_id,
+                    state,
+                    {
+                        "scene_status": state.scene_status,
+                        "current_bundle_id": bundle["bundle_id"],
+                        "current_bundle_hash": bundle["bundle_snapshot_hash"],
+                        "current_qc_report_id": state.current_qc_report_id,
+                        "current_human_review_event_id": state.current_human_review_event_id,
+                        "hard_qc": hard_qc_payload,
+                        "planning": planning,
+                        "run_policy": run_policy,
+                        # 盲化：暂停响应只报数量，不带分数/预览（候选经盲化视图取用）
+                        "candidate_count": len(offered_row_ids),
+                        "candidate_selection_required": True,
+                    },
+                )
 
         return self._finalize_after_style(
             scene=scene,
@@ -770,7 +888,9 @@ class Orchestrator:
         )
 
         def _optional_spend_allowed() -> bool:
-            return (not gave_up_optional) and scene_budget.can_spend(state, scene_budget.budget_unit(state))
+            return (not gave_up_optional) and scene_budget.can_spend(
+                state, scene_budget.budget_unit(state)
+            )
 
         if self._near_final_checkpoint_progress() >= 3:
             return self._archive_near_final_checkpoint(
@@ -800,16 +920,20 @@ class Orchestrator:
             # Wave 2：软 QC 只在 verified Q0/Q1 时才会走到这里（LLM-only 意见已在
             # 引擎内降级为 waive）——这是真硬阻断，正文保留、契约随行。
             self.session.flush()
-            return self._with_author_projection(scene_id, state, {
-                "scene_status": state.scene_status,
-                "current_bundle_id": bundle["bundle_id"],
-                "current_bundle_hash": bundle["bundle_snapshot_hash"],
-                "current_qc_report_id": state.current_qc_report_id,
-                "current_human_review_event_id": state.current_human_review_event_id,
-                "hard_qc": hard_qc_payload,
-                "soft_qc": self._soft_qc_result_payload(soft_qc),
-                "planning": planning,
-            })
+            return self._with_author_projection(
+                scene_id,
+                state,
+                {
+                    "scene_status": state.scene_status,
+                    "current_bundle_id": bundle["bundle_id"],
+                    "current_bundle_hash": bundle["bundle_snapshot_hash"],
+                    "current_qc_report_id": state.current_qc_report_id,
+                    "current_human_review_event_id": state.current_human_review_event_id,
+                    "hard_qc": hard_qc_payload,
+                    "soft_qc": self._soft_qc_result_payload(soft_qc),
+                    "planning": planning,
+                },
+            )
 
         near_final, final_generation, rewrite_count, near_final_skip_reason = (
             self._ensure_near_final_subcheckpoints(
@@ -819,7 +943,9 @@ class Orchestrator:
                 optional_spend_allowed=_optional_spend_allowed,
             )
         )
-        near_final_payload = self._near_final_result_payload(near_final, rewrite_count=rewrite_count)
+        near_final_payload = self._near_final_result_payload(
+            near_final, rewrite_count=rewrite_count
+        )
         # Wave 2（§5.4 / Wave 2 项 4）：near-final 是 LLM 提案层（Q2/Q3）——达自动
         # 修订上限（软补丁 ≤1 + 准终稿重写 ≤1 = 2 次）后不再断头，交付当前最好稿；
         # 其 requires_human_review 亦为提案，不得产生 human_review_required 断头。
@@ -837,23 +963,28 @@ class Orchestrator:
                 )
                 state.scene_status = "quality_warning_pending_acceptance"
                 self.session.flush()
-                result = self._with_author_projection(scene_id, state, {
-                    "scene_status": state.scene_status,
-                    "current_bundle_id": bundle["bundle_id"],
-                    "current_bundle_hash": bundle["bundle_snapshot_hash"],
-                    "current_qc_report_id": state.current_qc_report_id,
-                    "current_human_review_event_id": state.current_human_review_event_id,
-                    "hard_qc": hard_qc_payload,
-                    "soft_qc": self._soft_qc_result_payload(soft_qc),
-                    "planning": planning,
-                    "near_final": near_final_payload,
-                    "run_policy": run_policy,
-                })
-                result["quality_warnings"] = self._merged_warnings(result.get("quality_warnings"), near_final_warnings)
+                result = self._with_author_projection(
+                    scene_id,
+                    state,
+                    {
+                        "scene_status": state.scene_status,
+                        "current_bundle_id": bundle["bundle_id"],
+                        "current_bundle_hash": bundle["bundle_snapshot_hash"],
+                        "current_qc_report_id": state.current_qc_report_id,
+                        "current_human_review_event_id": state.current_human_review_event_id,
+                        "hard_qc": hard_qc_payload,
+                        "soft_qc": self._soft_qc_result_payload(soft_qc),
+                        "planning": planning,
+                        "near_final": near_final_payload,
+                        "run_policy": run_policy,
+                    },
+                )
+                result["quality_warnings"] = self._merged_warnings(
+                    result.get("quality_warnings"), near_final_warnings
+                )
                 result["safe_to_archive"] = bool(strict_gate["safe_to_archive"])
                 result["literary_warnings_unresolved"] = bool(
-                    strict_warnings
-                    or strict_gate.get("literary_warnings_unresolved")
+                    strict_warnings or strict_gate.get("literary_warnings_unresolved")
                 )
                 result["author_confirmed_final"] = False
                 result["finality"] = {
@@ -870,7 +1001,11 @@ class Orchestrator:
 
         final_row_id = versioned_scene_artifact_id("final_scene", scene_id, bundle)
         soft_risk_acceptance_event_id = self._soft_risk_acceptance_event_id(soft_qc)
-        carry_notes_json = self._carry_notes_from_report(soft_qc.qc_report_id) if soft_qc.branch == "waive" else []
+        carry_notes_json = (
+            self._carry_notes_from_report(soft_qc.qc_report_id)
+            if soft_qc.branch == "waive"
+            else []
+        )
         if soft_risk_acceptance_event_id:
             carry_notes_json.append(
                 {
@@ -909,7 +1044,9 @@ class Orchestrator:
             "final_generation_llm_call_id": final_generation.llm_call_id,
         }
         if soft_risk_acceptance_event_id:
-            finalize_details["soft_risk_acceptance_event_id"] = soft_risk_acceptance_event_id
+            finalize_details["soft_risk_acceptance_event_id"] = (
+                soft_risk_acceptance_event_id
+            )
         self.session.add(
             AttemptTracker(
                 scene_id=scene_id,
@@ -1004,7 +1141,11 @@ class Orchestrator:
         refs = state_payload.get("artifact_refs") or {}
         carry_notes = list(refs.get("carry_notes") or [])
         if self._json_hash(carry_notes) != self._checkpoint_hash("carry_notes"):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "near-final carry notes hash mismatch", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "near-final carry notes hash mismatch",
+                status_code=409,
+            )
         progress = self._near_final_checkpoint_progress()
         if progress < 4:
             archive_result = self.archiver.archive_final_scene(
@@ -1093,13 +1234,17 @@ class Orchestrator:
             carry_notes=carry_notes,
         )
         if progress < 5:
-            rule_event_ids = self._record_narrative_events(
-                scene,
-                contract,
-                final_scene.content,
-                include_prose=False,
-                degrade_errors=False,
-            ) or []
+            rule_event_ids = (
+                self._record_narrative_events(
+                    scene,
+                    contract,
+                    final_scene.content,
+                    include_prose=False,
+                    degrade_errors=False,
+                    final_scene_row_id=final_scene.row_id,
+                )
+                or []
+            )
             for ordinal, event_id in enumerate(rule_event_ids):
                 event = self.session.get(NarrativeEvent, event_id)
                 event.payload_json = {
@@ -1159,6 +1304,7 @@ class Orchestrator:
                     scene,
                     self._archive_event_base(scene, contract),
                     final_scene.content,
+                    final_scene_row_id=final_scene.row_id,
                     return_event_ids=True,
                 )
             else:
@@ -1213,6 +1359,24 @@ class Orchestrator:
             )
             progress = 6
         self._validate_archive_prose_checkpoint(scene, contract)
+        # Checkpointed extractor output is only a candidate product.  Stage it into
+        # the accepted-canon review ledger; pending rows are invisible to replay.
+        prose_checkpoint = dict(
+            ((state.run_checkpoint_json or {}).get("artifact_refs") or {}).get(
+                "archive_prose_product"
+            )
+            or {}
+        )
+        extraction_checkpoint = dict(prose_checkpoint.get("extraction") or {})
+        from novel_system.services.canon_continuity import CanonContinuityService
+
+        CanonContinuityService(self.session).stage_extraction(
+            final_scene.row_id,
+            outcome=str(extraction_checkpoint.get("outcome") or "not_invoked"),
+            event_ids=list(prose_checkpoint.get("event_ids") or []),
+            reason=extraction_checkpoint.get("reason"),
+            error_code=extraction_checkpoint.get("error_code"),
+        )
         self._validate_archive_prefix(
             scene=scene,
             contract=contract,
@@ -1232,7 +1396,11 @@ class Orchestrator:
                 outcome=vector_result["outcome"],
                 step_key="archive:vector_index:0",
                 input_hash=self._text_hash(final_scene.content),
-                **{key: value for key, value in vector_result.items() if key != "outcome"},
+                **{
+                    key: value
+                    for key, value in vector_result.items()
+                    if key != "outcome"
+                },
             )
             self._validate_archive_vector_product(
                 scene,
@@ -1244,13 +1412,18 @@ class Orchestrator:
                 "near_final_ready",
                 sub_index=7,
                 artifact_refs={"archive_vector_product": vector_product},
-                artifact_hashes={"archive_vector_product": self._json_hash(vector_product)},
+                artifact_hashes={
+                    "archive_vector_product": self._json_hash(vector_product)
+                },
             )
             progress = 7
         self._validate_archive_vector_product(scene, final_scene)
         self._validate_archive_prefix(
-            scene=scene, contract=contract, final_scene=final_scene,
-            carry_notes=carry_notes, through=7,
+            scene=scene,
+            contract=contract,
+            final_scene=final_scene,
+            carry_notes=carry_notes,
+            through=7,
         )
 
         if progress < 8:
@@ -1264,13 +1437,18 @@ class Orchestrator:
                 "near_final_ready",
                 sub_index=8,
                 artifact_refs={"archive_chapter_product": chapter_product},
-                artifact_hashes={"archive_chapter_product": self._json_hash(chapter_product)},
+                artifact_hashes={
+                    "archive_chapter_product": self._json_hash(chapter_product)
+                },
             )
             progress = 8
         self._validate_archive_chapter_product(scene)
         self._validate_archive_prefix(
-            scene=scene, contract=contract, final_scene=final_scene,
-            carry_notes=carry_notes, through=8,
+            scene=scene,
+            contract=contract,
+            final_scene=final_scene,
+            carry_notes=carry_notes,
+            through=8,
         )
 
         if progress < 9:
@@ -1284,13 +1462,18 @@ class Orchestrator:
                 "near_final_ready",
                 sub_index=9,
                 artifact_refs={"archive_volume_product": volume_product},
-                artifact_hashes={"archive_volume_product": self._json_hash(volume_product)},
+                artifact_hashes={
+                    "archive_volume_product": self._json_hash(volume_product)
+                },
             )
             progress = 9
         self._validate_archive_volume_product(scene)
         self._validate_archive_prefix(
-            scene=scene, contract=contract, final_scene=final_scene,
-            carry_notes=carry_notes, through=9,
+            scene=scene,
+            contract=contract,
+            final_scene=final_scene,
+            carry_notes=carry_notes,
+            through=9,
         )
 
         chapter_near_final = None
@@ -1317,10 +1500,15 @@ class Orchestrator:
                 },
             )
             progress = 10
-        chapter_evaluation_product = self._validate_archive_chapter_evaluation_product(scene)
+        chapter_evaluation_product = self._validate_archive_chapter_evaluation_product(
+            scene
+        )
         self._validate_archive_prefix(
-            scene=scene, contract=contract, final_scene=final_scene,
-            carry_notes=carry_notes, through=10,
+            scene=scene,
+            contract=contract,
+            final_scene=final_scene,
+            carry_notes=carry_notes,
+            through=10,
         )
         if chapter_evaluation_product.get("outcome") == "evaluated":
             chapter_near_final = chapter_evaluation_product.get("evaluation")
@@ -1337,7 +1525,11 @@ class Orchestrator:
                 outcome=drift_result["outcome"],
                 step_key="archive:style_drift:0",
                 input_hash=self._text_hash(final_scene.content),
-                **{key: value for key, value in drift_result.items() if key != "outcome"},
+                **{
+                    key: value
+                    for key, value in drift_result.items()
+                    if key != "outcome"
+                },
             )
             self._validate_archive_drift_product(
                 scene,
@@ -1348,13 +1540,18 @@ class Orchestrator:
                 "near_final_ready",
                 sub_index=11,
                 artifact_refs={"archive_drift_product": drift_product},
-                artifact_hashes={"archive_drift_product": self._json_hash(drift_product)},
+                artifact_hashes={
+                    "archive_drift_product": self._json_hash(drift_product)
+                },
             )
             progress = 11
         self._validate_archive_drift_product(scene)
         self._validate_archive_prefix(
-            scene=scene, contract=contract, final_scene=final_scene,
-            carry_notes=carry_notes, through=11,
+            scene=scene,
+            contract=contract,
+            final_scene=final_scene,
+            carry_notes=carry_notes,
+            through=11,
         )
 
         manifest = self._archive_manifest()
@@ -1373,23 +1570,31 @@ class Orchestrator:
         )
 
         near_final_warnings = self._near_final_warning_findings(near_final_payload)
-        result = self._with_author_projection(scene_id, state, {
-            "scene_status": state.scene_status,
-            "current_bundle_id": bundle["bundle_id"],
-            "current_bundle_hash": bundle["bundle_snapshot_hash"],
-            "current_final_scene_row_id": final_scene.row_id,
-            "current_qc_report_id": state.current_qc_report_id,
-            "current_human_review_event_id": state.current_human_review_event_id,
-            "hard_qc": hard_qc_payload,
-            "soft_qc": self._soft_qc_result_payload(soft_qc),
-            "planning": planning,
-            "near_final": near_final_payload,
-            "chapter_near_final": chapter_near_final,
-            "style_candidates": candidate_summaries,
-            "run_policy": run_policy,
-        })
-        result["quality_warnings"] = self._merged_warnings(result.get("quality_warnings"), near_final_warnings)
-        archive_attempt = self.session.get(AttemptTracker, archive_result.get("archive_attempt_id"))
+        result = self._with_author_projection(
+            scene_id,
+            state,
+            {
+                "scene_status": state.scene_status,
+                "current_bundle_id": bundle["bundle_id"],
+                "current_bundle_hash": bundle["bundle_snapshot_hash"],
+                "current_final_scene_row_id": final_scene.row_id,
+                "current_qc_report_id": state.current_qc_report_id,
+                "current_human_review_event_id": state.current_human_review_event_id,
+                "hard_qc": hard_qc_payload,
+                "soft_qc": self._soft_qc_result_payload(soft_qc),
+                "planning": planning,
+                "near_final": near_final_payload,
+                "chapter_near_final": chapter_near_final,
+                "style_candidates": candidate_summaries,
+                "run_policy": run_policy,
+            },
+        )
+        result["quality_warnings"] = self._merged_warnings(
+            result.get("quality_warnings"), near_final_warnings
+        )
+        archive_attempt = self.session.get(
+            AttemptTracker, archive_result.get("archive_attempt_id")
+        )
         gate_summary = (
             (archive_attempt.details_json or {}).get("final_text_gate")
             if archive_attempt is not None
@@ -1401,14 +1606,21 @@ class Orchestrator:
         result["literary_warnings_unresolved"] = bool(
             gate_summary.get("literary_warnings_unresolved") or near_final_warnings
         )
-        result["author_confirmed_final"] = bool(gate_summary.get("author_confirmed_final"))
+        result["author_confirmed_final"] = bool(
+            gate_summary.get("author_confirmed_final")
+        )
         result["finality"] = {
             "safe_to_archive": result["safe_to_archive"],
             "literary_warnings_unresolved": result["literary_warnings_unresolved"],
             "author_confirmed_final": result["author_confirmed_final"],
         }
-        if near_final_warnings and "author_review_optional_fix" not in (result.get("recommended_actions") or []):
-            result["recommended_actions"] = [*(result.get("recommended_actions") or []), "author_review_optional_fix"]
+        if near_final_warnings and "author_review_optional_fix" not in (
+            result.get("recommended_actions") or []
+        ):
+            result["recommended_actions"] = [
+                *(result.get("recommended_actions") or []),
+                "author_review_optional_fix",
+            ]
         return result
 
     def _consecutive_transition_count(self, scene: SceneCard) -> int:
@@ -1418,13 +1630,20 @@ class Orchestrator:
         the next transition is elevated to standard to break the "温吞" rhythm.
         """
         from novel_system.services.scene_criticality import classify_scene
-        preceding = list(self.session.execute(
-            select(SceneCard).where(
-                SceneCard.chapter_id == scene.chapter_id,
-                SceneCard.scene_seq < scene.scene_seq,
-                SceneCard.trashed_flag == 0,
-            ).order_by(SceneCard.scene_seq.desc())
-        ).scalars().all())
+
+        preceding = list(
+            self.session.execute(
+                select(SceneCard)
+                .where(
+                    SceneCard.chapter_id == scene.chapter_id,
+                    SceneCard.scene_seq < scene.scene_seq,
+                    SceneCard.trashed_flag == 0,
+                )
+                .order_by(SceneCard.scene_seq.desc())
+            )
+            .scalars()
+            .all()
+        )
         count = 0
         for prev in preceding:
             crit = classify_scene(prev)  # quick: no DB queries, pure field inspection
@@ -1441,18 +1660,31 @@ class Orchestrator:
         current = state.run_checkpoint
         if current not in RUN_CHECKPOINT_ORDER:
             return False
-        return RUN_CHECKPOINT_ORDER.index(current) >= RUN_CHECKPOINT_ORDER.index(node_key)
+        return RUN_CHECKPOINT_ORDER.index(current) >= RUN_CHECKPOINT_ORDER.index(
+            node_key
+        )
 
     def _checkpoint_artifact(self, key: str, *, expected_node_at_least: str) -> Any:
         if not self._checkpoint_reached(expected_node_at_least):
             return None
         state = self._active_checkpoint_state()
         payload = state.run_checkpoint_json or {}
-        if not isinstance(payload, dict) or payload.get("execution_id") != self._execution_id:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "checkpoint owner payload is invalid", status_code=409)
+        if (
+            not isinstance(payload, dict)
+            or payload.get("execution_id") != self._execution_id
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "checkpoint owner payload is invalid",
+                status_code=409,
+            )
         refs = payload.get("artifact_refs")
         if not isinstance(refs, dict):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "checkpoint artifact references are invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "checkpoint artifact references are invalid",
+                status_code=409,
+            )
         return refs.get(key)
 
     def _save_run_checkpoint(
@@ -1496,12 +1728,20 @@ class Orchestrator:
                 run_job.payload_json = {
                     **dict(run_job.payload_json or {}),
                     "current_step": node_key,
-                    **({"current_sub_index": sub_index} if sub_index is not None else {}),
+                    **(
+                        {"current_sub_index": sub_index}
+                        if sub_index is not None
+                        else {}
+                    ),
                 }
                 run_job.result_summary_json = {
                     **dict(run_job.result_summary_json or {}),
                     "current_step": node_key,
-                    **({"current_sub_index": sub_index} if sub_index is not None else {}),
+                    **(
+                        {"current_sub_index": sub_index}
+                        if sub_index is not None
+                        else {}
+                    ),
                 }
         self.session.commit()
         # The just-produced artifact and its ledger/checkpoint are durable before
@@ -1549,7 +1789,11 @@ class Orchestrator:
             )
         owner_execution_id = execution_id or self._execution_id
         if not owner_execution_id:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "checkpoint execution owner is missing", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "checkpoint execution owner is missing",
+                status_code=409,
+            )
         self._checkpoint_service.reconcile_step_output(
             scene_id=scene_id,
             execution_id=owner_execution_id,
@@ -1567,8 +1811,7 @@ class Orchestrator:
             or (
                 call.request_dispatched_at is None
                 and not (
-                    allow_local_rejected_output
-                    and call.accounting_status == "rejected"
+                    allow_local_rejected_output and call.accounting_status == "rejected"
                 )
             )
         ):
@@ -1588,7 +1831,11 @@ class Orchestrator:
         payload = self._active_checkpoint_state().run_checkpoint_json or {}
         allowed = {
             self._execution_id,
-            payload.get("selection_origin_execution_id") if isinstance(payload, dict) else None,
+            (
+                payload.get("selection_origin_execution_id")
+                if isinstance(payload, dict)
+                else None
+            ),
         }
         if isinstance(payload, dict):
             allowed.update(payload.get("artifact_execution_lineage_ids") or [])
@@ -1610,8 +1857,16 @@ class Orchestrator:
         if execution_id == self._execution_id:
             return run_job_id == self._run_job_id
         payload = self._active_checkpoint_state().run_checkpoint_json or {}
-        inherited = set(payload.get("artifact_execution_lineage_ids") or []) if isinstance(payload, dict) else set()
-        selection_origin = payload.get("selection_origin_execution_id") if isinstance(payload, dict) else None
+        inherited = (
+            set(payload.get("artifact_execution_lineage_ids") or [])
+            if isinstance(payload, dict)
+            else set()
+        )
+        selection_origin = (
+            payload.get("selection_origin_execution_id")
+            if isinstance(payload, dict)
+            else None
+        )
         if selection_origin:
             inherited.add(selection_origin)
         if not isinstance(execution_id, str) or execution_id not in inherited:
@@ -1644,7 +1899,11 @@ class Orchestrator:
             ).where(ChapterRunJob.job_id == self._run_job_id)
         ).one_or_none()
         status = row.status if row is not None else None
-        payload = row.payload_json if row is not None and isinstance(row.payload_json, dict) else {}
+        payload = (
+            row.payload_json
+            if row is not None and isinstance(row.payload_json, dict)
+            else {}
+        )
         ownership_matches = bool(
             row is not None
             and (
@@ -1698,16 +1957,25 @@ class Orchestrator:
             "provider_attempt_budget": state.provider_attempt_budget,
             "provider_attempts_used": state.provider_attempts_used,
         }
-        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in values.values()):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "budget checkpoint counters are invalid", status_code=409)
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in values.values()
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "budget checkpoint counters are invalid",
+                status_code=409,
+            )
         budget_prefixes = audited_scene_budget_prefixes(self.session, state)
         if (
             expected_budget not in budget_prefixes
-            or state.scene_tokens_used + state.scene_tokens_reserved > state.scene_token_budget
+            or state.scene_tokens_used + state.scene_tokens_reserved
+            > state.scene_token_budget
             or state.total_attempt_count > state.attempt_budget
             or state.provider_attempts_used > state.provider_attempt_budget
             or not isinstance(state.scene_budget_basis_json, dict)
-            or self._json_hash(state.scene_budget_basis_json) != self._checkpoint_hash("budget_basis")
+            or self._json_hash(state.scene_budget_basis_json)
+            != self._checkpoint_hash("budget_basis")
         ):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
@@ -1728,10 +1996,18 @@ class Orchestrator:
             return 3
         payload = state.run_checkpoint_json or {}
         sub_index = payload.get("sub_index") if isinstance(payload, dict) else None
-        if isinstance(sub_index, int) and not isinstance(sub_index, bool) and 0 <= sub_index <= 3:
+        if (
+            isinstance(sub_index, int)
+            and not isinstance(sub_index, bool)
+            and 0 <= sub_index <= 3
+        ):
             return sub_index
         refs = payload.get("artifact_refs") if isinstance(payload, dict) else None
-        if sub_index is None and isinstance(refs, dict) and isinstance(refs.get("planning"), dict):
+        if (
+            sub_index is None
+            and isinstance(refs, dict)
+            and isinstance(refs.get("planning"), dict)
+        ):
             return 3
         raise DomainError(
             "RUN_CHECKPOINT_CORRUPT",
@@ -1748,7 +2024,11 @@ class Orchestrator:
         reused: bool,
     ) -> dict[str, Any]:
         llm_call_id = serialized.get("llm_call_id")
-        call = self.session.get(LlmCall, llm_call_id) if isinstance(llm_call_id, str) else None
+        call = (
+            self.session.get(LlmCall, llm_call_id)
+            if isinstance(llm_call_id, str)
+            else None
+        )
         if call is not None and isinstance(call.execution_id, str):
             artifact_execution_id = call.execution_id
         elif reused:
@@ -1797,26 +2077,49 @@ class Orchestrator:
         owner_execution_id = provenance.get("artifact_execution_id")
         payload = self._active_checkpoint_state().run_checkpoint_json or {}
         if not isinstance(reused, bool):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "planning reuse marker is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "planning reuse marker is invalid",
+                status_code=409,
+            )
         if llm_call_id is None:
             if reused:
                 valid_owner = owner_execution_id is None
             else:
                 allowed = {
                     self._execution_id,
-                    payload.get("selection_origin_execution_id") if isinstance(payload, dict) else None,
+                    (
+                        payload.get("selection_origin_execution_id")
+                        if isinstance(payload, dict)
+                        else None
+                    ),
                 }
                 if isinstance(payload, dict):
                     allowed.update(payload.get("artifact_execution_lineage_ids") or [])
                 valid_owner = owner_execution_id in allowed
             if not valid_owner:
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "local planning provenance is invalid", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "local planning provenance is invalid",
+                    status_code=409,
+                )
             return None
         if not isinstance(owner_execution_id, str):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "planning execution provenance is missing", status_code=409)
-        superseded = set(payload.get("superseded_execution_ids") or []) if isinstance(payload, dict) else set()
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "planning execution provenance is missing",
+                status_code=409,
+            )
+        superseded = (
+            set(payload.get("superseded_execution_ids") or [])
+            if isinstance(payload, dict)
+            else set()
+        )
         if reused:
-            if owner_execution_id == self._execution_id or owner_execution_id not in superseded:
+            if (
+                owner_execution_id == self._execution_id
+                or owner_execution_id not in superseded
+            ):
                 raise DomainError(
                     "RUN_CHECKPOINT_CORRUPT",
                     "reused planning artifact is outside the superseded execution lineage",
@@ -1824,7 +2127,11 @@ class Orchestrator:
                 )
         elif owner_execution_id != self._execution_id:
             allowed = {
-                payload.get("selection_origin_execution_id") if isinstance(payload, dict) else None,
+                (
+                    payload.get("selection_origin_execution_id")
+                    if isinstance(payload, dict)
+                    else None
+                ),
             }
             if isinstance(payload, dict):
                 allowed.update(payload.get("artifact_execution_lineage_ids") or [])
@@ -1837,13 +2144,18 @@ class Orchestrator:
         return owner_execution_id
 
     @staticmethod
-    def _planning_snapshot_matches(current: dict[str, Any] | None, snapshot: dict[str, Any]) -> bool:
+    def _planning_snapshot_matches(
+        current: dict[str, Any] | None, snapshot: dict[str, Any]
+    ) -> bool:
         if current == snapshot:
             return True
         if not isinstance(current, dict):
             return False
         normalized = dict(current)
-        if snapshot.get("status") == "active" and normalized.get("status") == "superseded":
+        if (
+            snapshot.get("status") == "active"
+            and normalized.get("status") == "superseded"
+        ):
             normalized["status"] = "active"
         return normalized == snapshot
 
@@ -1870,10 +2182,18 @@ class Orchestrator:
         payload = state.run_checkpoint_json or {}
         refs = payload.get("artifact_refs") if isinstance(payload, dict) else None
         if not isinstance(refs, dict):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "planning references are invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "planning references are invalid",
+                status_code=409,
+            )
         serialized = refs.get("scene_blueprint")
         row_id = refs.get("planning_scene_blueprint_row_id")
-        row = self.session.get(SceneBlueprint, row_id) if isinstance(row_id, str) else None
+        row = (
+            self.session.get(SceneBlueprint, row_id)
+            if isinstance(row_id, str)
+            else None
+        )
         if row is None:
             self._raise_checkpoint_output_missing(row_id=row_id)
         assert row is not None
@@ -1885,21 +2205,27 @@ class Orchestrator:
                 self.scene_blueprint_service.serialize(row),
                 serialized,
             )
-            or self._json_hash(serialized) != self._checkpoint_hash("planning_scene_blueprint")
+            or self._json_hash(serialized)
+            != self._checkpoint_hash("planning_scene_blueprint")
             or row.scene_id != scene_id
             or scene is None
             or row.chapter_id != scene.chapter_id
             or refs.get("planning_scene_blueprint_llm_call_id") != row.llm_call_id
-            or refs.get("planning_scene_blueprint_execution_step_key") != "scene_blueprint"
+            or refs.get("planning_scene_blueprint_execution_step_key")
+            != "scene_blueprint"
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "planning blueprint checkpoint is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "planning blueprint checkpoint is invalid",
+                status_code=409,
+            )
         owner_execution_id = self._validate_planning_provenance(
             refs=refs,
             prefix="planning_scene_blueprint",
             llm_call_id=row.llm_call_id,
         )
         assert owner_execution_id is not None
-        generation_parent = self._validate_checkpoint_llm_output(
+        self._validate_checkpoint_llm_output(
             scene_id=scene_id,
             llm_call_id=row.llm_call_id,
             execution_step_key="scene_blueprint",
@@ -1919,10 +2245,18 @@ class Orchestrator:
         payload = state.run_checkpoint_json or {}
         refs = payload.get("artifact_refs") if isinstance(payload, dict) else None
         if not isinstance(refs, dict):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "planning references are invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "planning references are invalid",
+                status_code=409,
+            )
         serialized = refs.get(prefix)
         row_id = refs.get(f"{prefix}_row_id")
-        row = self.session.get(GenerationPlanningArtifact, row_id) if isinstance(row_id, str) else None
+        row = (
+            self.session.get(GenerationPlanningArtifact, row_id)
+            if isinstance(row_id, str)
+            else None
+        )
         if row is None:
             self._raise_checkpoint_output_missing(row_id=row_id)
         assert row is not None
@@ -1941,7 +2275,9 @@ class Orchestrator:
                 scene_id,
             ),
         }
-        artifact_type, object_type, object_id, artifact_scene_id = expected_shapes[expected_kind]
+        artifact_type, object_type, object_id, artifact_scene_id = expected_shapes[
+            expected_kind
+        ]
         if (
             scene is None
             or not isinstance(serialized, dict)
@@ -1959,7 +2295,11 @@ class Orchestrator:
             or refs.get(f"{prefix}_llm_call_id") != row.llm_call_id
             or refs.get(f"{prefix}_execution_step_key") != expected_step_key
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", f"{expected_kind} checkpoint is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                f"{expected_kind} checkpoint is invalid",
+                status_code=409,
+            )
         owner_execution_id = self._validate_planning_provenance(
             refs=refs,
             prefix=prefix,
@@ -1977,10 +2317,19 @@ class Orchestrator:
 
     def _load_planning_checkpoint(self, scene_id: str) -> dict[str, Any]:
         state_payload = self._active_checkpoint_state().run_checkpoint_json or {}
-        state_refs = state_payload.get("artifact_refs") if isinstance(state_payload, dict) else None
-        if isinstance(state_refs, dict) and "planning_scene_blueprint_row_id" in state_refs:
+        state_refs = (
+            state_payload.get("artifact_refs")
+            if isinstance(state_payload, dict)
+            else None
+        )
+        if (
+            isinstance(state_refs, dict)
+            and "planning_scene_blueprint_row_id" in state_refs
+        ):
             self._validate_planning_prefix(scene_id, through=2)
-        planning = self._checkpoint_artifact("planning", expected_node_at_least="planning_ready")
+        planning = self._checkpoint_artifact(
+            "planning", expected_node_at_least="planning_ready"
+        )
         blueprint_payload = self._checkpoint_artifact(
             "scene_blueprint",
             expected_node_at_least="planning_ready",
@@ -1989,13 +2338,22 @@ class Orchestrator:
             not isinstance(planning, dict)
             or self._json_hash(planning) != self._checkpoint_hash("planning")
             or not isinstance(blueprint_payload, dict)
-            or self._json_hash(blueprint_payload) != self._checkpoint_hash("scene_blueprint")
+            or self._json_hash(blueprint_payload)
+            != self._checkpoint_hash("scene_blueprint")
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "planning checkpoint payload/hash is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "planning checkpoint payload/hash is invalid",
+                status_code=409,
+            )
 
         scene = self.session.get(SceneCard, scene_id)
         blueprint_id = blueprint_payload.get("row_id")
-        blueprint = self.session.get(SceneBlueprint, blueprint_id) if isinstance(blueprint_id, str) else None
+        blueprint = (
+            self.session.get(SceneBlueprint, blueprint_id)
+            if isinstance(blueprint_id, str)
+            else None
+        )
         if blueprint is None:
             self._raise_checkpoint_output_missing(row_id=blueprint_id)
         assert blueprint is not None and scene is not None
@@ -2004,7 +2362,11 @@ class Orchestrator:
             or blueprint.chapter_id != scene.chapter_id
             or self.scene_blueprint_service.serialize(blueprint) != blueprint_payload
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "scene blueprint checkpoint row is misbound", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "scene blueprint checkpoint row is misbound",
+                status_code=409,
+            )
         self._validate_reused_planning_call(
             scene_id=scene_id,
             llm_call_id=blueprint.llm_call_id,
@@ -2032,7 +2394,11 @@ class Orchestrator:
         for key, shape in expected_shapes.items():
             serialized = planning.get(key)
             row_id = serialized.get("row_id") if isinstance(serialized, dict) else None
-            row = self.session.get(GenerationPlanningArtifact, row_id) if isinstance(row_id, str) else None
+            row = (
+                self.session.get(GenerationPlanningArtifact, row_id)
+                if isinstance(row_id, str)
+                else None
+            )
             if row is None:
                 self._raise_checkpoint_output_missing(row_id=row_id)
             assert row is not None
@@ -2045,7 +2411,11 @@ class Orchestrator:
                 or row.chapter_id != shape["chapter_id"]
                 or row.scene_id != shape["scene_id"]
             ):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", f"{key} planning artifact is misbound", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    f"{key} planning artifact is misbound",
+                    status_code=409,
+                )
             self._validate_reused_planning_call(
                 scene_id=scene_id,
                 llm_call_id=row.llm_call_id,
@@ -2064,7 +2434,11 @@ class Orchestrator:
     ) -> None:
         if llm_call_id is None and allow_absent:
             return
-        call = self.session.get(LlmCall, llm_call_id) if isinstance(llm_call_id, str) else None
+        call = (
+            self.session.get(LlmCall, llm_call_id)
+            if isinstance(llm_call_id, str)
+            else None
+        )
         if call is None:
             self._raise_checkpoint_output_missing(row_id=llm_call_id)
         assert call is not None
@@ -2072,9 +2446,16 @@ class Orchestrator:
             call.scene_id != scene_id
             or call.request_dispatched_at is None
             or call.accounting_status != "settled"
-            or (call.execution_id == self._execution_id and call.execution_step_key != expected_step_key)
+            or (
+                call.execution_id == self._execution_id
+                and call.execution_step_key != expected_step_key
+            )
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "planning artifact LLM call is misbound", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "planning artifact LLM call is misbound",
+                status_code=409,
+            )
         if call.execution_id == self._execution_id:
             self._validate_checkpoint_llm_output(
                 scene_id=scene_id,
@@ -2083,7 +2464,11 @@ class Orchestrator:
             )
 
     def _writer_evaluation_llm_call_id(self, evaluation_id: Any) -> str | None:
-        row = self.session.get(WriterEvaluation, evaluation_id) if isinstance(evaluation_id, str) else None
+        row = (
+            self.session.get(WriterEvaluation, evaluation_id)
+            if isinstance(evaluation_id, str)
+            else None
+        )
         return row.evaluator_llm_call_id if row is not None else None
 
     def _validate_qc_attempt(
@@ -2097,19 +2482,26 @@ class Orchestrator:
         llm_call_id: str | None,
         execution_step_key: str | None,
     ) -> None:
-        attempts = self.session.execute(
-            select(AttemptTracker).where(
-                AttemptTracker.scene_id == scene_id,
-                AttemptTracker.step == step,
-                AttemptTracker.source_bundle_id == source_bundle_id,
+        attempts = (
+            self.session.execute(
+                select(AttemptTracker).where(
+                    AttemptTracker.scene_id == scene_id,
+                    AttemptTracker.step == step,
+                    AttemptTracker.source_bundle_id == source_bundle_id,
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         matched = []
         for attempt in attempts:
             details = attempt.details_json or {}
             if details.get("qc_report_id") != qc_report_id:
                 continue
-            if source_draft_row_id is not None and details.get("source_draft_row_id") != source_draft_row_id:
+            if (
+                source_draft_row_id is not None
+                and details.get("source_draft_row_id") != source_draft_row_id
+            ):
                 continue
             if details.get("llm_call_id") != llm_call_id:
                 continue
@@ -2121,7 +2513,10 @@ class Orchestrator:
                 "RUN_CHECKPOINT_CORRUPT",
                 f"{step} checkpoint has no unique matching attempt audit row",
                 status_code=409,
-                details={"qc_report_id": qc_report_id, "matching_attempts": len(matched)},
+                details={
+                    "qc_report_id": qc_report_id,
+                    "matching_attempts": len(matched),
+                },
             )
 
     def _capture_failure_audits(
@@ -2130,12 +2525,16 @@ class Orchestrator:
         execution_id: str,
     ) -> dict[str, list[dict[str, Any]]]:
         self.session.flush()
-        calls = self.session.execute(
-            select(LlmCall).where(
-                LlmCall.scene_id == scene_id,
-                LlmCall.execution_id == execution_id,
+        calls = (
+            self.session.execute(
+                select(LlmCall).where(
+                    LlmCall.scene_id == scene_id,
+                    LlmCall.execution_id == execution_id,
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         call_snapshots = [
             {
                 column.name: deepcopy(getattr(call, column.name))
@@ -2144,12 +2543,16 @@ class Orchestrator:
             for call in calls
         ]
         call_ids = {call.llm_call_id for call in calls}
-        attempts = self.session.execute(
-            select(AttemptTracker).where(
-                AttemptTracker.scene_id == scene_id,
-                AttemptTracker.status == "failed",
+        attempts = (
+            self.session.execute(
+                select(AttemptTracker).where(
+                    AttemptTracker.scene_id == scene_id,
+                    AttemptTracker.status == "failed",
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         attempt_snapshots: list[dict[str, Any]] = []
         for attempt in attempts:
             details = dict(attempt.details_json or {})
@@ -2227,7 +2630,10 @@ class Orchestrator:
             self.session.refresh(state)
             if state.active_execution_id != execution_id:
                 return
-            if state.run_execution_status == "cancelled" and state.run_checkpoint == "cancelled":
+            if (
+                state.run_execution_status == "cancelled"
+                and state.run_checkpoint == "cancelled"
+            ):
                 return
             payload = (
                 dict(state.run_checkpoint_json)
@@ -2240,8 +2646,12 @@ class Orchestrator:
                 **payload,
                 "execution_id": execution_id,
                 "node_key": "cancelled",
-                "artifact_refs": artifact_refs if isinstance(artifact_refs, dict) else {},
-                "artifact_hashes": artifact_hashes if isinstance(artifact_hashes, dict) else {},
+                "artifact_refs": (
+                    artifact_refs if isinstance(artifact_refs, dict) else {}
+                ),
+                "artifact_hashes": (
+                    artifact_hashes if isinstance(artifact_hashes, dict) else {}
+                ),
                 "cancelled_from_node": state.run_checkpoint,
                 "cancelled_at": utcnow(),
                 "unrecoverable_failure_audit": {
@@ -2282,17 +2692,30 @@ class Orchestrator:
         snapshots: dict[str, list[dict[str, Any]]],
     ) -> None:
         state = self.session.get(SceneRunState, scene_id)
-        terminal_accounting_statuses = {"settled", "failed", "usage_exceeds_reservation"}
+        terminal_accounting_statuses = {
+            "settled",
+            "failed",
+            "usage_exceeds_reservation",
+        }
         restored_call_ids: set[str] = set()
         for call_snapshot in snapshots.get("calls", []):
             call_data = dict(call_snapshot)
-            if call_data.get("execution_id") != execution_id or call_data.get("scene_id") != scene_id:
+            if (
+                call_data.get("execution_id") != execution_id
+                or call_data.get("scene_id") != scene_id
+            ):
                 continue
             llm_call_id = call_data["llm_call_id"]
             existing = self.session.get(LlmCall, llm_call_id)
-            existing_status = existing.accounting_status if existing is not None else None
-            existing_reserved = int(existing.reserved_tokens or 0) if existing is not None else 0
-            existing_total = int(existing.total_tokens or 0) if existing is not None else 0
+            existing_status = (
+                existing.accounting_status if existing is not None else None
+            )
+            existing_reserved = (
+                int(existing.reserved_tokens or 0) if existing is not None else 0
+            )
+            existing_total = (
+                int(existing.total_tokens or 0) if existing is not None else 0
+            )
             snapshot_status = call_data.get("accounting_status")
             snapshot_total = int(call_data.get("total_tokens") or 0)
             if existing is None:
@@ -2319,11 +2742,15 @@ class Orchestrator:
                         int(state.scene_tokens_reserved or 0) - existing_reserved,
                     )
                 if existing_status not in terminal_accounting_statuses:
-                    state.scene_tokens_used = int(state.scene_tokens_used or 0) + snapshot_total
+                    state.scene_tokens_used = (
+                        int(state.scene_tokens_used or 0) + snapshot_total
+                    )
                 elif snapshot_total != existing_total:
                     state.scene_tokens_used = max(
                         0,
-                        int(state.scene_tokens_used or 0) + snapshot_total - existing_total,
+                        int(state.scene_tokens_used or 0)
+                        + snapshot_total
+                        - existing_total,
                     )
 
         restored = 0
@@ -2334,13 +2761,17 @@ class Orchestrator:
             llm_call_id = details.get("llm_call_id")
             if llm_call_id not in restored_call_ids:
                 continue
-            existing_attempts = self.session.execute(
-                select(AttemptTracker).where(
-                    AttemptTracker.scene_id == scene_id,
-                    AttemptTracker.step == attempt_data["step"],
-                    AttemptTracker.status == "failed",
+            existing_attempts = (
+                self.session.execute(
+                    select(AttemptTracker).where(
+                        AttemptTracker.scene_id == scene_id,
+                        AttemptTracker.step == attempt_data["step"],
+                        AttemptTracker.status == "failed",
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             if any(
                 (attempt.details_json or {}).get("llm_call_id") == llm_call_id
                 for attempt in existing_attempts
@@ -2379,7 +2810,11 @@ class Orchestrator:
         ):
             return sub_index
         refs = payload.get("artifact_refs") if isinstance(payload, dict) else None
-        if sub_index is None and isinstance(refs, dict) and refs.get("final_scene_row_id"):
+        if (
+            sub_index is None
+            and isinstance(refs, dict)
+            and refs.get("final_scene_row_id")
+        ):
             return 3
         raise DomainError(
             "RUN_CHECKPOINT_CORRUPT",
@@ -2555,9 +2990,11 @@ class Orchestrator:
                 row_id=(
                     product["scene_memory_row_id"]
                     if memory is None
-                    else product["chapter_rolling_note_row_id"]
-                    if rolling is None
-                    else str(product["archive_attempt_id"])
+                    else (
+                        product["chapter_rolling_note_row_id"]
+                        if rolling is None
+                        else str(product["archive_attempt_id"])
+                    )
                 )
             )
         if (
@@ -2569,8 +3006,7 @@ class Orchestrator:
             != self._archive_rolling_note_snapshot(rolling)
             or product.get("archive_attempt_snapshot")
             != self._archive_attempt_snapshot(attempt)
-            or
-            final_scene.status != "archived"
+            or final_scene.status != "archived"
             or (
                 state.scene_status != "archived"
                 if allow_terminal
@@ -2654,7 +3090,9 @@ class Orchestrator:
             "artifact_refs",
             {},
         )
-        event_ids = event_ids if event_ids is not None else refs.get("archive_rule_event_ids")
+        event_ids = (
+            event_ids if event_ids is not None else refs.get("archive_rule_event_ids")
+        )
         events = events if events is not None else refs.get("archive_rule_events")
         product = product if product is not None else refs.get("archive_rule_product")
         final_scene = self.session.get(FinalScene, refs.get("final_scene_row_id"))
@@ -2673,18 +3111,22 @@ class Orchestrator:
         )
         if (
             not isinstance(event_ids, list)
-            or any(not isinstance(event_id, str) or not event_id for event_id in event_ids)
+            or any(
+                not isinstance(event_id, str) or not event_id for event_id in event_ids
+            )
             or len(event_ids) != len(set(event_ids))
             or not isinstance(events, list)
             or not isinstance(product, dict)
             or product != expected_product
             or (
                 require_checkpoint_hash
-                and self._json_hash(events) != self._checkpoint_hash("archive_rule_events")
+                and self._json_hash(events)
+                != self._checkpoint_hash("archive_rule_events")
             )
             or (
                 require_checkpoint_hash
-                and self._json_hash(product) != self._checkpoint_hash("archive_rule_product")
+                and self._json_hash(product)
+                != self._checkpoint_hash("archive_rule_product")
             )
         ):
             raise DomainError(
@@ -2726,7 +3168,9 @@ class Orchestrator:
             {},
         )
         product = product if product is not None else refs.get("archive_prose_product")
-        event_ids = event_ids if event_ids is not None else refs.get("archive_prose_event_ids")
+        event_ids = (
+            event_ids if event_ids is not None else refs.get("archive_prose_event_ids")
+        )
         events = events if events is not None else refs.get("archive_prose_events")
         final_scene = self.session.get(FinalScene, refs.get("final_scene_row_id"))
         extraction = product.get("extraction") if isinstance(product, dict) else None
@@ -2746,16 +3190,20 @@ class Orchestrator:
                 events=events,
             )
             or not isinstance(event_ids, list)
-            or any(not isinstance(event_id, str) or not event_id for event_id in event_ids)
+            or any(
+                not isinstance(event_id, str) or not event_id for event_id in event_ids
+            )
             or len(event_ids) != len(set(event_ids))
             or not isinstance(events, list)
             or (
                 require_checkpoint_hash
-                and self._json_hash(product) != self._checkpoint_hash("archive_prose_product")
+                and self._json_hash(product)
+                != self._checkpoint_hash("archive_prose_product")
             )
             or (
                 require_checkpoint_hash
-                and self._json_hash(events) != self._checkpoint_hash("archive_prose_events")
+                and self._json_hash(events)
+                != self._checkpoint_hash("archive_prose_events")
             )
         ):
             raise DomainError(
@@ -2791,8 +3239,7 @@ class Orchestrator:
             or not self._checkpoint_execution_owner_matches(
                 extraction.get("execution_id"), extraction.get("run_job_id")
             )
-            or extraction.get("execution_step_key")
-            != "archive:prose_event_extract:0"
+            or extraction.get("execution_step_key") != "archive:prose_event_extract:0"
             or not isinstance(extraction.get("events"), list)
         ):
             raise DomainError(
@@ -2808,12 +3255,16 @@ class Orchestrator:
                     "archive prose no-call product has a parent/error",
                     status_code=409,
                 )
-            ledger = self.session.execute(
-                select(LlmCall).where(
-                    LlmCall.execution_id == self._execution_id,
-                    LlmCall.execution_step_key == "archive:prose_event_extract:0",
+            ledger = (
+                self.session.execute(
+                    select(LlmCall).where(
+                        LlmCall.execution_id == self._execution_id,
+                        LlmCall.execution_step_key == "archive:prose_event_extract:0",
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             if ledger:
                 raise DomainError(
                     "RUN_CHECKPOINT_CORRUPT",
@@ -2869,10 +3320,12 @@ class Orchestrator:
                     status_code=409,
                     details={"llm_call_id": call_id, "error_code": exc.code},
                 ) from exc
-            if (
-                not isinstance(parent.response_payload_summary, dict)
-                or parent.response_payload_summary.get("archive_prose_product_hash")
-                != self._json_hash(product)
+            if not isinstance(
+                parent.response_payload_summary, dict
+            ) or parent.response_payload_summary.get(
+                "archive_prose_product_hash"
+            ) != self._json_hash(
+                product
             ):
                 raise DomainError(
                     "RUN_CHECKPOINT_CORRUPT",
@@ -2979,9 +3432,11 @@ class Orchestrator:
         )
 
     def _archive_checkpoint_ref(self, key: str) -> Any:
-        return ((self._active_checkpoint_state().run_checkpoint_json or {}).get(
-            "artifact_refs", {}
-        )).get(key)
+        return (
+            (self._active_checkpoint_state().run_checkpoint_json or {}).get(
+                "artifact_refs", {}
+            )
+        ).get(key)
 
     def _validate_common_archive_product(
         self,
@@ -3058,7 +3513,9 @@ class Orchestrator:
                 status_code=409,
             )
         if product["outcome"] == "non_persistent":
-            if product.get("error_code") is not None or product.get("write_status") not in {
+            if product.get("error_code") is not None or product.get(
+                "write_status"
+            ) not in {
                 "indexed",
                 "already_present",
             }:
@@ -3084,7 +3541,11 @@ class Orchestrator:
             collection_exists = store.collection_exists(product["collection_name"])
             if not collection_exists and product["validation_scope"] == "process_local":
                 return product
-            rows = store.load_collection(product["collection_name"]) if collection_exists else []
+            rows = (
+                store.load_collection(product["collection_name"])
+                if collection_exists
+                else []
+            )
             matches = [row for row in rows if row.get("id") == scene.scene_id]
             if (
                 len(matches) != 1
@@ -3162,18 +3623,28 @@ class Orchestrator:
         inputs = self._scene_memory_inputs(scene.chapter_id)
         result = self.aggregator.run_final_aggregate(scene.chapter_id)
         self.session.flush()
-        row_id = result.get("chapter_memory_row_id") if isinstance(result, dict) else None
-        memory = self.session.get(ChapterMemory, row_id) if isinstance(row_id, str) else None
+        row_id = (
+            result.get("chapter_memory_row_id") if isinstance(result, dict) else None
+        )
+        memory = (
+            self.session.get(ChapterMemory, row_id) if isinstance(row_id, str) else None
+        )
         return self._archive_product(
             scene=scene,
             kind="chapter_aggregate",
             outcome=("aggregated" if memory is not None else "no_op"),
             step_key="archive:chapter_aggregate:0",
             input_hash=self._json_hash(inputs),
-            reason=(result or {}).get("reason") if isinstance(result, dict) else "no_result",
+            reason=(
+                (result or {}).get("reason")
+                if isinstance(result, dict)
+                else "no_result"
+            ),
             inputs=inputs,
             result=result,
-            chapter_memory=(self._chapter_memory_snapshot(memory) if memory is not None else None),
+            chapter_memory=(
+                self._chapter_memory_snapshot(memory) if memory is not None else None
+            ),
         )
 
     def _validate_archive_chapter_product(
@@ -3191,10 +3662,14 @@ class Orchestrator:
             step_key="archive:chapter_aggregate:0",
             outcomes={"not_applicable", "aggregated", "no_op"},
         )
-        if require_checkpoint_hash and self._json_hash(product) != self._checkpoint_hash(
-            "archive_chapter_product"
-        ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter aggregate product hash mismatch", status_code=409)
+        if require_checkpoint_hash and self._json_hash(
+            product
+        ) != self._checkpoint_hash("archive_chapter_product"):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "chapter aggregate product hash mismatch",
+                status_code=409,
+            )
         if scene.is_chapter_last != 1:
             final_scene = self.session.get(
                 FinalScene,
@@ -3209,7 +3684,11 @@ class Orchestrator:
                 or product.get("result") is not None
                 or product.get("chapter_memory") is not None
             ):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "non-final scene chapter product is invalid", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "non-final scene chapter product is invalid",
+                    status_code=409,
+                )
             return product
         inputs = product.get("inputs")
         if (
@@ -3217,9 +3696,15 @@ class Orchestrator:
             or inputs != sorted(inputs, key=lambda item: item.get("row_id", ""))
             or product.get("input_hash") != self._json_hash(inputs)
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter aggregate input manifest is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "chapter aggregate input manifest is invalid",
+                status_code=409,
+            )
         for item in inputs:
-            memory = self.session.get(SceneMemory, item.get("row_id") if isinstance(item, dict) else None)
+            memory = self.session.get(
+                SceneMemory, item.get("row_id") if isinstance(item, dict) else None
+            )
             if memory is None:
                 self._raise_checkpoint_output_missing(row_id=(item or {}).get("row_id"))
             if (
@@ -3228,12 +3713,18 @@ class Orchestrator:
                 or item.get("chapter_id") != scene.chapter_id
                 or self._text_hash(memory.content) != item.get("content_hash")
             ):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter aggregate input memory changed", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "chapter aggregate input memory changed",
+                    status_code=409,
+                )
         snapshot = product.get("chapter_memory")
         if product.get("outcome") == "aggregated":
             memory = self.session.get(ChapterMemory, (snapshot or {}).get("row_id"))
             if memory is None:
-                self._raise_checkpoint_output_missing(row_id=(snapshot or {}).get("row_id"))
+                self._raise_checkpoint_output_missing(
+                    row_id=(snapshot or {}).get("row_id")
+                )
             actual = self._chapter_memory_snapshot(memory)
             for mutable_field in (
                 "active_flag",
@@ -3242,24 +3733,39 @@ class Orchestrator:
             ):
                 actual[mutable_field] = snapshot.get(mutable_field)
             expected_content = "\n".join(
-                self.session.get(SceneMemory, item["row_id"]).content
-                for item in inputs
+                self.session.get(SceneMemory, item["row_id"]).content for item in inputs
             )
             if actual != snapshot or memory.content != expected_content:
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter aggregate output changed", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "chapter aggregate output changed",
+                    status_code=409,
+                )
         elif snapshot is not None:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter no-op unexpectedly has output", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "chapter no-op unexpectedly has output",
+                status_code=409,
+            )
         if (
             product.get("outcome") == "no_op"
             and isinstance(product.get("result"), dict)
             and product["result"].get("status") == "created"
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter aggregate created result lost its output", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "chapter aggregate created result lost its output",
+                status_code=409,
+            )
         return product
 
     def _volume_input_memories(self, scene: SceneCard) -> list[dict[str, str]]:
         chapter = self.session.get(ChapterGoal, scene.chapter_id)
-        if chapter is None or chapter.project_id is None or chapter.display_order is None:
+        if (
+            chapter is None
+            or chapter.project_id is None
+            or chapter.display_order is None
+        ):
             return []
         chapters = list(
             self.session.scalars(
@@ -3313,88 +3819,183 @@ class Orchestrator:
             "updated_at": row.updated_at,
         }
 
-    def _run_archive_volume_aggregate(self, scene: SceneCard, final_scene: FinalScene) -> dict[str, Any]:
+    def _run_archive_volume_aggregate(
+        self, scene: SceneCard, final_scene: FinalScene
+    ) -> dict[str, Any]:
         if scene.is_chapter_last != 1:
             return self._archive_product(
-                scene=scene, kind="volume_aggregate", outcome="not_applicable",
-                step_key="archive:volume_aggregate:0", input_hash=self._text_hash(final_scene.content),
-                reason="not_chapter_last", inputs=[], result=None, volume_summary=None,
+                scene=scene,
+                kind="volume_aggregate",
+                outcome="not_applicable",
+                step_key="archive:volume_aggregate:0",
+                input_hash=self._text_hash(final_scene.content),
+                reason="not_chapter_last",
+                inputs=[],
+                result=None,
+                volume_summary=None,
             )
         inputs = self._volume_input_memories(scene)
         try:
             result = self.aggregator.maybe_aggregate_volume(scene.chapter_id)
-            row_id = result.get("volume_summary_row_id") if isinstance(result, dict) else None
-            row = self.session.get(VolumeSummary, row_id) if isinstance(row_id, str) else None
+            row_id = (
+                result.get("volume_summary_row_id")
+                if isinstance(result, dict)
+                else None
+            )
+            row = (
+                self.session.get(VolumeSummary, row_id)
+                if isinstance(row_id, str)
+                else None
+            )
             outcome = "aggregated" if row is not None else "no_op"
             error_code = None
         except Exception as exc:
-            _LOGGER.warning("volume aggregation degraded for chapter %s", scene.chapter_id, exc_info=True)
-            result, row, outcome, error_code = None, None, "degraded", exc.__class__.__name__
+            _LOGGER.warning(
+                "volume aggregation degraded for chapter %s",
+                scene.chapter_id,
+                exc_info=True,
+            )
+            result, row, outcome, error_code = (
+                None,
+                None,
+                "degraded",
+                exc.__class__.__name__,
+            )
         return self._archive_product(
-            scene=scene, kind="volume_aggregate", outcome=outcome,
-            step_key="archive:volume_aggregate:0", input_hash=self._json_hash(inputs),
-            reason=(result or {}).get("reason") if isinstance(result, dict) else ("aggregation_failed" if error_code else "no_result"),
-            error_code=error_code, inputs=inputs, result=result,
+            scene=scene,
+            kind="volume_aggregate",
+            outcome=outcome,
+            step_key="archive:volume_aggregate:0",
+            input_hash=self._json_hash(inputs),
+            reason=(
+                (result or {}).get("reason")
+                if isinstance(result, dict)
+                else ("aggregation_failed" if error_code else "no_result")
+            ),
+            error_code=error_code,
+            inputs=inputs,
+            result=result,
             volume_summary=(self._volume_snapshot(row) if row is not None else None),
         )
 
     def _validate_archive_volume_product(
-        self, scene: SceneCard, product: dict[str, Any] | None = None, *, require_checkpoint_hash: bool = True,
+        self,
+        scene: SceneCard,
+        product: dict[str, Any] | None = None,
+        *,
+        require_checkpoint_hash: bool = True,
     ) -> dict[str, Any]:
         product = product or self._archive_checkpoint_ref("archive_volume_product")
         product = self._validate_common_archive_product(
-            scene=scene, product=product, kind="volume_aggregate", step_key="archive:volume_aggregate:0",
+            scene=scene,
+            product=product,
+            kind="volume_aggregate",
+            step_key="archive:volume_aggregate:0",
             outcomes={"not_applicable", "aggregated", "no_op", "degraded"},
         )
-        if require_checkpoint_hash and self._json_hash(product) != self._checkpoint_hash("archive_volume_product"):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "volume aggregate product hash mismatch", status_code=409)
+        if require_checkpoint_hash and self._json_hash(
+            product
+        ) != self._checkpoint_hash("archive_volume_product"):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "volume aggregate product hash mismatch",
+                status_code=409,
+            )
         if scene.is_chapter_last != 1:
             final_scene = self.session.get(
                 FinalScene,
                 self._archive_checkpoint_ref("final_scene_row_id"),
             )
-            if product.get("outcome") != "not_applicable" or product.get("reason") != "not_chapter_last" or product.get("inputs") != []:
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "non-final scene volume product is invalid", status_code=409)
+            if (
+                product.get("outcome") != "not_applicable"
+                or product.get("reason") != "not_chapter_last"
+                or product.get("inputs") != []
+            ):
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "non-final scene volume product is invalid",
+                    status_code=409,
+                )
             if (
                 final_scene is None
                 or product.get("input_hash") != self._text_hash(final_scene.content)
                 or product.get("result") is not None
                 or product.get("volume_summary") is not None
             ):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "non-final scene volume no-op payload is invalid", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "non-final scene volume no-op payload is invalid",
+                    status_code=409,
+                )
             return product
         inputs = product.get("inputs")
-        if not isinstance(inputs, list) or product.get("input_hash") != self._json_hash(inputs):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "volume aggregate input manifest is invalid", status_code=409)
+        if not isinstance(inputs, list) or product.get("input_hash") != self._json_hash(
+            inputs
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "volume aggregate input manifest is invalid",
+                status_code=409,
+            )
         for item in inputs:
-            row = self.session.get(ChapterMemory, item.get("row_id") if isinstance(item, dict) else None)
+            row = self.session.get(
+                ChapterMemory, item.get("row_id") if isinstance(item, dict) else None
+            )
             if row is None:
                 self._raise_checkpoint_output_missing(row_id=(item or {}).get("row_id"))
-            if (
-                row.chapter_id != item.get("chapter_id")
-                or self._text_hash(row.content) != item.get("content_hash")
-            ):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "volume aggregate input changed", status_code=409)
+            if row.chapter_id != item.get("chapter_id") or self._text_hash(
+                row.content
+            ) != item.get("content_hash"):
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "volume aggregate input changed",
+                    status_code=409,
+                )
         snapshot = product.get("volume_summary")
         if product.get("outcome") == "aggregated":
             row = self.session.get(VolumeSummary, (snapshot or {}).get("row_id"))
             if row is None:
-                self._raise_checkpoint_output_missing(row_id=(snapshot or {}).get("row_id"))
+                self._raise_checkpoint_output_missing(
+                    row_id=(snapshot or {}).get("row_id")
+                )
             actual = self._volume_snapshot(row)
-            for mutable_field in ("active_flag", "runtime_eligible", "runtime_eligibility_basis", "updated_at"):
+            for mutable_field in (
+                "active_flag",
+                "runtime_eligible",
+                "runtime_eligibility_basis",
+                "updated_at",
+            ):
                 actual[mutable_field] = snapshot.get(mutable_field)
             if actual != snapshot:
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "volume aggregate output changed", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "volume aggregate output changed",
+                    status_code=409,
+                )
         elif snapshot is not None:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "volume non-output product has a row", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "volume non-output product has a row",
+                status_code=409,
+            )
         if (
             product.get("outcome") == "no_op"
             and isinstance(product.get("result"), dict)
             and product["result"].get("status") == "created"
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "volume aggregate created result lost its output", status_code=409)
-        if product.get("outcome") == "degraded" and not isinstance(product.get("error_code"), str):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "volume degraded product has no error code", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "volume aggregate created result lost its output",
+                status_code=409,
+            )
+        if product.get("outcome") == "degraded" and not isinstance(
+            product.get("error_code"), str
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "volume degraded product has no error code",
+                status_code=409,
+            )
         return product
 
     @staticmethod
@@ -3460,7 +4061,9 @@ class Orchestrator:
             step_key="archive:chapter_near_final:0",
             input_hash=self._json_hash(
                 {
-                    "chapter_product_hash": self._checkpoint_hash("archive_chapter_product"),
+                    "chapter_product_hash": self._checkpoint_hash(
+                        "archive_chapter_product"
+                    ),
                     "source_text_ref": row.source_text_ref,
                 }
             ),
@@ -3498,10 +4101,14 @@ class Orchestrator:
             step_key="archive:chapter_near_final:0",
             outcomes={"not_applicable", "evaluated"},
         )
-        if require_checkpoint_hash and self._json_hash(product) != self._checkpoint_hash(
-            "archive_chapter_evaluation_product"
-        ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter evaluation product hash mismatch", status_code=409)
+        if require_checkpoint_hash and self._json_hash(
+            product
+        ) != self._checkpoint_hash("archive_chapter_evaluation_product"):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "chapter evaluation product hash mismatch",
+                status_code=409,
+            )
         if scene.is_chapter_last != 1:
             final_scene = self.session.get(
                 FinalScene,
@@ -3515,7 +4122,11 @@ class Orchestrator:
                 or final_scene is None
                 or product.get("input_hash") != self._text_hash(final_scene.content)
             ):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "non-final scene chapter evaluation is invalid", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "non-final scene chapter evaluation is invalid",
+                    status_code=409,
+                )
             return product
         snapshot = product.get("evaluation_row")
         if not isinstance(snapshot, dict) or not snapshot.get("evaluation_id"):
@@ -3527,7 +4138,9 @@ class Orchestrator:
             )
         row = self.session.get(WriterEvaluation, (snapshot or {}).get("evaluation_id"))
         if row is None:
-            self._raise_checkpoint_output_missing(row_id=(snapshot or {}).get("evaluation_id"))
+            self._raise_checkpoint_output_missing(
+                row_id=(snapshot or {}).get("evaluation_id")
+            )
         if (
             self._archive_writer_evaluation_snapshot(row) != snapshot
             or row.object_type != "chapter"
@@ -3535,17 +4148,28 @@ class Orchestrator:
             or row.chapter_id != scene.chapter_id
             or row.scene_id is not None
             or row.evaluator_llm_call_id != product.get("evaluator_llm_call_id")
-            or (product.get("evaluation") or {}).get("evaluation_id") != row.evaluation_id
+            or (product.get("evaluation") or {}).get("evaluation_id")
+            != row.evaluation_id
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter evaluation row is detached or changed", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "chapter evaluation row is detached or changed",
+                status_code=409,
+            )
         expected_input_hash = self._json_hash(
             {
-                "chapter_product_hash": self._checkpoint_hash("archive_chapter_product"),
+                "chapter_product_hash": self._checkpoint_hash(
+                    "archive_chapter_product"
+                ),
                 "source_text_ref": row.source_text_ref,
             }
         )
         if product.get("input_hash") != expected_input_hash:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter evaluation input hash mismatch", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "chapter evaluation input hash mismatch",
+                status_code=409,
+            )
         parent = self.session.get(LlmCall, row.evaluator_llm_call_id)
         if parent is None:
             self._raise_checkpoint_output_missing(row_id=row.evaluator_llm_call_id)
@@ -3563,9 +4187,11 @@ class Orchestrator:
         expected_outcome = (
             "completed"
             if parent.accounting_status == "settled"
-            else "rejected_before_dispatch"
-            if parent.accounting_status == "rejected"
-            else "provider_failed"
+            else (
+                "rejected_before_dispatch"
+                if parent.accounting_status == "rejected"
+                else "provider_failed"
+            )
         )
         chapter = self.session.get(ChapterGoal, scene.chapter_id)
         authoritative_project_id = chapter.project_id if chapter is not None else None
@@ -3601,26 +4227,55 @@ class Orchestrator:
                 parent.llm_call_id,
                 context,
                 expected_outcome=expected_outcome,
-                expected_error_code=(parent.error_code if expected_outcome != "completed" else None),
+                expected_error_code=(
+                    parent.error_code if expected_outcome != "completed" else None
+                ),
             )
         except (LLMAccountingError, ValueError) as exc:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter evaluation parent ledger is invalid", status_code=409) from exc
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "chapter evaluation parent ledger is invalid",
+                status_code=409,
+            ) from exc
         if (parent.response_payload_summary or {}).get(
             "archive_chapter_near_final_product_hash"
         ) != self._json_hash(product):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "chapter evaluation hash is detached from parent", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "chapter evaluation hash is detached from parent",
+                status_code=409,
+            )
         return product
 
     def _validate_archive_drift_product(
-        self, scene: SceneCard, product: dict[str, Any] | None = None, *, require_checkpoint_hash: bool = True,
+        self,
+        scene: SceneCard,
+        product: dict[str, Any] | None = None,
+        *,
+        require_checkpoint_hash: bool = True,
     ) -> dict[str, Any]:
         product = product or self._archive_checkpoint_ref("archive_drift_product")
         product = self._validate_common_archive_product(
-            scene=scene, product=product, kind="style_drift", step_key="archive:style_drift:0",
-            outcomes={"not_applicable", "no_op", "guidance_created", "already_present", "degraded"},
+            scene=scene,
+            product=product,
+            kind="style_drift",
+            step_key="archive:style_drift:0",
+            outcomes={
+                "not_applicable",
+                "no_op",
+                "guidance_created",
+                "already_present",
+                "degraded",
+            },
         )
-        if require_checkpoint_hash and self._json_hash(product) != self._checkpoint_hash("archive_drift_product"):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style drift product hash mismatch", status_code=409)
+        if require_checkpoint_hash and self._json_hash(
+            product
+        ) != self._checkpoint_hash("archive_drift_product"):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style drift product hash mismatch",
+                status_code=409,
+            )
         if scene.is_chapter_last != 1:
             final_scene = self.session.get(
                 FinalScene,
@@ -3632,10 +4287,16 @@ class Orchestrator:
                 or final_scene is None
                 or product.get("input_hash") != self._text_hash(final_scene.content)
             ):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "non-final scene drift product is invalid", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "non-final scene drift product is invalid",
+                    status_code=409,
+                )
             return product
         if product.get("outcome") in {"guidance_created", "already_present"}:
-            row = self.session.get(LongformStructureGuidance, product.get("guidance_id"))
+            row = self.session.get(
+                LongformStructureGuidance, product.get("guidance_id")
+            )
             if row is None:
                 self._raise_checkpoint_output_missing(row_id=product.get("guidance_id"))
             evidence = dict(row.evidence_json or {})
@@ -3643,7 +4304,8 @@ class Orchestrator:
                 row.scope_type != product.get("scope_type")
                 or row.scope_ref_id != product.get("scope_ref_id")
                 or self._text_hash(row.content) != product.get("content_hash")
-                or self._json_hash(row.recommendation_json or {}) != product.get("recommendation_hash")
+                or self._json_hash(row.recommendation_json or {})
+                != product.get("recommendation_hash")
                 or row.source_review_id != product.get("source_review_id")
                 or evidence.get("creation_path") != "orchestrator_style_drift"
                 or evidence.get("identity_hash") != product.get("identity_hash")
@@ -3651,12 +4313,20 @@ class Orchestrator:
                 or sorted(evidence.get("supersedes_guidance_ids") or [])
                 != sorted(product.get("supersedes_guidance_ids") or [])
             ):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "style drift guidance changed", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "style drift guidance changed",
+                    status_code=409,
+                )
             current = row
             seen: set[str] = set()
             while current.status == "superseded":
                 if current.guidance_id in seen:
-                    raise DomainError("RUN_CHECKPOINT_CORRUPT", "style drift successor chain has a cycle", status_code=409)
+                    raise DomainError(
+                        "RUN_CHECKPOINT_CORRUPT",
+                        "style drift successor chain has a cycle",
+                        status_code=409,
+                    )
                 seen.add(current.guidance_id)
                 current_evidence = dict(current.evidence_json or {})
                 successor_id = current_evidence.get("superseded_by_guidance_id")
@@ -3666,23 +4336,44 @@ class Orchestrator:
                     or current_evidence.get("superseded_by_creation_path")
                     != "orchestrator_style_drift"
                 ):
-                    raise DomainError("RUN_CHECKPOINT_CORRUPT", "superseded style drift guidance has no successor", status_code=409)
+                    raise DomainError(
+                        "RUN_CHECKPOINT_CORRUPT",
+                        "superseded style drift guidance has no successor",
+                        status_code=409,
+                    )
                 successor = self.session.get(LongformStructureGuidance, successor_id)
-                successor_evidence = dict(successor.evidence_json or {}) if successor is not None else {}
+                successor_evidence = (
+                    dict(successor.evidence_json or {}) if successor is not None else {}
+                )
                 if (
                     successor is None
                     or successor.scope_type != row.scope_type
                     or successor.scope_ref_id != row.scope_ref_id
-                    or successor_evidence.get("creation_path") != "orchestrator_style_drift"
+                    or successor_evidence.get("creation_path")
+                    != "orchestrator_style_drift"
                     or current.guidance_id
                     not in (successor_evidence.get("supersedes_guidance_ids") or [])
                 ):
-                    raise DomainError("RUN_CHECKPOINT_CORRUPT", "style drift successor chain is invalid", status_code=409)
+                    raise DomainError(
+                        "RUN_CHECKPOINT_CORRUPT",
+                        "style drift successor chain is invalid",
+                        status_code=409,
+                    )
                 current = successor
             if current.status != "approved" or current.runtime_eligible != 1:
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "style drift successor chain has no active guidance", status_code=409)
-        if product.get("outcome") == "degraded" and not isinstance(product.get("error_code"), str):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style drift degraded product has no error code", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "style drift successor chain has no active guidance",
+                    status_code=409,
+                )
+        if product.get("outcome") == "degraded" and not isinstance(
+            product.get("error_code"), str
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style drift degraded product has no error code",
+                status_code=409,
+            )
         return product
 
     def _archive_manifest(self) -> list[dict[str, Any]]:
@@ -3709,7 +4400,11 @@ class Orchestrator:
             for sub_index, kind, hash_key in entries
         ]
         if any(not isinstance(entry["product_hash"], str) for entry in manifest):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "archive manifest is incomplete", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archive manifest is incomplete",
+                status_code=409,
+            )
         return manifest
 
     def _validate_archive_prefix(
@@ -3760,24 +4455,35 @@ class Orchestrator:
                 source_generation=source_generation,
             )
             generation = StyleGenerationResult(
-                row_id=str((self._active_checkpoint_state().run_checkpoint_json or {}).get("artifact_refs", {}).get(
-                    "near_final_source_draft_row_id"
-                )),
+                row_id=str(
+                    (self._active_checkpoint_state().run_checkpoint_json or {})
+                    .get("artifact_refs", {})
+                    .get("near_final_source_draft_row_id")
+                ),
                 content=final_scene.content,
                 llm_call_id=final_scene.generation_llm_call_id or "",
                 bundle_id=bundle["bundle_id"],
                 bundle_hash=bundle["bundle_snapshot_hash"],
-                execution_step_key=(self._active_checkpoint_state().run_checkpoint_json or {}).get(
-                    "artifact_refs", {}
-                ).get("final_generation_execution_step_key"),
-                artifact_execution_id=(self._active_checkpoint_state().run_checkpoint_json or {}).get(
-                    "artifact_refs", {}
-                ).get("final_generation_artifact_execution_id"),
-            )
-            return payload, generation, int(payload.get("rewrite_count") or 0), (
-                (self._active_checkpoint_state().run_checkpoint_json or {}).get("artifact_refs", {}).get(
-                    "near_final_skip_reason"
+                execution_step_key=(
+                    self._active_checkpoint_state().run_checkpoint_json or {}
                 )
+                .get("artifact_refs", {})
+                .get("final_generation_execution_step_key"),
+                artifact_execution_id=(
+                    self._active_checkpoint_state().run_checkpoint_json or {}
+                )
+                .get("artifact_refs", {})
+                .get("final_generation_artifact_execution_id"),
+            )
+            return (
+                payload,
+                generation,
+                int(payload.get("rewrite_count") or 0),
+                (
+                    (self._active_checkpoint_state().run_checkpoint_json or {})
+                    .get("artifact_refs", {})
+                    .get("near_final_skip_reason")
+                ),
             )
 
         if progress < 0:
@@ -3789,7 +4495,9 @@ class Orchestrator:
                 source_content=source_generation.content,
                 execution_step_key="near_final_acceptance:0",
             )
-            rewrite_requested = not bool(eval0.get("pass_flag")) and bool(eval0.get("should_rewrite"))
+            rewrite_requested = not bool(eval0.get("pass_flag")) and bool(
+                eval0.get("should_rewrite")
+            )
             rewrite_allowed = rewrite_requested and optional_spend_allowed()
             if rewrite_requested and not rewrite_allowed:
                 skip_reason = "budget_or_candidate_cap"
@@ -3836,14 +4544,16 @@ class Orchestrator:
         if bool(control["rewrite_allowed"]):
             if progress < 1:
                 self._reconcile_execution_step("near_final_rewrite:0")
-                rewrite_generation = self.scene_generation_service.generate_near_final_rewrite(
-                    scene.scene_id,
-                    bundle,
-                    source_draft_row_id=source_generation.row_id,
-                    source_content=source_generation.content,
-                    revision_brief=self._near_final_rewrite_brief(eval0),
-                    source_evaluation_id=str(eval0.get("evaluation_id") or ""),
-                    execution_step_key="near_final_rewrite:0",
+                rewrite_generation = (
+                    self.scene_generation_service.generate_near_final_rewrite(
+                        scene.scene_id,
+                        bundle,
+                        source_draft_row_id=source_generation.row_id,
+                        source_content=source_generation.content,
+                        revision_brief=self._near_final_rewrite_brief(eval0),
+                        source_evaluation_id=str(eval0.get("evaluation_id") or ""),
+                        execution_step_key="near_final_rewrite:0",
+                    )
                 )
                 self._save_near_rewrite_checkpoint(
                     generation=rewrite_generation,
@@ -3958,9 +4668,15 @@ class Orchestrator:
         evaluation_id: str,
         candidate_id: Any,
     ) -> tuple[dict[str, Any], dict[str, str]]:
-        rows = self.session.execute(
-            select(RevisionCandidate).where(RevisionCandidate.evaluation_id == evaluation_id)
-        ).scalars().all()
+        rows = (
+            self.session.execute(
+                select(RevisionCandidate).where(
+                    RevisionCandidate.evaluation_id == evaluation_id
+                )
+            )
+            .scalars()
+            .all()
+        )
         if candidate_id is None:
             if rows:
                 raise DomainError(
@@ -3970,7 +4686,11 @@ class Orchestrator:
                 )
             snapshot = None
         else:
-            candidate = self.session.get(RevisionCandidate, candidate_id) if isinstance(candidate_id, str) else None
+            candidate = (
+                self.session.get(RevisionCandidate, candidate_id)
+                if isinstance(candidate_id, str)
+                else None
+            )
             if candidate is None:
                 self._raise_checkpoint_output_missing(row_id=candidate_id)
             if len(rows) != 1 or rows[0].revision_id != candidate_id:
@@ -4001,7 +4721,11 @@ class Orchestrator:
         self.session.flush()
         prefix = f"near_eval{round_index}"
         evaluation_id = result.get("evaluation_id")
-        evaluation = self.session.get(WriterEvaluation, evaluation_id) if isinstance(evaluation_id, str) else None
+        evaluation = (
+            self.session.get(WriterEvaluation, evaluation_id)
+            if isinstance(evaluation_id, str)
+            else None
+        )
         if evaluation is None:
             self._raise_checkpoint_output_missing(row_id=evaluation_id)
         normalized = self._near_evaluation_payload(result)
@@ -4023,14 +4747,18 @@ class Orchestrator:
         }
         hashes = {
             f"{prefix}_payload": self._json_hash(normalized),
-            f"{prefix}_evaluation": self._json_hash(self._writer_evaluation_snapshot(evaluation)),
+            f"{prefix}_evaluation": self._json_hash(
+                self._writer_evaluation_snapshot(evaluation)
+            ),
             **candidate_hashes,
         }
         if round_index == 0 and control is not None:
             refs["near_eval0_control"] = deepcopy(control)
             hashes["near_eval0_control"] = self._json_hash(control)
         if round_index == 1:
-            state_refs = (self._active_checkpoint_state().run_checkpoint_json or {}).get("artifact_refs") or {}
+            state_refs = (
+                self._active_checkpoint_state().run_checkpoint_json or {}
+            ).get("artifact_refs") or {}
             eval0_id = state_refs.get("near_eval0_evaluation_id")
             eval0_candidate_id = state_refs.get("near_eval0_revision_candidate_id")
             refreshed_refs, refreshed_hashes = self._near_candidate_refs_and_hashes(
@@ -4059,7 +4787,11 @@ class Orchestrator:
         refs = payload.get("artifact_refs") or {}
         prefix = f"near_eval{round_index}"
         evaluation_id = refs.get(f"{prefix}_evaluation_id")
-        evaluation = self.session.get(WriterEvaluation, evaluation_id) if isinstance(evaluation_id, str) else None
+        evaluation = (
+            self.session.get(WriterEvaluation, evaluation_id)
+            if isinstance(evaluation_id, str)
+            else None
+        )
         if evaluation is None:
             self._raise_checkpoint_output_missing(row_id=evaluation_id)
         normalized = refs.get(f"{prefix}_payload")
@@ -4077,8 +4809,10 @@ class Orchestrator:
         bundle = self._load_checkpoint_bundle(scene_id)
         llm_call_id = refs.get(f"{prefix}_llm_call_id")
         step_key = refs.get(f"{prefix}_execution_step_key")
-        owner = self._validate_artifact_execution_owner(refs.get(f"{prefix}_artifact_execution_id"))
-        generation_parent = self._validate_checkpoint_llm_output(
+        owner = self._validate_artifact_execution_owner(
+            refs.get(f"{prefix}_artifact_execution_id")
+        )
+        self._validate_checkpoint_llm_output(
             scene_id=scene_id,
             llm_call_id=llm_call_id,
             execution_step_key=step_key,
@@ -4103,10 +4837,14 @@ class Orchestrator:
             or normalized.get("scores") != (evaluation.scores_json or {})
             or normalized.get("findings") != (evaluation.findings_json or [])
             or normalized.get("failure_class") != evaluation.failure_class
-            or normalized.get("should_rewrite") != bool(evaluation.auto_rewrite_eligible)
-            or normalized.get("revision_brief") != (evaluation.revision_brief_json or [])
-            or normalized.get("requires_human_review") != bool(evaluation.requires_human_review)
-            or normalized.get("pass_flag") != (normalized.get("near_final_status") == "near_final_ready")
+            or normalized.get("should_rewrite")
+            != bool(evaluation.auto_rewrite_eligible)
+            or normalized.get("revision_brief")
+            != (evaluation.revision_brief_json or [])
+            or normalized.get("requires_human_review")
+            != bool(evaluation.requires_human_review)
+            or normalized.get("pass_flag")
+            != (normalized.get("near_final_status") == "near_final_ready")
             or normalized.get("requires_human_review")
             != (normalized.get("near_final_status") == "human_review_required")
             or (
@@ -4129,9 +4867,15 @@ class Orchestrator:
         candidate_id = refs.get(f"{prefix}_revision_candidate_id")
         expected_candidate_id = normalized.get("revision_candidate_id")
         candidate_snapshot = refs.get(f"{prefix}_candidate_snapshot")
-        candidates = self.session.execute(
-            select(RevisionCandidate).where(RevisionCandidate.evaluation_id == evaluation.evaluation_id)
-        ).scalars().all()
+        candidates = (
+            self.session.execute(
+                select(RevisionCandidate).where(
+                    RevisionCandidate.evaluation_id == evaluation.evaluation_id
+                )
+            )
+            .scalars()
+            .all()
+        )
         if expected_candidate_id is None:
             if candidate_id is not None or candidate_snapshot is not None or candidates:
                 raise DomainError(
@@ -4140,7 +4884,11 @@ class Orchestrator:
                     status_code=409,
                 )
         else:
-            candidate = self.session.get(RevisionCandidate, candidate_id) if isinstance(candidate_id, str) else None
+            candidate = (
+                self.session.get(RevisionCandidate, candidate_id)
+                if isinstance(candidate_id, str)
+                else None
+            )
             if candidate is None:
                 self._raise_checkpoint_output_missing(row_id=candidate_id)
             if (
@@ -4152,7 +4900,8 @@ class Orchestrator:
                 or candidate.object_id != scene_id
                 or candidate.scene_id != scene_id
                 or candidate.revision_type != "near_final_scene_rewrite"
-                or candidate.source_text_ref != f"source_draft:{source_generation.row_id}"
+                or candidate.source_text_ref
+                != f"source_draft:{source_generation.row_id}"
                 or candidate.proposed_text != source_generation.content
                 or candidate.status not in {"candidate", "superseded"}
                 or self._revision_candidate_snapshot(candidate) != candidate_snapshot
@@ -4162,7 +4911,9 @@ class Orchestrator:
                     f"near-final evaluation {round_index} candidate is misbound",
                     status_code=409,
                 )
-        if self._json_hash(candidate_snapshot) != self._checkpoint_hash(f"{prefix}_candidate"):
+        if self._json_hash(candidate_snapshot) != self._checkpoint_hash(
+            f"{prefix}_candidate"
+        ):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
                 f"near-final evaluation {round_index} candidate hash mismatch",
@@ -4190,13 +4941,17 @@ class Orchestrator:
         llm_call_id: str,
         execution_step_key: str,
     ) -> None:
-        attempts = self.session.execute(
-            select(AttemptTracker).where(
-                AttemptTracker.scene_id == scene_id,
-                AttemptTracker.step == "near_final_acceptance_review",
-                AttemptTracker.source_bundle_id == source_bundle_id,
+        attempts = (
+            self.session.execute(
+                select(AttemptTracker).where(
+                    AttemptTracker.scene_id == scene_id,
+                    AttemptTracker.step == "near_final_acceptance_review",
+                    AttemptTracker.source_bundle_id == source_bundle_id,
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         matched = []
         for attempt in attempts:
             details = attempt.details_json or {}
@@ -4213,13 +4968,20 @@ class Orchestrator:
                 "RUN_CHECKPOINT_CORRUPT",
                 "near-final checkpoint has no unique matching attempt audit row",
                 status_code=409,
-                details={"evaluation_id": evaluation_id, "matching_attempts": len(matched)},
+                details={
+                    "evaluation_id": evaluation_id,
+                    "matching_attempts": len(matched),
+                },
             )
 
     def _load_near_eval0_control(self, eval0: dict[str, Any]) -> dict[str, Any]:
-        refs = (self._active_checkpoint_state().run_checkpoint_json or {}).get("artifact_refs") or {}
+        refs = (self._active_checkpoint_state().run_checkpoint_json or {}).get(
+            "artifact_refs"
+        ) or {}
         control = refs.get("near_eval0_control")
-        rewrite_requested = not bool(eval0.get("pass_flag")) and bool(eval0.get("should_rewrite"))
+        rewrite_requested = not bool(eval0.get("pass_flag")) and bool(
+            eval0.get("should_rewrite")
+        )
         if (
             not isinstance(control, dict)
             or not isinstance(control.get("branch"), str)
@@ -4229,7 +4991,10 @@ class Orchestrator:
             or control["rewrite_requested"] != rewrite_requested
             or (control["rewrite_allowed"] and not control["rewrite_requested"])
             or (control["rewrite_allowed"] and control.get("skip_reason") is not None)
-            or (control.get("skip_reason") is not None and not isinstance(control.get("skip_reason"), str))
+            or (
+                control.get("skip_reason") is not None
+                and not isinstance(control.get("skip_reason"), str)
+            )
         ):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
@@ -4239,16 +5004,28 @@ class Orchestrator:
         expected_branch: str
         expected_skip_reason: str | None
         if eval0.get("requires_human_review"):
-            expected_branch, expected_skip_reason = "human_review_proposal", "human_review_proposal"
+            expected_branch, expected_skip_reason = (
+                "human_review_proposal",
+                "human_review_proposal",
+            )
         elif eval0.get("pass_flag"):
             expected_branch, expected_skip_reason = "pass", "no_rewrite_requested"
         elif rewrite_requested and control["rewrite_allowed"]:
             expected_branch, expected_skip_reason = "rewrite", None
         elif rewrite_requested:
-            expected_branch, expected_skip_reason = "rewrite_skipped", "budget_or_candidate_cap"
+            expected_branch, expected_skip_reason = (
+                "rewrite_skipped",
+                "budget_or_candidate_cap",
+            )
         else:
-            expected_branch, expected_skip_reason = "unresolved", "not_auto_rewrite_eligible"
-        if control.get("branch") != expected_branch or control.get("skip_reason") != expected_skip_reason:
+            expected_branch, expected_skip_reason = (
+                "unresolved",
+                "not_auto_rewrite_eligible",
+            )
+        if (
+            control.get("branch") != expected_branch
+            or control.get("skip_reason") != expected_skip_reason
+        ):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
                 "near-final eval0 branch/skip reason is inconsistent",
@@ -4271,7 +5048,8 @@ class Orchestrator:
                 "near_rewrite_draft_row_id": generation.row_id,
                 "near_rewrite_llm_call_id": generation.llm_call_id,
                 "near_rewrite_execution_step_key": generation.execution_step_key,
-                "near_rewrite_artifact_execution_id": generation.artifact_execution_id or self._execution_id,
+                "near_rewrite_artifact_execution_id": generation.artifact_execution_id
+                or self._execution_id,
                 "near_rewrite_source_draft_row_id": source_generation.row_id,
                 "near_rewrite_source_evaluation_id": source_evaluation_id,
                 "near_rewrite_bundle_id": bundle["bundle_id"],
@@ -4288,15 +5066,21 @@ class Orchestrator:
         source_generation: StyleGenerationResult,
         source_evaluation_id: str,
     ) -> StyleGenerationResult:
-        refs = (self._active_checkpoint_state().run_checkpoint_json or {}).get("artifact_refs") or {}
+        refs = (self._active_checkpoint_state().run_checkpoint_json or {}).get(
+            "artifact_refs"
+        ) or {}
         row_id = refs.get("near_rewrite_draft_row_id")
-        draft = self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
+        draft = (
+            self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
+        )
         if draft is None:
             self._raise_checkpoint_output_missing(row_id=row_id)
         bundle = self._load_checkpoint_bundle(scene_id)
         llm_call_id = refs.get("near_rewrite_llm_call_id")
         step_key = refs.get("near_rewrite_execution_step_key")
-        owner = self._validate_artifact_execution_owner(refs.get("near_rewrite_artifact_execution_id"))
+        owner = self._validate_artifact_execution_owner(
+            refs.get("near_rewrite_artifact_execution_id")
+        )
         self._validate_checkpoint_llm_output(
             scene_id=scene_id,
             llm_call_id=llm_call_id,
@@ -4314,27 +5098,34 @@ class Orchestrator:
             or refs.get("near_rewrite_bundle_id") != bundle["bundle_id"]
             or refs.get("near_rewrite_bundle_hash") != bundle["bundle_snapshot_hash"]
             or step_key != "near_final_rewrite:0"
-            or self._text_hash(draft.content) != self._checkpoint_hash("near_rewrite_draft")
+            or self._text_hash(draft.content)
+            != self._checkpoint_hash("near_rewrite_draft")
         ):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
                 "near-final rewrite checkpoint identity/source/hash mismatch",
                 status_code=409,
             )
-        attempts = self.session.execute(
-            select(AttemptTracker).where(
-                AttemptTracker.scene_id == scene_id,
-                AttemptTracker.step == "scene_literary_rewrite",
-                AttemptTracker.source_bundle_id == bundle["bundle_id"],
+        attempts = (
+            self.session.execute(
+                select(AttemptTracker).where(
+                    AttemptTracker.scene_id == scene_id,
+                    AttemptTracker.step == "scene_literary_rewrite",
+                    AttemptTracker.source_bundle_id == bundle["bundle_id"],
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         matched = [
             attempt
             for attempt in attempts
             if (attempt.details_json or {}).get("row_id") == draft.row_id
             and (attempt.details_json or {}).get("llm_call_id") == llm_call_id
-            and (attempt.details_json or {}).get("source_draft_row_id") == source_generation.row_id
-            and (attempt.details_json or {}).get("source_evaluation_id") == source_evaluation_id
+            and (attempt.details_json or {}).get("source_draft_row_id")
+            == source_generation.row_id
+            and (attempt.details_json or {}).get("source_evaluation_id")
+            == source_evaluation_id
         ]
         if len(matched) != 1:
             raise DomainError(
@@ -4364,7 +5155,11 @@ class Orchestrator:
             "final_scene_row_id",
             expected_node_at_least="near_final_ready",
         )
-        final_scene = self.session.get(FinalScene, final_row_id) if isinstance(final_row_id, str) else None
+        final_scene = (
+            self.session.get(FinalScene, final_row_id)
+            if isinstance(final_row_id, str)
+            else None
+        )
         if final_scene is None:
             self._raise_checkpoint_output_missing(row_id=final_row_id)
         assert final_scene is not None
@@ -4387,24 +5182,39 @@ class Orchestrator:
             or final_scene.source_bundle_id != bundle["bundle_id"]
             or final_scene.source_bundle_hash != bundle["bundle_snapshot_hash"]
             or final_scene.generation_llm_call_id != generation_call_id
-            or self._text_hash(final_scene.content) != self._checkpoint_hash("final_scene")
+            or self._text_hash(final_scene.content)
+            != self._checkpoint_hash("final_scene")
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "near-final checkpoint identity/hash mismatch", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "near-final checkpoint identity/hash mismatch",
+                status_code=409,
+            )
 
         near_final_payload = refs.get("near_final")
-        if (
-            not isinstance(near_final_payload, dict)
-            or self._json_hash(near_final_payload) != self._checkpoint_hash("near_final")
-        ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "near-final payload hash mismatch", status_code=409)
+        if not isinstance(near_final_payload, dict) or self._json_hash(
+            near_final_payload
+        ) != self._checkpoint_hash("near_final"):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "near-final payload hash mismatch",
+                status_code=409,
+            )
         carry_notes = refs.get("carry_notes")
-        if (
-            not isinstance(carry_notes, list)
-            or self._json_hash(carry_notes) != self._checkpoint_hash("carry_notes")
-        ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "near-final carry notes hash mismatch", status_code=409)
+        if not isinstance(carry_notes, list) or self._json_hash(
+            carry_notes
+        ) != self._checkpoint_hash("carry_notes"):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "near-final carry notes hash mismatch",
+                status_code=409,
+            )
         evaluation_id = refs.get("near_final_evaluation_id")
-        evaluation = self.session.get(WriterEvaluation, evaluation_id) if isinstance(evaluation_id, str) else None
+        evaluation = (
+            self.session.get(WriterEvaluation, evaluation_id)
+            if isinstance(evaluation_id, str)
+            else None
+        )
         if evaluation is None:
             self._raise_checkpoint_output_missing(row_id=evaluation_id)
         assert evaluation is not None
@@ -4433,7 +5243,11 @@ class Orchestrator:
             or evaluation.evaluator_llm_call_id != evaluation_call_id
             or near_final_payload.get("evaluation_id") != evaluation.evaluation_id
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "near-final evaluation checkpoint is misbound", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "near-final evaluation checkpoint is misbound",
+                status_code=409,
+            )
         if refs.get("near_completion") is not None:
             if source_generation is None:
                 raise DomainError(
@@ -4449,7 +5263,10 @@ class Orchestrator:
             control = self._load_near_eval0_control(eval0)
             rewrite_count = refs.get("near_final_rewrite_count")
             if rewrite_count == 1:
-                if not control.get("rewrite_allowed") or control.get("skip_reason") is not None:
+                if (
+                    not control.get("rewrite_allowed")
+                    or control.get("skip_reason") is not None
+                ):
                     raise DomainError(
                         "RUN_CHECKPOINT_CORRUPT",
                         "near-final rewrite completion is not reachable from eval0",
@@ -4486,11 +5303,15 @@ class Orchestrator:
             )
             eval0_candidate_id = refs.get("near_eval0_revision_candidate_id")
             if isinstance(eval0_candidate_id, str):
-                eval0_candidate = self.session.get(RevisionCandidate, eval0_candidate_id)
+                eval0_candidate = self.session.get(
+                    RevisionCandidate, eval0_candidate_id
+                )
                 if eval0_candidate is None:
                     self._raise_checkpoint_output_missing(row_id=eval0_candidate_id)
                 expected_eval0_candidate_status = (
-                    "superseded" if rewrite_count == 1 and final_evaluation.get("pass_flag") else "candidate"
+                    "superseded"
+                    if rewrite_count == 1 and final_evaluation.get("pass_flag")
+                    else "candidate"
                 )
                 if eval0_candidate.status != expected_eval0_candidate_status:
                     raise DomainError(
@@ -4510,11 +5331,15 @@ class Orchestrator:
             }
             if (
                 completion != expected_completion
-                or self._json_hash(completion) != self._checkpoint_hash("near_completion")
-                or refs.get("near_final_branch") != final_evaluation.get("near_final_status")
-                or refs.get("near_final_skip_reason") != (control.get("skip_reason") if rewrite_count == 0 else None)
+                or self._json_hash(completion)
+                != self._checkpoint_hash("near_completion")
+                or refs.get("near_final_branch")
+                != final_evaluation.get("near_final_status")
+                or refs.get("near_final_skip_reason")
+                != (control.get("skip_reason") if rewrite_count == 0 else None)
                 or near_final_payload != expected_payload
-                or refs.get("near_final_source_draft_row_id") != expected_generation.row_id
+                or refs.get("near_final_source_draft_row_id")
+                != expected_generation.row_id
                 or final_scene.content != expected_generation.content
                 or final_scene.generation_llm_call_id != expected_generation.llm_call_id
             ):
@@ -4523,19 +5348,26 @@ class Orchestrator:
                     "near-final completion prefix/branch/hash mismatch",
                     status_code=409,
                 )
-            finalize_attempts = self.session.execute(
-                select(AttemptTracker).where(
-                    AttemptTracker.scene_id == scene_id,
-                    AttemptTracker.step == "finalize",
-                    AttemptTracker.source_bundle_id == bundle["bundle_id"],
+            finalize_attempts = (
+                self.session.execute(
+                    select(AttemptTracker).where(
+                        AttemptTracker.scene_id == scene_id,
+                        AttemptTracker.step == "finalize",
+                        AttemptTracker.source_bundle_id == bundle["bundle_id"],
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             matched_finalize = [
                 attempt
                 for attempt in finalize_attempts
-                if (attempt.details_json or {}).get("source_style_draft_row_id") == expected_generation.row_id
-                and (attempt.details_json or {}).get("final_generation_llm_call_id") == expected_generation.llm_call_id
-                and (attempt.details_json or {}).get("source_qc_report_id") == refs.get("soft_qc_report_id")
+                if (attempt.details_json or {}).get("source_style_draft_row_id")
+                == expected_generation.row_id
+                and (attempt.details_json or {}).get("final_generation_llm_call_id")
+                == expected_generation.llm_call_id
+                and (attempt.details_json or {}).get("source_qc_report_id")
+                == refs.get("soft_qc_report_id")
             ]
             if len(matched_finalize) != 1:
                 raise DomainError(
@@ -4588,17 +5420,22 @@ class Orchestrator:
         self._validate_archive_drift_product(scene)
         manifest = refs.get("archive_manifest")
         expected_manifest = self._archive_manifest()
-        if (
-            manifest != expected_manifest
-            or self._json_hash(manifest) != self._checkpoint_hash("archive_manifest")
-        ):
+        if manifest != expected_manifest or self._json_hash(
+            manifest
+        ) != self._checkpoint_hash("archive_manifest"):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
                 "archived product manifest is incomplete or changed",
                 status_code=409,
             )
-        memory_id = self._checkpoint_artifact("scene_memory_row_id", expected_node_at_least="archived")
-        memory = self.session.get(SceneMemory, memory_id) if isinstance(memory_id, str) else None
+        memory_id = self._checkpoint_artifact(
+            "scene_memory_row_id", expected_node_at_least="archived"
+        )
+        memory = (
+            self.session.get(SceneMemory, memory_id)
+            if isinstance(memory_id, str)
+            else None
+        )
         if memory is None:
             self._raise_checkpoint_output_missing(row_id=memory_id)
         assert memory is not None
@@ -4617,13 +5454,23 @@ class Orchestrator:
             or memory.active_flag != 1
             or memory.runtime_eligible != 1
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "archived checkpoint product graph is inconsistent", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "archived checkpoint product graph is inconsistent",
+                status_code=409,
+            )
         return final_scene
 
     def _load_checkpoint_bundle(self, scene_id: str) -> dict[str, Any]:
-        bundle_id = self._checkpoint_artifact("bundle_id", expected_node_at_least="bundle_ready")
+        bundle_id = self._checkpoint_artifact(
+            "bundle_id", expected_node_at_least="bundle_ready"
+        )
         expected_hash = self._checkpoint_hash("bundle")
-        bundle = self.session.get(SceneBundle, bundle_id) if isinstance(bundle_id, str) else None
+        bundle = (
+            self.session.get(SceneBundle, bundle_id)
+            if isinstance(bundle_id, str)
+            else None
+        )
         if bundle is None:
             raise DomainError(
                 "RUN_CHECKPOINT_OUTPUT_MISSING",
@@ -4632,7 +5479,11 @@ class Orchestrator:
                 details={"bundle_id": bundle_id},
             )
         if bundle.scene_id != scene_id or bundle.bundle_snapshot_hash != expected_hash:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "checkpoint bundle identity/hash mismatch", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "checkpoint bundle identity/hash mismatch",
+                status_code=409,
+            )
         bundle_integrity = verify_bundle_snapshot_hash(
             bundle.frozen_snapshot_json,
             expected_hash=bundle.bundle_snapshot_hash,
@@ -4662,7 +5513,9 @@ class Orchestrator:
         expected_node_at_least: str,
         result_type: str,
     ) -> NeutralGenerationResult | StyleGenerationResult:
-        row_id = self._checkpoint_artifact(ref_key, expected_node_at_least=expected_node_at_least)
+        row_id = self._checkpoint_artifact(
+            ref_key, expected_node_at_least=expected_node_at_least
+        )
         row = self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
         if row is None:
             self._raise_checkpoint_output_missing(row_id=row_id)
@@ -4695,7 +5548,9 @@ class Orchestrator:
                 "style_artifact_execution_id",
                 expected_node_at_least=expected_node_at_least,
             )
-        artifact_execution_id = self._validate_artifact_execution_owner(artifact_execution_id)
+        artifact_execution_id = self._validate_artifact_execution_owner(
+            artifact_execution_id
+        )
         generation_parent = self._validate_checkpoint_llm_output(
             scene_id=scene_id,
             llm_call_id=llm_call_id,
@@ -4719,7 +5574,11 @@ class Orchestrator:
             or row.generation_llm_call_id != llm_call_id
             or self._text_hash(row.content) != self._checkpoint_hash(hash_key)
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "checkpoint draft identity/hash mismatch", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "checkpoint draft identity/hash mismatch",
+                status_code=409,
+            )
         kwargs = {
             "row_id": row.row_id,
             "content": row.content,
@@ -4736,11 +5595,23 @@ class Orchestrator:
     @staticmethod
     def _style_slot_identity(slot_key: str) -> tuple[str, int]:
         parts = slot_key.split(":") if isinstance(slot_key, str) else []
-        if len(parts) != 2 or parts[0] not in {"initial", "topup"} or not parts[1].isdigit():
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style work-item slot key is invalid", status_code=409)
+        if (
+            len(parts) != 2
+            or parts[0] not in {"initial", "topup"}
+            or not parts[1].isdigit()
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style work-item slot key is invalid",
+                status_code=409,
+            )
         index = int(parts[1])
         if (parts[0] == "initial" and index < 0) or (parts[0] == "topup" and index < 1):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style work-item slot index is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style work-item slot index is invalid",
+                status_code=409,
+            )
         return parts[0], index
 
     def _style_artifact_descriptor(
@@ -4757,7 +5628,11 @@ class Orchestrator:
         assert row is not None
         owner = product.artifact_execution_id or self._execution_id
         if not isinstance(owner, str):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style artifact owner is missing", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style artifact owner is missing",
+                status_code=409,
+            )
         return {
             "phase": phase,
             "row_id": product.row_id,
@@ -4790,11 +5665,26 @@ class Orchestrator:
             or slot_order < 0
             or metadata.get("source_neutral_draft_row_id") != neutral_draft_row_id
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style product callback metadata is invalid", status_code=409)
-        item = next((candidate for candidate in work_items if candidate.get("slot_key") == slot_key), None)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style product callback metadata is invalid",
+                status_code=409,
+            )
+        item = next(
+            (
+                candidate
+                for candidate in work_items
+                if candidate.get("slot_key") == slot_key
+            ),
+            None,
+        )
         if phase == "base":
             if item is not None or slot_order != len(work_items):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "style base phase is not a monotonic prefix", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "style base phase is not a monotonic prefix",
+                    status_code=409,
+                )
             descriptor = self._style_artifact_descriptor(
                 product,
                 phase="base",
@@ -4802,7 +5692,11 @@ class Orchestrator:
                 source_base_row_id=None,
             )
             if descriptor["stage"] != "style_draft":
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "style base product has the wrong stage", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "style base product has the wrong stage",
+                    status_code=409,
+                )
             work_items.append(
                 {
                     "slot_key": slot_key,
@@ -4816,8 +5710,16 @@ class Orchestrator:
                 }
             )
             return
-        if item is None or item.get("slot_order") != slot_order or item.get("final") is not None:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style final phase has no matching base prefix", status_code=409)
+        if (
+            item is None
+            or item.get("slot_order") != slot_order
+            or item.get("final") is not None
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style final phase has no matching base prefix",
+                status_code=409,
+            )
         gate_decision = metadata.get("gate_decision")
         de_template_outcome = metadata.get("de_template_outcome")
         source_base_row_id = metadata.get("source_base_row_id")
@@ -4825,35 +5727,64 @@ class Orchestrator:
             not isinstance(gate_decision, dict)
             or not isinstance(gate_decision.get("triggered"), bool)
             or not isinstance(de_template_outcome, dict)
-            or de_template_outcome.get("status") not in {"not_required", "completed", "failed"}
+            or de_template_outcome.get("status")
+            not in {"not_required", "completed", "failed"}
             or source_base_row_id != item["base"]["row_id"]
-            or (not gate_decision["triggered"] and de_template_outcome.get("status") != "not_required")
-            or (gate_decision["triggered"] and de_template_outcome.get("status") == "not_required")
+            or (
+                not gate_decision["triggered"]
+                and de_template_outcome.get("status") != "not_required"
+            )
+            or (
+                gate_decision["triggered"]
+                and de_template_outcome.get("status") == "not_required"
+            )
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style final gate/source metadata is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style final gate/source metadata is invalid",
+                status_code=409,
+            )
         if de_template_outcome["status"] == "completed" and (
             de_template_outcome.get("llm_call_id") != product.llm_call_id
-            or de_template_outcome.get("execution_step_key") != product.execution_step_key
+            or de_template_outcome.get("execution_step_key")
+            != product.execution_step_key
             or de_template_outcome.get("accounting_status") != "settled"
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "completed de-template outcome is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "completed de-template outcome is invalid",
+                status_code=409,
+            )
         if de_template_outcome["status"] == "failed" and (
             not isinstance(de_template_outcome.get("llm_call_id"), str)
             or not isinstance(de_template_outcome.get("execution_step_key"), str)
             or not isinstance(de_template_outcome.get("artifact_execution_id"), str)
-            or de_template_outcome.get("accounting_status") not in {"failed", "rejected"}
+            or de_template_outcome.get("accounting_status")
+            not in {"failed", "rejected"}
             or not isinstance(de_template_outcome.get("error_code"), str)
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "failed de-template outcome is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "failed de-template outcome is invalid",
+                status_code=409,
+            )
         descriptor = self._style_artifact_descriptor(
             product,
             phase="final",
             source_neutral_draft_row_id=neutral_draft_row_id,
             source_base_row_id=source_base_row_id,
         )
-        expected_stage = "de_template" if de_template_outcome["status"] == "completed" else "style_draft"
+        expected_stage = (
+            "de_template"
+            if de_template_outcome["status"] == "completed"
+            else "style_draft"
+        )
         if descriptor["stage"] != expected_stage:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style final product contradicts its gate", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style final product contradicts its gate",
+                status_code=409,
+            )
         item["gate_decision"] = deepcopy(gate_decision)
         item["de_template_outcome"] = deepcopy(de_template_outcome)
         item["final"] = descriptor
@@ -4871,13 +5802,19 @@ class Orchestrator:
         source_base_row_id: str | None,
     ) -> StyleGenerationResult:
         if not isinstance(descriptor, dict):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style artifact descriptor is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style artifact descriptor is invalid",
+                status_code=409,
+            )
         row_id = descriptor.get("row_id")
         row = self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
         if row is None:
             self._raise_checkpoint_output_missing(row_id=row_id)
         assert row is not None
-        owner = self._validate_artifact_execution_owner(descriptor.get("artifact_execution_id"))
+        owner = self._validate_artifact_execution_owner(
+            descriptor.get("artifact_execution_id")
+        )
         self._validate_checkpoint_llm_output(
             scene_id=scene_id,
             llm_call_id=descriptor.get("llm_call_id"),
@@ -4888,7 +5825,8 @@ class Orchestrator:
             descriptor.get("phase") != expected_phase
             or descriptor.get("stage") != expected_stage
             or descriptor.get("execution_step_key") != expected_step_key
-            or descriptor.get("source_neutral_draft_row_id") != source_neutral_draft_row_id
+            or descriptor.get("source_neutral_draft_row_id")
+            != source_neutral_draft_row_id
             or descriptor.get("source_base_row_id") != source_base_row_id
             or descriptor.get("bundle_id") != bundle["bundle_id"]
             or descriptor.get("bundle_hash") != bundle["bundle_snapshot_hash"]
@@ -4899,8 +5837,14 @@ class Orchestrator:
             or row.generation_llm_call_id != descriptor.get("llm_call_id")
             or self._text_hash(row.content) != descriptor.get("content_hash")
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style artifact identity/source/hash mismatch", status_code=409)
-        attempt_step = "de_template" if expected_stage == "de_template" else "style_draft"
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style artifact identity/source/hash mismatch",
+                status_code=409,
+            )
+        attempt_step = (
+            "de_template" if expected_stage == "de_template" else "style_draft"
+        )
         matching_attempts = []
         for attempt in self.session.execute(
             select(AttemptTracker).where(
@@ -4911,8 +5855,16 @@ class Orchestrator:
             )
         ).scalars():
             details = attempt.details_json or {}
-            expected_source_key = "source_style_draft_row_id" if expected_stage == "de_template" else "source_draft_row_id"
-            expected_source = source_base_row_id if expected_stage == "de_template" else source_neutral_draft_row_id
+            expected_source_key = (
+                "source_style_draft_row_id"
+                if expected_stage == "de_template"
+                else "source_draft_row_id"
+            )
+            expected_source = (
+                source_base_row_id
+                if expected_stage == "de_template"
+                else source_neutral_draft_row_id
+            )
             if (
                 details.get("row_id") == row.row_id
                 and details.get("llm_call_id") == row.generation_llm_call_id
@@ -4920,7 +5872,11 @@ class Orchestrator:
             ):
                 matching_attempts.append(attempt)
         if len(matching_attempts) != 1:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style artifact attempt ledger is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style artifact attempt ledger is invalid",
+                status_code=409,
+            )
         return StyleGenerationResult(
             row_id=row.row_id,
             content=row.content,
@@ -4940,23 +5896,47 @@ class Orchestrator:
         require_complete: bool,
     ) -> list[tuple[StyleGenerationResult, StyleGenerationResult | None]]:
         if not isinstance(work_items, list) or (require_complete and not work_items):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style work-item cursor is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style work-item cursor is invalid",
+                status_code=409,
+            )
         bundle = self._load_checkpoint_bundle(scene_id)
-        neutral_row_id = self._checkpoint_artifact("neutral_draft_row_id", expected_node_at_least="neutral_ready")
+        neutral_row_id = self._checkpoint_artifact(
+            "neutral_draft_row_id", expected_node_at_least="neutral_ready"
+        )
         products: list[tuple[StyleGenerationResult, StyleGenerationResult | None]] = []
         saw_partial = False
         for order, item in enumerate(work_items):
-            expected_slot = f"initial:{order}" if order < expected_initial_count else f"topup:{order - expected_initial_count + 1}"
+            expected_slot = (
+                f"initial:{order}"
+                if order < expected_initial_count
+                else f"topup:{order - expected_initial_count + 1}"
+            )
             if (
                 saw_partial
                 or not isinstance(item, dict)
                 or item.get("slot_key") != expected_slot
                 or item.get("slot_order") != order
-                or item.get("kind") != ("initial" if order < expected_initial_count else "topup")
-                or item.get("slot_index") != (order if order < expected_initial_count else order - expected_initial_count + 1)
+                or item.get("kind")
+                != ("initial" if order < expected_initial_count else "topup")
+                or item.get("slot_index")
+                != (
+                    order
+                    if order < expected_initial_count
+                    else order - expected_initial_count + 1
+                )
             ):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "style work-item prefix/slot identity is invalid", status_code=409)
-            base_step_key = f"style_draft:{order}" if order < expected_initial_count else f"style_draft:topup:{order - expected_initial_count + 1}"
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "style work-item prefix/slot identity is invalid",
+                    status_code=409,
+                )
+            base_step_key = (
+                f"style_draft:{order}"
+                if order < expected_initial_count
+                else f"style_draft:topup:{order - expected_initial_count + 1}"
+            )
             base = self._validate_style_artifact_descriptor(
                 item.get("base"),
                 scene_id=scene_id,
@@ -4975,7 +5955,11 @@ class Orchestrator:
                     or item.get("de_template_outcome") is not None
                     or order != len(work_items) - 1
                 ):
-                    raise DomainError("RUN_CHECKPOINT_CORRUPT", "style work-item final prefix is incomplete", status_code=409)
+                    raise DomainError(
+                        "RUN_CHECKPOINT_CORRUPT",
+                        "style work-item final prefix is incomplete",
+                        status_code=409,
+                    )
                 saw_partial = True
                 products.append((base, None))
                 continue
@@ -4989,9 +5973,19 @@ class Orchestrator:
                 or (not gate["triggered"] and outcome.get("status") != "not_required")
                 or (gate["triggered"] and outcome.get("status") == "not_required")
             ):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "style work-item gate decision is invalid", status_code=409)
-            final_stage = "de_template" if outcome["status"] == "completed" else "style_draft"
-            final_step_key = f"{base_step_key}:de_template" if outcome["status"] == "completed" else base_step_key
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "style work-item gate decision is invalid",
+                    status_code=409,
+                )
+            final_stage = (
+                "de_template" if outcome["status"] == "completed" else "style_draft"
+            )
+            final_step_key = (
+                f"{base_step_key}:de_template"
+                if outcome["status"] == "completed"
+                else base_step_key
+            )
             final = self._validate_style_artifact_descriptor(
                 final_descriptor,
                 scene_id=scene_id,
@@ -5007,16 +6001,28 @@ class Orchestrator:
                 or final.llm_call_id != base.llm_call_id
                 or final.content != base.content
             ):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "fallback style product is not base=final", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "fallback style product is not base=final",
+                    status_code=409,
+                )
             if outcome["status"] == "completed" and final.row_id == base.row_id:
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "de-template product does not have independent lineage", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "de-template product does not have independent lineage",
+                    status_code=409,
+                )
             if outcome["status"] == "completed" and (
                 outcome.get("llm_call_id") != final.llm_call_id
                 or outcome.get("execution_step_key") != final.execution_step_key
                 or outcome.get("artifact_execution_id") != final.artifact_execution_id
                 or outcome.get("accounting_status") != "settled"
             ):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "completed de-template outcome is misbound", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "completed de-template outcome is misbound",
+                    status_code=409,
+                )
             if outcome["status"] == "failed":
                 self._validate_failed_style_de_template_outcome(
                     outcome,
@@ -5037,9 +6043,15 @@ class Orchestrator:
         execution_step_key: str,
         source_base_row_id: str,
     ) -> None:
-        owner = self._validate_artifact_execution_owner(outcome.get("artifact_execution_id"))
+        owner = self._validate_artifact_execution_owner(
+            outcome.get("artifact_execution_id")
+        )
         llm_call_id = outcome.get("llm_call_id")
-        call = self.session.get(LlmCall, llm_call_id) if isinstance(llm_call_id, str) else None
+        call = (
+            self.session.get(LlmCall, llm_call_id)
+            if isinstance(llm_call_id, str)
+            else None
+        )
         if (
             call is None
             or call.scene_id != scene_id
@@ -5051,13 +6063,29 @@ class Orchestrator:
             or outcome.get("accounting_status") != call.accounting_status
             or not isinstance(outcome.get("error_code"), str)
             or outcome.get("error_code") != call.error_code
-            or (call.accounting_status == "failed" and call.request_dispatched_at is None)
-            or (call.accounting_status == "rejected" and call.request_dispatched_at is not None)
+            or (
+                call.accounting_status == "failed"
+                and call.request_dispatched_at is None
+            )
+            or (
+                call.accounting_status == "rejected"
+                and call.request_dispatched_at is not None
+            )
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "failed de-template call ledger is invalid", status_code=409)
-        provider_attempts = self.session.execute(
-            select(LlmCallAttempt).where(LlmCallAttempt.llm_call_id == call.llm_call_id)
-        ).scalars().all()
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "failed de-template call ledger is invalid",
+                status_code=409,
+            )
+        provider_attempts = (
+            self.session.execute(
+                select(LlmCallAttempt).where(
+                    LlmCallAttempt.llm_call_id == call.llm_call_id
+                )
+            )
+            .scalars()
+            .all()
+        )
         if provider_attempts:
             ordinals = [attempt.provider_attempt_no for attempt in provider_attempts]
             numeric_fields = (
@@ -5073,25 +6101,37 @@ class Orchestrator:
             if (
                 sorted(ordinals) != list(range(len(ordinals)))
                 or any(
-                    attempt.accounting_status in {"reserved", "usage_exceeds_reservation"}
+                    attempt.accounting_status
+                    in {"reserved", "usage_exceeds_reservation"}
                     or any(
-                        not isinstance(getattr(attempt, field), int) or getattr(attempt, field) < 0
+                        not isinstance(getattr(attempt, field), int)
+                        or getattr(attempt, field) < 0
                         for field in numeric_fields
                     )
                     or attempt.budget_charged_tokens > attempt.reserved_tokens
-                    or attempt.total_tokens != attempt.prompt_tokens + attempt.completion_tokens
+                    or attempt.total_tokens
+                    != attempt.prompt_tokens + attempt.completion_tokens
                     for attempt in provider_attempts
                 )
                 or any(
-                    getattr(call, field) != sum(getattr(attempt, field) for attempt in provider_attempts)
+                    getattr(call, field)
+                    != sum(getattr(attempt, field) for attempt in provider_attempts)
                     for field in aggregate_fields
                 )
-                or (call.accounting_status == "failed" and not any(
-                    attempt.request_dispatched_at is not None for attempt in provider_attempts
-                ))
-                or (call.accounting_status == "rejected" and any(
-                    attempt.request_dispatched_at is not None for attempt in provider_attempts
-                ))
+                or (
+                    call.accounting_status == "failed"
+                    and not any(
+                        attempt.request_dispatched_at is not None
+                        for attempt in provider_attempts
+                    )
+                )
+                or (
+                    call.accounting_status == "rejected"
+                    and any(
+                        attempt.request_dispatched_at is not None
+                        for attempt in provider_attempts
+                    )
+                )
             ):
                 raise DomainError(
                     "RUN_CHECKPOINT_CORRUPT",
@@ -5115,7 +6155,11 @@ class Orchestrator:
             ):
                 failed_attempts.append(attempt)
         if len(failed_attempts) != 1:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "failed de-template attempt is missing or duplicated", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "failed de-template attempt is missing or duplicated",
+                status_code=409,
+            )
 
     def _load_partial_style_work_items(
         self,
@@ -5134,7 +6178,11 @@ class Orchestrator:
             or refs.get("style_initial_candidate_count") != expected_initial_count
             or self._json_hash(work_items) != self._checkpoint_hash("style_work_items")
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "partial style work-item cursor is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "partial style work-item cursor is invalid",
+                status_code=409,
+            )
         products = self._validate_style_work_items(
             work_items,
             scene_id=scene_id,
@@ -5144,7 +6192,11 @@ class Orchestrator:
         last_order = len(products) - 1
         last_phase = 1 if products and products[-1][1] is not None else 0
         if payload.get("sub_index") != last_order * 2 + last_phase:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "partial style subcursor does not match its phase", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "partial style subcursor does not match its phase",
+                status_code=409,
+            )
         return deepcopy(work_items)
 
     def _style_resume_products(
@@ -5171,19 +6223,37 @@ class Orchestrator:
                 finals[item["slot_key"]] = final
         return bases, finals
 
-    def _load_style_checkpoint_candidates(self, scene_id: str) -> list[StyleGenerationResult]:
-        row_ids = self._checkpoint_artifact("candidate_row_ids", expected_node_at_least="style_ready")
-        selected = self._checkpoint_artifact("style_draft_row_id", expected_node_at_least="style_ready")
+    def _load_style_checkpoint_candidates(
+        self, scene_id: str
+    ) -> list[StyleGenerationResult]:
+        row_ids = self._checkpoint_artifact(
+            "candidate_row_ids", expected_node_at_least="style_ready"
+        )
+        selected = self._checkpoint_artifact(
+            "style_draft_row_id", expected_node_at_least="style_ready"
+        )
         if not isinstance(row_ids, list) or not row_ids or row_ids[0] != selected:
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style candidate checkpoint is invalid", status_code=409)
-        work_items = self._checkpoint_artifact("style_work_items", expected_node_at_least="style_ready")
-        initial_count = self._checkpoint_artifact("style_initial_candidate_count", expected_node_at_least="style_ready")
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style candidate checkpoint is invalid",
+                status_code=409,
+            )
+        work_items = self._checkpoint_artifact(
+            "style_work_items", expected_node_at_least="style_ready"
+        )
+        initial_count = self._checkpoint_artifact(
+            "style_initial_candidate_count", expected_node_at_least="style_ready"
+        )
         if (
             not isinstance(initial_count, int)
             or initial_count < 1
             or self._json_hash(work_items) != self._checkpoint_hash("style_work_items")
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style work-item completion ledger is invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style work-item completion ledger is invalid",
+                status_code=409,
+            )
         lineage_products = self._validate_style_work_items(
             work_items,
             scene_id=scene_id,
@@ -5195,13 +6265,29 @@ class Orchestrator:
             for _base, final in lineage_products
             if final is not None
         }
-        if len(final_by_row_id) != len(lineage_products) or set(row_ids) != set(final_by_row_id):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style candidate ordering is detached from work-item lineage", status_code=409)
+        if len(final_by_row_id) != len(lineage_products) or set(row_ids) != set(
+            final_by_row_id
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style candidate ordering is detached from work-item lineage",
+                status_code=409,
+            )
         results: list[StyleGenerationResult] = []
         bundle = self._load_checkpoint_bundle(scene_id)
-        llm_call_ids = self._checkpoint_artifact("llm_call_ids", expected_node_at_least="style_ready")
-        step_keys = self._checkpoint_artifact("style_execution_step_keys", expected_node_at_least="style_ready")
-        execution_ids = self._checkpoint_artifact("style_artifact_execution_ids", expected_node_at_least="style_ready")
+        llm_call_ids = self._checkpoint_artifact(
+            "llm_call_ids", expected_node_at_least="style_ready"
+        )
+        step_keys = self._checkpoint_artifact(
+            "style_execution_step_keys", expected_node_at_least="style_ready"
+        )
+        execution_ids = self._checkpoint_artifact(
+            "style_artifact_execution_ids", expected_node_at_least="style_ready"
+        )
+        checkpoint_payload = self._active_checkpoint_state().run_checkpoint_json or {}
+        checkpoint_refs = checkpoint_payload.get("artifact_refs") or {}
+        checkpoint_hashes = checkpoint_payload.get("artifact_hashes") or {}
+        ranking_audits = checkpoint_refs.get("style_candidate_rankings")
         if (
             not isinstance(llm_call_ids, list)
             or not isinstance(step_keys, list)
@@ -5210,12 +6296,35 @@ class Orchestrator:
             or not isinstance(execution_ids, list)
             or len(execution_ids) != len(row_ids)
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "style candidate ledger references are invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style candidate ledger references are invalid",
+                status_code=409,
+            )
+        if ranking_audits is not None and (
+            not isinstance(ranking_audits, list)
+            or len(ranking_audits) != len(row_ids)
+            or self._json_hash(ranking_audits)
+            != checkpoint_hashes.get("style_candidate_rankings")
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "style candidate ranking audit is invalid",
+                status_code=409,
+            )
         for index, row_id in enumerate(row_ids):
             lineage_result = final_by_row_id.get(row_id)
             if lineage_result is None:
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "style candidate has no final work item", status_code=409)
-            row = self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "style candidate has no final work item",
+                    status_code=409,
+                )
+            row = (
+                self.session.get(SceneDraft, row_id)
+                if isinstance(row_id, str)
+                else None
+            )
             if row is None:
                 self._raise_checkpoint_output_missing(row_id=row_id)
             assert row is not None
@@ -5223,7 +6332,9 @@ class Orchestrator:
                 scene_id=scene_id,
                 llm_call_id=llm_call_ids[index],
                 execution_step_key=step_keys[index],
-                execution_id=self._validate_artifact_execution_owner(execution_ids[index]),
+                execution_id=self._validate_artifact_execution_owner(
+                    execution_ids[index]
+                ),
             )
             if (
                 row.scene_id != scene_id
@@ -5234,11 +6345,22 @@ class Orchestrator:
                 or lineage_result.llm_call_id != llm_call_ids[index]
                 or lineage_result.execution_step_key != step_keys[index]
                 or lineage_result.artifact_execution_id != execution_ids[index]
-                or self._text_hash(row.content) != self._checkpoint_hash(f"style_ready_candidate_{index}")
+                or self._text_hash(row.content)
+                != self._checkpoint_hash(f"style_ready_candidate_{index}")
             ):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "style candidate identity/source/hash mismatch", status_code=409)
-            if index == 0 and self._text_hash(row.content) != self._checkpoint_hash("selected_draft"):
-                raise DomainError("RUN_CHECKPOINT_CORRUPT", "selected style draft hash mismatch", status_code=409)
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "style candidate identity/source/hash mismatch",
+                    status_code=409,
+                )
+            if index == 0 and self._text_hash(row.content) != self._checkpoint_hash(
+                "selected_draft"
+            ):
+                raise DomainError(
+                    "RUN_CHECKPOINT_CORRUPT",
+                    "selected style draft hash mismatch",
+                    status_code=409,
+                )
             results.append(
                 StyleGenerationResult(
                     row_id=row.row_id,
@@ -5248,6 +6370,12 @@ class Orchestrator:
                     bundle_hash=bundle["bundle_snapshot_hash"],
                     execution_step_key=step_keys[index],
                     artifact_execution_id=execution_ids[index],
+                    ranking_audit=(
+                        deepcopy(ranking_audits[index])
+                        if isinstance(ranking_audits, list)
+                        and isinstance(ranking_audits[index], dict)
+                        else None
+                    ),
                 )
             )
         return results
@@ -5261,7 +6389,9 @@ class Orchestrator:
         selected_row_id = refs.get("selected_row_id")
         if selected_row_id is None:
             return candidates[0]
-        selected = [candidate for candidate in candidates if candidate.row_id == selected_row_id]
+        selected = [
+            candidate for candidate in candidates if candidate.row_id == selected_row_id
+        ]
         if len(selected) != 1:
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
@@ -5271,8 +6401,14 @@ class Orchestrator:
         return selected[0]
 
     def _load_hard_qc_checkpoint(self, scene_id: str) -> HardQcDecision:
-        qc_report_id = self._checkpoint_artifact("qc_report_id", expected_node_at_least="hard_qc_ready")
-        report = self.session.get(QcReport, qc_report_id) if isinstance(qc_report_id, str) else None
+        qc_report_id = self._checkpoint_artifact(
+            "qc_report_id", expected_node_at_least="hard_qc_ready"
+        )
+        report = (
+            self.session.get(QcReport, qc_report_id)
+            if isinstance(qc_report_id, str)
+            else None
+        )
         if report is None:
             self._raise_checkpoint_output_missing(row_id=qc_report_id)
         assert report is not None
@@ -5300,12 +6436,18 @@ class Orchestrator:
             or report.source_bundle_id != bundle["bundle_id"]
             or refs.get("hard_qc_bundle_id") != bundle["bundle_id"]
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "hard QC checkpoint identity/source mismatch", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "hard QC checkpoint identity/source mismatch",
+                status_code=409,
+            )
         decision = HardQcDecision(
             branch=str(refs.get("branch") or "continue"),
             qc_report_id=report.qc_report_id,
             human_review_event_id=refs.get("human_review_event_id"),
-            resolution_code=str(refs.get("resolution_code") or report.resolution_code or ""),
+            resolution_code=str(
+                refs.get("resolution_code") or report.resolution_code or ""
+            ),
             next_action=str(refs.get("next_action") or report.next_action or ""),
             should_continue=bool(refs.get("should_continue")),
             stop_reason=refs.get("stop_reason"),
@@ -5323,10 +6465,22 @@ class Orchestrator:
             "llm_call_id": decision.llm_call_id,
             "execution_step_key": decision.execution_step_key,
         }
-        if self._json_hash(decision_summary) != self._checkpoint_hash("hard_qc_decision"):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "hard QC decision hash mismatch", status_code=409)
-        if self._json_hash(self._qc_report_snapshot(report)) != self._checkpoint_hash("hard_qc_report"):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "hard QC report hash mismatch", status_code=409)
+        if self._json_hash(decision_summary) != self._checkpoint_hash(
+            "hard_qc_decision"
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "hard QC decision hash mismatch",
+                status_code=409,
+            )
+        if self._json_hash(self._qc_report_snapshot(report)) != self._checkpoint_hash(
+            "hard_qc_report"
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "hard QC report hash mismatch",
+                status_code=409,
+            )
         self._validate_qc_attempt(
             scene_id=scene_id,
             step="hard_qc",
@@ -5351,10 +6505,18 @@ class Orchestrator:
             return 3
         payload = state.run_checkpoint_json or {}
         sub_index = payload.get("sub_index") if isinstance(payload, dict) else None
-        if isinstance(sub_index, int) and not isinstance(sub_index, bool) and sub_index in {0, 1, 2, 3}:
+        if (
+            isinstance(sub_index, int)
+            and not isinstance(sub_index, bool)
+            and sub_index in {0, 1, 2, 3}
+        ):
             return sub_index
         refs = payload.get("artifact_refs") if isinstance(payload, dict) else None
-        if sub_index is None and isinstance(refs, dict) and refs.get("soft_qc_report_id"):
+        if (
+            sub_index is None
+            and isinstance(refs, dict)
+            and refs.get("soft_qc_report_id")
+        ):
             # 兼容子游标上线前已经完整提交的 soft checkpoint。
             return 3
         raise DomainError(
@@ -5397,17 +6559,18 @@ class Orchestrator:
             critique_context = LLMCallContext(
                 scope_type="scene",
                 scope_id=scene.scene_id,
-                project_id=scene.project_id or (chapter.project_id if chapter is not None else None),
+                project_id=scene.project_id
+                or (chapter.project_id if chapter is not None else None),
                 chapter_id=scene.chapter_id,
                 scene_id=scene.scene_id,
                 node_id="soft_qc",
                 step=critique_step_key,
                 execution_id=self._execution_id,
-                execution_step_key=critique_step_key if self._execution_id is not None else None,
-                run_job_id=self._run_job_id,
-                provider_execution_mode=(
-                    "online"
+                execution_step_key=(
+                    critique_step_key if self._execution_id is not None else None
                 ),
+                run_job_id=self._run_job_id,
+                provider_execution_mode=("online"),
             )
             self._reconcile_execution_step(critique_step_key)
             skip_critique = bool(getattr(criticality, "skip_critique", False))
@@ -5452,9 +6615,11 @@ class Orchestrator:
             patch_spend_allowed = bool(
                 critique.should_rewrite and optional_spend_allowed()
             )
-            recovered_patch_failure = self._recover_auto_critique_patch_rejected_product(
-                scene_id,
-                allow_retry=patch_spend_allowed,
+            recovered_patch_failure = (
+                self._recover_auto_critique_patch_rejected_product(
+                    scene_id,
+                    allow_retry=patch_spend_allowed,
+                )
             )
             if recovered_patch_failure is not None:
                 if not critique.should_rewrite:
@@ -5469,32 +6634,41 @@ class Orchestrator:
                 if not patch_spend_allowed:
                     critique_outcome = "patch_skipped"
                     critique_skip_reason = "budget_or_candidate_cap"
-                    _LOGGER.warning("critique patch skipped for scene %s (budget/candidate cap)", scene_id)
+                    _LOGGER.warning(
+                        "critique patch skipped for scene %s (budget/candidate cap)",
+                        scene_id,
+                    )
                 else:
                     try:
-                        from novel_system.services.auto_critique import format_critique_brief
+                        from novel_system.services.auto_critique import (
+                            format_critique_brief,
+                        )
 
                         critique_brief = self._pov_desensitize_brief(
                             scene,
                             contract,
                             format_critique_brief(critique),
                         )
-                        style_generation = self.scene_generation_service.generate_style_patch(
-                            scene_id,
-                            bundle,
-                            source_style_draft_row_id=style_generation.row_id,
-                            source_style_content=style_generation.content,
-                            rewrite_brief=critique_brief,
-                            source_qc_report_id=f"auto_critique_{scene_id}",
-                            execution_step_key="soft_patch:auto_critique:0",
+                        style_generation = (
+                            self.scene_generation_service.generate_style_patch(
+                                scene_id,
+                                bundle,
+                                source_style_draft_row_id=style_generation.row_id,
+                                source_style_content=style_generation.content,
+                                rewrite_brief=critique_brief,
+                                source_qc_report_id=f"auto_critique_{scene_id}",
+                                execution_step_key="soft_patch:auto_critique:0",
+                            )
                         )
                         critique_outcome = "patched"
                     except Exception as exc:
                         if is_llm_control_plane_failure(exc):
                             raise
-                        patch_failure_product = self._build_auto_critique_patch_failure_product(
-                            scene_id,
-                            exc,
+                        patch_failure_product = (
+                            self._build_auto_critique_patch_failure_product(
+                                scene_id,
+                                exc,
+                            )
                         )
                         critique_outcome = "patch_failed"
                         critique_skip_reason = f"patch_failed:{exc.__class__.__name__}"
@@ -5600,8 +6774,12 @@ class Orchestrator:
                 "soft_auto_critique_decision": critique_product_hash,
             }
             if patch_failure_product is not None:
-                checkpoint_refs["soft_auto_critique_patch_failure"] = patch_failure_product
-                checkpoint_hashes["soft_auto_critique_patch_failure"] = patch_failure_hash
+                checkpoint_refs["soft_auto_critique_patch_failure"] = (
+                    patch_failure_product
+                )
+                checkpoint_hashes["soft_auto_critique_patch_failure"] = (
+                    patch_failure_hash
+                )
             self._save_run_checkpoint(
                 "soft_qc_ready",
                 sub_index=0,
@@ -5630,7 +6808,9 @@ class Orchestrator:
             patch_allowed = soft_qc0.branch == "patch" and optional_spend_allowed()
             if soft_qc0.branch == "patch" and not patch_allowed:
                 qc0_skip_reason = "budget_or_candidate_cap"
-                _LOGGER.warning("soft patch skipped for scene %s (budget/candidate cap)", scene_id)
+                _LOGGER.warning(
+                    "soft patch skipped for scene %s (budget/candidate cap)", scene_id
+                )
             elif soft_qc0.branch == "human_review_required":
                 qc0_skip_reason = "human_review_required"
             elif soft_qc0.branch != "patch":
@@ -5653,7 +6833,9 @@ class Orchestrator:
                 round_index=0,
                 source_generation=style_generation,
             )
-            patch_allowed, qc0_skip_reason = self._load_soft_qc0_branch_control(soft_qc0)
+            patch_allowed, qc0_skip_reason = self._load_soft_qc0_branch_control(
+                soft_qc0
+            )
 
         if soft_qc0.branch == "patch" and patch_allowed:
             if progress < 2:
@@ -5682,7 +6864,9 @@ class Orchestrator:
                         bundle=bundle,
                         source_qc_report_id=soft_qc0.qc_report_id,
                     ),
-                    artifact_hashes={"soft_patch_draft": self._text_hash(final_generation.content)},
+                    artifact_hashes={
+                        "soft_patch_draft": self._text_hash(final_generation.content)
+                    },
                     branch="patch",
                 )
             else:
@@ -5744,7 +6928,8 @@ class Orchestrator:
             f"{prefix}_draft_row_id": generation.row_id,
             f"{prefix}_llm_call_id": generation.llm_call_id,
             f"{prefix}_execution_step_key": generation.execution_step_key,
-            f"{prefix}_artifact_execution_id": generation.artifact_execution_id or self._execution_id,
+            f"{prefix}_artifact_execution_id": generation.artifact_execution_id
+            or self._execution_id,
             f"{prefix}_source_draft_row_id": source_draft_row_id,
             f"{prefix}_bundle_id": bundle["bundle_id"],
             f"{prefix}_bundle_hash": bundle["bundle_snapshot_hash"],
@@ -5767,11 +6952,17 @@ class Orchestrator:
         payload = self._active_checkpoint_state().run_checkpoint_json or {}
         refs = payload.get("artifact_refs") or {}
         row_id = refs.get(f"{prefix}_draft_row_id")
-        draft = self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
+        draft = (
+            self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
+        )
         if draft is None:
             self._raise_checkpoint_output_missing(row_id=row_id)
         source_row_id = refs.get(f"{prefix}_source_draft_row_id")
-        source = self.session.get(SceneDraft, source_row_id) if isinstance(source_row_id, str) else None
+        source = (
+            self.session.get(SceneDraft, source_row_id)
+            if isinstance(source_row_id, str)
+            else None
+        )
         if source is None:
             self._raise_checkpoint_output_missing(row_id=source_row_id)
         bundle = self._load_checkpoint_bundle(scene_id)
@@ -5806,7 +6997,8 @@ class Orchestrator:
             or source_row_id != expected_source_draft_row_id
             or refs.get(f"{prefix}_bundle_id") != bundle["bundle_id"]
             or refs.get(f"{prefix}_bundle_hash") != bundle["bundle_snapshot_hash"]
-            or self._text_hash(draft.content) != self._checkpoint_hash(f"{prefix}_draft")
+            or self._text_hash(draft.content)
+            != self._checkpoint_hash(f"{prefix}_draft")
         ):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
@@ -5846,11 +7038,19 @@ class Orchestrator:
             skip_reason = refs.get("soft_auto_critique_skip_reason")
             if (
                 not isinstance(critique, dict)
-                or self._json_hash(critique) != self._checkpoint_hash("soft_auto_critique_decision")
-                or outcome not in {"unchanged", "patched", "patch_skipped", "patch_failed"}
+                or self._json_hash(critique)
+                != self._checkpoint_hash("soft_auto_critique_decision")
+                or outcome
+                not in {"unchanged", "patched", "patch_skipped", "patch_failed"}
                 or (outcome in {"unchanged", "patched"} and skip_reason is not None)
-                or (outcome in {"patch_skipped", "patch_failed"} and not isinstance(skip_reason, str))
-                or (outcome == "patched" and (draft.stage != "style_patch" or draft.row_id == source_row_id))
+                or (
+                    outcome in {"patch_skipped", "patch_failed"}
+                    and not isinstance(skip_reason, str)
+                )
+                or (
+                    outcome == "patched"
+                    and (draft.stage != "style_patch" or draft.row_id == source_row_id)
+                )
                 or (outcome != "patched" and draft.row_id != source_row_id)
             ):
                 raise DomainError(
@@ -5957,7 +7157,11 @@ class Orchestrator:
         expected_provider_execution_mode: str | None = None,
     ) -> None:
         scene = self.session.get(SceneCard, scene_id)
-        chapter = self.session.get(ChapterGoal, scene.chapter_id) if scene is not None else None
+        chapter = (
+            self.session.get(ChapterGoal, scene.chapter_id)
+            if scene is not None
+            else None
+        )
         stage_owner = {
             "style_draft": ("style_draft", "style_draft"),
             "style_patch": ("style_patch", "soft_patch"),
@@ -6037,7 +7241,11 @@ class Orchestrator:
         run_job_id: str | None = None,
     ) -> LLMCallContext:
         scene = self.session.get(SceneCard, scene_id)
-        chapter = self.session.get(ChapterGoal, scene.chapter_id) if scene is not None else None
+        chapter = (
+            self.session.get(ChapterGoal, scene.chapter_id)
+            if scene is not None
+            else None
+        )
         if scene is None:
             raise LLMAccountingError(
                 "LLM_ACCOUNTING_PRODUCT_LEDGER_INVALID",
@@ -6046,7 +7254,8 @@ class Orchestrator:
         return LLMCallContext(
             scope_type="scene",
             scope_id=scene_id,
-            project_id=scene.project_id or (chapter.project_id if chapter is not None else None),
+            project_id=scene.project_id
+            or (chapter.project_id if chapter is not None else None),
             chapter_id=scene.chapter_id,
             scene_id=scene_id,
             node_id="style_patch",
@@ -6070,14 +7279,18 @@ class Orchestrator:
         error: BaseException,
     ) -> dict[str, Any]:
         context = self._auto_critique_patch_context(scene_id)
-        rows = self.session.execute(
-            select(LlmCall).where(
-                LlmCall.scene_id == scene_id,
-                LlmCall.execution_id == self._execution_id,
-                LlmCall.execution_step_key == context.execution_step_key,
-                LlmCall.accounting_status.in_(("settled", "failed", "rejected")),
+        rows = (
+            self.session.execute(
+                select(LlmCall).where(
+                    LlmCall.scene_id == scene_id,
+                    LlmCall.execution_id == self._execution_id,
+                    LlmCall.execution_step_key == context.execution_step_key,
+                    LlmCall.accounting_status.in_(("settled", "failed", "rejected")),
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if not rows:
             raise error
         if len(rows) != 1:
@@ -6178,7 +7391,9 @@ class Orchestrator:
                 "dimension_scores": expected_rule.dimension_scores,
                 "flagged_dimensions": expected_rule.flagged_dimensions,
             }
-            if any(product.get(key) != value for key, value in merged_rule_fields.items()):
+            if any(
+                product.get(key) != value for key, value in merged_rule_fields.items()
+            ):
                 raise DomainError(
                     "RUN_CHECKPOINT_CORRUPT",
                     "auto-critique degraded/no-call product is not the deterministic rule result",
@@ -6192,7 +7407,9 @@ class Orchestrator:
                 )
         else:
             contribution = product.get("llm_contribution")
-            issues = contribution.get("issues") if isinstance(contribution, dict) else None
+            issues = (
+                contribution.get("issues") if isinstance(contribution, dict) else None
+            )
             allowed_dimensions = {
                 "character_consistency",
                 "earned_emotion",
@@ -6243,10 +7460,7 @@ class Orchestrator:
                 and product.get("dimension_scores")
                 == product.get("rule_dimension_scores")
                 and product.get("should_rewrite")
-                == (
-                    expected_rule.should_rewrite
-                    or contribution["should_rewrite"]
-                )
+                == (expected_rule.should_rewrite or contribution["should_rewrite"])
             )
             if not completed_invariants_hold:
                 raise DomainError(
@@ -6255,12 +7469,9 @@ class Orchestrator:
                     status_code=409,
                 )
         should_rewrite = product.get("should_rewrite") is True
-        if (
-            (not should_rewrite and patch_outcome != "unchanged")
-            or (
-                should_rewrite
-                and patch_outcome not in {"patched", "patch_skipped", "patch_failed"}
-            )
+        if (not should_rewrite and patch_outcome != "unchanged") or (
+            should_rewrite
+            and patch_outcome not in {"patched", "patch_skipped", "patch_failed"}
         ):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
@@ -6314,9 +7525,9 @@ class Orchestrator:
                 "auto-critique patch failure product schema/owner is invalid",
                 status_code=409,
             )
-        if validate_checkpoint_hash and self._json_hash(product) != self._checkpoint_hash(
-            "soft_auto_critique_patch_failure"
-        ):
+        if validate_checkpoint_hash and self._json_hash(
+            product
+        ) != self._checkpoint_hash("soft_auto_critique_patch_failure"):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
                 "auto-critique patch failure product hash mismatch",
@@ -6343,10 +7554,12 @@ class Orchestrator:
             allowed_accounting_statuses=(expected_status,),
             allow_local_rejected_output=outcome == "rejected_before_dispatch",
         )
-        if (
-            not isinstance(parent.response_payload_summary, dict)
-            or parent.response_payload_summary.get("auto_critique_patch_failure_hash")
-            != self._json_hash(product)
+        if not isinstance(
+            parent.response_payload_summary, dict
+        ) or parent.response_payload_summary.get(
+            "auto_critique_patch_failure_hash"
+        ) != self._json_hash(
+            product
         ):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
@@ -6394,13 +7607,17 @@ class Orchestrator:
         """Recover a rejected patch tombstone before gate changes can hide it."""
 
         query_context = self._auto_critique_patch_context(scene_id)
-        rows = self.session.execute(
-            select(LlmCall).where(
-                LlmCall.scene_id == scene_id,
-                LlmCall.execution_id == self._execution_id,
-                LlmCall.execution_step_key == query_context.execution_step_key,
+        rows = (
+            self.session.execute(
+                select(LlmCall).where(
+                    LlmCall.scene_id == scene_id,
+                    LlmCall.execution_id == self._execution_id,
+                    LlmCall.execution_step_key == query_context.execution_step_key,
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         rejected = [row for row in rows if row.accounting_status == "rejected"]
         if not rejected:
             released = [row for row in rows if row.accounting_status == "released"]
@@ -6462,15 +7679,19 @@ class Orchestrator:
 
         from dataclasses import replace
 
-        rows = self.session.execute(
-            select(LlmCall)
-            .where(
-                LlmCall.scene_id == context.scene_id,
-                LlmCall.execution_id == context.execution_id,
-                LlmCall.execution_step_key == context.execution_step_key,
+        rows = (
+            self.session.execute(
+                select(LlmCall)
+                .where(
+                    LlmCall.scene_id == context.scene_id,
+                    LlmCall.execution_id == context.execution_id,
+                    LlmCall.execution_step_key == context.execution_step_key,
+                )
+                .order_by(LlmCall.created_at.asc(), LlmCall.llm_call_id.asc())
             )
-            .order_by(LlmCall.created_at.asc(), LlmCall.llm_call_id.asc())
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if not rows:
             return None
 
@@ -6493,11 +7714,15 @@ class Orchestrator:
                 rejected.append(row)
                 continue
             if row.accounting_status == "released":
-                attempts = self.session.execute(
-                    select(LlmCallAttempt).where(
-                        LlmCallAttempt.llm_call_id == row.llm_call_id
+                attempts = (
+                    self.session.execute(
+                        select(LlmCallAttempt).where(
+                            LlmCallAttempt.llm_call_id == row.llm_call_id
+                        )
                     )
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
                 if (
                     row.request_dispatched_at is not None
                     or row.budget_charged_tokens != 0
@@ -6640,7 +7865,8 @@ class Orchestrator:
         if outcome == "not_invoked":
             if (
                 call_id is not None
-                or reason not in {
+                or reason
+                not in {
                     "skip_critique",
                     "budget_or_candidate_cap",
                     "feature_disabled",
@@ -6650,14 +7876,20 @@ class Orchestrator:
                 or error_code is not None
             ):
                 corrupt("auto-critique no-call outcome field matrix is invalid")
-            ledger_rows = self.session.execute(
-                select(LlmCall).where(
-                    LlmCall.execution_id == product.get("execution_id"),
-                    LlmCall.execution_step_key == expected_step,
+            ledger_rows = (
+                self.session.execute(
+                    select(LlmCall).where(
+                        LlmCall.execution_id == product.get("execution_id"),
+                        LlmCall.execution_step_key == expected_step,
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             if ledger_rows:
-                corrupt("auto-critique no-call product unexpectedly has an execution ledger")
+                corrupt(
+                    "auto-critique no-call product unexpectedly has an execution ledger"
+                )
             from novel_system.services.auto_critique import auto_critique
 
             expected_rule = auto_critique(
@@ -6677,7 +7909,9 @@ class Orchestrator:
                     "rule_flagged_dimensions": expected_rule.rule_flagged_dimensions,
                 }.items()
             ):
-                corrupt("auto-critique no-call product differs from its deterministic rule result")
+                corrupt(
+                    "auto-critique no-call product differs from its deterministic rule result"
+                )
             return
         if not isinstance(call_id, str) or not call_id:
             corrupt("auto-critique called outcome is missing its parent id")
@@ -6698,14 +7932,19 @@ class Orchestrator:
             corrupt("auto-critique parse-failed outcome code is invalid")
 
         scene = self.session.get(SceneCard, scene_id)
-        chapter = self.session.get(ChapterGoal, scene.chapter_id) if scene is not None else None
+        chapter = (
+            self.session.get(ChapterGoal, scene.chapter_id)
+            if scene is not None
+            else None
+        )
         if scene is None:
             corrupt("auto-critique checkpoint scene owner is missing")
         product_parent = self.session.get(LlmCall, call_id)
         context = LLMCallContext(
             scope_type="scene",
             scope_id=scene_id,
-            project_id=scene.project_id or (chapter.project_id if chapter is not None else None),
+            project_id=scene.project_id
+            or (chapter.project_id if chapter is not None else None),
             chapter_id=scene.chapter_id,
             scene_id=scene_id,
             node_id="soft_qc",
@@ -6741,7 +7980,9 @@ class Orchestrator:
             parent.response_payload_summary.get("auto_critique_parsed_llm_hash")
             != self._auto_critique_llm_contribution_hash(product)
         ):
-            corrupt("auto-critique LLM merge payload is detached from its parsed-result hash")
+            corrupt(
+                "auto-critique LLM merge payload is detached from its parsed-result hash"
+            )
         try:
             validate_product_call(
                 self.session,
@@ -6800,7 +8041,9 @@ class Orchestrator:
         if report is None:
             self._raise_checkpoint_output_missing(row_id=decision.qc_report_id)
         prefix = f"soft_qc{round_index}"
-        decision_snapshot = self._soft_decision_snapshot(decision, include_should_continue=True)
+        decision_snapshot = self._soft_decision_snapshot(
+            decision, include_should_continue=True
+        )
         refs: dict[str, Any] = {
             f"{prefix}_report_id": decision.qc_report_id,
             f"{prefix}_decision": decision_snapshot,
@@ -6820,7 +8063,9 @@ class Orchestrator:
             refs["soft_qc0_control"] = control
             hashes["soft_qc0_control"] = self._json_hash(control)
         if final_generation is not None:
-            legacy_decision = self._soft_decision_snapshot(decision, include_should_continue=False)
+            legacy_decision = self._soft_decision_snapshot(
+                decision, include_should_continue=False
+            )
             completion = {
                 "final_qc_round": round_index,
                 "skip_reason": final_skip_reason,
@@ -6879,14 +8124,17 @@ class Orchestrator:
         refs = payload.get("artifact_refs") or {}
         prefix = f"soft_qc{round_index}"
         report_id = refs.get(f"{prefix}_report_id")
-        report = self.session.get(QcReport, report_id) if isinstance(report_id, str) else None
+        report = (
+            self.session.get(QcReport, report_id)
+            if isinstance(report_id, str)
+            else None
+        )
         if report is None:
             self._raise_checkpoint_output_missing(row_id=report_id)
         decision_payload = refs.get(f"{prefix}_decision")
-        if (
-            not isinstance(decision_payload, dict)
-            or self._json_hash(decision_payload) != self._checkpoint_hash(f"{prefix}_decision")
-        ):
+        if not isinstance(decision_payload, dict) or self._json_hash(
+            decision_payload
+        ) != self._checkpoint_hash(f"{prefix}_decision"):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
                 f"soft QC{round_index} decision hash mismatch",
@@ -6903,7 +8151,9 @@ class Orchestrator:
             llm_call_id=decision_payload.get("llm_call_id"),
             execution_step_key=decision_payload.get("execution_step_key"),
         )
-        owner = self._validate_artifact_execution_owner(refs.get(f"{prefix}_artifact_execution_id"))
+        owner = self._validate_artifact_execution_owner(
+            refs.get(f"{prefix}_artifact_execution_id")
+        )
         self._validate_checkpoint_llm_output(
             scene_id=scene_id,
             llm_call_id=decision.llm_call_id,
@@ -6925,7 +8175,8 @@ class Orchestrator:
             or refs.get(f"{prefix}_llm_call_id") != decision.llm_call_id
             or refs.get(f"{prefix}_execution_step_key") != decision.execution_step_key
             or decision.execution_step_key != f"soft_qc:{round_index}"
-            or self._json_hash(self._qc_report_snapshot(report)) != self._checkpoint_hash(f"{prefix}_report")
+            or self._json_hash(self._qc_report_snapshot(report))
+            != self._checkpoint_hash(f"{prefix}_report")
         ):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
@@ -6944,7 +8195,9 @@ class Orchestrator:
         if decision.branch == "human_review_required":
             event = self.session.get(HumanReviewEvent, decision.human_review_event_id)
             if event is None:
-                self._raise_checkpoint_output_missing(row_id=decision.human_review_event_id)
+                self._raise_checkpoint_output_missing(
+                    row_id=decision.human_review_event_id
+                )
             replay_context = (event.details_json or {}).get("replay_context")
             if (
                 event.scene_id != scene_id
@@ -6961,7 +8214,9 @@ class Orchestrator:
                 )
         return decision
 
-    def _load_soft_qc0_branch_control(self, decision: SoftQcDecision) -> tuple[bool, str | None]:
+    def _load_soft_qc0_branch_control(
+        self, decision: SoftQcDecision
+    ) -> tuple[bool, str | None]:
         payload = self._active_checkpoint_state().run_checkpoint_json or {}
         refs = payload.get("artifact_refs") or {}
         control = refs.get("soft_qc0_control")
@@ -6996,18 +8251,28 @@ class Orchestrator:
             "soft_qc_report_id",
             expected_node_at_least="soft_qc_ready",
         )
-        report = self.session.get(QcReport, report_id) if isinstance(report_id, str) else None
+        report = (
+            self.session.get(QcReport, report_id)
+            if isinstance(report_id, str)
+            else None
+        )
         if report is None:
             self._raise_checkpoint_output_missing(row_id=report_id)
         assert report is not None
         if report.scene_id != scene_id or report.qc_type != "soft_qc":
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "soft QC checkpoint identity mismatch", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "soft QC checkpoint identity mismatch",
+                status_code=409,
+            )
 
         row_id = self._checkpoint_artifact(
             "soft_final_draft_row_id",
             expected_node_at_least="soft_qc_ready",
         )
-        draft = self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
+        draft = (
+            self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
+        )
         if draft is None:
             self._raise_checkpoint_output_missing(row_id=row_id)
         assert draft is not None
@@ -7042,21 +8307,33 @@ class Orchestrator:
             or draft.source_bundle_id != bundle["bundle_id"]
             or draft.source_bundle_hash != bundle["bundle_snapshot_hash"]
             or draft.generation_llm_call_id != final_llm_call_id
-            or self._text_hash(draft.content) != self._checkpoint_hash("soft_final_draft")
+            or self._text_hash(draft.content)
+            != self._checkpoint_hash("soft_final_draft")
             or report.source_draft_row_id != refs.get("soft_qc_source_draft_row_id")
             or report.source_draft_row_id != draft.row_id
             or report.source_bundle_id != bundle["bundle_id"]
             or refs.get("soft_qc_bundle_id") != bundle["bundle_id"]
         ):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "soft QC draft identity/hash mismatch", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "soft QC draft identity/hash mismatch",
+                status_code=409,
+            )
 
         decision = SoftQcDecision(
-            branch=str(refs.get("soft_qc_branch") or payload.get("branch") or "continue"),
+            branch=str(
+                refs.get("soft_qc_branch") or payload.get("branch") or "continue"
+            ),
             qc_report_id=report.qc_report_id,
             human_review_event_id=refs.get("soft_qc_human_review_event_id"),
-            resolution_code=str(refs.get("soft_qc_resolution_code") or report.resolution_code or ""),
-            next_action=str(refs.get("soft_qc_next_action") or report.next_action or ""),
-            should_continue=str(refs.get("soft_qc_branch") or payload.get("branch")) in {"continue", "waive"},
+            resolution_code=str(
+                refs.get("soft_qc_resolution_code") or report.resolution_code or ""
+            ),
+            next_action=str(
+                refs.get("soft_qc_next_action") or report.next_action or ""
+            ),
+            should_continue=str(refs.get("soft_qc_branch") or payload.get("branch"))
+            in {"continue", "waive"},
             stop_reason=refs.get("soft_qc_stop_reason"),
             llm_call_id=refs.get("soft_qc_llm_call_id"),
             execution_step_key=refs.get("soft_qc_execution_step_key"),
@@ -7071,10 +8348,22 @@ class Orchestrator:
             "llm_call_id": decision.llm_call_id,
             "execution_step_key": decision.execution_step_key,
         }
-        if self._json_hash(decision_summary) != self._checkpoint_hash("soft_qc_decision"):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "soft QC decision hash mismatch", status_code=409)
-        if self._json_hash(self._qc_report_snapshot(report)) != self._checkpoint_hash("soft_qc_report"):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "soft QC report hash mismatch", status_code=409)
+        if self._json_hash(decision_summary) != self._checkpoint_hash(
+            "soft_qc_decision"
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "soft QC decision hash mismatch",
+                status_code=409,
+            )
+        if self._json_hash(self._qc_report_snapshot(report)) != self._checkpoint_hash(
+            "soft_qc_report"
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "soft QC report hash mismatch",
+                status_code=409,
+            )
         self._validate_qc_attempt(
             scene_id=scene_id,
             step="soft_qc",
@@ -7114,7 +8403,11 @@ class Orchestrator:
             patch_allowed, skip_reason = self._load_soft_qc0_branch_control(qc0)
             final_qc_round = refs.get("soft_final_qc_round")
             if final_qc_round == 1:
-                if qc0.branch != "patch" or not patch_allowed or skip_reason is not None:
+                if (
+                    qc0.branch != "patch"
+                    or not patch_allowed
+                    or skip_reason is not None
+                ):
                     raise DomainError(
                         "RUN_CHECKPOINT_CORRUPT",
                         "soft QC1 completion is not reachable from its QC0 branch",
@@ -7158,9 +8451,13 @@ class Orchestrator:
             }
             if (
                 completion != expected_completion
-                or self._json_hash(completion) != self._checkpoint_hash("soft_completion")
-                or refs.get("soft_completion_skip_reason") != (skip_reason if final_qc_round == 0 else None)
-                or self._soft_decision_snapshot(checkpoint_decision, include_should_continue=False)
+                or self._json_hash(completion)
+                != self._checkpoint_hash("soft_completion")
+                or refs.get("soft_completion_skip_reason")
+                != (skip_reason if final_qc_round == 0 else None)
+                or self._soft_decision_snapshot(
+                    checkpoint_decision, include_should_continue=False
+                )
                 != self._soft_decision_snapshot(decision, include_should_continue=False)
                 or expected_generation.row_id != generation.row_id
                 or expected_generation.llm_call_id != generation.llm_call_id
@@ -7190,7 +8487,11 @@ class Orchestrator:
         payload = self._active_checkpoint_state().run_checkpoint_json or {}
         hashes = payload.get("artifact_hashes") if isinstance(payload, dict) else None
         if not isinstance(hashes, dict):
-            raise DomainError("RUN_CHECKPOINT_CORRUPT", "checkpoint artifact hashes are invalid", status_code=409)
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "checkpoint artifact hashes are invalid",
+                status_code=409,
+            )
         value = hashes.get(key)
         return str(value) if value is not None else None
 
@@ -7205,11 +8506,21 @@ class Orchestrator:
     def _active_checkpoint_state(self) -> SceneRunState:
         if self._execution_id is None:
             raise RuntimeError("scene checkpoint context is not active")
-        state = self.session.execute(
-            select(SceneRunState).where(SceneRunState.active_execution_id == self._execution_id)
-        ).scalars().one_or_none()
+        state = (
+            self.session.execute(
+                select(SceneRunState).where(
+                    SceneRunState.active_execution_id == self._execution_id
+                )
+            )
+            .scalars()
+            .one_or_none()
+        )
         if state is None:
-            raise DomainError("RUN_EXECUTION_SUPERSEDED", "scene execution no longer owns state", status_code=409)
+            raise DomainError(
+                "RUN_EXECUTION_SUPERSEDED",
+                "scene execution no longer owns state",
+                status_code=409,
+            )
         return state
 
     @staticmethod
@@ -7220,7 +8531,9 @@ class Orchestrator:
     def _json_hash(payload: Any) -> str:
         import json
 
-        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        encoded = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     @staticmethod
@@ -7238,7 +8551,9 @@ class Orchestrator:
         # provider/total attempt counters and latest_valid remain cumulative.
         state.soft_patch_count = 0
 
-    def _pov_desensitize_brief(self, scene: SceneCard, contract, brief: list[str]) -> list[str]:
+    def _pov_desensitize_brief(
+        self, scene: SceneCard, contract, brief: list[str]
+    ) -> list[str]:
         """Wave 4（§5.6/§7.11/不变量 11）：回灌自动补丁提示词前做 POV 证据脱敏。
 
         引用了非 POV 已知秘密的 brief 条目不得进入自动补丁——剔除后只能走作者确认修订。
@@ -7252,6 +8567,7 @@ class Orchestrator:
                 PovKnowledgeProjection,
             )
             from novel_system.services.narrative_event_log import NarrativeEventLog
+
             payload = getattr(contract, "payload_json", None) or {}
             pov = scene.pov_character_id or payload.get("pov_character_id")
             if not pov:
@@ -7271,7 +8587,8 @@ class Orchestrator:
         except Exception:
             _LOGGER.warning(
                 "pov brief desensitization degraded for scene %s; keeping raw brief",
-                scene.scene_id, exc_info=True,
+                scene.scene_id,
+                exc_info=True,
             )
             return brief
 
@@ -7300,7 +8617,12 @@ class Orchestrator:
                 continue
             note_scope = entry.get("note_scope")
             carry_note_text = entry.get("carry_note_text")
-            if isinstance(note_scope, str) and note_scope.strip() and isinstance(carry_note_text, str) and carry_note_text.strip():
+            if (
+                isinstance(note_scope, str)
+                and note_scope.strip()
+                and isinstance(carry_note_text, str)
+                and carry_note_text.strip()
+            ):
                 carry_notes.append(
                     {
                         "kind": "carry_forward_note",
@@ -7324,7 +8646,11 @@ class Orchestrator:
         rewrite_brief: list[str] = []
         for entry in near_final.get("revision_brief") or []:
             if isinstance(entry, dict):
-                action = entry.get("action") or entry.get("instruction") or entry.get("recommendation")
+                action = (
+                    entry.get("action")
+                    or entry.get("instruction")
+                    or entry.get("recommendation")
+                )
                 if isinstance(action, str) and action.strip():
                     rewrite_brief.append(action.strip())
             elif isinstance(entry, str) and entry.strip():
@@ -7335,7 +8661,9 @@ class Orchestrator:
             )
         return rewrite_brief
 
-    def _with_author_projection(self, scene_id: str, state: SceneRunState, payload: dict[str, Any]) -> dict[str, Any]:
+    def _with_author_projection(
+        self, scene_id: str, state: SceneRunState, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """Wave 2 项 5：run 结果（含全部早退路径）统一附 §5.3 作者状态契约。"""
         from novel_system.services.author_state import compute_author_state
 
@@ -7343,14 +8671,20 @@ class Orchestrator:
         return {**payload, **projection}
 
     @staticmethod
-    def _near_final_warning_findings(near_final: dict[str, Any]) -> list[dict[str, Any]]:
+    def _near_final_warning_findings(
+        near_final: dict[str, Any]
+    ) -> list[dict[str, Any]]:
         """near-final 未过 → Q2/Q3 警告条目（LLM 提案层，不阻断）。"""
         if near_final.get("pass_flag"):
             return []
         failure_class = str(near_final.get("failure_class") or "near_final_unresolved")
         level = "Q3" if failure_class == "prose_model_voice" else "Q2"
         first_finding = next(
-            (item for item in near_final.get("findings") or [] if isinstance(item, dict)),
+            (
+                item
+                for item in near_final.get("findings") or []
+                if isinstance(item, dict)
+            ),
             {},
         )
         return [
@@ -7363,23 +8697,35 @@ class Orchestrator:
             }
         ]
 
-    def _collect_q2_warnings(self, state: SceneRunState, near_final_warnings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _collect_q2_warnings(
+        self, state: SceneRunState, near_final_warnings: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """严格模式停点判据：当前 QC 报告的 Q2 条目 + near-final Q2 警告（Q3 只诊断不停）。"""
-        warnings = [item for item in near_final_warnings if item.get("quality_level") == "Q2"]
-        report = self.session.get(QcReport, state.current_qc_report_id) if state.current_qc_report_id else None
+        warnings = [
+            item for item in near_final_warnings if item.get("quality_level") == "Q2"
+        ]
+        report = (
+            self.session.get(QcReport, state.current_qc_report_id)
+            if state.current_qc_report_id
+            else None
+        )
         for issue in (report.issues_json or []) if report else []:
             if isinstance(issue, dict) and issue.get("quality_level") == "Q2":
                 warnings.append(issue)
         return warnings
 
     @staticmethod
-    def _merged_warnings(existing: Any, additions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _merged_warnings(
+        existing: Any, additions: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         merged = [item for item in (existing or []) if isinstance(item, dict)]
         merged.extend(additions)
         return merged
 
     @staticmethod
-    def _near_final_result_payload(near_final: dict[str, Any], *, rewrite_count: int) -> dict[str, Any]:
+    def _near_final_result_payload(
+        near_final: dict[str, Any], *, rewrite_count: int
+    ) -> dict[str, Any]:
         return {
             "near_final_status": near_final.get("near_final_status"),
             "pass_flag": bool(near_final.get("pass_flag")),
@@ -7402,6 +8748,7 @@ class Orchestrator:
         *,
         include_prose: bool = True,
         degrade_errors: bool = True,
+        final_scene_row_id: str | None = None,
     ) -> list[str]:
         """Extract all 7 event types from approved scene and log to event sourcing.
 
@@ -7409,11 +8756,15 @@ class Orchestrator:
         """
         try:
             from novel_system.services.narrative_event_log import NarrativeEventLog
+
             base_log = NarrativeEventLog(self.session)
             event_ids: list[str] = []
 
             class _RecordingEventLog:
                 def log_event(self, **kwargs):
+                    kwargs.setdefault("authority_status", "planned")
+                    kwargs.setdefault("source_kind", "scene_plan")
+                    kwargs.setdefault("final_scene_row_id", final_scene_row_id)
                     event = base_log.log_event(**kwargs)
                     event_ids.append(event.event_id)
                     return event
@@ -7426,8 +8777,14 @@ class Orchestrator:
             project_id = self._resolve_scene_project_id(scene, contract)
             pov = scene.pov_character_id or payload.get("pov_character_id")
             onstage = scene.onstage_chars_json or []
-            all_chars = list(dict.fromkeys(([pov] if pov else []) + [c for c in onstage if c != pov]))
-            base = dict(project_id=project_id, scene_id=scene.scene_id, chapter_id=scene.chapter_id)
+            all_chars = list(
+                dict.fromkeys(([pov] if pov else []) + [c for c in onstage if c != pov])
+            )
+            base = dict(
+                project_id=project_id,
+                scene_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+            )
 
             # --- 1. character_state: appeared_in_scene ---
             for char_id in all_chars:
@@ -7474,7 +8831,9 @@ class Orchestrator:
             writer_brief = scene.writer_brief_json or {}
             must_reveal = writer_brief.get("must_reveal")
             if must_reveal and pov:
-                reveal_text = must_reveal if isinstance(must_reveal, str) else str(must_reveal)
+                reveal_text = (
+                    must_reveal if isinstance(must_reveal, str) else str(must_reveal)
+                )
                 log.log_event(
                     **base,
                     event_type="character_learns",
@@ -7503,7 +8862,9 @@ class Orchestrator:
             if not degrade_errors:
                 raise
             _LOGGER.warning(
-                "narrative event recording degraded for scene %s", scene.scene_id, exc_info=True
+                "narrative event recording degraded for scene %s",
+                scene.scene_id,
+                exc_info=True,
             )
             return []
 
@@ -7517,9 +8878,7 @@ class Orchestrator:
             self.session,
             scene,
             explicit_project_id=(
-                explicit_project_id
-                if isinstance(explicit_project_id, str)
-                else None
+                explicit_project_id if isinstance(explicit_project_id, str) else None
             ),
         )
 
@@ -7538,8 +8897,13 @@ class Orchestrator:
         Extracted from ``run_scene`` so the opt-in gate is unit-testable in isolation
         (blueprint §8 + §15 honest-bounds)."""
         from novel_system.settings import get_settings
+
         settings = get_settings()
-        return self.llm_runner if (settings.llm_enabled and settings.llm_auto_critique_enabled) else None
+        return (
+            self.llm_runner
+            if (settings.llm_enabled and settings.llm_auto_critique_enabled)
+            else None
+        )
 
     def _record_prose_events(
         self,
@@ -7548,6 +8912,7 @@ class Orchestrator:
         base: dict,
         content: str,
         *,
+        final_scene_row_id: str | None = None,
         return_event_ids: bool = False,
     ) -> ProseExtractionResult | tuple[ProseExtractionResult, list[str]]:
         """§2 (opt-in): extract events from the ACTUAL generated prose so model drift away
@@ -7560,13 +8925,19 @@ class Orchestrator:
             extract_events_from_prose,
         )
         from novel_system.settings import get_settings
+
         settings = get_settings()
         extract_step_key = "archive:prose_event_extract:0"
-        if not (settings.llm_enabled and getattr(settings, "llm_event_extraction_enabled", False)):
+        if not (
+            settings.llm_enabled
+            and getattr(settings, "llm_event_extraction_enabled", False)
+        ):
             result = ProseExtractionResult(
                 outcome="not_invoked",
                 execution_id=self._execution_id,
-                execution_step_key=(extract_step_key if self._execution_id is not None else None),
+                execution_step_key=(
+                    extract_step_key if self._execution_id is not None else None
+                ),
                 run_job_id=self._run_job_id,
                 reason="feature_disabled",
             )
@@ -7575,7 +8946,9 @@ class Orchestrator:
             result = ProseExtractionResult(
                 outcome="not_invoked",
                 execution_id=self._execution_id,
-                execution_step_key=(extract_step_key if self._execution_id is not None else None),
+                execution_step_key=(
+                    extract_step_key if self._execution_id is not None else None
+                ),
                 run_job_id=self._run_job_id,
                 reason="empty_content",
             )
@@ -7583,13 +8956,18 @@ class Orchestrator:
         extract_context = LLMCallContext(
             scope_type="scene",
             scope_id=str(base.get("scene_id") or getattr(scene, "scene_id", "")),
-            project_id=str(base.get("project_id") or getattr(scene, "project_id", "")) or None,
-            chapter_id=str(base.get("chapter_id") or getattr(scene, "chapter_id", "")) or None,
-            scene_id=str(base.get("scene_id") or getattr(scene, "scene_id", "")) or None,
+            project_id=str(base.get("project_id") or getattr(scene, "project_id", ""))
+            or None,
+            chapter_id=str(base.get("chapter_id") or getattr(scene, "chapter_id", ""))
+            or None,
+            scene_id=str(base.get("scene_id") or getattr(scene, "scene_id", ""))
+            or None,
             node_id="extraction",
             step=extract_step_key,
             execution_id=self._execution_id,
-            execution_step_key=extract_step_key if self._execution_id is not None else None,
+            execution_step_key=(
+                extract_step_key if self._execution_id is not None else None
+            ),
             run_job_id=self._run_job_id,
             provider_execution_mode=getattr(
                 self.llm_runner,
@@ -7608,12 +8986,20 @@ class Orchestrator:
             event = log.log_event(
                 **base,
                 event_type=ev.event_type,
-                entity_type="relation" if ev.event_type == "relation_change" else "character",
+                entity_type=(
+                    "relation" if ev.event_type == "relation_change" else "character"
+                ),
                 entity_id=ev.entity_id,
                 fact_key=ev.fact_key,
                 fact_value=ev.fact_value,
                 confidence="extracted",
-                source_text_excerpt=ev.evidence or content[:200],
+                # Missing extractor evidence stays missing. Substituting an
+                # arbitrary prose prefix would let an unsupported fact appear
+                # grounded during canon review.
+                source_text_excerpt=ev.evidence or None,
+                authority_status="pending",
+                source_kind="prose_extraction",
+                final_scene_row_id=final_scene_row_id,
                 payload={
                     "source": "prose",
                     "archive_execution_id": self._execution_id,
@@ -7625,15 +9011,28 @@ class Orchestrator:
         return (result, event_ids) if return_event_ids else result
 
     def _record_relation_events(
-        self, log, scene: SceneCard, base: dict, pov: str | None, all_chars: list[str],
+        self,
+        log,
+        scene: SceneCard,
+        base: dict,
+        pov: str | None,
+        all_chars: list[str],
     ) -> None:
         """Extract relation_change events from scene blueprint and writer brief."""
         from novel_system.db.models import SceneBlueprint
-        blueprint = self.session.execute(
-            select(SceneBlueprint)
-            .where(SceneBlueprint.scene_id == scene.scene_id, SceneBlueprint.status.in_(("accepted", "draft")))
-            .order_by(SceneBlueprint.created_at.desc())
-        ).scalars().first()
+
+        blueprint = (
+            self.session.execute(
+                select(SceneBlueprint)
+                .where(
+                    SceneBlueprint.scene_id == scene.scene_id,
+                    SceneBlueprint.status.in_(("accepted", "draft")),
+                )
+                .order_by(SceneBlueprint.created_at.desc())
+            )
+            .scalars()
+            .first()
+        )
         relationship_turn = None
         if blueprint and blueprint.blueprint_json:
             relationship_turn = blueprint.blueprint_json.get("relationship_turn")
@@ -7658,14 +9057,20 @@ class Orchestrator:
         the text may never have included the hint.
         """
         from novel_system.db.models import ForeshadowTracker
-        from novel_system.services.foreshadow_lifecycle import ForeshadowLifecycleService
+        from novel_system.services.foreshadow_lifecycle import (
+            ForeshadowLifecycleService,
+        )
 
-        trackers = self.session.execute(
-            select(ForeshadowTracker).where(
-                ForeshadowTracker.scene_id == scene.scene_id,
-                ForeshadowTracker.active_flag == 1,
+        trackers = (
+            self.session.execute(
+                select(ForeshadowTracker).where(
+                    ForeshadowTracker.scene_id == scene.scene_id,
+                    ForeshadowTracker.active_flag == 1,
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for tracker in trackers:
             if tracker.tracker_status == "open":
                 log.log_event(
@@ -7674,7 +9079,9 @@ class Orchestrator:
                     entity_type="foreshadow",
                     entity_id=tracker.foreshadow_id,
                     fact_key="planted",
-                    fact_value=tracker.text[:500] if tracker.text else "foreshadow planted",
+                    fact_value=(
+                        tracker.text[:500] if tracker.text else "foreshadow planted"
+                    ),
                 )
             elif tracker.tracker_status == "resolved":
                 log.log_event(
@@ -7683,7 +9090,9 @@ class Orchestrator:
                     entity_type="foreshadow",
                     entity_id=tracker.foreshadow_id,
                     fact_key="resolved",
-                    fact_value=tracker.text[:500] if tracker.text else "foreshadow resolved",
+                    fact_value=(
+                        tracker.text[:500] if tracker.text else "foreshadow resolved"
+                    ),
                 )
 
         # Blueprint §5 reinforcement tracking: check if this scene had reinforcement
@@ -7758,17 +9167,32 @@ class Orchestrator:
             )
             matches = [row for row in existing if row.get("id") == scene.scene_id]
             if len(matches) > 1:
-                return {**base, "outcome": "failed", "write_status": "failed", "error_code": "VECTOR_INDEX_DUPLICATE_ID"}
-            if matches:
-                if str(matches[0].get("text") or "") != expected_text:
-                    return {**base, "outcome": "failed", "write_status": "failed", "error_code": "VECTOR_INDEX_STALE_CONTENT"}
                 return {
                     **base,
-                    "outcome": ("non_persistent" if backend == "memory" else "already_present"),
+                    "outcome": "failed",
+                    "write_status": "failed",
+                    "error_code": "VECTOR_INDEX_DUPLICATE_ID",
+                }
+            if matches:
+                if str(matches[0].get("text") or "") != expected_text:
+                    return {
+                        **base,
+                        "outcome": "failed",
+                        "write_status": "failed",
+                        "error_code": "VECTOR_INDEX_STALE_CONTENT",
+                    }
+                return {
+                    **base,
+                    "outcome": (
+                        "non_persistent" if backend == "memory" else "already_present"
+                    ),
                     "write_status": "already_present",
                     "error_code": None,
                 }
-            store.write_collection(collection_name, [*existing, {"id": scene.scene_id, "text": expected_text}])
+            store.write_collection(
+                collection_name,
+                [*existing, {"id": scene.scene_id, "text": expected_text}],
+            )
             written = store.load_collection(collection_name)
             matches = [row for row in written if row.get("id") == scene.scene_id]
             if len(matches) != 1 or str(matches[0].get("text") or "") != expected_text:
@@ -7780,8 +9204,17 @@ class Orchestrator:
                 "error_code": None,
             }
         except Exception as exc:
-            _LOGGER.warning("vector store indexing degraded for scene %s", scene.scene_id, exc_info=True)
-            return {**base, "outcome": "failed", "write_status": "failed", "error_code": exc.__class__.__name__}
+            _LOGGER.warning(
+                "vector store indexing degraded for scene %s",
+                scene.scene_id,
+                exc_info=True,
+            )
+            return {
+                **base,
+                "outcome": "failed",
+                "write_status": "failed",
+                "error_code": exc.__class__.__name__,
+            }
 
     def _detect_and_store_style_drift(self, scene: SceneCard) -> dict[str, Any]:
         try:
@@ -7884,7 +9317,8 @@ class Orchestrator:
                 )
             else:
                 supersedes_guidance_ids = sorted(
-                    dict(guidance.evidence_json or {}).get("supersedes_guidance_ids") or []
+                    dict(guidance.evidence_json or {}).get("supersedes_guidance_ids")
+                    or []
                 )
             self.session.flush()
             return {
@@ -7894,7 +9328,9 @@ class Orchestrator:
                 "scope_type": scope_type,
                 "scope_ref_id": scope_ref_id,
                 "content_hash": self._text_hash(guidance.content),
-                "recommendation_hash": self._json_hash(guidance.recommendation_json or {}),
+                "recommendation_hash": self._json_hash(
+                    guidance.recommendation_json or {}
+                ),
                 "source_review_id": source_review_id,
                 "identity_hash": identity_hash,
                 "supersedes_guidance_ids": supersedes_guidance_ids,
@@ -7902,7 +9338,11 @@ class Orchestrator:
         except Exception as exc:
             if isinstance(exc, DomainError) and exc.code == "RUN_CHECKPOINT_CORRUPT":
                 raise
-            _LOGGER.warning("style drift detection degraded for chapter %s", scene.chapter_id, exc_info=True)
+            _LOGGER.warning(
+                "style drift detection degraded for chapter %s",
+                scene.chapter_id,
+                exc_info=True,
+            )
             return {
                 "outcome": "degraded",
                 "reason": "drift_detection_failed",
@@ -7915,14 +9355,18 @@ class Orchestrator:
             current = self.session.get(ChapterGoal, scene.chapter_id)
             if current is None or current.display_order is None:
                 return None
-            return self.session.execute(
-                select(ChapterGoal)
-                .where(
-                    ChapterGoal.project_id == scene.project_id,
-                    ChapterGoal.display_order > current.display_order,
+            return (
+                self.session.execute(
+                    select(ChapterGoal)
+                    .where(
+                        ChapterGoal.project_id == scene.project_id,
+                        ChapterGoal.display_order > current.display_order,
+                    )
+                    .order_by(ChapterGoal.display_order.asc())
                 )
-                .order_by(ChapterGoal.display_order.asc())
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
         except Exception:
             _LOGGER.warning(
                 "Next-chapter lookup degraded scene_id=%s chapter_id=%s",
@@ -7933,24 +9377,67 @@ class Orchestrator:
             return None
 
     def _load_style_baseline(self, scene: SceneCard) -> dict[str, float] | None:
-        """Load baseline metrics from style reference profile if available."""
+        """Load the same frozen, layered style baseline used for generation.
+
+        New runs read the runtime contract embedded in the scene bundle.  The
+        legacy live-binding path remains only for bundles created before that
+        contract existed, and now uses all resolved layers rather than one
+        project binding.
+        """
         try:
-            from novel_system.db.models import StyleReferenceInjectionBinding, StyleReferenceProfile
-            binding = self.session.execute(
-                select(StyleReferenceInjectionBinding).where(
-                    StyleReferenceInjectionBinding.scope == "project",
-                    StyleReferenceInjectionBinding.scope_ref_id == scene.project_id,
-                    StyleReferenceInjectionBinding.status == "active",
-                ).order_by(StyleReferenceInjectionBinding.created_at.desc())
-            ).scalars().first()
-            if not binding:
+            from novel_system.services.style_reference.injection import (
+                InjectionService,
+                ordered_character_ids,
+            )
+            from novel_system.services.style_reference.runtime_contract import (
+                blend_profile_metric_baselines,
+                contract_metric_mean_map,
+                resolve_style_runtime_contract_state,
+            )
+
+            state = self.session.get(SceneRunState, scene.scene_id)
+            bundle = (
+                self.session.get(SceneBundle, state.current_bundle_id)
+                if state is not None and state.current_bundle_id
+                else None
+            )
+            frozen_snapshot = (
+                bundle.frozen_snapshot_json if bundle is not None else None
+            )
+            contract_state = resolve_style_runtime_contract_state(frozen_snapshot)
+            contract = contract_state.contract
+            if contract_state.error_code is not None:
+                raise ValueError(contract_state.error_code)
+            if contract is not None:
+                means = contract_metric_mean_map(contract)
+                return means or None
+            if contract_state.mode == "absent":
                 return None
-            profile = self.session.get(StyleReferenceProfile, binding.profile_id)
-            if profile and profile.profile_json:
-                metrics = profile.profile_json.get("metrics_baseline")
-                if isinstance(metrics, dict):
-                    return metrics
-            return None
+
+            # Compatibility for historical bundles.  Resolve with the same
+            # scene/character/project/global precedence as prompt injection.
+            injection = InjectionService(self.session)
+            layers = injection.resolve_binding_layers(
+                scene.project_id,
+                "scene_generation",
+                character_ids=ordered_character_ids(
+                    scene.pov_character_id,
+                    scene.onstage_chars_json,
+                ),
+                scene_id=scene.scene_id,
+            )
+            profiles = [
+                injection.repo.get_profile(str(layer.profile_id)) for layer in layers
+            ]
+            blended = blend_profile_metric_baselines(
+                [profile for profile in profiles if profile is not None]
+            )
+            means = {
+                metric: float(stats["mean"])
+                for metric, stats in blended.items()
+                if isinstance(stats, dict) and "mean" in stats
+            }
+            return means or None
         except Exception:
             _LOGGER.warning(
                 "Style baseline lookup degraded scene_id=%s project_id=%s",
@@ -7958,11 +9445,14 @@ class Orchestrator:
                 scene.project_id,
                 exc_info=True,
             )
-            return None
+            raise
 
     def _best_of_n_count(self, contract, *, criticality=None) -> int:
         self._best_of_n_policy_cap = 1
-        if self.scene_generation_service._llm_runner.provider_execution_mode != "online":
+        if (
+            self.scene_generation_service._llm_runner.provider_execution_mode
+            != "online"
+        ):
             return 1
         scene_id = str(getattr(contract, "scene_id", "") or "").strip()
         if not scene_id or not hasattr(self, "session"):
@@ -7972,7 +9462,11 @@ class Orchestrator:
 
             resolved = QualityStrategyResolver(self.session).resolve_for_scene(scene_id)
         except Exception as exc:
-            _LOGGER.warning("quality strategy resolution failed closed for scene %s: %s", scene_id, exc)
+            _LOGGER.warning(
+                "quality strategy resolution failed closed for scene %s: %s",
+                scene_id,
+                exc,
+            )
             return 1
         if not resolved.best_of_n_enabled:
             _LOGGER.info(
@@ -8009,7 +9503,9 @@ class Orchestrator:
             return max(1, criticality_max)
         return max(1, min(criticality_max, int(policy_cap)))
 
-    def _offer_candidates_for_selection(self, scene, state, bundle, candidates) -> list[str] | None:
+    def _offer_candidates_for_selection(
+        self, scene, state, bundle, candidates
+    ) -> list[str] | None:
         """Wave 3（§4.4/§5.5）：确定性坏稿淘汰后建立匿名候选终选 gate。
 
         机器只淘汰空文本与来源安全 Q0 命中的无效候选（不按机器分数删，
@@ -8020,15 +9516,25 @@ class Orchestrator:
         import uuid
         from novel_system.db.models import HumanReviewEvent
         from novel_system.services.source_safety import scan_source_safety
+        from novel_system.services.style_reference.style_feedback import (
+            build_candidate_style_snapshot,
+        )
 
-        valid_row_ids: list[str] = []
+        valid_candidates: list[Any] = []
         for cand in candidates:
             content = (getattr(cand, "content", "") or "").strip()
             if not content:
                 continue
             if not scan_source_safety(content).get("safe", True):
                 continue
-            valid_row_ids.append(cand.row_id)
+            ranking = getattr(cand, "ranking_audit", None) or {}
+            if (
+                ranking.get("plagiarism_checked") is True
+                and ranking.get("plagiarism_passed") is False
+            ):
+                continue
+            valid_candidates.append(cand)
+        valid_row_ids = [str(candidate.row_id) for candidate in valid_candidates]
         if not valid_row_ids:
             _LOGGER.warning(
                 "no deterministically valid candidate to offer for scene %s; pipeline continues",
@@ -8054,6 +9560,12 @@ class Orchestrator:
                 "selected_row_id": None,
                 "tokens_used": int(state.scene_tokens_used or 0),
                 "decision_history": [],
+                # Kept server-side and omitted from the blinded GET response.
+                # Contains only scores/hashes/IDs—never candidate or source prose.
+                "style_feedback_snapshot": build_candidate_style_snapshot(
+                    valid_candidates
+                ),
+                "style_feedback_history": [],
             },
             default_action="select",
         )
@@ -8065,16 +9577,25 @@ class Orchestrator:
 
     def _latest_selection_gate(self, scene_id: str):
         from novel_system.db.models import HumanReviewEvent
-        events = self.session.execute(
-            select(HumanReviewEvent)
-            .where(
-                HumanReviewEvent.scene_id == scene_id,
-                HumanReviewEvent.event_source == "candidate_selection",
+
+        events = (
+            self.session.execute(
+                select(HumanReviewEvent)
+                .where(
+                    HumanReviewEvent.scene_id == scene_id,
+                    HumanReviewEvent.event_source == "candidate_selection",
+                )
+                .order_by(
+                    HumanReviewEvent.created_at.desc(), HumanReviewEvent.event_id.desc()
+                )
             )
-            .order_by(HumanReviewEvent.created_at.desc(), HumanReviewEvent.event_id.desc())
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for event in events:
-            if (event.details_json or {}).get("gate_type") == "style_candidate_selection":
+            if (event.details_json or {}).get(
+                "gate_type"
+            ) == "style_candidate_selection":
                 return event
         return None
 
@@ -8095,7 +9616,9 @@ class Orchestrator:
                 status_code=409,
                 details={"scene_id": scene_id},
             )
-        effective_execution_id = execution_id or f"direct-selection-resume:{scene_id}:{uuid4().hex}"
+        effective_execution_id = (
+            execution_id or f"direct-selection-resume:{scene_id}:{uuid4().hex}"
+        )
         checkpoints = SceneRunCheckpointService(self.session)
         checkpoints.acquire_selection_resume(scene_id, effective_execution_id)
 
@@ -8130,14 +9653,20 @@ class Orchestrator:
                 checkpoints,
             )
             state = self.session.get(SceneRunState, scene_id)
-            return self._with_author_projection(scene_id, state, {
-                "scene_status": getattr(state, "scene_status", None),
-                "lifecycle_budget_block": {
-                    "code": getattr(exc, "code", "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED"),
-                    "message": str(exc),
-                    "resume_mode": "selection",
+            return self._with_author_projection(
+                scene_id,
+                state,
+                {
+                    "scene_status": getattr(state, "scene_status", None),
+                    "lifecycle_budget_block": {
+                        "code": getattr(
+                            exc, "code", "LLM_SCENE_TOKEN_BUDGET_EXHAUSTED"
+                        ),
+                        "message": str(exc),
+                        "resume_mode": "selection",
+                    },
                 },
-            })
+            )
         except Exception:
             self._persist_failure_audits_or_fence(
                 scene_id,
@@ -8164,11 +9693,14 @@ class Orchestrator:
         if scene is None:
             raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
         state = self.session.get(SceneRunState, scene_id)
-        checkpoint_payload = (state.run_checkpoint_json or {}) if state is not None else {}
+        checkpoint_payload = (
+            (state.run_checkpoint_json or {}) if state is not None else {}
+        )
         checkpoint = state.run_checkpoint if state is not None else None
         checkpoint_is_post_selection = (
             checkpoint in RUN_CHECKPOINT_ORDER
-            and RUN_CHECKPOINT_ORDER.index(checkpoint) >= RUN_CHECKPOINT_ORDER.index("selection_wait")
+            and RUN_CHECKPOINT_ORDER.index(checkpoint)
+            >= RUN_CHECKPOINT_ORDER.index("selection_wait")
             and bool(checkpoint_payload.get("selection_origin_execution_id"))
         )
         if state is None or not checkpoint_is_post_selection:
@@ -8194,7 +9726,12 @@ class Orchestrator:
             expected_node_at_least="selection_wait",
         )
         from novel_system.db.models import HumanReviewEvent
-        gate = self.session.get(HumanReviewEvent, selection_event_id) if isinstance(selection_event_id, str) else None
+
+        gate = (
+            self.session.get(HumanReviewEvent, selection_event_id)
+            if isinstance(selection_event_id, str)
+            else None
+        )
         if (
             gate is None
             or gate.scene_id != scene_id
@@ -8215,7 +9752,11 @@ class Orchestrator:
                 "selection gate candidates differ from the durable checkpoint",
                 status_code=409,
             )
-        if gate is None or details.get("decision_status") != "selected" or not selected_row_id:
+        if (
+            gate is None
+            or details.get("decision_status") != "selected"
+            or not selected_row_id
+        ):
             raise DomainError(
                 "SELECTION_REQUIRED",
                 "author terminal selection is required before resuming",
@@ -8258,7 +9799,8 @@ class Orchestrator:
             or draft.stage not in {"style_draft", "de_template"}
             or draft.source_bundle_id != bundle["bundle_id"]
             or draft.source_bundle_hash != bundle["bundle_snapshot_hash"]
-            or self._text_hash(draft.content) != self._checkpoint_hash(f"selection_candidate_{selected_index}")
+            or self._text_hash(draft.content)
+            != self._checkpoint_hash(f"selection_candidate_{selected_index}")
         ):
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
@@ -8313,16 +9855,19 @@ class Orchestrator:
             "selected_artifact_execution_id",
         )
         checkpoint_hashes = checkpoint_payload.get("artifact_hashes") or {}
-        handoff_already_committed = any(key in checkpoint_refs for key in handoff_ref_keys) or (
-            "selection_decision" in checkpoint_hashes
-        )
+        handoff_already_committed = any(
+            key in checkpoint_refs for key in handoff_ref_keys
+        ) or ("selection_decision" in checkpoint_hashes)
         if handoff_already_committed:
             if (
                 checkpoint_refs.get("selected_row_id") != selected_row_id
                 or checkpoint_refs.get("selected_llm_call_id") != selected_llm_call_id
-                or checkpoint_refs.get("selected_execution_step_key") != selected_step_key
-                or checkpoint_refs.get("selected_artifact_execution_id") != selected_execution_id
-                or self._json_hash(selection_decision) != self._checkpoint_hash("selection_decision")
+                or checkpoint_refs.get("selected_execution_step_key")
+                != selected_step_key
+                or checkpoint_refs.get("selected_artifact_execution_id")
+                != selected_execution_id
+                or self._json_hash(selection_decision)
+                != self._checkpoint_hash("selection_decision")
                 or gate.status != "resolved"
                 or details.get("resumed") is not True
                 or (
@@ -8358,18 +9903,28 @@ class Orchestrator:
                     "selected_execution_step_key": selected_step_key,
                     "selected_artifact_execution_id": selected_execution_id,
                 },
-                artifact_hashes={"selection_decision": self._json_hash(selection_decision)},
+                artifact_hashes={
+                    "selection_decision": self._json_hash(selection_decision)
+                },
                 strategy="human_selection_resumed",
             )
-        contract = self.execution_contract_service.get_or_create(scene_id, actor_ref="orchestrator")
+        contract = self.execution_contract_service.get_or_create(
+            scene_id, actor_ref="orchestrator"
+        )
         from novel_system.services.scene_criticality import classify_scene
+
         chapter = self.session.get(ChapterGoal, scene.chapter_id)
         criticality = classify_scene(
             scene,
-            chapter_seq=chapter.display_order if chapter and chapter.display_order is not None else None,
+            chapter_seq=(
+                chapter.display_order
+                if chapter and chapter.display_order is not None
+                else None
+            ),
             constraint_intensity=getattr(scene, "constraint_intensity", None),
         )
         from types import SimpleNamespace
+
         style_generation = SimpleNamespace(
             row_id=draft.row_id,
             content=draft.content,
@@ -8402,7 +9957,12 @@ class Orchestrator:
 
     def _rebuild_bundle(self, state: SceneRunState) -> dict[str, Any]:
         from novel_system.db.models import SceneBundle
-        row = self.session.get(SceneBundle, state.current_bundle_id) if state.current_bundle_id else None
+
+        row = (
+            self.session.get(SceneBundle, state.current_bundle_id)
+            if state.current_bundle_id
+            else None
+        )
         if row is None:
             raise DomainError(
                 "BUNDLE_NOT_FOUND",
@@ -8420,16 +9980,23 @@ class Orchestrator:
         """Build the §8 SceneContext for the LLM editor critic (best-effort; the critic
         degrades gracefully when fields are absent)."""
         from novel_system.services.auto_critique import SceneContext
+
         payload = getattr(contract, "payload_json", None) or {}
         brief = getattr(scene, "writer_brief_json", None) or {}
         tension = brief.get("tension_target")
         return SceneContext(
-            scene_goal=str(getattr(scene, "scene_goal", "") or payload.get("scene_goal") or ""),
+            scene_goal=str(
+                getattr(scene, "scene_goal", "") or payload.get("scene_goal") or ""
+            ),
             tension_target=tension if isinstance(tension, int) else None,
-            cost_requirement=str(payload.get("cost_requirement") or brief.get("cost_requirement") or ""),
+            cost_requirement=str(
+                payload.get("cost_requirement") or brief.get("cost_requirement") or ""
+            ),
         )
 
-    def _run_pre_generation_diagnostics(self, scene: SceneCard, chapter: ChapterGoal | None) -> None:
+    def _run_pre_generation_diagnostics(
+        self, scene: SceneCard, chapter: ChapterGoal | None
+    ) -> None:
         """Blueprint §10/§12: pre-generation tension curve + theme relevance diagnostics.
 
         These checks are non-blocking (logged as warnings) — the execution contract
@@ -8439,19 +10006,26 @@ class Orchestrator:
         if chapter is not None:
             try:
                 from novel_system.services.tension_curve import TensionCurveService
+
                 tension_svc = TensionCurveService(self.session)
                 tension_report = tension_svc.validate_chapter(chapter.chapter_id)
                 for v in tension_report.violations:
                     _LOGGER.warning(
                         "§10 tension violation in chapter %s scene %s: [%s] %s",
-                        chapter.chapter_id, v.scene_id, v.violation_type, v.message,
+                        chapter.chapter_id,
+                        v.scene_id,
+                        v.violation_type,
+                        v.message,
                     )
                 # §10: chapter-end hook type adjacency check
                 hook_violations = tension_svc.validate_chapter_hooks(chapter.chapter_id)
                 for hv in hook_violations:
                     _LOGGER.warning(
                         "§10 hook violation in chapter %s scene %s: [%s] %s",
-                        chapter.chapter_id, hv.scene_id, hv.violation_type, hv.message,
+                        chapter.chapter_id,
+                        hv.scene_id,
+                        hv.violation_type,
+                        hv.message,
                     )
             except Exception:
                 _LOGGER.debug("tension curve diagnostics skipped", exc_info=True)
@@ -8461,6 +10035,7 @@ class Orchestrator:
         if project_id:
             try:
                 from novel_system.services.theme_anchor import ThemeAnchorService
+
                 theme_svc = ThemeAnchorService(self.session)
                 idea = theme_svc.get_controlling_idea(project_id)
                 if idea:
@@ -8468,7 +10043,9 @@ class Orchestrator:
                     if not check.relevant:
                         _LOGGER.warning(
                             "§12 theme relevance warning for scene %s: %s — %s",
-                            scene.scene_id, check.connection, check.suggestion,
+                            scene.scene_id,
+                            check.connection,
+                            check.suggestion,
                         )
             except Exception:
                 _LOGGER.debug("theme relevance diagnostics skipped", exc_info=True)

@@ -293,7 +293,7 @@ illustrates_dims TEXT NOT NULL  -- JSON array
 
 ```
 'sync_only'      仅跑 quantitative + plagiarism,毫秒级返回(qc_engine 落盘 gate 用)
-'async_full'     全跑三路并发,semantic 走 LLM 异步
+'async_full'     全跑三路并发,semantic 走 LLM 异步；语义路不可用/空结果时 verdict 至多 partial
 ```
 
 `forbidden_hits_json` 是新增字段,存储 forbidden_pattern 的触发结果(任一触发 verdict=fail)。

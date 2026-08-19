@@ -93,6 +93,8 @@ def _log_event(session, **kwargs) -> NarrativeEvent:
         project_id="PROJ_REC",
         scene_id="CH_REC01_SC01",
         chapter_id="CH_REC01",
+        authority_status="accepted",
+        source_kind="test_fixture",
     )
     defaults.update(kwargs)
     evt = log.log_event(**defaults)

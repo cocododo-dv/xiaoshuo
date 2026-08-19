@@ -22,6 +22,7 @@ from novel_system.db.models import (
     StyleReferenceRun,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.projects import ProjectChapterFlowService
 
 
@@ -339,6 +340,17 @@ def test_project_chapter_run_stops_at_final_review_and_approve_final_advances(cl
                     state = self.session.get(SceneRunState, scene.scene_id)
                     if state is not None:
                         state.current_final_scene_row_id = final_row_id
+                        state.narrative_sync_status = "synced"
+                        state.narrative_sync_final_scene_row_id = final_row_id
+                self.session.flush()
+                canon = CanonContinuityService(self.session)
+                for scene in scenes:
+                    canon.verify_scene_complete(
+                        scene.project_id,
+                        scene.scene_id,
+                        actor_ref="test-runner",
+                        note="测试运行器模拟作者完成正史核验。",
+                    )
                 result = {
                     "chapter_id": chapter_id,
                     "status": "completed",
@@ -438,6 +450,17 @@ def test_project_chapter_final_requires_current_read_confirmation(client, sessio
         state = session.get(SceneRunState, scene.scene_id)
         assert state is not None
         state.current_final_scene_row_id = final_row.row_id
+        state.narrative_sync_status = "synced"
+        state.narrative_sync_final_scene_row_id = final_row.row_id
+    session.flush()
+    canon = CanonContinuityService(session)
+    for scene in scenes:
+        canon.verify_scene_complete(
+            project["project_id"],
+            scene.scene_id,
+            actor_ref="test-author",
+            note="测试已通读本场正史。",
+        )
     session.add(
         ChapterRunJob(
             job_id=f"read_confirm_job_{chapter_id}",
@@ -482,7 +505,31 @@ def test_project_chapter_final_requires_current_read_confirmation(client, sessio
     dashboard_after_confirm = client.get(f"/api/v1/projects/{project['project_id']}/dashboard").json()["data"]
     assert dashboard_after_confirm["review_packet"]["read_confirmation"]["body_hash"] == packet["body_hash"]
 
-    final_rows[0].content = "第二版正文已经变化，旧阅读确认不能批准。"
+    previous_final = final_rows[0]
+    replacement = FinalScene(
+        row_id=f"{previous_final.row_id}_v2",
+        scene_id=previous_final.scene_id,
+        chapter_id=previous_final.chapter_id,
+        source_bundle_id=previous_final.source_bundle_id,
+        source_bundle_hash=previous_final.source_bundle_hash,
+        parent_final_scene_row_id=previous_final.row_id,
+        content="第二版正文已经变化，旧阅读确认不能批准。",
+        status="archived",
+    )
+    previous_final.status = "superseded"
+    previous_final.superseded_by_final_scene_row_id = replacement.row_id
+    session.add(replacement)
+    state = session.get(SceneRunState, previous_final.scene_id)
+    state.current_final_scene_row_id = replacement.row_id
+    state.narrative_sync_status = "pending_review"
+    state.narrative_sync_final_scene_row_id = replacement.row_id
+    session.flush()
+    CanonContinuityService(session).verify_scene_complete(
+        project["project_id"],
+        scenes[0].scene_id,
+        actor_ref="author-c",
+        note="第二版正文形成新终稿后重新核对本场正史。",
+    )
     session.commit()
     changed_packet = client.get(f"/api/v1/projects/{project['project_id']}/dashboard").json()["data"]["review_packet"]
     assert changed_packet["body_hash"] != packet["body_hash"]

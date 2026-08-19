@@ -709,6 +709,10 @@ class LLMNodeRunner:
         if source_draft_content is not None:
             # The source row owns prose; the audit summary converts this to a fingerprint.
             summary["source_draft_content"] = source_draft_content
+        if isinstance(prompt.get("_style_reference_runtime_audit"), dict):
+            summary["style_reference_runtime"] = prompt[
+                "_style_reference_runtime_audit"
+            ]
         return sanitize_audit_summary(summary)
 
     def _client(self) -> Any:

@@ -176,6 +176,39 @@ def test_bundle_freezes_dispatched_contract_and_anchor_provenance(session):
     assert second["bundle_snapshot_hash"] != first["bundle_snapshot_hash"]
 
 
+def test_bundle_recalls_relevant_faded_anchor_without_dumping_faded_pool(session):
+    scene, _pinned, _contract = _seed_longform_scene(session)
+    relevant = LongformAnchor(
+        anchor_id="anchor_recalled_evidence",
+        project_id=scene.project_id,
+        kind="fact",
+        text="关键证据始终装在旧信封中",
+        status="faded",
+    )
+    unrelated = LongformAnchor(
+        anchor_id="anchor_unrelated_harbor",
+        project_id=scene.project_id,
+        kind="setting",
+        text="北方港口冬季禁止夜航",
+        status="faded",
+    )
+    session.add_all([relevant, unrelated])
+    session.flush()
+
+    snapshot = BundleBuilder(session).build(scene.scene_id)["snapshot"]
+    payload = json.loads(snapshot["inline_digests"]["longform_anchors"])
+    by_id = {item["anchor_id"]: item for item in payload}
+
+    assert relevant.anchor_id in by_id
+    assert by_id[relevant.anchor_id]["selection_reason"].startswith(
+        "recalled_relevance:"
+    )
+    assert unrelated.anchor_id not in by_id
+    retrieval = snapshot["source_version_refs"]["longform_anchor_retrieval"]
+    assert retrieval["strategy"] == "mandatory_plus_structural_lexical_v1"
+    assert retrieval["query_hash"]
+
+
 def test_contract_waiver_records_actor_reason_and_time(session):
     scene, _pinned, contract = _seed_longform_scene(session)
     contract.status = "drafting"

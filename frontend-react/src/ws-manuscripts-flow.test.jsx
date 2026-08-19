@@ -12,6 +12,10 @@ const flow = vi.hoisted(() => ({
   confirmRead: vi.fn().mockResolvedValue({ body_hash: "hash-1" }),
   approveFinal: vi.fn().mockResolvedValue({ approved_chapter_id: "c1" }),
   reopenFinal: vi.fn().mockResolvedValue({ reopened_chapter_id: "c1" }),
+  decideCanonCandidate: vi.fn().mockResolvedValue({}),
+  verifySceneCanon: vi.fn().mockResolvedValue({}),
+  createCanonCandidate: vi.fn().mockResolvedValue({}),
+  extractSceneCanon: vi.fn().mockResolvedValue({}),
 }));
 const catalogRefresh = vi.hoisted(() => vi.fn().mockResolvedValue({}));
 const worksRefresh = vi.hoisted(() => vi.fn().mockResolvedValue({}));
@@ -53,6 +57,18 @@ function chapter(state) {
 const COMPLETE_BODY = {
   completion: "complete",
   missingSceneIds: [],
+  canonContinuity: {
+    complete: true,
+    scene_count: 1,
+    synced_scene_count: 1,
+    pending_scene_ids: [],
+    missing_final_scene_ids: [],
+    pending_candidate_count: 0,
+    scenes: [{
+      scene_id: "s1", scene_seq: 1, final_scene_row_id: "final_s1_v1",
+      status: "synced", complete: true, pending_count: 0, candidates: [], extraction: {},
+    }],
+  },
   scenes: [{ sceneId: "s1", live: true, paras: ["潮水退去，她看清了闸门上的名字。"] }],
 };
 
@@ -95,6 +111,10 @@ beforeEach(() => {
   flow.confirmRead.mockResolvedValue({ body_hash: "hash-1" });
   flow.approveFinal.mockResolvedValue({ approved_chapter_id: "c1" });
   flow.reopenFinal.mockResolvedValue({ reopened_chapter_id: "c1" });
+  flow.decideCanonCandidate.mockResolvedValue({});
+  flow.verifySceneCanon.mockResolvedValue({});
+  flow.createCanonCandidate.mockResolvedValue({});
+  flow.extractSceneCanon.mockResolvedValue({});
   catalogRefresh.mockResolvedValue({});
   worksRefresh.mockResolvedValue({});
   delete window.WrDocVersions;
@@ -190,6 +210,45 @@ describe("成稿中心权威章节流", () => {
     expect(host.textContent).toContain("这一场尚无服务端归档正文");
     expect(host.textContent).not.toContain("章节结束");
     expect(host.querySelector('[data-testid="approve-final-open"]').disabled).toBe(true);
+  });
+
+  it("正史页展示正文证据，并把接受动作写回服务端正史账本", async () => {
+    const pendingBody = {
+      ...COMPLETE_BODY,
+      canonContinuity: {
+        complete: false,
+        scene_count: 1,
+        synced_scene_count: 0,
+        pending_scene_ids: ["s1"],
+        missing_final_scene_ids: [],
+        pending_candidate_count: 1,
+        scenes: [{
+          scene_id: "s1", scene_seq: 1, final_scene_row_id: "final_s1_v1",
+          status: "pending_review", complete: false, pending_count: 1,
+          extraction: { extraction_outcome: "completed_events" },
+          candidates: [{
+            candidate_id: "fc1", event_type: "character_state", raw_entity_ref: "林远",
+            fact_key: "injury", fact_value: "右臂骨折", status: "pending",
+            entity_resolution_status: "exact", entity_options: [],
+            evidence: { text: "他的右臂已经折断。" },
+          }],
+        }],
+      },
+    };
+    flow.snapshot.mockReturnValue(readySnapshot(pendingBody));
+    flow.body.mockReturnValue(pendingBody);
+    const host = await renderPage("review");
+
+    await click(host.querySelector('[data-testid="manuscript-canon-tab"]'));
+    expect(host.textContent).toContain("他的右臂已经折断");
+    expect(host.querySelector('[data-testid="approve-final-open"]').disabled).toBe(true);
+
+    await click(host.querySelector('[data-testid="canon-candidate-accept"]'));
+    expect(flow.decideCanonCandidate).toHaveBeenCalledWith("p1", "c1", "fc1", {
+      action: "accept",
+      selected_entity_id: null,
+      expected_final_scene_row_id: "final_s1_v1",
+    });
   });
 
   it("本章导出会二次核验，服务端失败后显示失败且不下载", async () => {

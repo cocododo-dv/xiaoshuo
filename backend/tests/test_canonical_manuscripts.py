@@ -21,6 +21,7 @@ from novel_system.db.models import (
 )
 from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
+from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.canonical_manuscripts import CanonicalSceneService
 from novel_system.services.errors import DomainError
 from novel_system.services.reference_safety import ReferenceSafetyService
@@ -105,6 +106,13 @@ def _seed_scene(
     )
     session.flush()
     Archiver(session).archive_final_scene(scene_id, old_final_id)
+    CanonContinuityService(session).verify_scene_complete(
+        project_id,
+        scene_id,
+        actor_ref="test",
+        note="fixture verifies the previous final before carry-forward",
+        expected_final_scene_row_id=old_final_id,
+    )
     aggregate = Aggregator(session).run_final_aggregate(chapter_id)
     assert aggregate and aggregate["status"] == "created"
     session.commit()
@@ -476,7 +484,7 @@ def test_missing_or_corrupt_persisted_final_hash_never_uses_true_noop(client, se
     assert session.get(FinalScene, corrupt_final_id).content_hash == "corrupt-persisted-hash"
 
 
-def test_promote_fails_closed_when_narrative_reconciliation_is_required(client, session) -> None:
+def test_promote_requires_reconcile_publishes_text_but_keeps_canon_pending(client, session) -> None:
     seeded = _seed_scene(session, "RECONCILE")
     cause_id = f"evt_{seeded['scene_id']}_cause"
     effect_id = f"evt_{seeded['scene_id']}_effect"
@@ -561,13 +569,19 @@ def test_promote_fails_closed_when_narrative_reconciliation_is_required(client, 
         narrative_effect="requires_reconcile",
     )
 
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED"
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["narrative_sync_status"] == "pending_extraction"
+    assert data["canon_continuity"]["complete"] is False
+    assert data["canon_continuity"]["status"] == "pending_extraction"
     session.expire_all()
-    assert snapshot() == before
-    assert session.query(FinalScene).filter_by(scene_id=seeded["scene_id"]).count() == 1
-    assert session.get(SceneRunState, seeded["scene_id"]).current_final_scene_row_id == seeded["old_final_id"]
-    assert session.get(AuthorDraft, seeded["draft_id"]).last_promoted_revision_no is None
+    after = snapshot()
+    assert after["events"] == before["events"]
+    assert session.query(FinalScene).filter_by(scene_id=seeded["scene_id"]).count() == 2
+    state = session.get(SceneRunState, seeded["scene_id"])
+    assert state is not None and state.current_final_scene_row_id == data["final_scene_row_id"]
+    assert state.narrative_sync_status == "pending_extraction"
+    assert session.get(AuthorDraft, seeded["draft_id"]).last_promoted_revision_no == 2
 
 
 def test_promote_rejects_stale_draft_and_stale_canonical_pointer(client, session) -> None:

@@ -38,6 +38,7 @@ from novel_system.services.style_reference.untrusted_data import UntrustedPayloa
 
 if TYPE_CHECKING:
     from novel_system.db.models import (
+        StyleReferenceEvidence,
         StyleReferenceFinding,
         StyleReferenceProfile,
         StyleReferenceQuote,
@@ -89,7 +90,10 @@ class ProfileSynthesizer:
         # (未 reclassify)时,旧 run 的引文会混进本 profile 的 scene_samples_index /
         # quote_count / few-shot 池。改为 **run-scoped**:仅取本 run findings 经
         # evidence 关联的 quotes(与 source_finding_ids_json 同一物料来源)。
-        quotes = self._run_scoped_quotes(findings)
+        finding_ids = [f.finding_id for f in findings]
+        evidences = self.repo.list_evidences_for_findings(finding_ids)
+        evidences.sort(key=lambda ev: (ev.created_at or "", ev.evidence_id))
+        quotes = self._run_scoped_quotes(findings, evidences=evidences)
 
         sub_dim_summaries = _aggregate_sub_dim_stats(findings, quotes)
         metrics_baseline = (book.stats_json or {}).get("metrics", {})
@@ -98,7 +102,7 @@ class ProfileSynthesizer:
             for p in self.repo.list_paragraphs(book_id)
         }
         scene_samples_index = _build_scene_samples_index(quotes, paragraph_types)
-        sample_quotes_payload = _build_sample_quotes_payload(findings, quotes)
+        sample_quotes_payload = _build_sample_quotes_payload(findings, quotes, evidences)
 
         payload = {
             "book_title": book.title,
@@ -157,10 +161,17 @@ class ProfileSynthesizer:
             )
         return profile
 
-    def _run_scoped_quotes(self, findings: list["StyleReferenceFinding"]) -> list["StyleReferenceQuote"]:
+    def _run_scoped_quotes(
+        self,
+        findings: list["StyleReferenceFinding"],
+        *,
+        evidences: list["StyleReferenceEvidence"] | None = None,
+    ) -> list["StyleReferenceQuote"]:
         """本 run findings 经 evidence 关联的 quotes(排序确定:created_at, quote_id)。"""
         finding_ids = [f.finding_id for f in findings]
-        evidences = self.repo.list_evidences_for_findings(finding_ids)
+        if evidences is None:
+            evidences = self.repo.list_evidences_for_findings(finding_ids)
+            evidences.sort(key=lambda ev: (ev.created_at or "", ev.evidence_id))
         quote_ids: list[str] = []
         seen: set[str] = set()
         for ev in evidences:
@@ -272,22 +283,35 @@ def _build_scene_samples_index(
 def _build_sample_quotes_payload(
     findings: list["StyleReferenceFinding"],
     quotes: list["StyleReferenceQuote"],
+    evidences: list["StyleReferenceEvidence"],
 ) -> list[dict[str, str]]:
-    """按 sub_dim 取每条 finding 的 statement(截断 120 字)+ 1 个代表性 quote 文本(截断 200 字)。
+    """每条 finding 配自己的 evidence quote，而不是同维度的任意 quote。
 
-    控制 prompt token 在合理范围(每 finding < 400 字)。
+    evidence 优先真实 paragraph_quote，再取其它真实证据，最后才取合成证据。
+    同一 quote 可以合法支撑多个 finding，不因全局去重而改配无关引文。控制
+    prompt token 在合理范围(每 finding < 400 字)。
     """
     quote_by_id = {q.quote_id: q for q in quotes}
-    quotes_used: set[str] = set()
+    evidence_by_finding: dict[str, list["StyleReferenceEvidence"]] = defaultdict(list)
+    for evidence in evidences:
+        evidence_by_finding[evidence.finding_id].append(evidence)
+    for rows in evidence_by_finding.values():
+        rows.sort(
+            key=lambda ev: (
+                bool(ev.is_synthetic),
+                ev.anchor_kind != "paragraph_quote",
+                ev.created_at or "",
+                ev.evidence_id,
+            )
+        )
+
     payload: list[dict[str, str]] = []
     for f in findings:
         repr_quote: str = ""
-        for q in quotes:
-            if q.quote_id in quotes_used:
-                continue
-            if f.sub_dimension in (q.illustrates_dims or []):
+        for evidence in evidence_by_finding.get(f.finding_id, []):
+            q = quote_by_id.get(evidence.quote_id)
+            if q is not None and (q.quote_text or "").strip():
                 repr_quote = (q.quote_text or "")[:200]
-                quotes_used.add(q.quote_id)
                 break
         payload.append(
             {

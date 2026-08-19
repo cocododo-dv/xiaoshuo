@@ -63,11 +63,15 @@ class VectorStore(Protocol):
 
     def load_collection(self, collection_name: str) -> list[dict]: ...
 
-    def query(self, collection_name: str, query_text: str, top_k: int = 3) -> list[dict]: ...
+    def query(
+        self, collection_name: str, query_text: str, top_k: int = 3
+    ) -> list[dict]: ...
 
     def delete_collection(self, collection_name: str) -> None: ...
 
-    def delete_documents(self, collection_name: str, document_ids: list[str]) -> None: ...
+    def delete_documents(
+        self, collection_name: str, document_ids: list[str]
+    ) -> None: ...
 
 
 class InMemoryVectorStore:
@@ -83,9 +87,10 @@ class InMemoryVectorStore:
     def load_collection(self, collection_name: str) -> list[dict]:
         return [dict(item) for item in self._collections.get(collection_name, [])]
 
-    def query(self, collection_name: str, query_text: str, top_k: int = 3) -> list[dict]:
+    def query(
+        self, collection_name: str, query_text: str, top_k: int = 3
+    ) -> list[dict]:
         return _rank_documents(self.load_collection(collection_name), query_text, top_k)
-
 
     def delete_collection(self, collection_name: str) -> None:
         self._collections.pop(collection_name, None)
@@ -95,7 +100,8 @@ class InMemoryVectorStore:
             return
         targets = set(document_ids)
         self._collections[collection_name] = [
-            item for item in self._collections[collection_name]
+            item
+            for item in self._collections[collection_name]
             if str(item.get("id")) not in targets
         ]
 
@@ -175,7 +181,11 @@ class ChromaVectorStore:
         texts = [item.get("text", "") for item in documents]
         metadatas = []
         for item in documents:
-            metadata = {key: value for key, value in item.items() if key not in {"id", "text"} and value is not None}
+            metadata = {
+                key: value
+                for key, value in item.items()
+                if key not in {"id", "text"} and value is not None
+            }
             metadatas.append(metadata)
 
         payload: dict[str, object] = {"ids": ids, "documents": texts}
@@ -209,14 +219,21 @@ class ChromaVectorStore:
             documents.append(row)
         return documents
 
-    def query(self, collection_name: str, query_text: str, top_k: int = 3) -> list[dict]:
+    def query(
+        self, collection_name: str, query_text: str, top_k: int = 3
+    ) -> list[dict]:
         if not query_text.strip() or not self.collection_exists(collection_name):
             return []
 
         collection = self._get_collection(collection_name)
+        collection_size = int(collection.count())
+        if collection_size <= 0:
+            return []
         payload = collection.query(
             query_texts=[query_text],
-            n_results=top_k,
+            # Some Chroma releases reject n_results larger than the collection.
+            # RAG deliberately asks for a wide shortlist, including on tiny books.
+            n_results=max(1, min(int(top_k), collection_size)),
             include=["documents", "metadatas"],
         )
         ids = payload.get("ids", [[]])[0]

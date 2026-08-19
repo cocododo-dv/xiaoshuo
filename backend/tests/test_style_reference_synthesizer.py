@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,7 @@ from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.profile_synthesizer import (
     ProfileSynthesizer,
     SynthesizeError,
+    _build_sample_quotes_payload,
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from tests.accounted_llm_fakes import AccountedGenerateMixin
@@ -120,6 +122,42 @@ def _fake_llm_with_response(response_dict: dict):
 # ---------------------------------------------------------------------------
 # Cases
 # ---------------------------------------------------------------------------
+
+
+def test_sample_quote_is_selected_from_the_findings_own_evidence() -> None:
+    """同一维度有多条引文时，不能把别的 finding 的证据错配过来。"""
+    finding = SimpleNamespace(
+        finding_id="finding_target",
+        sub_dimension="language.rhetoric",
+        finding_kind="observation",
+        statement="目标观察",
+    )
+    wrong_quote = SimpleNamespace(
+        quote_id="quote_wrong",
+        quote_text="同维度但属于另一条观察的引文",
+        illustrates_dims=["language.rhetoric"],
+    )
+    right_quote = SimpleNamespace(
+        quote_id="quote_right",
+        quote_text="目标观察自己的证据引文",
+        illustrates_dims=["language.rhetoric"],
+    )
+    evidence = SimpleNamespace(
+        evidence_id="evidence_target",
+        finding_id="finding_target",
+        quote_id="quote_right",
+        anchor_kind="paragraph_quote",
+        is_synthetic=0,
+        created_at="2026-01-01T00:00:00Z",
+    )
+
+    payload = _build_sample_quotes_payload(
+        [finding],
+        [wrong_quote, right_quote],
+        [evidence],
+    )
+
+    assert payload[0]["representative_quote"] == "目标观察自己的证据引文"
 
 
 def test_synthesize_llm_required_when_disabled() -> None:

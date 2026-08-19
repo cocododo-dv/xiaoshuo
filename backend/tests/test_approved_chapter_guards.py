@@ -9,6 +9,7 @@ from novel_system.db.models import (
     SceneRunState,
     StoryProject,
 )
+from novel_system.services.canon_continuity import CanonContinuityService
 
 
 _sequence = 0
@@ -416,6 +417,22 @@ def test_review_read_confirmation_and_approval_require_complete_canonical_manusc
     assert partial.json()["error"]["details"]["missing_scene_ids"] == [scenes[1].scene_id]
 
     _archive_scene(session, scenes[1], content="Second canonical scene.")
+    session.commit()
+    canon_pending = client.patch(
+        f"/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}",
+        json={"state": "review"},
+    )
+    assert canon_pending.status_code == 409
+    assert canon_pending.json()["error"]["code"] == "CHAPTER_CANON_NOT_COMMITTED"
+
+    canon = CanonContinuityService(session)
+    for scene in scenes:
+        canon.verify_scene_complete(
+            project_id,
+            scene.scene_id,
+            actor_ref="test-author",
+            note="测试已通读当前终稿，确认本场正史事实完整。",
+        )
     session.commit()
     submitted = client.patch(
         f"/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}",

@@ -2,8 +2,8 @@
 
 参见 plans/style-reference-v1-1-fancy-shannon.md §"路由清单"。
 prefix: /api/v2/style-reference。
-PR-4 18 端点 + PR-7 3 端点(validate / reports get / reports list)= 21 端点。
-不含 inject(PR-8)。
+在既有导入、抽取、画像、校验和注入预览端点上，增加候选盲选反馈聚合读接口。
+不含公开 inject 写接口(PR-8)。
 """
 
 from __future__ import annotations
@@ -79,18 +79,16 @@ class ImportPathRequest(BaseModel):
     file_path: str = Field(min_length=1, max_length=2048)
     title: str = Field(min_length=1, max_length=512)
     author_label: str | None = Field(default=None, max_length=255)
-    cloud_policy: Literal[
-        "allow_full_cloud", "segments_only", "local_only"
-    ]
+    cloud_policy: Literal["allow_full_cloud", "segments_only", "local_only"]
     # Wave 7 §5.9 — 导入权属声明 {analysis_rights, send_rights, declared_by}
     rights_declaration: BoundedJsonObject | None = None
 
 
 class StartRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    layers: list[
-        Annotated[str, Field(min_length=1, max_length=64)]
-    ] | None = Field(default=None, max_length=4)
+    layers: list[Annotated[str, Field(min_length=1, max_length=64)]] | None = Field(
+        default=None, max_length=4
+    )
     # True 时立即返回 RUNNING + run_id,抽取在后台线程执行;
     # 调用方轮询 GET /runs/{run_id} 读 coverage_json.progress
     background: bool = False
@@ -103,9 +101,9 @@ class ApplyConfigMixin(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
     intensity: int | None = Field(default=None, ge=0, le=100)
-    sub_dimensions: list[
-        Annotated[str, Field(min_length=1, max_length=128)]
-    ] | None = Field(default=None, max_length=128)
+    sub_dimensions: list[Annotated[str, Field(min_length=1, max_length=128)]] | None = (
+        Field(default=None, max_length=128)
+    )
     include_positive: bool | None = None
     include_forbidden: bool | None = None
     include_metric: bool | None = None
@@ -246,6 +244,41 @@ def _serialize_profile(profile) -> dict[str, Any]:
         "version_tag": profile.version_tag,
         "source_finding_ids_json": profile.source_finding_ids_json or [],
     }
+
+
+def _invalidate_profiles_after_finding_membership_change(
+    repo: StyleReferenceRepository,
+    finding,
+    *,
+    previous_status: str,
+    next_status: str,
+) -> list[str]:
+    """finding 进入/退出 rejected 集合时，使同 run 的派生画像失效。
+
+    synthesize 的输入集合是“全部非 rejected finding”。因此 pending 与 approved
+    互换不改变画像输入；任一状态与 rejected 互换则会改变输入集合。旧画像中的
+    summary/features 无法安全地局部删改，必须停止注入并要求重新合成。
+    """
+    if (previous_status == "rejected") == (next_status == "rejected"):
+        return []
+
+    invalidated: list[str] = []
+    for profile in repo.list_profiles(book_id=finding.book_id):
+        if profile.run_id != finding.run_id or profile.status == "archived":
+            continue
+        coverage = dict(profile.coverage_json or {})
+        coverage.update(
+            {
+                "stale": True,
+                "stale_reason": "source_finding_membership_changed",
+                "stale_finding_id": finding.finding_id,
+            }
+        )
+        profile.coverage_json = coverage
+        profile.status = "draft"
+        invalidated.append(profile.profile_id)
+    repo.session.flush()
+    return invalidated
 
 
 def _serialize_binding(binding) -> dict[str, Any]:
@@ -705,9 +738,7 @@ def list_run_findings(
     # PR-23 — ?include=evidence:总查询数固定 3 条(findings + evidences + quotes)
     evidence_map: dict[str, list[dict[str, Any]]] | None = None
     if include == "evidence":
-        evidences = repo.list_evidences_for_findings(
-            [f.finding_id for f in findings]
-        )
+        evidences = repo.list_evidences_for_findings([f.finding_id for f in findings])
         quotes = {
             q.quote_id: q
             for q in repo.list_quotes_by_ids([e.quote_id for e in evidences])
@@ -778,6 +809,7 @@ def review_finding(
                 f"decision {decision!r} not allowed",
                 status_code=400,
             )
+        previous_status = finding.status
         # 创建或 update ReviewItem(prefix `review_style_ref_finding_`)
         review_id = f"review_style_ref_finding_{finding_id[-12:]}"
         existing = session.get(ReviewItem, review_id)
@@ -809,8 +841,19 @@ def review_finding(
             }
         # 反向更新 finding.review_id + status
         repo.update_finding(finding_id, review_id=review_id, status=decision)
+        invalidated_profile_ids = _invalidate_profiles_after_finding_membership_change(
+            repo,
+            finding,
+            previous_status=previous_status,
+            next_status=decision,
+        )
         session.flush()
-        return {"finding_id": finding_id, "review_id": review_id, "decision": decision}
+        return {
+            "finding_id": finding_id,
+            "review_id": review_id,
+            "decision": decision,
+            "invalidated_profile_ids": invalidated_profile_ids,
+        }
 
     return _with_idem(
         session,
@@ -833,7 +876,9 @@ def user_feedback_finding(
     body = payload.model_dump(mode="json")
 
     def _do() -> dict[str, Any]:
-        from novel_system.services.style_reference.finding_feedback import apply_feedback
+        from novel_system.services.style_reference.finding_feedback import (
+            apply_feedback,
+        )
 
         return apply_feedback(
             session, finding_id, operator_ref=_actor(request), vote=body["vote"]
@@ -890,16 +935,25 @@ def synthesize_profile(
                     "title": f"参考画像「{profile.title}」是否应用到本项目",
                     "source": "风格参考",
                     "where": "风格参考 · 刚学完",
-                    "detail": (summary[:200] + ("…" if len(summary) > 200 else "")) or "画像已合成，可应用为写作润色基线，可随时关闭。",
+                    "detail": (summary[:200] + ("…" if len(summary) > 200 else ""))
+                    or "画像已合成，可应用为写作润色基线，可随时关闭。",
                     "dedupe_key": f"style-profile:{profile.profile_id}",
                     "actions": [
                         {
                             "label": "应用到本项目",
                             "intent": "primary",
                             "op": "resolve",
-                            "effect": {"type": "bind_style_profile", "profile_id": profile.profile_id},
+                            "effect": {
+                                "type": "bind_style_profile",
+                                "profile_id": profile.profile_id,
+                            },
                         },
-                        {"label": "先去看画像", "intent": "ghost", "op": "nav", "nav_to": "styleref"},
+                        {
+                            "label": "先去看画像",
+                            "intent": "ghost",
+                            "op": "nav",
+                            "nav_to": "styleref",
+                        },
                         {"label": "丢弃", "intent": "quiet", "op": "resolve"},
                     ],
                 },
@@ -954,6 +1008,39 @@ def get_profile(
             status_code=404,
         )
     return ok({"profile": _serialize_profile(profile)}, req_id=_req_id(request))
+
+
+@router.get(f"{PATH_PREFIX}/profiles/{{profile_id}}/candidate-feedback")
+def get_profile_candidate_feedback(
+    profile_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """Return aggregate blind-choice calibration diagnostics for one profile.
+
+    The response never includes candidate prose or source excerpts, and it is
+    explicitly ineligible to self-activate production reranking.
+    """
+
+    repo = StyleReferenceRepository(session)
+    if repo.get_profile(profile_id) is None:
+        raise DomainError(
+            "STYLE_REFERENCE_PROFILE_NOT_FOUND",
+            f"profile {profile_id!r} not found",
+            status_code=404,
+        )
+    from novel_system.services.style_reference.style_feedback import (
+        summarize_profile_candidate_feedback,
+    )
+
+    return ok(
+        {
+            "candidate_feedback": summarize_profile_candidate_feedback(
+                session, profile_id
+            )
+        },
+        req_id=_req_id(request),
+    )
 
 
 @router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/preview")
@@ -1016,6 +1103,7 @@ def apply_profile(
             "binding_id": result.binding_id,
             "review_ids": result.review_ids,
             "item_type_counts": result.item_type_counts,
+            "rag_index": result.rag_index,
         }
 
     return _with_idem(
@@ -1163,8 +1251,12 @@ def create_banned_term(
         request,
         method="POST",
         path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/banned-terms",
-        payload={"profile_id": profile_id, "term": term_text, "scope": scope,
-                 "replacement_hint": payload.replacement_hint},
+        payload={
+            "profile_id": profile_id,
+            "term": term_text,
+            "scope": scope,
+            "replacement_hint": payload.replacement_hint,
+        },
         action=_do,
     )
 
@@ -1259,18 +1351,24 @@ def _reap_orphan_report(session: Session, report) -> None:
 
     try:
         last_seen = datetime.fromisoformat(
-            str(report.heartbeat_at or report.started_at or report.created_at).replace("Z", "+00:00")
+            str(report.heartbeat_at or report.started_at or report.created_at).replace(
+                "Z", "+00:00"
+            )
         )
     except (TypeError, ValueError):
         return
     if last_seen.tzinfo is None:
         last_seen = last_seen.replace(tzinfo=timezone.utc)
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=REPORT_PENDING_TIMEOUT_MINUTES)
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        minutes=REPORT_PENDING_TIMEOUT_MINUTES
+    )
     if last_seen < cutoff:
         report.verdict = "fail"
         report.status = "failed"
         report.error_code = "STYLE_REFERENCE_VALIDATION_INTERRUPTED"
-        report.error_text = "async validation was interrupted; submit the text again to retry"
+        report.error_text = (
+            "async validation was interrupted; submit the text again to retry"
+        )
         report.retryable = True
         report.heartbeat_at = utcnow()
         report.finished_at = utcnow()
@@ -1395,9 +1493,14 @@ def get_binding_injection_preview(
         strategy = InjectionStrategy(binding.strategy)
     except ValueError:
         strategy = InjectionStrategy.A
-    fragments = InjectionService(session)._render(profile, strategy, binding.config_json or {})
+    fragments = InjectionService(session)._render(
+        profile, strategy, binding.config_json or {}
+    )
     return ok(
-        {"fragments": fragments.model_dump(), "prefix": fragments.to_system_prompt_prefix()},
+        {
+            "fragments": fragments.model_dump(),
+            "prefix": fragments.to_system_prompt_prefix(),
+        },
         req_id=_req_id(request),
     )
 
@@ -1428,7 +1531,10 @@ def dryrun_injection_preview(
     }
     fragments = InjectionService(session)._render(profile, payload.strategy, config)
     return ok(
-        {"fragments": fragments.model_dump(), "prefix": fragments.to_system_prompt_prefix()},
+        {
+            "fragments": fragments.model_dump(),
+            "prefix": fragments.to_system_prompt_prefix(),
+        },
         req_id=_req_id(request),
     )
 
@@ -1459,7 +1565,10 @@ def get_injection_layers(
     """
     chars = [c.strip() for c in (character_ids or "").split(",") if c.strip()] or None
     data = InjectionService(session).describe_binding_layers(
-        project_id, task_type, character_ids=chars, scene_id=scene_id,
+        project_id,
+        task_type,
+        character_ids=chars,
+        scene_id=scene_id,
     )
     return ok(data, req_id=_req_id(request))
 

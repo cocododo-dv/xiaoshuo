@@ -287,7 +287,10 @@ class EventReconciliationService:
         row = (
             self.session.execute(
                 select(NarrativeEvent.scene_seq)
-                .where(NarrativeEvent.project_id == project_id)
+                .where(
+                    NarrativeEvent.project_id == project_id,
+                    self._event_log._runtime_authority_clause(),
+                )
                 .order_by(NarrativeEvent.scene_seq.desc())
                 .limit(1)
             )

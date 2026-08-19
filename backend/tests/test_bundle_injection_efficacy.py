@@ -77,6 +77,8 @@ def test_narrative_state_digest_uses_scene_project_id(session):
         entity_id="char_a",
         fact_key="injury",
         fact_value="左臂骨折",
+        authority_status="accepted",
+        source_kind="test_fixture",
     )
     # 事件位于同章前一场，当前场景应能按权威目录位置读取。
     digest = BundleBuilder(session)._narrative_state_digest(scene)

@@ -34,12 +34,14 @@ def _seed(session) -> None:
         project_id=PROJECT, scene_id=f"{CHAPTER}_SC01", chapter_id=CHAPTER,
         event_type="character_state", entity_type="character", entity_id="X",
         fact_key="secret_held_by", fact_value="X是幕后凶手",
+        authority_status="accepted", source_kind="test_fixture",
     )
     # 公共硬事实（供公共 finding 引用）。
     log.log_event(
         project_id=PROJECT, scene_id=f"{CHAPTER}_SC01", chapter_id=CHAPTER,
         event_type="character_state", entity_type="character", entity_id="X",
         fact_key="location", fact_value="书房",
+        authority_status="accepted", source_kind="test_fixture",
     )
     session.commit()
 

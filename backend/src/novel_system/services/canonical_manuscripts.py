@@ -25,6 +25,7 @@ from novel_system.db.models import (
 from novel_system.services.aggregator import Aggregator
 from novel_system.services.archiver import Archiver
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.chapter_approval import require_chapter_mutation_allowed
 from novel_system.services.errors import DomainError
 from novel_system.services.final_text_gate import FinalTextGateService
@@ -100,10 +101,10 @@ def canonical_content_hash(content: str) -> str:
 class CanonicalSceneService:
     """Promote a scene AuthorDraft into the immutable canonical FinalScene chain.
 
-    v1 deliberately accepts only an explicit ``facts_unchanged`` assertion. A
-    manuscript that may alter tracked story facts must go through the later
-    event-reconciliation workflow; silently retaining old narrative events is
-    forbidden.
+    Text publication and fact authority are separate. ``requires_reconcile``
+    publishes the exact author revision but leaves its continuity ledger pending;
+    ``facts_unchanged`` may carry a previously committed ledger forward. Silently
+    retaining unreviewed narrative events is forbidden.
     """
 
     def __init__(self, session: Session) -> None:
@@ -132,16 +133,16 @@ class CanonicalSceneService:
             )
 
         narrative_effect = str(body.get("narrative_effect") or "requires_reconcile").strip()
-        if narrative_effect != "facts_unchanged":
+        if narrative_effect not in {"requires_reconcile", "facts_unchanged"}:
             raise DomainError(
-                "CANONICAL_NARRATIVE_RECONCILIATION_REQUIRED",
-                "this revision may change story facts and must be reconciled before canonical promotion",
-                status_code=409,
+                "CANONICAL_NARRATIVE_EFFECT_INVALID",
+                "narrative_effect must be requires_reconcile or facts_unchanged",
+                status_code=400,
                 details={
                     "draft_id": draft.draft_id,
                     "scene_id": draft.object_id,
                     "narrative_effect": narrative_effect,
-                    "supported_effect": "facts_unchanged",
+                    "supported_effects": ["requires_reconcile", "facts_unchanged"],
                 },
             )
 
@@ -243,6 +244,30 @@ class CanonicalSceneService:
                 final=current_final,
             )
             if existing_derivation is not None:
+                canon_continuity: dict[str, Any] = {
+                    "status": "unavailable",
+                    "complete": False,
+                    "reason": "projectless_legacy_scene",
+                }
+                if project_id:
+                    canon_service = CanonContinuityService(self.session)
+                    canon_continuity = canon_service.scene_status(
+                        project_id,
+                        scene.scene_id,
+                    )
+                    if (
+                        narrative_effect == "facts_unchanged"
+                        and not canon_continuity["complete"]
+                    ):
+                        canon_continuity = canon_service.carry_forward_facts_unchanged(
+                            current_final.row_id,
+                            source_final_scene_row_id=current_final.parent_final_scene_row_id,
+                            actor_ref=actor_ref or "operator",
+                            note="作者确认本次正文修订不改变既有叙事事实",
+                        )
+                    elif not canon_continuity["complete"]:
+                        state.narrative_sync_status = str(canon_continuity["status"])
+                        state.narrative_sync_final_scene_row_id = current_final.row_id
                 # Different idempotency keys may reach this branch. It is a true
                 # publication no-op: no CAS UPDATE, archive, aggregate, or log.
                 return {
@@ -269,8 +294,9 @@ class CanonicalSceneService:
                     },
                     "scene_memory_row_id": existing_derivation["scene_memory_row_id"],
                     "chapter_memory_row_id": existing_derivation["chapter_memory_row_id"],
-                    "narrative_sync_status": "synced",
+                    "narrative_sync_status": state.narrative_sync_status,
                     "canonical_dirty": False,
+                    "canon_continuity": canon_continuity,
                     "validation": {
                         "canonical_char_count": len(canonical_text),
                         "source_safety_scan": existing_derivation["source_safety_scan"],
@@ -379,6 +405,9 @@ class CanonicalSceneService:
             self.session.add(final)
             self.session.flush()
 
+        target_sync_status = (
+            "synced" if narrative_effect == "facts_unchanged" else "pending_extraction"
+        )
         state_condition = SceneRunState.current_final_scene_row_id.is_(None)
         if expected_final_id is not None:
             state_condition = SceneRunState.current_final_scene_row_id == expected_final_id
@@ -387,7 +416,7 @@ class CanonicalSceneService:
             .where(SceneRunState.scene_id == scene.scene_id, state_condition)
             .values(
                 current_final_scene_row_id=new_final_id,
-                narrative_sync_status="synced",
+                narrative_sync_status=target_sync_status,
                 narrative_sync_final_scene_row_id=new_final_id,
             )
             .execution_options(synchronize_session=False)
@@ -403,7 +432,7 @@ class CanonicalSceneService:
         draft.last_promoted_revision_no = base_revision_no
         draft.last_promoted_final_scene_row_id = new_final_id
         state.current_final_scene_row_id = new_final_id
-        state.narrative_sync_status = "synced"
+        state.narrative_sync_status = target_sync_status
         state.narrative_sync_final_scene_row_id = new_final_id
         if current_final is not None and not same_author_revision:
             current_final.status = "superseded"
@@ -416,7 +445,7 @@ class CanonicalSceneService:
                 "actor_ref": actor_ref or "operator",
                 "draft_id": draft.draft_id,
                 "draft_revision_no": base_revision_no,
-                "narrative_effect": "facts_unchanged",
+                "narrative_effect": narrative_effect,
             }
         ]
         if same_author_revision:
@@ -435,6 +464,26 @@ class CanonicalSceneService:
             author_confirmed_final=True,
             accepted_warning_codes=accepted_warning_codes,
         )
+        # Project-less rows only exist in the legacy compatibility surface. They
+        # cannot own a CanonCommit (the new ledger deliberately requires a real
+        # StoryProject), but adopting their exact author revision must keep the
+        # pre-existing archive behaviour. Archiver already returns an explicit
+        # unavailable marker for this case; never invent a project merely to make
+        # the continuity status look complete.
+        canon_continuity = dict(archive_result.get("canon_continuity") or {})
+        if (
+            project_id
+            and narrative_effect == "facts_unchanged"
+            and not canon_continuity.get("complete")
+        ):
+            canon_continuity = CanonContinuityService(
+                self.session
+            ).carry_forward_facts_unchanged(
+                final.row_id,
+                source_final_scene_row_id=current_final_id,
+                actor_ref=actor_ref or "operator",
+                note="作者确认本次正文修订不改变既有叙事事实",
+            )
         aggregate_result = Aggregator(self.session).run_final_aggregate(scene.chapter_id)
         if not aggregate_result or aggregate_result.get("status") != "created":
             raise DomainError(
@@ -458,9 +507,9 @@ class CanonicalSceneService:
                     "final_scene_row_id": final.row_id,
                     "content_hash": content_hash,
                     "already_current": same_author_revision,
-                    "narrative_effect": "facts_unchanged",
-                    "narrative_events_preserved": True,
-                    "narrative_sync_status": "synced",
+                    "narrative_effect": narrative_effect,
+                    "narrative_events_preserved": narrative_effect == "facts_unchanged",
+                    "narrative_sync_status": state.narrative_sync_status,
                     "accepted_warning_codes": accepted_warning_codes,
                     "source_safety_scan": safety_scan,
                     "final_text_gate": final_text_gate,
@@ -485,8 +534,9 @@ class CanonicalSceneService:
             "finality": archive_result["finality"],
             "scene_memory_row_id": archive_result["scene_memory_row_id"],
             "chapter_memory_row_id": aggregate_result["chapter_memory_row_id"],
-            "narrative_sync_status": "synced",
+            "narrative_sync_status": state.narrative_sync_status,
             "canonical_dirty": False,
+            "canon_continuity": canon_continuity,
             "validation": {
                 "canonical_char_count": len(canonical_text),
                 "source_safety_scan": safety_scan,

@@ -2022,10 +2022,13 @@ describe("作者状态门（Wave 2：无法继续 vs 有稿建议修改）", () 
     expect(list.candidates.map(c => c.row_id)).toEqual(["cand_b", "cand_a"]);
     expect(list.candidates.every(c => !("adversarial_score" in c))).toBe(true);
 
-    await mod.scnSelectCandidate("ch01s1", "cand_b", { no_clear_difference: true });
+    await mod.scnSelectCandidate("ch01s1", "cand_b", {
+      no_clear_difference: true,
+      preference_tags: ["style_match"],
+    });
     expect(client.apiPost).toHaveBeenCalledWith(
       "/api/v1/scenes/s1/style-candidates/cand_b/select",
-      expect.objectContaining({ no_clear_difference: true })
+      expect.objectContaining({ no_clear_difference: true, preference_tags: ["style_match"] })
     );
 
     await mod.scnResumeAfterSelection("ch01s1");

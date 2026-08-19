@@ -160,6 +160,8 @@ def load_prompt_templates(path: str | Path | None = None) -> dict[str, PromptTem
 
 
 def _task_kind_for_template(template_name: str) -> str:
+    if template_name == "neutral_draft":
+        return "neutral_draft"
     if template_name in HARD_QC_TEMPLATE_NAMES:
         return "hard_qc"
     if template_name in CHAPTER_REVIEW_TEMPLATE_NAMES:

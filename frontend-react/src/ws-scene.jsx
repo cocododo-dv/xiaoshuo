@@ -1212,8 +1212,12 @@ function RunningStage({ scene, activeBeat, setActiveBeat, logOpen, setLogOpen })
 
 function CandidatePicker({ sid, onDone }) {
   const [st, setSt] = useSt8({ loading: true, error: null, candidates: [], picking: null, resuming: false });
+  const [styleMatchReason, setStyleMatchReason] = useSt8(false);
+  const openedAtRef = useRef8(Date.now());
   useEf8(() => {
     let on = true;
+    openedAtRef.current = Date.now();
+    setStyleMatchReason(false);
     setSt({ loading: true, error: null, candidates: [], picking: null, resuming: false });
     (async () => {
       try {
@@ -1230,7 +1234,12 @@ function CandidatePicker({ sid, onDone }) {
   const choose = async (rowId, tie) => {
     setSt(s => ({ ...s, picking: rowId, error: null }));
     try {
-      await scnSelectCandidate(sid, rowId, tie ? { no_clear_difference: true } : {});
+      const selection = {
+        no_clear_difference: !!tie,
+        duration_ms: Math.max(0, Date.now() - openedAtRef.current),
+        preference_tags: styleMatchReason && !tie ? ["style_match"] : [],
+      };
+      await scnSelectCandidate(sid, rowId, selection);
       setSt(s => ({ ...s, resuming: true }));
       const resumed = await scnResumeAfterSelection(sid);
       onDone && (await onDone(resumed));
@@ -1243,7 +1252,7 @@ function CandidatePicker({ sid, onDone }) {
     <div className="scn2-review scn2-scroll">
       <div className="scn2-decide is-wait" style={{ marginBottom: 10 }}>
         <div className="scn2-decide-sum">
-          <I.Users size={14} /> 关键场景 · 匿名候选终选：全文读完再选——顺序已随机化，机器分数默认折叠，选中后管线自动续跑（批判修订 → 质检 → 归档）
+          <I.Users size={14} /> 关键场景 · 匿名候选终选：全文读完再选——顺序已随机化，机器分数不展示，选中后管线自动续跑（批判修订 → 质检 → 归档）
         </div>
       </div>
       {st.error && (
@@ -1274,7 +1283,17 @@ function CandidatePicker({ sid, onDone }) {
         </article>
       ))}
       {!st.loading && st.candidates.length > 1 && (
-        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, justifyContent: "space-between", marginBottom: 8 }}>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 7, cursor: "pointer", fontSize: 12, color: "var(--ink-2)" }}>
+            <input
+              type="checkbox"
+              data-testid="scene-candidate-style-reason"
+              checked={styleMatchReason}
+              disabled={!!st.picking || st.resuming}
+              onChange={e => setStyleMatchReason(e.target.checked)}
+            />
+            我主要按“更贴近参考风格”来选
+          </label>
           <button className="btn btn-quiet btn-sm" data-testid="scene-candidate-tie" disabled={!!st.picking || st.resuming}
             title="记录「无明显差异」并采用候选 A（终选耗时与平局照实入档）"
             onClick={() => choose(st.candidates[0].row_id, true)}>

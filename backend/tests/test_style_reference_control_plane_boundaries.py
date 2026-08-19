@@ -255,3 +255,63 @@ def test_validation_worker_still_degrades_explicit_provider_failure(
     assert row.verdict == "partial"
     assert row.status == "completed"
     assert row.error_code is None
+
+
+@pytest.mark.parametrize(
+    ("llm_enabled", "llm_client", "expected_semantic_calls"),
+    [
+        (False, None, 0),
+        (True, object(), 1),
+    ],
+    ids=("semantic-unavailable", "semantic-empty-result"),
+)
+def test_async_full_without_semantic_evidence_cannot_report_full_pass(
+    session,
+    monkeypatch: pytest.MonkeyPatch,
+    llm_enabled: bool,
+    llm_client: object | None,
+    expected_semantic_calls: int,
+) -> None:
+    degraded: list[bool] = []
+    semantic_calls = 0
+
+    def empty_semantic(*_args: Any, **_kwargs: Any) -> list:
+        nonlocal semantic_calls
+        semantic_calls += 1
+        return []
+
+    def compute_verdict(**kwargs: Any) -> SimpleNamespace:
+        degraded.append(kwargs["semantic_degraded"])
+        return SimpleNamespace(value="partial" if kwargs["semantic_degraded"] else "pass")
+
+    seed = "semantic_unavailable" if not llm_enabled else "semantic_empty"
+    report_id = _seed_durable_validation_report(session, seed)
+    profile_id = f"sr_profile_cp_{seed}"
+    monkeypatch.setattr(validation_core, "_load_plagiarism_corpus", lambda *_args: [])
+    monkeypatch.setattr(
+        plagiarism,
+        "check_plagiarism",
+        lambda *_args: SimpleNamespace(passed=True, model_dump=lambda: {"passed": True}),
+    )
+    monkeypatch.setattr(quantitative, "check_quantitative", lambda *_args: [])
+    monkeypatch.setattr(validation_semantic, "check_semantic", empty_semantic)
+    monkeypatch.setattr(forbidden_semantic, "check_forbidden_semantic", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(validation_core, "_compute_full_verdict", compute_verdict)
+    monkeypatch.setattr(forbidden_local, "check_forbidden_local", lambda *_args: [])
+    monkeypatch.setattr(policy, "cloud_llm_allowed", lambda _book: True)
+
+    runner._async_worker(
+        report_id=report_id,
+        profile_id=profile_id,
+        generated_text="generated",
+        llm_client=llm_client,
+        llm_enabled=llm_enabled,
+    )
+
+    assert semantic_calls == expected_semantic_calls
+    assert degraded == [True]
+    session.expire_all()
+    row = session.get(StyleReferenceValidationReport, report_id)
+    assert row is not None
+    assert row.verdict == "partial"
+    assert row.status == "completed"

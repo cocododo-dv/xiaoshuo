@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.contracts.bundle import BundleSnapshotHashProjection
@@ -31,13 +31,30 @@ from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import compute_bundle_hash_projection
 from novel_system.services.literary_quality import fingerprint_literary_quality
 from novel_system.services.resolver import Resolver
-from novel_system.services.character_continuity import CHARACTER_CONTRACT_VERSION, build_character_contract_digest
+from novel_system.services.character_continuity import (
+    CHARACTER_CONTRACT_VERSION,
+    build_character_contract_digest,
+)
 from novel_system.services.scene_digest import scene_card_digest
 from novel_system.services.scene_ownership import require_scene_project_id
-from novel_system.services.style_profile import STYLE_FEATURE_CONTRACT_VERSION, StyleProfileService
+from novel_system.services.style_profile import (
+    STYLE_FEATURE_CONTRACT_VERSION,
+    StyleProfileService,
+)
 from novel_system.services.style_reference.injection import InjectionService
-from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief, writer_brief_has_content
-from novel_system.services.author_preferences import merge_preference_summaries, safe_preference_summary_for_prompt
+from novel_system.services.style_reference.runtime_contract import (
+    STYLE_RUNTIME_CONTRACT_VERSION,
+    build_style_runtime_contract,
+)
+from novel_system.services.writer_briefs import (
+    normalize_chapter_writer_brief,
+    normalize_scene_writer_brief,
+    writer_brief_has_content,
+)
+from novel_system.services.author_preferences import (
+    merge_preference_summaries,
+    safe_preference_summary_for_prompt,
+)
 from novel_system.services.author_instructions import normalize_author_note
 
 
@@ -67,7 +84,11 @@ class BundleBuilder:
 
     @staticmethod
     def _combined_text(rows: list[Any], text_field: str) -> str:
-        return "\n\n".join(str(getattr(row, text_field)) for row in rows if getattr(row, text_field, None))
+        return "\n\n".join(
+            str(getattr(row, text_field))
+            for row in rows
+            if getattr(row, text_field, None)
+        )
 
     def _next_bundle_id(self, scene_id: str, state: SceneRunState) -> tuple[str, int]:
         build_no = (state.bundle_build_count or 0) + 1
@@ -93,51 +114,169 @@ class BundleBuilder:
         if chapter is None:
             raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
         state = self.session.get(SceneRunState, scene_id)
-        previous_memory = self.session.execute(
-            select(SceneMemory)
-            .join(SceneCard, SceneCard.scene_id == SceneMemory.scene_id)
-            .where(
-                SceneMemory.chapter_id == scene.chapter_id,
-                SceneMemory.active_flag == 1,
-                SceneMemory.runtime_eligible == 1,
-                SceneCard.trashed_flag == 0,
-                SceneCard.scene_seq < scene.scene_seq,
+        previous_memory = (
+            self.session.execute(
+                select(SceneMemory)
+                .join(SceneCard, SceneCard.scene_id == SceneMemory.scene_id)
+                .where(
+                    SceneMemory.chapter_id == scene.chapter_id,
+                    SceneMemory.active_flag == 1,
+                    SceneMemory.runtime_eligible == 1,
+                    SceneCard.trashed_flag == 0,
+                    SceneCard.scene_seq < scene.scene_seq,
+                )
+                .order_by(SceneCard.scene_seq.desc(), SceneMemory.created_at.desc())
             )
-            .order_by(SceneCard.scene_seq.desc(), SceneMemory.created_at.desc())
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
 
         source_version_refs = {
             "chapter_goal": chapter.chapter_id,
             "scene_card": scene.scene_id,
         }
-        reference_layers = InjectionService(self.session).resolve_binding_layers(
-            scene.project_id,
-            "scene_generation",
-            character_ids=list(
-                dict.fromkeys(
-                    value
-                    for value in [scene.pov_character_id, *(scene.onstage_chars_json or [])]
-                    if value
-                )
-            ),
-            scene_id=scene.scene_id,
+        style_injection = InjectionService(self.session)
+        style_character_ids = list(
+            dict.fromkeys(
+                value
+                for value in [
+                    scene.pov_character_id,
+                    *(scene.onstage_chars_json or []),
+                ]
+                if value
+            )
         )
-        reference_profile_ids = list(dict.fromkeys(layer.profile_id for layer in reference_layers))
+        reference_resolution_degraded = False
+        try:
+            reference_layers = style_injection.resolve_binding_layers(
+                scene.project_id,
+                "scene_generation",
+                character_ids=style_character_ids,
+                scene_id=scene.scene_id,
+            )
+        except Exception:  # noqa: BLE001 — optional style layer degrades visibly
+            reference_layers = []
+            reference_resolution_degraded = True
+            self._slot_degraded("style_reference_binding_resolution", scene)
+        long_form_resolution_degraded = False
+        try:
+            long_form_reference_layers = style_injection.resolve_binding_layers(
+                scene.project_id,
+                "long_form_continuation",
+                character_ids=style_character_ids,
+                scene_id=scene.scene_id,
+            )
+        except Exception:  # noqa: BLE001 — optional style layer degrades visibly
+            long_form_reference_layers = []
+            long_form_resolution_degraded = True
+            self._slot_degraded("long_form_style_binding_resolution", scene)
+        reference_profile_ids = list(
+            dict.fromkeys(layer.profile_id for layer in reference_layers)
+        )
         if reference_profile_ids:
             # 来源画像必须进入冻结 bundle 的版本引用：归档/回放时据此加载动态
             # protected_terms / scene_bridges，不能只在 prompt 注入侧短暂可见。
             source_version_refs["reference_profile_ids"] = reference_profile_ids
         ordered_injections = [
-            {"slot": "chapter_goal", "ref_id": chapter.chapter_id, "digest_key": "chapter_goal"},
-            {"slot": "scene_card", "ref_id": scene.scene_id, "digest_key": "scene_card"},
+            {
+                "slot": "chapter_goal",
+                "ref_id": chapter.chapter_id,
+                "digest_key": "chapter_goal",
+            },
+            {
+                "slot": "scene_card",
+                "ref_id": scene.scene_id,
+                "digest_key": "scene_card",
+            },
         ]
         inline_digests = {
             "chapter_goal": chapter.chapter_goal,
             "scene_card": scene_card_digest(scene),
         }
+        source_version_refs["style_reference_runtime_contract_version"] = (
+            STYLE_RUNTIME_CONTRACT_VERSION
+        )
+        source_version_refs["style_reference_runtime_contract_status"] = (
+            "degraded"
+            if reference_resolution_degraded
+            else ("frozen" if reference_layers else "absent")
+        )
+        if reference_layers:
+            try:
+                style_runtime_contract = build_style_runtime_contract(
+                    style_injection.repo,
+                    reference_layers,
+                    task_type="scene_generation",
+                )
+                if style_runtime_contract is not None:
+                    source_version_refs["style_reference_runtime_contract_hash"] = (
+                        style_runtime_contract["contract_hash"]
+                    )
+                    source_version_refs["reference_binding_ids"] = (
+                        style_runtime_contract["binding_ids"]
+                    )
+                    inline_digests["_style_reference_runtime_contract"] = json.dumps(
+                        style_runtime_contract,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+            except Exception:  # noqa: BLE001 — optional style layer degrades visibly
+                source_version_refs["style_reference_runtime_contract_status"] = (
+                    "degraded"
+                )
+                self._slot_degraded("style_reference_runtime_contract", scene)
+        source_version_refs[
+            "long_form_continuation_style_reference_runtime_contract_version"
+        ] = STYLE_RUNTIME_CONTRACT_VERSION
+        source_version_refs[
+            "long_form_continuation_style_reference_runtime_contract_status"
+        ] = (
+            "degraded"
+            if long_form_resolution_degraded
+            else ("frozen" if long_form_reference_layers else "absent")
+        )
+        if long_form_reference_layers:
+            try:
+                long_form_style_contract = build_style_runtime_contract(
+                    style_injection.repo,
+                    long_form_reference_layers,
+                    task_type="long_form_continuation",
+                )
+                if long_form_style_contract is not None:
+                    source_version_refs[
+                        "long_form_style_reference_runtime_contract_hash"
+                    ] = long_form_style_contract["contract_hash"]
+                    source_version_refs[
+                        "long_form_continuation_style_reference_runtime_contract_hash"
+                    ] = long_form_style_contract["contract_hash"]
+                    source_version_refs["long_form_reference_profile_ids"] = (
+                        long_form_style_contract["profile_ids"]
+                    )
+                    source_version_refs["long_form_reference_binding_ids"] = (
+                        long_form_style_contract["binding_ids"]
+                    )
+                    inline_digests[
+                        "_style_reference_runtime_contract_long_form_continuation"
+                    ] = json.dumps(
+                        long_form_style_contract,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+            except Exception:  # noqa: BLE001 — optional style layer degrades visibly
+                source_version_refs[
+                    "long_form_continuation_style_reference_runtime_contract_status"
+                ] = "degraded"
+                self._slot_degraded(
+                    "long_form_style_reference_runtime_contract",
+                    scene,
+                )
         normalized_author_note = normalize_author_note(author_note)
         if normalized_author_note:
-            instruction_hash = hashlib.sha256(normalized_author_note.encode("utf-8")).hexdigest()
+            instruction_hash = hashlib.sha256(
+                normalized_author_note.encode("utf-8")
+            ).hexdigest()
             source_version_refs["author_instruction_hash"] = instruction_hash
             ordered_injections.append(
                 {
@@ -178,11 +317,20 @@ class BundleBuilder:
                 sort_keys=True,
             )
 
-        scene_blueprint = self.session.execute(
-            select(SceneBlueprint)
-            .where(SceneBlueprint.scene_id == scene.scene_id, SceneBlueprint.status.in_(("accepted", "draft")))
-            .order_by(SceneBlueprint.created_at.desc(), SceneBlueprint.row_id.desc())
-        ).scalars().first()
+        scene_blueprint = (
+            self.session.execute(
+                select(SceneBlueprint)
+                .where(
+                    SceneBlueprint.scene_id == scene.scene_id,
+                    SceneBlueprint.status.in_(("accepted", "draft")),
+                )
+                .order_by(
+                    SceneBlueprint.created_at.desc(), SceneBlueprint.row_id.desc()
+                )
+            )
+            .scalars()
+            .first()
+        )
         if scene_blueprint is not None:
             source_version_refs["scene_blueprint_row_id"] = scene_blueprint.row_id
             ordered_injections.append(
@@ -204,7 +352,9 @@ class BundleBuilder:
             object_id=scene.scene_id,
         )
         if character_pressure is not None:
-            source_version_refs["character_pressure_artifact_row_id"] = character_pressure.row_id
+            source_version_refs["character_pressure_artifact_row_id"] = (
+                character_pressure.row_id
+            )
             ordered_injections.append(
                 {
                     "slot": "character_pressure",
@@ -224,7 +374,9 @@ class BundleBuilder:
             object_id=scene.chapter_id,
         )
         if chapter_architecture is not None:
-            source_version_refs["chapter_story_architecture_artifact_row_id"] = chapter_architecture.row_id
+            source_version_refs["chapter_story_architecture_artifact_row_id"] = (
+                chapter_architecture.row_id
+            )
             ordered_injections.append(
                 {
                     "slot": "chapter_story_architecture",
@@ -251,12 +403,18 @@ class BundleBuilder:
             source_version_refs["voice_profile_row_id"] = voice_profile.row_id
             source_version_refs["voice_profile_version"] = voice_profile.version
             ordered_injections.append(
-                {"slot": "pov_voice", "ref_id": voice_profile.voice_profile_id, "digest_key": "voice_card"}
+                {
+                    "slot": "pov_voice",
+                    "ref_id": voice_profile.voice_profile_id,
+                    "digest_key": "voice_card",
+                }
             )
             inline_digests["voice_card"] = voice_profile.content
 
         relation_profile_id = self.resolver.resolve_relation_profile_id(scene)
-        relation_profile = self.resolver.resolve_active_relation_profile(self.session, scene)
+        relation_profile = self.resolver.resolve_active_relation_profile(
+            self.session, scene
+        )
         if relation_profile_id and relation_profile is None:
             raise DomainError(
                 "BUNDLE_SOURCE_MISSING",
@@ -264,28 +422,46 @@ class BundleBuilder:
                 status_code=409,
             )
         if relation_profile:
-            source_version_refs["relation_profile_id"] = relation_profile.relation_profile_id
+            source_version_refs["relation_profile_id"] = (
+                relation_profile.relation_profile_id
+            )
             source_version_refs["relation_profile_row_id"] = relation_profile.row_id
             source_version_refs["relation_profile_version"] = relation_profile.version
             ordered_injections.append(
-                {"slot": "relation", "ref_id": relation_profile.relation_profile_id, "digest_key": "relation_card"}
+                {
+                    "slot": "relation",
+                    "ref_id": relation_profile.relation_profile_id,
+                    "digest_key": "relation_card",
+                }
             )
             inline_digests["relation_card"] = relation_profile.content
 
         # 解析 pov/onstage 的权威 display_name（StoryCharacter），避免裸 id 进提示词当人名
-        contract_char_ids = [cid for cid in [scene.pov_character_id, *(scene.onstage_chars_json or [])] if cid]
+        contract_char_ids = [
+            cid
+            for cid in [scene.pov_character_id, *(scene.onstage_chars_json or [])]
+            if cid
+        ]
         character_display_names: dict[str, str] = {}
         if contract_char_ids:
-            for row in self.session.execute(
-                select(StoryCharacter).where(StoryCharacter.character_id.in_(contract_char_ids))
-            ).scalars().all():
+            for row in (
+                self.session.execute(
+                    select(StoryCharacter).where(
+                        StoryCharacter.character_id.in_(contract_char_ids)
+                    )
+                )
+                .scalars()
+                .all()
+            ):
                 if row.display_name:
                     character_display_names[row.character_id] = row.display_name
         character_contract = build_character_contract_digest(
             pov_character_id=scene.pov_character_id,
             onstage_character_ids=scene.onstage_chars_json,
             voice_profile_content=voice_profile.content if voice_profile else None,
-            relation_profile_content=relation_profile.content if relation_profile else None,
+            relation_profile_content=(
+                relation_profile.content if relation_profile else None
+            ),
             display_names=character_display_names,
         )
         if character_contract:
@@ -346,13 +522,19 @@ class BundleBuilder:
         if previous_memory:
             source_version_refs["scene_memory_prev"] = previous_memory.scene_id
             ordered_injections.append(
-                {"slot": "prev_scene_memory", "ref_id": previous_memory.scene_id, "digest_key": "scene_memory"}
+                {
+                    "slot": "prev_scene_memory",
+                    "ref_id": previous_memory.scene_id,
+                    "digest_key": "scene_memory",
+                }
             )
             inline_digests["scene_memory"] = previous_memory.content
 
         freshness_budget = self._literary_freshness_budget(scene)
         if freshness_budget is not None:
-            source_version_refs["literary_freshness_source_final_scene_ids"] = freshness_budget["source_final_scene_ids"]
+            source_version_refs["literary_freshness_source_final_scene_ids"] = (
+                freshness_budget["source_final_scene_ids"]
+            )
             ordered_injections.append(
                 {
                     "slot": "literary_freshness_budget",
@@ -369,23 +551,37 @@ class BundleBuilder:
         style_rules = self.resolver.resolve_active_style_rules(self.session, scene)
         if style_rules:
             style_rule_ids = [row.style_rule_set_id for row in style_rules]
-            source_version_refs["style_rule_set_id"] = self._single_or_list(style_rule_ids)
+            source_version_refs["style_rule_set_id"] = self._single_or_list(
+                style_rule_ids
+            )
             ordered_injections.append(
-                {"slot": "style_rules", "ref_id": style_rule_ids[0], "digest_key": "style_rule"}
+                {
+                    "slot": "style_rules",
+                    "ref_id": style_rule_ids[0],
+                    "digest_key": "style_rule",
+                }
             )
             inline_digests["style_rule"] = self._combined_text(style_rules, "content")
 
-        style_observations = self.session.execute(
-            select(StyleObservation)
-            .where(
-                StyleObservation.active_flag == 1,
-                StyleObservation.runtime_eligible == 1,
-                self.resolver._scoped_clause(StyleObservation, scene),
+        style_observations = (
+            self.session.execute(
+                select(StyleObservation)
+                .where(
+                    StyleObservation.active_flag == 1,
+                    StyleObservation.runtime_eligible == 1,
+                    self.resolver._scoped_clause(StyleObservation, scene),
+                )
+                .order_by(
+                    StyleObservation.created_at.asc(), StyleObservation.row_id.asc()
+                )
             )
-            .order_by(StyleObservation.created_at.asc(), StyleObservation.row_id.asc())
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if style_observations:
-            style_observation_ids = [row.style_observation_id for row in style_observations]
+            style_observation_ids = [
+                row.style_observation_id for row in style_observations
+            ]
             source_version_refs["style_observation_ids"] = style_observation_ids
             ordered_injections.append(
                 {
@@ -394,18 +590,30 @@ class BundleBuilder:
                     "digest_key": "style_observation",
                 }
             )
-            inline_digests["style_observation"] = self._combined_text(style_observations, "text")
+            inline_digests["style_observation"] = self._combined_text(
+                style_observations, "text"
+            )
 
-        banned_rule_clusters = self.resolver.resolve_active_banned_rule_clusters(self.session, scene)
+        banned_rule_clusters = self.resolver.resolve_active_banned_rule_clusters(
+            self.session, scene
+        )
         if banned_rule_clusters:
             banned_ids = [row.banned_cluster_id for row in banned_rule_clusters]
             source_version_refs["banned_cluster_id"] = self._single_or_list(banned_ids)
             ordered_injections.append(
-                {"slot": "banned_rules", "ref_id": banned_ids[0], "digest_key": "banned_rule"}
+                {
+                    "slot": "banned_rules",
+                    "ref_id": banned_ids[0],
+                    "digest_key": "banned_rule",
+                }
             )
-            inline_digests["banned_rule"] = self._combined_text(banned_rule_clusters, "content")
+            inline_digests["banned_rule"] = self._combined_text(
+                banned_rule_clusters, "content"
+            )
 
-        narrative_patterns = self.resolver.resolve_active_narrative_patterns(self.session, scene)
+        narrative_patterns = self.resolver.resolve_active_narrative_patterns(
+            self.session, scene
+        )
         if narrative_patterns:
             narrative_ids = [row.narrative_pattern_id for row in narrative_patterns]
             source_version_refs["narrative_pattern_ids"] = narrative_ids
@@ -416,16 +624,26 @@ class BundleBuilder:
                     "digest_key": "narrative_pattern",
                 }
             )
-            inline_digests["narrative_pattern"] = self._combined_text(narrative_patterns, "content")
+            inline_digests["narrative_pattern"] = self._combined_text(
+                narrative_patterns, "content"
+            )
 
-        calibration_lines = self.resolver.resolve_active_calibration_lines(self.session, scene)
+        calibration_lines = self.resolver.resolve_active_calibration_lines(
+            self.session, scene
+        )
         if calibration_lines:
             calibration_ids = [row.calibration_line_id for row in calibration_lines]
             source_version_refs["calibration_line_ids"] = calibration_ids
             ordered_injections.append(
-                {"slot": "calibration_lines", "ref_id": calibration_ids[0], "digest_key": "calibration_line"}
+                {
+                    "slot": "calibration_lines",
+                    "ref_id": calibration_ids[0],
+                    "digest_key": "calibration_line",
+                }
             )
-            inline_digests["calibration_line"] = self._combined_text(calibration_lines, "text")
+            inline_digests["calibration_line"] = self._combined_text(
+                calibration_lines, "text"
+            )
 
         style_profile = StyleProfileService.build_profile(
             style_rules=style_rules,
@@ -435,7 +653,9 @@ class BundleBuilder:
             voice_profile=voice_profile,
         )
         if style_profile:
-            source_version_refs["style_profile_contract"] = STYLE_FEATURE_CONTRACT_VERSION
+            source_version_refs["style_profile_contract"] = (
+                STYLE_FEATURE_CONTRACT_VERSION
+            )
             ordered_injections.append(
                 {
                     "slot": "style_profile",
@@ -443,19 +663,29 @@ class BundleBuilder:
                     "digest_key": "style_profile",
                 }
             )
-            inline_digests["style_profile"] = StyleProfileService.render_profile_digest(style_profile)
+            inline_digests["style_profile"] = StyleProfileService.render_profile_digest(
+                style_profile
+            )
 
-        author_preference_profiles = self._approved_runtime_author_preference_profiles(scene, chapter)
+        author_preference_profiles = self._approved_runtime_author_preference_profiles(
+            scene, chapter
+        )
         if author_preference_profiles:
             author_preference_profile = author_preference_profiles[-1]
             merged_preference: dict[str, Any] = {}
             for row in author_preference_profiles:
-                merged_preference = merge_preference_summaries(merged_preference, row.summary_json or {})
+                merged_preference = merge_preference_summaries(
+                    merged_preference, row.summary_json or {}
+                )
             runtime_preference = safe_preference_summary_for_prompt(merged_preference)
             profile_ids = [row.profile_id for row in author_preference_profiles]
-            source_version_refs["author_preference_profile_id"] = author_preference_profile.profile_id
+            source_version_refs["author_preference_profile_id"] = (
+                author_preference_profile.profile_id
+            )
             source_version_refs["author_preference_profile_ids"] = profile_ids
-            source_version_refs["author_preference_profile_updated_at"] = author_preference_profile.updated_at
+            source_version_refs["author_preference_profile_updated_at"] = (
+                author_preference_profile.updated_at
+            )
             ordered_injections.append(
                 {
                     "slot": "author_preference_profile",
@@ -491,7 +721,9 @@ class BundleBuilder:
                     ChapterContract.updated_at.desc(),
                     ChapterContract.created_at.desc(),
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         if len(active_chapter_contracts) > 1:
             raise DomainError(
@@ -500,10 +732,14 @@ class BundleBuilder:
                 status_code=409,
                 details={
                     "chapter_id": scene.chapter_id,
-                    "contract_ids": [row.contract_id for row in active_chapter_contracts],
+                    "contract_ids": [
+                        row.contract_id for row in active_chapter_contracts
+                    ],
                 },
             )
-        chapter_contract = active_chapter_contracts[0] if active_chapter_contracts else None
+        chapter_contract = (
+            active_chapter_contracts[0] if active_chapter_contracts else None
+        )
         contract_constraints = (
             chapter_contract.constraints_json or []
             if chapter_contract is not None
@@ -514,27 +750,27 @@ class BundleBuilder:
             for item in contract_constraints
             if isinstance(item, dict) and str(item.get("anchor_id") or "").strip()
         }
-        anchor_selector = and_(
-            LongformAnchor.status == "pinned",
-            LongformAnchor.kind.in_(("fact", "trait", "setting", "timeline")),
+        from novel_system.services.longform_anchor_retrieval import (
+            LongformAnchorRetriever,
         )
-        if referenced_anchor_ids:
-            anchor_selector = or_(
-                LongformAnchor.anchor_id.in_(referenced_anchor_ids),
-                anchor_selector,
-            )
-        project_anchors = list(
+
+        selection = LongformAnchorRetriever(self.session).select(
+            project_id=longform_project_id,
+            chapter=chapter,
+            scene=scene,
+            contract_constraints=contract_constraints,
+            referenced_anchor_ids=referenced_anchor_ids,
+        )
+        project_anchor_ids = set(
             self.session.execute(
-                select(LongformAnchor)
-                .where(
-                    LongformAnchor.project_id == longform_project_id,
-                    anchor_selector,
+                select(LongformAnchor.anchor_id).where(
+                    LongformAnchor.project_id == longform_project_id
                 )
-                .order_by(LongformAnchor.created_at, LongformAnchor.anchor_id)
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
-        anchor_by_id = {row.anchor_id: row for row in project_anchors}
-        missing_anchor_ids = sorted(referenced_anchor_ids - set(anchor_by_id))
+        missing_anchor_ids = sorted(referenced_anchor_ids - project_anchor_ids)
         if missing_anchor_ids:
             raise DomainError(
                 "BUNDLE_SOURCE_MISSING",
@@ -542,17 +778,29 @@ class BundleBuilder:
                 status_code=409,
                 details={
                     "chapter_id": scene.chapter_id,
-                    "contract_id": chapter_contract.contract_id if chapter_contract is not None else None,
+                    "contract_id": (
+                        chapter_contract.contract_id
+                        if chapter_contract is not None
+                        else None
+                    ),
                     "missing_anchor_ids": missing_anchor_ids,
                 },
             )
-        longform_anchors = project_anchors
+        longform_anchors = selection.anchors
         if longform_anchors:
             anchor_ids = [row.anchor_id for row in longform_anchors]
             source_version_refs["longform_anchor_ids"] = anchor_ids
             source_version_refs["longform_anchor_updated_at"] = [
                 row.updated_at for row in longform_anchors
             ]
+            source_version_refs["longform_anchor_retrieval"] = {
+                "strategy": selection.strategy,
+                "query_hash": selection.query_hash,
+                "selection_reasons": {
+                    anchor_id: selection.selection_reasons[anchor_id]
+                    for anchor_id in anchor_ids
+                },
+            }
             ordered_injections.append(
                 {
                     "slot": "longform_anchors",
@@ -569,6 +817,7 @@ class BundleBuilder:
                         "source_ref": row.source_ref,
                         "note": row.note,
                         "status": row.status,
+                        "selection_reason": selection.selection_reasons[row.anchor_id],
                         "updated_at": row.updated_at,
                     }
                     for row in longform_anchors
@@ -579,7 +828,9 @@ class BundleBuilder:
         if chapter_contract is not None:
             source_version_refs["chapter_contract_id"] = chapter_contract.contract_id
             source_version_refs["chapter_contract_status"] = chapter_contract.status
-            source_version_refs["chapter_contract_updated_at"] = chapter_contract.updated_at
+            source_version_refs["chapter_contract_updated_at"] = (
+                chapter_contract.updated_at
+            )
             ordered_injections.append(
                 {
                     "slot": "chapter_contract",
@@ -633,20 +884,32 @@ class BundleBuilder:
             for row in longform_guidance:
                 rec = row.recommendation_json or {}
                 if "drift_ptype_priority" in rec:
-                    inline_digests["_drift_ptype_priority"] = rec["drift_ptype_priority"]
+                    inline_digests["_drift_ptype_priority"] = rec[
+                        "drift_ptype_priority"
+                    ]
                     break
 
         world_rules = self.resolver.resolve_active_world_rules(self.session, scene)
         if world_rules:
             ordered_injections.append(
-                {"slot": "world_rules", "ref_id": world_rules[0].world_rule_id, "digest_key": "world_rule"}
+                {
+                    "slot": "world_rules",
+                    "ref_id": world_rules[0].world_rule_id,
+                    "digest_key": "world_rule",
+                }
             )
             inline_digests["world_rule"] = self._combined_text(world_rules, "content")
 
-        open_foreshadows = self.resolver.resolve_open_foreshadow_trackers(self.session, scene)
+        open_foreshadows = self.resolver.resolve_open_foreshadow_trackers(
+            self.session, scene
+        )
         if open_foreshadows:
             ordered_injections.append(
-                {"slot": "foreshadow", "ref_id": open_foreshadows[0].foreshadow_id, "digest_key": "foreshadow"}
+                {
+                    "slot": "foreshadow",
+                    "ref_id": open_foreshadows[0].foreshadow_id,
+                    "digest_key": "foreshadow",
+                }
             )
             inline_digests["foreshadow"] = self._combined_text(open_foreshadows, "text")
 
@@ -658,7 +921,11 @@ class BundleBuilder:
         if scene_summary:
             source_version_refs["scene_summary_id"] = scene_summary.scene_id
             ordered_injections.append(
-                {"slot": "scene_summary", "ref_id": scene_summary.scene_id, "digest_key": "scene_summary"}
+                {
+                    "slot": "scene_summary",
+                    "ref_id": scene_summary.scene_id,
+                    "digest_key": "scene_summary",
+                }
             )
             inline_digests["scene_summary"] = scene_summary.content
 
@@ -666,7 +933,11 @@ class BundleBuilder:
         if chapter_summary:
             source_version_refs["chapter_summary_id"] = chapter_summary.chapter_id
             ordered_injections.append(
-                {"slot": "chapter_summary", "ref_id": chapter_summary.chapter_id, "digest_key": "chapter_summary"}
+                {
+                    "slot": "chapter_summary",
+                    "ref_id": chapter_summary.chapter_id,
+                    "digest_key": "chapter_summary",
+                }
             )
             inline_digests["chapter_summary"] = chapter_summary.content
 
@@ -675,7 +946,11 @@ class BundleBuilder:
         if volume_summary is not None:
             source_version_refs["volume_summary_row_id"] = volume_summary.row_id
             ordered_injections.append(
-                {"slot": "volume_summary", "ref_id": volume_summary.row_id, "digest_key": "volume_summary"}
+                {
+                    "slot": "volume_summary",
+                    "ref_id": volume_summary.row_id,
+                    "digest_key": "volume_summary",
+                }
             )
             inline_digests["volume_summary"] = (
                 "【卷级远景氛围 — 仅供语气/基调延续，严禁当作事实来源；事实一律以权威状态为准】\n"
@@ -687,7 +962,9 @@ class BundleBuilder:
             stage_allowlist_name="bundle_build_allowlist_v1",
             source_version_refs=source_version_refs,
             resolved_ref_ids={
-                "relation_ids": [relation_profile.relation_profile_id] if relation_profile else [],
+                "relation_ids": (
+                    [relation_profile.relation_profile_id] if relation_profile else []
+                ),
                 "world_rule_ids": [row.world_rule_id for row in world_rules],
                 "open_foreshadow_ids": [row.foreshadow_id for row in open_foreshadows],
             },
@@ -720,7 +997,11 @@ class BundleBuilder:
         state.scene_status = "bundle_built"
         self.session.flush()
 
-        return {"bundle_id": bundle_id, "bundle_snapshot_hash": bundle_hash, "snapshot": snapshot}
+        return {
+            "bundle_id": bundle_id,
+            "bundle_snapshot_hash": bundle_hash,
+            "snapshot": snapshot,
+        }
 
     def _latest_planning_artifact(
         self,
@@ -729,20 +1010,30 @@ class BundleBuilder:
         object_type: str,
         object_id: str,
     ) -> GenerationPlanningArtifact | None:
-        return self.session.execute(
-            select(GenerationPlanningArtifact)
-            .where(
-                GenerationPlanningArtifact.artifact_type == artifact_type,
-                GenerationPlanningArtifact.object_type == object_type,
-                GenerationPlanningArtifact.object_id == object_id,
-                GenerationPlanningArtifact.status == "active",
+        return (
+            self.session.execute(
+                select(GenerationPlanningArtifact)
+                .where(
+                    GenerationPlanningArtifact.artifact_type == artifact_type,
+                    GenerationPlanningArtifact.object_type == object_type,
+                    GenerationPlanningArtifact.object_id == object_id,
+                    GenerationPlanningArtifact.status == "active",
+                )
+                .order_by(
+                    GenerationPlanningArtifact.created_at.desc(),
+                    GenerationPlanningArtifact.row_id.desc(),
+                )
             )
-            .order_by(GenerationPlanningArtifact.created_at.desc(), GenerationPlanningArtifact.row_id.desc())
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
 
     def _foreshadow_directives(self, scene: SceneCard) -> str | None:
         try:
-            from novel_system.services.foreshadow_lifecycle import ForeshadowLifecycleService
+            from novel_system.services.foreshadow_lifecycle import (
+                ForeshadowLifecycleService,
+            )
+
             service = ForeshadowLifecycleService(self.session)
             return service.format_foreshadow_directives(scene.scene_id)
         except Exception:
@@ -752,6 +1043,7 @@ class BundleBuilder:
     def _tension_prompt(self, scene: SceneCard) -> str | None:
         try:
             from novel_system.services.tension_curve import TensionCurveService
+
             service = TensionCurveService.__new__(TensionCurveService)
             return service.format_tension_prompt(scene)
         except Exception:
@@ -767,6 +1059,7 @@ class BundleBuilder:
         """
         try:
             from novel_system.services.theme_anchor import ThemeAnchorService
+
             project_id = scene.project_id
             if not project_id:
                 return None
@@ -801,7 +1094,9 @@ class BundleBuilder:
     def _narrative_state_digest(self, scene: SceneCard) -> str | None:
         """Inject authoritative character state from event log into the prompt."""
         try:
+            from novel_system.services.canon_continuity import CanonContinuityService
             from novel_system.services.narrative_event_log import NarrativeEventLog
+
             log = NarrativeEventLog(self.session)
             project_id = require_scene_project_id(self.session, scene)
             # Wave 4（§5.6）：传 pov_character_id → format_state_for_prompt 委派
@@ -813,24 +1108,40 @@ class BundleBuilder:
                 pov_character_id=scene.pov_character_id,
                 onstage_character_ids=scene.onstage_chars_json,
             )
-            return text if text else None
+            checkpoint = CanonContinuityService(
+                self.session
+            ).format_recent_checkpoint_for_prompt(
+                project_id,
+                scene.scene_id,
+                pov_character_id=scene.pov_character_id,
+            )
+            parts = [part for part in (text, checkpoint) if part]
+            return "\n\n".join(parts) if parts else None
         except Exception:
             self._slot_degraded("narrative_state", scene)
             return None
 
     def _literary_freshness_budget(self, scene: SceneCard) -> dict[str, Any] | None:
-        rows = self.session.execute(
-            select(FinalScene)
-            .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
-            .where(
-                FinalScene.chapter_id == scene.chapter_id,
-                # Wave 1 词表统一：archived 是归档事务写入的权威成稿态，必须与旧值并列
-                FinalScene.status.in_(("approved", "near_final_ready", "archived")),
-                SceneCard.trashed_flag == 0,
-                SceneCard.scene_seq < scene.scene_seq,
+        rows = (
+            self.session.execute(
+                select(FinalScene)
+                .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
+                .where(
+                    FinalScene.chapter_id == scene.chapter_id,
+                    # Wave 1 词表统一：archived 是归档事务写入的权威成稿态，必须与旧值并列
+                    FinalScene.status.in_(("approved", "near_final_ready", "archived")),
+                    SceneCard.trashed_flag == 0,
+                    SceneCard.scene_seq < scene.scene_seq,
+                )
+                .order_by(
+                    SceneCard.scene_seq.asc(),
+                    FinalScene.created_at.asc(),
+                    FinalScene.row_id.asc(),
+                )
             )
-            .order_by(SceneCard.scene_seq.asc(), FinalScene.created_at.asc(), FinalScene.row_id.asc())
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if not rows:
             return None
 
@@ -859,31 +1170,53 @@ class BundleBuilder:
             "avoid_image_fields": image_fields[:6],
             "vary_syntax_shapes": syntax_shapes[:5],
             "avoid_false_clarity": ["她知道", "他知道", "忽然意识到", "突然意识到"],
-            "avoid_summary_endings": ["这意味着", "一切都变了", "事情从此不同", "解释了一切"],
+            "avoid_summary_endings": [
+                "这意味着",
+                "一切都变了",
+                "事情从此不同",
+                "解释了一切",
+            ],
             "instruction": (
                 "Use this as a freshness budget: do not repeat high-frequency action templates, "
                 "rotate image fields, and end on a hard action instead of explanation."
             ),
         }
         try:
-            from novel_system.services.self_repetition import SelfRepetitionDetector, format_semantic_repetition_guidance
+            from novel_system.services.self_repetition import (
+                SelfRepetitionDetector,
+                format_semantic_repetition_guidance,
+            )
+
             detector = SelfRepetitionDetector(self.session)
-            repeated_ngrams = detector.top_repeated_ngrams(scene.chapter_id, lookback_scenes=6, top_n=8)
+            repeated_ngrams = detector.top_repeated_ngrams(
+                scene.chapter_id, lookback_scenes=6, top_n=8
+            )
             if repeated_ngrams:
                 budget["avoid_recent_ngrams"] = repeated_ngrams
-            corpus_texts, corpus_ids = detector._load_corpus(scene.scene_id, scene.chapter_id, lookback_scenes=6)
+            corpus_texts, corpus_ids = detector._load_corpus(
+                scene.scene_id, scene.chapter_id, lookback_scenes=6
+            )
             if corpus_texts:
-                from novel_system.services.self_repetition import check_semantic_repetition
+                from novel_system.services.self_repetition import (
+                    check_semantic_repetition,
+                )
+
                 sem_hits = check_semantic_repetition(
                     scene.scene_goal or scene.hook or "",
-                    corpus_texts, corpus_ids,
+                    corpus_texts,
+                    corpus_ids,
                 )
                 if sem_hits:
-                    budget["semantic_repetition_alert"] = format_semantic_repetition_guidance(sem_hits)
+                    budget["semantic_repetition_alert"] = (
+                        format_semantic_repetition_guidance(sem_hits)
+                    )
             # §9 blueprint: whole-book banned expression list (LifetimeExpressionRegistry)
             from novel_system.services.self_repetition import LifetimeExpressionRegistry
+
             lifetime_reg = LifetimeExpressionRegistry(self.session)
-            lifetime_guidance = lifetime_reg.get_lifetime_avoidance_guidance(scene.project_id)
+            lifetime_guidance = lifetime_reg.get_lifetime_avoidance_guidance(
+                scene.project_id
+            )
             if lifetime_guidance:
                 budget["lifetime_banned_expressions"] = lifetime_guidance
         except Exception:
@@ -898,15 +1231,19 @@ class BundleBuilder:
         project_id = scene.project_id
         if not project_id:
             return None
-        return self.session.execute(
-            select(VolumeSummary)
-            .where(
-                VolumeSummary.project_id == project_id,
-                VolumeSummary.active_flag == 1,
-                VolumeSummary.runtime_eligible == 1,
+        return (
+            self.session.execute(
+                select(VolumeSummary)
+                .where(
+                    VolumeSummary.project_id == project_id,
+                    VolumeSummary.active_flag == 1,
+                    VolumeSummary.runtime_eligible == 1,
+                )
+                .order_by(VolumeSummary.volume_seq.desc(), VolumeSummary.row_id.desc())
             )
-            .order_by(VolumeSummary.volume_seq.desc(), VolumeSummary.row_id.desc())
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
 
     def _approved_runtime_author_preference_profiles(
         self,
@@ -916,7 +1253,11 @@ class BundleBuilder:
         project_id = scene.project_id or chapter.project_id
         project = self.session.get(StoryProject, project_id) if project_id else None
         scopes: list[tuple[str, str]] = [("global", "global")]
-        genre = " ".join(str(project.genre or "").strip().lower().split()) if project else ""
+        genre = (
+            " ".join(str(project.genre or "").strip().lower().split())
+            if project
+            else ""
+        )
         if genre:
             scopes.append(("genre", genre[:120]))
         if project_id:
@@ -933,28 +1274,50 @@ class BundleBuilder:
                         AuthorPreferenceProfile.status == "approved",
                         AuthorPreferenceProfile.runtime_eligible == 1,
                     )
-                    .order_by(AuthorPreferenceProfile.updated_at.asc(), AuthorPreferenceProfile.profile_id.asc())
-                ).scalars().all()
+                    .order_by(
+                        AuthorPreferenceProfile.updated_at.asc(),
+                        AuthorPreferenceProfile.profile_id.asc(),
+                    )
+                )
+                .scalars()
+                .all()
             )
         return rows
 
-    def _approved_runtime_longform_guidance(self, scene: SceneCard) -> list[LongformStructureGuidance]:
+    def _approved_runtime_longform_guidance(
+        self, scene: SceneCard
+    ) -> list[LongformStructureGuidance]:
         scope_pairs = {
             ("global", "global"),
             ("chapter", scene.chapter_id),
             ("scene", scene.scene_id),
         }
-        character_ids = {item for item in [scene.pov_character_id, *(scene.onstage_chars_json or [])] if item}
-        scope_pairs.update(("character", character_id) for character_id in character_ids)
-        rows = self.session.execute(
-            select(LongformStructureGuidance)
-            .where(
-                LongformStructureGuidance.status == "approved",
-                LongformStructureGuidance.runtime_eligible == 1,
+        character_ids = {
+            item
+            for item in [scene.pov_character_id, *(scene.onstage_chars_json or [])]
+            if item
+        }
+        scope_pairs.update(
+            ("character", character_id) for character_id in character_ids
+        )
+        rows = (
+            self.session.execute(
+                select(LongformStructureGuidance)
+                .where(
+                    LongformStructureGuidance.status == "approved",
+                    LongformStructureGuidance.runtime_eligible == 1,
+                )
+                .order_by(
+                    LongformStructureGuidance.created_at.asc(),
+                    LongformStructureGuidance.guidance_id.asc(),
+                )
             )
-            .order_by(LongformStructureGuidance.created_at.asc(), LongformStructureGuidance.guidance_id.asc())
-        ).scalars().all()
-        return [row for row in rows if (row.scope_type, row.scope_ref_id) in scope_pairs]
+            .scalars()
+            .all()
+        )
+        return [
+            row for row in rows if (row.scope_type, row.scope_ref_id) in scope_pairs
+        ]
 
     def _chapter_transition_buffer(self, scene: SceneCard) -> str | None:
         """Blueprint §3: inject last 500-1000 chars of previous chapter as continuity anchor.
@@ -970,35 +1333,49 @@ class BundleBuilder:
                 return None
             current_order = current_chapter.display_order
             if current_order is not None:
-                prev_chapter = self.session.execute(
-                    select(ChapterGoal)
-                    .where(
-                        ChapterGoal.project_id == scene.project_id,
-                        ChapterGoal.display_order < current_order,
+                prev_chapter = (
+                    self.session.execute(
+                        select(ChapterGoal)
+                        .where(
+                            ChapterGoal.project_id == scene.project_id,
+                            ChapterGoal.display_order < current_order,
+                        )
+                        .order_by(ChapterGoal.display_order.desc())
                     )
-                    .order_by(ChapterGoal.display_order.desc())
-                ).scalars().first()
+                    .scalars()
+                    .first()
+                )
             else:
-                prev_chapter = self.session.execute(
-                    select(ChapterGoal)
-                    .where(
-                        ChapterGoal.project_id == scene.project_id,
-                        ChapterGoal.chapter_id < scene.chapter_id,
+                prev_chapter = (
+                    self.session.execute(
+                        select(ChapterGoal)
+                        .where(
+                            ChapterGoal.project_id == scene.project_id,
+                            ChapterGoal.chapter_id < scene.chapter_id,
+                        )
+                        .order_by(ChapterGoal.chapter_id.desc())
                     )
-                    .order_by(ChapterGoal.chapter_id.desc())
-                ).scalars().first()
+                    .scalars()
+                    .first()
+                )
             if prev_chapter is None:
                 return None
-            last_final = self.session.execute(
-                select(FinalScene)
-                .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
-                .where(
-                    FinalScene.chapter_id == prev_chapter.chapter_id,
-                    FinalScene.status.in_(("approved", "near_final_ready", "archived")),
-                    SceneCard.trashed_flag == 0,
+            last_final = (
+                self.session.execute(
+                    select(FinalScene)
+                    .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
+                    .where(
+                        FinalScene.chapter_id == prev_chapter.chapter_id,
+                        FinalScene.status.in_(
+                            ("approved", "near_final_ready", "archived")
+                        ),
+                        SceneCard.trashed_flag == 0,
+                    )
+                    .order_by(SceneCard.scene_seq.desc(), FinalScene.created_at.desc())
                 )
-                .order_by(SceneCard.scene_seq.desc(), FinalScene.created_at.desc())
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
             if last_final and last_final.content:
                 tail = last_final.content[-800:]
                 return f"## Chapter Transition Buffer (previous chapter ending — maintain tone continuity)\n\n{tail}"
@@ -1013,20 +1390,27 @@ class BundleBuilder:
             # 审计 P-7 关联：统一走 get_vector_store()（memory=进程级单例 / chroma=持久化）。
             # 行为保持"每次由 DB 重建集合再查询"——自包含且结果始终新鲜。
             from novel_system.services.vector_store import get_vector_store
+
             project_id = require_scene_project_id(self.session, scene)
             collection_name = f"scenes_{project_id}"
             store = get_vector_store()
-            approved_scenes = self.session.execute(
-                select(FinalScene)
-                .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
-                .where(
-                    FinalScene.status.in_(("approved", "near_final_ready", "archived")),
-                    SceneCard.trashed_flag == 0,
-                    SceneCard.scene_id != scene.scene_id,
-                    SceneCard.project_id == project_id,
+            approved_scenes = (
+                self.session.execute(
+                    select(FinalScene)
+                    .join(SceneCard, SceneCard.scene_id == FinalScene.scene_id)
+                    .where(
+                        FinalScene.status.in_(
+                            ("approved", "near_final_ready", "archived")
+                        ),
+                        SceneCard.trashed_flag == 0,
+                        SceneCard.scene_id != scene.scene_id,
+                        SceneCard.project_id == project_id,
+                    )
+                    .order_by(SceneCard.scene_seq.asc())
                 )
-                .order_by(SceneCard.scene_seq.asc())
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             if not approved_scenes or len(approved_scenes) < 2:
                 return None
             documents = [
@@ -1050,7 +1434,9 @@ class BundleBuilder:
                 "Use them only for tonal resonance, imagery contrast, or emotional echoing.",
             ]
             for item in results:
-                lines.append(f"\n[scene {item.get('id', '?')}]\n{item.get('text', '')[:400]}")
+                lines.append(
+                    f"\n[scene {item.get('id', '?')}]\n{item.get('text', '')[:400]}"
+                )
             return "\n".join(lines)
         except Exception:
             self._slot_degraded("similar_scene", scene)
@@ -1059,7 +1445,11 @@ class BundleBuilder:
     def _pov_voice_coloring(self, scene: SceneCard, voice_profile) -> str | None:
         """Blueprint §2: POV-conditional narration coloring (自由间接引语)."""
         try:
-            from novel_system.services.pov_voice_coloring import build_pov_coloring, format_pov_coloring_prompt
+            from novel_system.services.pov_voice_coloring import (
+                build_pov_coloring,
+                format_pov_coloring_prompt,
+            )
+
             pov_id = scene.pov_character_id
             if not pov_id:
                 return None
@@ -1077,8 +1467,12 @@ class BundleBuilder:
     def _character_psychology_prompt(self, scene: SceneCard) -> str | None:
         """Blueprint §11: three-layer character psychology model."""
         try:
-            from novel_system.services.character_psychology import extract_psychology_from_bible, format_psychology_prompt
+            from novel_system.services.character_psychology import (
+                extract_psychology_from_bible,
+                format_psychology_prompt,
+            )
             from novel_system.services.tension_curve import get_scene_tension
+
             pov_id = scene.pov_character_id
             if not pov_id:
                 return None
@@ -1099,6 +1493,7 @@ class BundleBuilder:
         """
         try:
             from novel_system.services.character_arc import CharacterArcService
+
             pov_id = scene.pov_character_id
             if not pov_id:
                 return None
@@ -1108,30 +1503,44 @@ class BundleBuilder:
             if chapter is None or chapter.display_order is None:
                 return None
             from sqlalchemy import func as sa_func
+
             # 审计 P-5：count 必须走 select(func.count())（Function 没有 .where），
             # 且分母只数本项目未回收的章——否则多项目库里进度被稀释。
-            total_chapters = self.session.scalar(
-                select(sa_func.count())
-                .select_from(ChapterGoal)
-                .where(
-                    ChapterGoal.project_id == project_id,
-                    ChapterGoal.trashed_flag == 0,
+            total_chapters = (
+                self.session.scalar(
+                    select(sa_func.count())
+                    .select_from(ChapterGoal)
+                    .where(
+                        ChapterGoal.project_id == project_id,
+                        ChapterGoal.trashed_flag == 0,
+                    )
                 )
-            ) or 1
+                or 1
+            )
             # Refine with scene_seq within the chapter for sub-chapter granularity
-            total_scenes_in_chapter = self.session.scalar(
-                select(sa_func.count())
-                .select_from(SceneCard)
-                .where(SceneCard.chapter_id == scene.chapter_id, SceneCard.trashed_flag == 0)
-            ) or 1
+            total_scenes_in_chapter = (
+                self.session.scalar(
+                    select(sa_func.count())
+                    .select_from(SceneCard)
+                    .where(
+                        SceneCard.chapter_id == scene.chapter_id,
+                        SceneCard.trashed_flag == 0,
+                    )
+                )
+                or 1
+            )
             chapter_progress = (chapter.display_order or 0) / max(total_chapters, 1)
-            scene_fraction = ((scene.scene_seq or 1) - 1) / max(total_scenes_in_chapter, 1)
+            scene_fraction = ((scene.scene_seq or 1) - 1) / max(
+                total_scenes_in_chapter, 1
+            )
             # Combine: chapter-level coarse + scene-level fine adjustment
             progress = chapter_progress + scene_fraction / max(total_chapters, 1)
             progress = max(0.0, min(1.0, progress))
 
             arc_svc = CharacterArcService(self.session)
-            return arc_svc.format_weights_at_progress_for_prompt(project_id, pov_id, progress)
+            return arc_svc.format_weights_at_progress_for_prompt(
+                project_id, pov_id, progress
+            )
         except Exception:
             self._slot_degraded("character_arc_weights", scene)
             return None
@@ -1139,7 +1548,11 @@ class BundleBuilder:
     def _voice_fingerprint_prompt(self, scene: SceneCard) -> str | None:
         """Blueprint §11: structured voice fingerprint for onstage characters."""
         try:
-            from novel_system.services.voice_fingerprint import extract_fingerprint_from_bible, format_voice_fingerprint_prompt
+            from novel_system.services.voice_fingerprint import (
+                extract_fingerprint_from_bible,
+                format_voice_fingerprint_prompt,
+            )
+
             pov_id = scene.pov_character_id
             if not pov_id:
                 return None
@@ -1154,7 +1567,10 @@ class BundleBuilder:
     def _relationship_matrix_prompt(self, scene: SceneCard) -> str | None:
         """Blueprint §11: relationship dynamics matrix for onstage characters."""
         try:
-            from novel_system.services.relationship_matrix import RelationshipMatrixService
+            from novel_system.services.relationship_matrix import (
+                RelationshipMatrixService,
+            )
+
             project_id = require_scene_project_id(self.session, scene)
             onstage = scene.onstage_chars_json or []
             if len(onstage) < 2:
@@ -1171,7 +1587,9 @@ class BundleBuilder:
             prompt = svc.format_for_prompt(matrix)
             opportunities = svc.tension_opportunities(matrix)
             if opportunities:
-                prompt += "\n\n### Tension Opportunities\n" + "\n".join(f"- {o}" for o in opportunities[:3])
+                prompt += "\n\n### Tension Opportunities\n" + "\n".join(
+                    f"- {o}" for o in opportunities[:3]
+                )
             return prompt
         except Exception:
             self._slot_degraded("relationship_matrix", scene)
@@ -1181,6 +1599,7 @@ class BundleBuilder:
         """Blueprint §2/§11: inject information gaps between onstage characters."""
         try:
             from novel_system.services.narrative_event_log import NarrativeEventLog
+
             log = NarrativeEventLog(self.session)
             project_id = require_scene_project_id(self.session, scene)
             onstage = scene.onstage_chars_json or []

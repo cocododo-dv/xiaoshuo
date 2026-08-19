@@ -96,7 +96,7 @@
 
 - **反抄袭事前预防接线**:`SystemPromptFragments` 新增 `anti_plagiarism_block` 第 4 块(§A.5 红线模板 + banned_terms scope=generation 填充,配置缺失有内置兜底);任一风格 block 非空时必随注入、永不参与预算截断;多层叠加时 banned_terms 取全层并集。前端 SrApply 面板展示的「第 4 块」自此为真实契约。
 - **抄袭检测升级**:语料从 profile quotes 扩为**全书段落**(`_load_plagiarism_corpus`,按 checksum 进程内小缓存);匹配前做规范化(去空白/标点、统一小写,Unicode P*/S*),防「插空格/换标点」绕过;倒排索引建在 generated 侧,全书语料复杂度 O(n+m) 不变。
-- **cloud_policy 强制执行**(新 `policy.py`):`local_only` 的书在 start_run / reclassify / synthesize / preview 一律 409 `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`;导入分类强制降级启发式;async_full 语义路跳过。此前该字段只存不查。
+- **cloud_policy 强制执行**(新 `policy.py`):`local_only` 的书在 start_run / reclassify / synthesize / preview 一律 409 `STYLE_REFERENCE_CLOUD_POLICY_BLOCKED`;导入分类强制降级启发式;async_full 语义路跳过且 verdict 至多为 `partial`，避免缺少语义证据仍误报完整 `pass`。此前该字段只存不查。
 - **校验语义闭合**:sync 快路径补上 quantitative(§4.3 设计对齐,qc gate 自此有量化对照);semantic 路**尝试执行但失败**时 PASS 封顶 PARTIAL(空集不再静默折叠成满分);sync/preview 的 report 落盘 quantitative_json。
 - **卡死回收**:RUNNING 超 60 分钟的僵尸 run 在下次同书启动时自动降级 FAILED(`failure_reason=stale_running_reaped`);pending 超 10 分钟的 async report 在轮询端点惰性降级 fail;报告序列化新增 `status` 字段(pending/done)。
 - **错误与边界**:`LLMRequiredError` / `CloudPolicyBlockedError` 继承 DomainError → 409 + author_action(原 LLMRequired 落通用 500);上传体积上限 10MB(413);注入截断改行边界感知(损失过半时退回字符截断);MIXED intensity 三块截断额之和封顶 `system_prompt_max_tokens`(原 1.5x 溢出预算)。
@@ -495,3 +495,21 @@ OpenAI 的 reasoning 参数,8192 预算照样烧光,run 再次失败。最终解
 (3/3 statement、6/6 引文命中原文);二调零降级 37s。
 备注:deepseek-v4-flash 抽取产出较薄(同 payload 二调返回 0 观察),连通性已闭合,
 产出质量属模型能力——建议「提炼整理」角色槽换更强模型。
+
+## 十一、2026-08-19 风格运行时契约统一
+
+- Bundle 同时冻结场景生成与长文续写的多层风格契约；Profile/Binding 后续修改不再改变
+  本次生成。契约、层和原文引文引用均可校验，Bundle 只保存引文哈希，不复制原文。
+- `frozen / absent / degraded` 状态封死新 Bundle 回退实时 Binding 的旁路；历史 Bundle
+  保留兼容解析；四条消费链统一走同一状态解析器，冲突状态也按损坏契约降级。
+- 初次风格化改用中性稿作 RAG 上下文，长文续写显式携带 Bundle 并随累计正文刷新；审计
+  只保存上下文和注入前缀哈希。
+- 候选评分、同步质检和章节漂移检测统一消费冻结多层基线；修复结构化基线参与标量运算
+  导致漂移检测降级，以及漂移优先级读取错层的问题。
+- 关键场景盲选新增显式“贴近参考风格”原因；服务端冻结无正文的评分快照并提供画像级
+  聚合接口。反馈聚合前复核内容哈希，损坏记录不会污染一致率；该反馈只用于观察校准，
+  永远不能直接激活生产重排。
+- 冻结画像改为字段白名单；质检使用冻结禁用词，RAG/质检/主动重排核对参考书版本，
+  避免 Profile 或语料在建包后变化造成“生成、评分、质检各读一版”。
+
+详细契约见 `docs/style-reference-runtime-contract.md`。

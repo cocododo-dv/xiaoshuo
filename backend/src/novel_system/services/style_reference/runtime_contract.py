@@ -1,0 +1,602 @@
+"""Frozen runtime contract shared by style injection, scoring and feedback.
+
+The contract stores abstract profile inputs and hashes of any referenced prose;
+raw reference quotes stay in the StyleReference repository.  This lets a scene
+bundle freeze exactly which layers/configuration were selected without copying a
+book into every bundle.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import math
+import re
+from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any, Mapping, Sequence
+
+from novel_system.services.hash_engine import canonical_json
+from novel_system.services.style_reference.policy import cloud_llm_allowed
+
+
+STYLE_RUNTIME_CONTRACT_VERSION = "style_reference_runtime_contract_v1"
+STYLE_CONTEXT_VERSION = "style_reference_generation_context_v1"
+_FROZEN_PROFILE_JSON_KEYS = frozenset(
+    {
+        "narrative_summary",
+        "metrics_baseline",
+        "scene_samples_index",
+        "sub_dimensions",
+        "style_features",
+        "narrative_patterns",
+        "banned_replication_rules",
+        "calibration_guidance",
+    }
+)
+_ALLOWED_STRATEGIES = frozenset({"A", "B", "C", "mixed"})
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _json_hash(payload: Mapping[str, Any]) -> str:
+    return hashlib.sha256(canonical_json(dict(payload)).encode("utf-8")).hexdigest()
+
+
+def _text_hash(text: str) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
+
+
+def _profile_value(profile: Any, name: str, default: Any = None) -> Any:
+    if isinstance(profile, Mapping):
+        return profile.get(name, default)
+    return getattr(profile, name, default)
+
+
+def _quote_ids(profile_json: Mapping[str, Any]) -> list[str]:
+    index = profile_json.get("scene_samples_index")
+    if not isinstance(index, Mapping):
+        return []
+    values: list[str] = []
+    for raw_ids in index.values():
+        if isinstance(raw_ids, str):
+            raw_ids = [raw_ids]
+        if not isinstance(raw_ids, Sequence):
+            continue
+        values.extend(str(value).strip() for value in raw_ids if str(value).strip())
+    return list(dict.fromkeys(values))
+
+
+def build_style_runtime_contract(
+    repo: Any,
+    layers: Sequence[Any],
+    *,
+    task_type: str,
+) -> dict[str, Any] | None:
+    """Freeze ordered binding layers and every abstract input used for rendering."""
+    if not layers:
+        return None
+    frozen_layers: list[dict[str, Any]] = []
+    for order, binding in enumerate(layers):
+        if (
+            getattr(binding, "status", None) != "active"
+            or str(getattr(binding, "task_type", "") or "") != str(task_type)
+        ):
+            raise ValueError("style binding is not active for the requested task")
+        profile = repo.get_profile(str(binding.profile_id))
+        if profile is None or getattr(profile, "status", None) != "active":
+            raise ValueError(f"active style profile missing: {binding.profile_id}")
+        raw_profile_json = getattr(profile, "profile_json", None) or {}
+        if not isinstance(raw_profile_json, Mapping):
+            raise ValueError("style profile payload must be an object")
+        # Keep this an explicit allow-list.  A future profile schema may gain
+        # raw excerpts or private annotations; those must not silently become
+        # part of every immutable SceneBundle.
+        profile_json = {
+            key: copy.deepcopy(raw_profile_json[key])
+            for key in _FROZEN_PROFILE_JSON_KEYS
+            if key in raw_profile_json
+        }
+        raw_finding_ids = getattr(profile, "source_finding_ids_json", None) or []
+        if not isinstance(raw_finding_ids, Sequence) or isinstance(
+            raw_finding_ids, (str, bytes, bytearray)
+        ):
+            raise ValueError("style profile finding ids must be a list")
+        source_finding_ids = list(copy.deepcopy(raw_finding_ids))
+        forbidden_findings: list[dict[str, Any]] = []
+        for finding_id in source_finding_ids:
+            finding = repo.get_finding(str(finding_id))
+            if (
+                finding is None
+                or getattr(finding, "finding_kind", None) != "forbidden_pattern"
+            ):
+                continue
+            forbidden_findings.append(
+                {
+                    "finding_id": str(finding.finding_id),
+                    "sub_dimension": str(finding.sub_dimension or ""),
+                    "statement": str(finding.statement or ""),
+                    "status": str(finding.status or ""),
+                }
+            )
+
+        quote_refs: list[dict[str, str]] = []
+        for quote_id in _quote_ids(profile_json):
+            quote = repo.get_quote(quote_id)
+            quote_text = str(getattr(quote, "quote_text", "") or "")
+            if quote_text:
+                quote_refs.append(
+                    {"quote_id": quote_id, "quote_sha256": _text_hash(quote_text)}
+                )
+
+        banned_terms = sorted(
+            {
+                str(getattr(term, "term", "") or "").strip()
+                for term in repo.list_banned_terms(
+                    str(profile.profile_id), scope="generation"
+                )
+                if str(getattr(term, "term", "") or "").strip()
+            }
+        )
+        book = repo.get_book(str(profile.book_id))
+        book_snapshot = {
+            "book_id": str(profile.book_id),
+            "text_checksum": str(getattr(book, "text_checksum", "") or ""),
+            "cloud_llm_allowed_at_freeze": bool(
+                book is not None and cloud_llm_allowed(book)
+            ),
+        }
+        profile_snapshot = {
+            "profile_id": str(profile.profile_id),
+            "book_id": str(profile.book_id),
+            "run_id": str(profile.run_id),
+            "version_tag": str(getattr(profile, "version_tag", "") or ""),
+            "status": str(profile.status),
+            "profile_json": profile_json,
+            "source_finding_ids_json": source_finding_ids,
+        }
+        raw_config = getattr(binding, "config_json", None) or {}
+        if not isinstance(raw_config, Mapping):
+            raise ValueError("style binding config must be an object")
+        binding_snapshot = {
+            "binding_id": str(binding.binding_id),
+            "profile_id": str(binding.profile_id),
+            "scope": str(binding.scope),
+            "scope_ref_id": str(binding.scope_ref_id or ""),
+            "task_type": str(binding.task_type),
+            "strategy": str(binding.strategy),
+            "status": str(binding.status),
+            "config_json": copy.deepcopy(dict(raw_config)),
+        }
+        layer = {
+            "order": order,
+            "binding": binding_snapshot,
+            "profile": profile_snapshot,
+            "forbidden_findings": forbidden_findings,
+            "banned_terms": banned_terms,
+            "sample_quote_refs": quote_refs,
+            "book": book_snapshot,
+        }
+        layer["layer_hash"] = _json_hash(layer)
+        frozen_layers.append(layer)
+
+    profile_ids = list(
+        dict.fromkeys(layer["profile"]["profile_id"] for layer in frozen_layers)
+    )
+    contract: dict[str, Any] = {
+        "schema_version": 1,
+        "contract_version": STYLE_RUNTIME_CONTRACT_VERSION,
+        "task_type": str(task_type),
+        "profile_ids": profile_ids,
+        "binding_ids": [layer["binding"]["binding_id"] for layer in frozen_layers],
+        "layer_count": len(frozen_layers),
+        "layers": frozen_layers,
+    }
+    contract["contract_hash"] = _json_hash(contract)
+    return validate_style_runtime_contract(contract)
+
+
+def validate_style_runtime_contract(payload: Mapping[str, Any]) -> dict[str, Any]:
+    contract = copy.deepcopy(dict(payload))
+    supplied_hash = str(contract.pop("contract_hash", "") or "")
+    if (
+        type(contract.get("schema_version")) is not int
+        or contract.get("schema_version") != 1
+        or contract.get("contract_version") != STYLE_RUNTIME_CONTRACT_VERSION
+    ):
+        raise ValueError("unsupported style runtime contract")
+    layers = contract.get("layers")
+    if not isinstance(layers, list) or not layers:
+        raise ValueError("style runtime contract has no layers")
+    if (
+        type(contract.get("layer_count")) is not int
+        or contract.get("layer_count") != len(layers)
+    ):
+        raise ValueError("style runtime contract layer count mismatch")
+    task_type = str(contract.get("task_type") or "")
+    if not task_type:
+        raise ValueError("style runtime contract task type is missing")
+    expected_profile_ids: list[str] = []
+    expected_binding_ids: list[str] = []
+    for expected_order, layer in enumerate(layers):
+        if (
+            not isinstance(layer, Mapping)
+            or type(layer.get("order")) is not int
+            or layer.get("order") != expected_order
+        ):
+            raise ValueError("style runtime contract layer order is invalid")
+        layer_copy = copy.deepcopy(dict(layer))
+        layer_hash = str(layer_copy.pop("layer_hash", "") or "")
+        if not layer_hash or _json_hash(layer_copy) != layer_hash:
+            raise ValueError("style runtime contract layer hash mismatch")
+        binding = layer.get("binding")
+        profile = layer.get("profile")
+        if not isinstance(binding, Mapping) or not isinstance(profile, Mapping):
+            raise ValueError("style runtime contract layer snapshot is invalid")
+        if not isinstance(binding.get("config_json"), Mapping) or not isinstance(
+            profile.get("profile_json"), Mapping
+        ):
+            raise ValueError("style runtime contract payload shape is invalid")
+        if not set(profile["profile_json"]).issubset(_FROZEN_PROFILE_JSON_KEYS):
+            raise ValueError("style runtime contract profile payload is not allow-listed")
+        if not isinstance(profile.get("source_finding_ids_json"), list):
+            raise ValueError("style runtime contract finding ids are invalid")
+        if not isinstance(layer.get("forbidden_findings"), list) or not isinstance(
+            layer.get("banned_terms"), list
+        ):
+            raise ValueError("style runtime contract safety inputs are invalid")
+        if not isinstance(layer.get("sample_quote_refs"), list) or not isinstance(
+            layer.get("book"), Mapping
+        ):
+            raise ValueError("style runtime contract source references are invalid")
+        if any(
+            not isinstance(finding_id, str) or not finding_id
+            for finding_id in profile["source_finding_ids_json"]
+        ):
+            raise ValueError("style runtime contract finding ids are malformed")
+        if any(
+            not isinstance(item, Mapping)
+            or not str(item.get("finding_id") or "")
+            or not isinstance(item.get("statement"), str)
+            for item in layer["forbidden_findings"]
+        ):
+            raise ValueError("style runtime contract forbidden findings are malformed")
+        if any(
+            not isinstance(term, str) or not term for term in layer["banned_terms"]
+        ):
+            raise ValueError("style runtime contract banned terms are malformed")
+        quote_ids: list[str] = []
+        for quote_ref in layer["sample_quote_refs"]:
+            if not isinstance(quote_ref, Mapping):
+                raise ValueError("style runtime contract quote reference is malformed")
+            quote_id = str(quote_ref.get("quote_id") or "")
+            quote_sha256 = str(quote_ref.get("quote_sha256") or "")
+            if (
+                not quote_id
+                or quote_id in quote_ids
+                or _SHA256_RE.fullmatch(quote_sha256) is None
+            ):
+                raise ValueError("style runtime contract quote reference is malformed")
+            quote_ids.append(quote_id)
+        profile_id = str(profile.get("profile_id") or "")
+        binding_id = str(binding.get("binding_id") or "")
+        book_id = str(profile.get("book_id") or "")
+        book = layer["book"]
+        if (
+            not profile_id
+            or not binding_id
+            or not book_id
+            or not str(profile.get("run_id") or "")
+            or str(binding.get("profile_id") or "") != profile_id
+            or str(binding.get("task_type") or "") != task_type
+            or str(binding.get("status") or "") != "active"
+            or str(binding.get("strategy") or "") not in _ALLOWED_STRATEGIES
+            or not str(binding.get("scope") or "")
+            or str(profile.get("status") or "") != "active"
+            or str(book.get("book_id") or "") != book_id
+            or type(book.get("cloud_llm_allowed_at_freeze")) is not bool
+        ):
+            raise ValueError("style runtime contract layer lineage is invalid")
+        if profile_id not in expected_profile_ids:
+            expected_profile_ids.append(profile_id)
+        expected_binding_ids.append(binding_id)
+    if contract.get("profile_ids") != expected_profile_ids:
+        raise ValueError("style runtime contract profile ids mismatch")
+    if contract.get("binding_ids") != expected_binding_ids:
+        raise ValueError("style runtime contract binding ids mismatch")
+    computed_hash = _json_hash(contract)
+    if not supplied_hash or supplied_hash != computed_hash:
+        raise ValueError("style runtime contract hash mismatch")
+    contract["contract_hash"] = supplied_hash
+    return contract
+
+
+def style_runtime_contract_from_bundle(
+    bundle_or_snapshot: Mapping[str, Any] | None,
+    *,
+    task_type: str = "scene_generation",
+) -> dict[str, Any] | None:
+    if not isinstance(bundle_or_snapshot, Mapping):
+        return None
+    snapshot = bundle_or_snapshot.get("snapshot")
+    if not isinstance(snapshot, Mapping):
+        snapshot = bundle_or_snapshot
+    inline = snapshot.get("inline_digests")
+    if not isinstance(inline, Mapping):
+        return None
+    key = (
+        "_style_reference_runtime_contract"
+        if task_type == "scene_generation"
+        else f"_style_reference_runtime_contract_{task_type}"
+    )
+    raw = inline.get(key)
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("style runtime contract JSON is invalid") from exc
+    if not isinstance(raw, Mapping):
+        raise ValueError("style runtime contract must be an object")
+    return validate_style_runtime_contract(raw)
+
+
+def style_runtime_contract_status_from_bundle(
+    bundle_or_snapshot: Mapping[str, Any] | None,
+    *,
+    task_type: str = "scene_generation",
+) -> str | None:
+    """Return the bundle's freeze status, or ``None`` for a legacy bundle."""
+
+    if not isinstance(bundle_or_snapshot, Mapping):
+        return None
+    snapshot = bundle_or_snapshot.get("snapshot")
+    if not isinstance(snapshot, Mapping):
+        snapshot = bundle_or_snapshot
+    refs = snapshot.get("source_version_refs")
+    if not isinstance(refs, Mapping):
+        return None
+    prefix = "" if task_type == "scene_generation" else f"{task_type}_"
+    status_key = f"{prefix}style_reference_runtime_contract_status"
+    version_key = f"{prefix}style_reference_runtime_contract_version"
+    status = str(refs.get(status_key) or "").strip().lower()
+    if status:
+        return status
+    # Transitional bundles may carry the version/hash but predate the explicit
+    # status field. Treat them as contract-aware so they cannot fall through to
+    # live binding resolution if their embedded contract goes missing.
+    if refs.get(version_key) == STYLE_RUNTIME_CONTRACT_VERSION:
+        return "expected"
+    return None
+
+
+def contract_profile_objects(
+    contract: Mapping[str, Any],
+    *,
+    per_layer: bool = True,
+) -> list[Any]:
+    validated = validate_style_runtime_contract(contract)
+    snapshots = []
+    for layer in validated["layers"]:
+        snapshot = dict(layer["profile"])
+        # These runtime-only attributes let validation consume the same frozen
+        # safety inputs as generation without changing the persisted profile
+        # payload or consulting mutable rows by profile_id.
+        snapshot["runtime_contract_banned_terms"] = copy.deepcopy(
+            list(layer["banned_terms"])
+        )
+        snapshot["runtime_contract_forbidden_findings"] = copy.deepcopy(
+            list(layer["forbidden_findings"])
+        )
+        snapshot["runtime_contract_book"] = copy.deepcopy(dict(layer["book"]))
+        snapshots.append(snapshot)
+    if not per_layer:
+        snapshots = list(
+            {snapshot["profile_id"]: snapshot for snapshot in snapshots}.values()
+        )
+    return [SimpleNamespace(**copy.deepcopy(snapshot)) for snapshot in snapshots]
+
+
+def blend_profile_metric_baselines(
+    profiles: Sequence[Any],
+) -> dict[str, dict[str, float | int]]:
+    """Blend ordered generic→specific baselines with total variance."""
+    if not profiles:
+        return {}
+    weighted_profiles = list(zip(profiles, range(1, len(profiles) + 1), strict=True))
+    metric_names: set[str] = set()
+    for profile, _weight in weighted_profiles:
+        profile_json = _profile_value(profile, "profile_json", {}) or {}
+        baseline = (
+            profile_json.get("metrics_baseline")
+            if isinstance(profile_json, Mapping)
+            else {}
+        )
+        if isinstance(baseline, Mapping):
+            metric_names.update(str(name) for name in baseline)
+
+    blended: dict[str, dict[str, float | int]] = {}
+    for metric in sorted(metric_names):
+        components: list[tuple[float, float, float]] = []
+        for profile, weight in weighted_profiles:
+            profile_json = _profile_value(profile, "profile_json", {}) or {}
+            baseline = (
+                profile_json.get("metrics_baseline")
+                if isinstance(profile_json, Mapping)
+                else {}
+            )
+            raw = baseline.get(metric) if isinstance(baseline, Mapping) else None
+            if isinstance(raw, Mapping):
+                raw_mean = raw.get("mean")
+                raw_std = raw.get("std", 0.0)
+            else:
+                raw_mean = raw
+                raw_std = 0.0
+            try:
+                mean = float(raw_mean)
+                std = float(raw_std)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(mean) or not math.isfinite(std) or std < 0:
+                continue
+            components.append((float(weight), mean, std))
+        if not components:
+            continue
+        weight_sum = sum(weight for weight, _mean, _std in components)
+        target_mean = (
+            sum(weight * mean for weight, mean, _std in components) / weight_sum
+        )
+        target_variance = (
+            sum(
+                weight * (std**2 + (mean - target_mean) ** 2)
+                for weight, mean, std in components
+            )
+            / weight_sum
+        )
+        blended[metric] = {
+            "mean": target_mean,
+            "std": math.sqrt(max(0.0, target_variance)),
+            "component_count": len(components),
+        }
+    return blended
+
+
+def contract_metric_mean_map(contract: Mapping[str, Any]) -> dict[str, float]:
+    baseline = blend_profile_metric_baselines(contract_profile_objects(contract))
+    return {
+        metric: float(stats["mean"])
+        for metric, stats in baseline.items()
+        if isinstance(stats, Mapping) and "mean" in stats
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class StyleGenerationContext:
+    query_text: str
+    source_kind: str
+    query_sha256: str
+    char_count: int
+    version: str = STYLE_CONTEXT_VERSION
+
+    def audit_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "source_kind": self.source_kind,
+            "query_sha256": self.query_sha256,
+            "char_count": self.char_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class StyleRuntimeContractState:
+    """One normalized interpretation of a bundle's style-contract state.
+
+    ``error_code`` is deliberately data, not an exception, so optional consumers
+    can degrade in their own way without ever treating an inconsistent new bundle
+    as permission to resolve today's live bindings.
+    """
+
+    status: str | None
+    mode: str
+    contract: dict[str, Any] | None = None
+    error_code: str | None = None
+
+
+def resolve_style_runtime_contract_state(
+    bundle_or_snapshot: Mapping[str, Any] | None,
+    *,
+    task_type: str = "scene_generation",
+) -> StyleRuntimeContractState:
+    """Normalize legacy/frozen/absent/degraded states for every runtime consumer."""
+
+    status = style_runtime_contract_status_from_bundle(
+        bundle_or_snapshot,
+        task_type=task_type,
+    )
+    try:
+        contract = style_runtime_contract_from_bundle(
+            bundle_or_snapshot,
+            task_type=task_type,
+        )
+    except (TypeError, ValueError):
+        return StyleRuntimeContractState(
+            status=status,
+            mode="degraded",
+            error_code="runtime_contract_invalid",
+        )
+
+    if status == "absent":
+        if contract is not None:
+            return StyleRuntimeContractState(
+                status=status,
+                mode="degraded",
+                error_code="runtime_contract_status_conflict",
+            )
+        return StyleRuntimeContractState(status=status, mode="absent")
+    if status in {"frozen", "expected"}:
+        if contract is None:
+            return StyleRuntimeContractState(
+                status=status,
+                mode="degraded",
+                error_code="runtime_contract_missing",
+            )
+        return StyleRuntimeContractState(
+            status=status,
+            mode="frozen",
+            contract=contract,
+        )
+    if status == "degraded":
+        return StyleRuntimeContractState(
+            status=status,
+            mode="degraded",
+            error_code="runtime_contract_degraded",
+        )
+    if status is not None:
+        return StyleRuntimeContractState(
+            status=status,
+            mode="degraded",
+            error_code="runtime_contract_status_invalid",
+        )
+    if contract is not None:
+        # Early contract prototypes had an embedded contract but no status marker.
+        return StyleRuntimeContractState(
+            status=None,
+            mode="frozen_legacy",
+            contract=contract,
+        )
+    return StyleRuntimeContractState(status=None, mode="legacy_live")
+
+
+def extract_style_generation_context(
+    text: str | None,
+    *,
+    source_kind: str,
+    max_chars: int = 2000,
+) -> StyleGenerationContext:
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", normalized).strip()
+    query = normalized[-max(1, int(max_chars)) :] if normalized else ""
+    return StyleGenerationContext(
+        query_text=query,
+        source_kind=str(source_kind),
+        query_sha256=_text_hash(query),
+        char_count=len(query),
+    )
+
+
+__all__ = [
+    "STYLE_CONTEXT_VERSION",
+    "STYLE_RUNTIME_CONTRACT_VERSION",
+    "StyleGenerationContext",
+    "StyleRuntimeContractState",
+    "blend_profile_metric_baselines",
+    "build_style_runtime_contract",
+    "contract_metric_mean_map",
+    "contract_profile_objects",
+    "extract_style_generation_context",
+    "resolve_style_runtime_contract_state",
+    "style_runtime_contract_from_bundle",
+    "style_runtime_contract_status_from_bundle",
+    "validate_style_runtime_contract",
+]

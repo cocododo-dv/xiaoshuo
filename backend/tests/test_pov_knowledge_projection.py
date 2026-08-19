@@ -43,7 +43,8 @@ def _state(session, seq, entity, key, value, **kw):
         project_id=PROJECT, scene_id=f"{CHAPTER}_SC0{seq}", chapter_id=CHAPTER,
         event_type=kw.pop("event_type", "character_state"),
         entity_type="character", entity_id=entity,
-        fact_key=key, fact_value=value, **kw,
+        fact_key=key, fact_value=value,
+        authority_status="accepted", source_kind="test_fixture", **kw,
     )
 
 
@@ -186,11 +187,13 @@ def test_asymmetry_digest_pov_shows_own_exclusive_knowledge(session) -> None:
         project_id=PROJECT, scene_id=f"{CHAPTER}_SC01", chapter_id=CHAPTER,
         event_type="character_learns", entity_type="character", entity_id="Y",
         fact_key="knows_route", fact_value="密道在西墙",
+        authority_status="accepted", source_kind="test_fixture",
     )
     NarrativeEventLog(session).log_event(
         project_id=PROJECT, scene_id=f"{CHAPTER}_SC01", chapter_id=CHAPTER,
         event_type="character_learns", entity_type="character", entity_id="X",
         fact_key="knows_traitor", fact_value="内奸是Y",
+        authority_status="accepted", source_kind="test_fixture",
     )
     session.commit()
 

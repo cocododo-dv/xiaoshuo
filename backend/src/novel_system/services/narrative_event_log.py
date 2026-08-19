@@ -21,11 +21,13 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
+    CanonCommit,
     ChapterGoal,
+    FinalScene,
     NarrativeEvent,
     SceneCard,
 )
@@ -146,7 +148,9 @@ class NarrativeEventLog:
                 "use exactly one narrative boundary",
                 status_code=400,
             )
-        statement = self.positions.event_statement(project_id)
+        statement = self.positions.event_statement(project_id).where(
+            self._runtime_authority_clause()
+        )
         if before_scene_id is not None:
             cursor = self.positions.cursor_for_scene(project_id, before_scene_id)
             statement = self.positions.before(statement, cursor)
@@ -180,7 +184,10 @@ class NarrativeEventLog:
             chapter_ids = set(
                 self.session.execute(
                     select(NarrativeEvent.chapter_id)
-                    .where(NarrativeEvent.project_id == project_id)
+                    .where(
+                        NarrativeEvent.project_id == project_id,
+                        self._runtime_authority_clause(),
+                    )
                     .distinct()
                 ).scalars().all()
             )
@@ -238,6 +245,10 @@ class NarrativeEventLog:
         obligation_ids: list[str] | None = None,
         source_text_excerpt: str | None = None,
         payload: dict[str, Any] | None = None,
+        authority_status: str = "planned",
+        source_kind: str = "legacy_plan",
+        final_scene_row_id: str | None = None,
+        canon_commit_id: str | None = None,
     ) -> NarrativeEvent:
         cursor = self.positions.cursor_for_scene(project_id, scene_id)
         if cursor.chapter_id != chapter_id:
@@ -262,6 +273,10 @@ class NarrativeEventLog:
             theme_tags=theme_tags or [],
             obligation_ids=obligation_ids or [],
             source_text_excerpt=source_text_excerpt,
+            authority_status=authority_status,
+            source_kind=source_kind,
+            final_scene_row_id=final_scene_row_id,
+            canon_commit_id=canon_commit_id,
             payload_json=payload or {},
         )
         self.session.add(event)
@@ -431,6 +446,7 @@ class NarrativeEventLog:
                 scene_id=evt.scene_id,
                 scene_seq=evt.scene_seq,
                 event_id=evt.event_id,
+                confidence=evt.confidence,
             )
             for evt in events
         ]
@@ -551,6 +567,7 @@ class NarrativeEventLog:
             select(NarrativeEvent.fact_value).where(
                 NarrativeEvent.project_id == project_id,
                 NarrativeEvent.fact_key == "location",
+                self._runtime_authority_clause(),
             ).distinct()
         ).scalars().all()
         known_locations |= {v.lower() for v in loc_values if v}
@@ -999,10 +1016,43 @@ class NarrativeEventLog:
             .where(
                 NarrativeEvent.project_id == project_id,
                 NarrativeEvent.entity_type == entity_type,
+                self._runtime_authority_clause(),
             )
             .distinct()
         ).scalars().all()
         return list(rows)
+
+    @staticmethod
+    def _runtime_authority_clause():
+        """Accept canon-managed events only with a complete, hash-bound scene commit."""
+
+        managed = NarrativeEvent.source_kind.in_(
+            ("canon_candidate_accepted", "canon_acceptance", "facts_unchanged")
+        )
+        event_commit_valid = exists(
+            select(CanonCommit.commit_id).where(
+                CanonCommit.commit_id == NarrativeEvent.canon_commit_id,
+                CanonCommit.final_scene_row_id == NarrativeEvent.final_scene_row_id,
+                CanonCommit.status == "active",
+                CanonCommit.final_content_hash == FinalScene.content_hash,
+                FinalScene.row_id == NarrativeEvent.final_scene_row_id,
+            )
+        )
+        completion_commit_valid = exists(
+            select(CanonCommit.commit_id).where(
+                CanonCommit.final_scene_row_id == NarrativeEvent.final_scene_row_id,
+                CanonCommit.project_id == NarrativeEvent.project_id,
+                CanonCommit.scene_id == NarrativeEvent.scene_id,
+                CanonCommit.status == "active",
+                CanonCommit.commit_kind.in_(("author_verification", "facts_unchanged")),
+                CanonCommit.final_content_hash == FinalScene.content_hash,
+                FinalScene.row_id == NarrativeEvent.final_scene_row_id,
+            )
+        )
+        return and_(
+            NarrativeEvent.authority_status == "accepted",
+            or_(~managed, and_(event_commit_valid, completion_commit_valid)),
+        )
 
 
 _CHECKABLE_FACT_KEYS = {

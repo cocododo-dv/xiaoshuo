@@ -54,6 +54,7 @@ MERGED_HISTORY_REVISION = "20260802_0077"
 CORE_INTEGRITY_REVISION = "20260802_0078"
 SCENE_AUTHOR_NOTES_REVISION = "20260802_0079"
 SCENE_DEEP_REVIEW_REVISION = "20260802_0080"
+FOREIGN_KEY_INDEX_REVISION = "20260805_0081"
 REVISION_ALIASES = {
     "0064": LEGACY_REVISION,
     LEGACY_REVISION: LEGACY_REVISION,
@@ -89,7 +90,9 @@ REVISION_ALIASES = {
     SCENE_AUTHOR_NOTES_REVISION: SCENE_AUTHOR_NOTES_REVISION,
     "0080": SCENE_DEEP_REVIEW_REVISION,
     SCENE_DEEP_REVIEW_REVISION: SCENE_DEEP_REVIEW_REVISION,
-    "0081": CURRENT_SCHEMA_REVISION,
+    "0081": FOREIGN_KEY_INDEX_REVISION,
+    FOREIGN_KEY_INDEX_REVISION: FOREIGN_KEY_INDEX_REVISION,
+    "0082": CURRENT_SCHEMA_REVISION,
     CURRENT_SCHEMA_REVISION: CURRENT_SCHEMA_REVISION,
 }
 # 0074 and 0075 each exist on two restored branches.  Their short ordinals are
@@ -114,6 +117,7 @@ REVISION_SEQUENCE = (
     CORE_INTEGRITY_REVISION,
     SCENE_AUTHOR_NOTES_REVISION,
     SCENE_DEEP_REVIEW_REVISION,
+    FOREIGN_KEY_INDEX_REVISION,
     CURRENT_SCHEMA_REVISION,
 )
 REVISION_PARENTS: dict[str, tuple[str, ...]] = {
@@ -139,7 +143,8 @@ REVISION_PARENTS: dict[str, tuple[str, ...]] = {
     CORE_INTEGRITY_REVISION: (MERGED_HISTORY_REVISION,),
     SCENE_AUTHOR_NOTES_REVISION: (CORE_INTEGRITY_REVISION,),
     SCENE_DEEP_REVIEW_REVISION: (SCENE_AUTHOR_NOTES_REVISION,),
-    CURRENT_SCHEMA_REVISION: (SCENE_DEEP_REVIEW_REVISION,),
+    FOREIGN_KEY_INDEX_REVISION: (SCENE_DEEP_REVIEW_REVISION,),
+    CURRENT_SCHEMA_REVISION: (FOREIGN_KEY_INDEX_REVISION,),
 }
 
 
@@ -512,6 +517,101 @@ SCENE_DEEP_REVIEW_PREFERENCES_REQUIRED_COLUMNS = {
     ),
 }
 
+CANON_CONTINUITY_REQUIRED_TABLES = SNOWFLAKE_CHAPTER_REQUIRED_TABLES + (
+    "timeline_events",
+    "canon_commits",
+    "fact_candidates",
+    "continuity_snapshots",
+)
+CANON_CONTINUITY_REQUIRED_COLUMNS = {
+    **SCENE_DEEP_REVIEW_PREFERENCES_REQUIRED_COLUMNS,
+    "narrative_events": SCENE_DEEP_REVIEW_PREFERENCES_REQUIRED_COLUMNS[
+        "narrative_events"
+    ]
+    + (
+        "authority_status",
+        "source_kind",
+        "final_scene_row_id",
+        "canon_commit_id",
+    ),
+    "timeline_events": (
+        "event_id",
+        "project_id",
+        "event_mode",
+        "realization_status",
+        "realized_canon_commit_id",
+        "realized_scene_id",
+    ),
+    "canon_commits": (
+        "commit_id",
+        "project_id",
+        "chapter_id",
+        "scene_id",
+        "final_scene_row_id",
+        "final_content_hash",
+        "commit_kind",
+        "candidate_ids_json",
+        "source_final_scene_row_id",
+        "status",
+        "actor_ref",
+        "decision_note",
+        "created_at",
+    ),
+    "fact_candidates": (
+        "candidate_id",
+        "project_id",
+        "chapter_id",
+        "scene_id",
+        "final_scene_row_id",
+        "staged_event_id",
+        "event_type",
+        "entity_type",
+        "raw_entity_ref",
+        "resolved_entity_id",
+        "entity_resolution_status",
+        "entity_candidates_json",
+        "fact_key",
+        "fact_value",
+        "evidence_text",
+        "evidence_start",
+        "evidence_end",
+        "source_kind",
+        "confidence",
+        "criticality",
+        "planned_timeline_event_id",
+        "status",
+        "canon_commit_id",
+        "decided_by",
+        "decided_at",
+        "decision_note",
+        "created_at",
+        "updated_at",
+    ),
+    "continuity_snapshots": (
+        "snapshot_id",
+        "project_id",
+        "scope_type",
+        "scope_id",
+        "chapter_id",
+        "scene_id",
+        "final_scene_row_id",
+        "latest_commit_id",
+        "status",
+        "summary_text",
+        "state_deltas_json",
+        "knowledge_deltas_json",
+        "relationship_deltas_json",
+        "item_deltas_json",
+        "timeline_deltas_json",
+        "open_obligations_json",
+        "entity_ids_json",
+        "source_commit_ids_json",
+        "metadata_json",
+        "created_at",
+        "updated_at",
+    ),
+}
+
 SCHEMA_PROFILES = {
     LEGACY_REVISION: (LEGACY_REQUIRED_TABLES, LEGACY_REQUIRED_COLUMNS),
     C1B_REVISION: (C1B_REQUIRED_TABLES, C1B_REQUIRED_COLUMNS),
@@ -584,9 +684,13 @@ SCHEMA_PROFILES = {
         SNOWFLAKE_CHAPTER_REQUIRED_TABLES,
         SCENE_DEEP_REVIEW_PREFERENCES_REQUIRED_COLUMNS,
     ),
-    CURRENT_SCHEMA_REVISION: (
+    FOREIGN_KEY_INDEX_REVISION: (
         SNOWFLAKE_CHAPTER_REQUIRED_TABLES,
         SCENE_DEEP_REVIEW_PREFERENCES_REQUIRED_COLUMNS,
+    ),
+    CURRENT_SCHEMA_REVISION: (
+        CANON_CONTINUITY_REQUIRED_TABLES,
+        CANON_CONTINUITY_REQUIRED_COLUMNS,
     ),
 }
 
@@ -733,6 +837,209 @@ CORE_ORDER_INDEX_CONTRACTS = {
         ("chapter_id", "scene_seq"),
         True,
         True,
+    ),
+}
+
+CANON_CONTINUITY_COLUMN_CONTRACTS = {
+    "timeline_events": {
+        "event_mode": {"not_null": True, "default": "planned"},
+        "realization_status": {"not_null": True, "default": "planned"},
+    },
+    "narrative_events": {
+        "authority_status": {"not_null": True, "default": "planned"},
+        "source_kind": {"not_null": True, "default": "legacy_plan"},
+    },
+    "canon_commits": {
+        "status": {"not_null": True, "default": "active"},
+        "commit_kind": {
+            "not_null": True,
+            "default": "candidate_acceptance",
+        },
+    },
+    "fact_candidates": {
+        "status": {"not_null": True, "default": "pending"},
+        "entity_resolution_status": {
+            "not_null": True,
+            "default": "unresolved",
+        },
+    },
+    "continuity_snapshots": {
+        "status": {"not_null": True, "default": "pending"},
+    },
+}
+CANON_CONTINUITY_PRIMARY_KEY_CONTRACTS = {
+    "canon_commits": ("commit_id",),
+    "fact_candidates": ("candidate_id",),
+    "continuity_snapshots": ("snapshot_id",),
+}
+CANON_CONTINUITY_CHECK_CONTRACTS = {
+    "timeline_events": {
+        "ck_timeline_events_event_mode": "event_mode IN ('planned','recorded')",
+        "ck_timeline_events_realization_status": (
+            "realization_status IN ('planned','realized')"
+        ),
+    },
+    "narrative_events": {
+        "ck_narrative_events_authority_status": (
+            "authority_status IN "
+            "('accepted','pending','rejected','planned','superseded')"
+        ),
+    },
+    "canon_commits": {
+        "ck_canon_commits_status": "status IN ('active','superseded')",
+        "ck_canon_commits_commit_kind": (
+            "commit_kind IN "
+            "('candidate_acceptance','author_verification','facts_unchanged')"
+        ),
+    },
+    "fact_candidates": {
+        "ck_fact_candidates_status": (
+            "status IN ('pending','accepted','rejected','superseded')"
+        ),
+        "ck_fact_candidates_entity_resolution_status": (
+            "entity_resolution_status IN "
+            "('exact','alias','ambiguous','unresolved','manual')"
+        ),
+    },
+    "continuity_snapshots": {
+        "ck_continuity_snapshots_scope_type": (
+            "scope_type IN ('scene','chapter')"
+        ),
+        "ck_continuity_snapshots_status": (
+            "status IN ('pending','complete','degraded','superseded')"
+        ),
+    },
+}
+CANON_CONTINUITY_FOREIGN_KEY_CONTRACTS = {
+    "timeline_events": (
+        ("project_id", "story_projects", "project_id"),
+        ("realized_canon_commit_id", "canon_commits", "commit_id"),
+        ("realized_scene_id", "scene_cards", "scene_id"),
+    ),
+    "narrative_events": (
+        ("final_scene_row_id", "final_scenes", "row_id"),
+        ("canon_commit_id", "canon_commits", "commit_id"),
+    ),
+    "canon_commits": (
+        ("project_id", "story_projects", "project_id"),
+        ("chapter_id", "chapter_goals", "chapter_id"),
+        ("scene_id", "scene_cards", "scene_id"),
+        ("final_scene_row_id", "final_scenes", "row_id"),
+        ("source_final_scene_row_id", "final_scenes", "row_id"),
+    ),
+    "fact_candidates": (
+        ("project_id", "story_projects", "project_id"),
+        ("chapter_id", "chapter_goals", "chapter_id"),
+        ("scene_id", "scene_cards", "scene_id"),
+        ("final_scene_row_id", "final_scenes", "row_id"),
+        ("staged_event_id", "narrative_events", "event_id"),
+        ("planned_timeline_event_id", "timeline_events", "event_id"),
+        ("canon_commit_id", "canon_commits", "commit_id"),
+    ),
+    "continuity_snapshots": (
+        ("project_id", "story_projects", "project_id"),
+        ("chapter_id", "chapter_goals", "chapter_id"),
+        ("scene_id", "scene_cards", "scene_id"),
+        ("final_scene_row_id", "final_scenes", "row_id"),
+        ("latest_commit_id", "canon_commits", "commit_id"),
+    ),
+}
+CANON_CONTINUITY_UNIQUE_CONTRACTS = {
+    "fact_candidates": (("staged_event_id",),),
+    "continuity_snapshots": (("project_id", "scope_type", "scope_id"),),
+}
+CANON_CONTINUITY_INDEX_CONTRACTS = {
+    "ix_timeline_events_realized_canon_commit_id": (
+        "timeline_events",
+        ("realized_canon_commit_id",),
+        False,
+    ),
+    "ix_timeline_events_realized_scene_id": (
+        "timeline_events",
+        ("realized_scene_id",),
+        False,
+    ),
+    "ix_narrative_events_authority_project_scene": (
+        "narrative_events",
+        ("authority_status", "project_id", "scene_id"),
+        False,
+    ),
+    "ix_narrative_events_final_scene": (
+        "narrative_events",
+        ("final_scene_row_id",),
+        False,
+    ),
+    "ix_narrative_events_canon_commit": (
+        "narrative_events",
+        ("canon_commit_id",),
+        False,
+    ),
+    "ix_canon_commits_project_scene_final": (
+        "canon_commits",
+        ("project_id", "scene_id", "final_scene_row_id"),
+        False,
+    ),
+    "ix_canon_commits_chapter": ("canon_commits", ("chapter_id",), False),
+    "ix_canon_commits_scene": ("canon_commits", ("scene_id",), False),
+    "ix_canon_commits_final_scene": (
+        "canon_commits",
+        ("final_scene_row_id",),
+        False,
+    ),
+    "ix_canon_commits_source_final_scene": (
+        "canon_commits",
+        ("source_final_scene_row_id",),
+        False,
+    ),
+    "ix_fact_candidates_project_chapter_status": (
+        "fact_candidates",
+        ("project_id", "chapter_id", "status"),
+        False,
+    ),
+    "ix_fact_candidates_scene_status": (
+        "fact_candidates",
+        ("scene_id", "status"),
+        False,
+    ),
+    "ix_fact_candidates_final_scene": (
+        "fact_candidates",
+        ("final_scene_row_id",),
+        False,
+    ),
+    "ix_fact_candidates_chapter": (
+        "fact_candidates",
+        ("chapter_id",),
+        False,
+    ),
+    "ix_fact_candidates_planned_timeline": (
+        "fact_candidates",
+        ("planned_timeline_event_id",),
+        False,
+    ),
+    "ix_fact_candidates_canon_commit": (
+        "fact_candidates",
+        ("canon_commit_id",),
+        False,
+    ),
+    "ix_continuity_snapshots_chapter": (
+        "continuity_snapshots",
+        ("chapter_id", "scope_type"),
+        False,
+    ),
+    "ix_continuity_snapshots_scene": (
+        "continuity_snapshots",
+        ("scene_id",),
+        False,
+    ),
+    "ix_continuity_snapshots_final_scene": (
+        "continuity_snapshots",
+        ("final_scene_row_id",),
+        False,
+    ),
+    "ix_continuity_snapshots_latest_commit": (
+        "continuity_snapshots",
+        ("latest_commit_id",),
+        False,
     ),
 }
 
@@ -1857,7 +2164,7 @@ def _inspect_revision_schema(
                 SNOWFLAKE_CHAPTER_INDEX_CONTRACTS,
             )
         )
-    if _revision_at_least(canonical_revision, CURRENT_SCHEMA_REVISION):
+    if _revision_at_least(canonical_revision, FOREIGN_KEY_INDEX_REVISION):
         errors.extend(
             _inspect_foreign_key_contracts(
                 connection,
@@ -1877,6 +2184,49 @@ def _inspect_revision_schema(
                 connection,
                 tables,
                 CORE_ORDER_INDEX_CONTRACTS,
+            )
+        )
+    if _revision_at_least(canonical_revision, CURRENT_SCHEMA_REVISION):
+        errors.extend(
+            _inspect_column_contracts(
+                connection,
+                tables,
+                CANON_CONTINUITY_COLUMN_CONTRACTS,
+            )
+        )
+        errors.extend(
+            _inspect_primary_key_contracts(
+                connection,
+                tables,
+                CANON_CONTINUITY_PRIMARY_KEY_CONTRACTS,
+            )
+        )
+        errors.extend(
+            _inspect_check_contracts(
+                connection,
+                tables,
+                CANON_CONTINUITY_CHECK_CONTRACTS,
+            )
+        )
+        errors.extend(
+            _inspect_foreign_key_contracts(
+                connection,
+                tables,
+                CANON_CONTINUITY_FOREIGN_KEY_CONTRACTS,
+            )
+        )
+        errors.extend(
+            _inspect_unique_contracts(
+                connection,
+                tables,
+                CANON_CONTINUITY_UNIQUE_CONTRACTS,
+            )
+        )
+        errors.extend(
+            _inspect_explicit_index_contracts(
+                connection,
+                tables,
+                CANON_CONTINUITY_INDEX_CONTRACTS,
             )
         )
     return errors

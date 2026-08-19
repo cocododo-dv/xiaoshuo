@@ -20,7 +20,7 @@ narration_ratio 恒 1、其余恒 0,对照 baseline 是系统性伪偏差:对话
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Mapping
 
 from novel_system.services.style_reference.config_loader import load_yaml_config
 from novel_system.services.style_reference.metrics import (
@@ -83,19 +83,48 @@ def _dim_for_metric(metric: str) -> str:
     return "language"
 
 
+def compute_generated_metrics(generated_text: str) -> dict[str, float]:
+    """Compute text-observable metrics once for validation and candidate ranking."""
+    paragraphs = _wrap_as_paragraphs(generated_text)
+    if not paragraphs:
+        return {}
+    return MetricsEngine().compute_all(paragraphs)
+
+
 def check_quantitative(
     generated_text: str,
     profile: "StyleReferenceProfile",
     *,
     floors: dict[str, float] | None = None,
 ) -> list[QuantitativeReportItem]:
-    paragraphs = _wrap_as_paragraphs(generated_text)
-    if not paragraphs:
+    gen_metrics = compute_generated_metrics(generated_text)
+    if not gen_metrics:
         return []
 
     profile_json = profile.profile_json or {}
     baseline = profile_json.get("metrics_baseline") or {}
-    if not baseline:
+    return check_quantitative_against_baseline(
+        generated_text,
+        baseline,
+        floors=floors,
+        generated_metrics=gen_metrics,
+    )
+
+
+def check_quantitative_against_baseline(
+    generated_text: str,
+    baseline: Mapping[str, Any],
+    *,
+    floors: dict[str, float] | None = None,
+    generated_metrics: Mapping[str, float] | None = None,
+) -> list[QuantitativeReportItem]:
+    """Validate against an explicit baseline (used by frozen layered contracts)."""
+    gen_metrics = (
+        dict(generated_metrics)
+        if generated_metrics is not None
+        else compute_generated_metrics(generated_text)
+    )
+    if not gen_metrics or not baseline:
         return []
 
     if floors is None:
@@ -103,8 +132,6 @@ def check_quantitative(
             floors = load_yaml_config("tolerance_floors")
         except FileNotFoundError:
             floors = {}
-
-    gen_metrics = MetricsEngine().compute_all(paragraphs)
 
     reports: list[QuantitativeReportItem] = []
     for name in METRIC_NAMES:

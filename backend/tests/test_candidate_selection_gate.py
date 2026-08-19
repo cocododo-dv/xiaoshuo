@@ -93,7 +93,12 @@ def _response(payload: dict, *, request_id: str) -> LLMResponse:
         text=json.dumps(payload, ensure_ascii=False),
         structured_output=payload,
         response_format="json_object",
-        raw_response={"id": request_id, "model": "fake-model", "usage": {"input_tokens": 60, "output_tokens": 18, "total_tokens": 78}, "finish_reason": "stop"},
+        raw_response={
+            "id": request_id,
+            "model": "fake-model",
+            "usage": {"input_tokens": 60, "output_tokens": 18, "total_tokens": 78},
+            "finish_reason": "stop",
+        },
         usage={"input_tokens": 60, "output_tokens": 18, "total_tokens": 78},
         finish_reason="stop",
     )
@@ -106,7 +111,10 @@ class FakeSceneClient(AccountedGenerateMixin):
     def generate(self, request: LLMRequest) -> LLMResponse:
         self.requests.append(request)
         index = len(self.requests)
-        payload = {"scene_text": f"Provider-generated draft #{index} for terminal selection.", "continuity_notes": []}
+        payload = {
+            "scene_text": f"Provider-generated draft #{index} for terminal selection.",
+            "continuity_notes": [],
+        }
         return _response(payload, request_id=f"resp_scene_{index:03d}")
 
 
@@ -119,7 +127,13 @@ class FakePassQcClient(AccountedGenerateMixin):
 
 
 def _hard_pass() -> dict:
-    return {"resolution_code": "hard_pass", "pass_flag": True, "next_action": "pass", "issues": [], "rewrite_brief": []}
+    return {
+        "resolution_code": "hard_pass",
+        "pass_flag": True,
+        "next_action": "pass",
+        "issues": [],
+        "rewrite_brief": [],
+    }
 
 
 def _soft_pass() -> dict:
@@ -136,8 +150,17 @@ def _soft_pass() -> dict:
 
 
 def _seed_scene(session, *, constraint_intensity: float | None = 0.9) -> None:
-    session.add(StoryProject(project_id=PROJECT_ID, title="Selection gate", outline_text=""))
-    session.add(ChapterGoal(chapter_id=CHAPTER_ID, project_id=PROJECT_ID, planned_scene_count=1, chapter_goal="A reunion turns dangerous."))
+    session.add(
+        StoryProject(project_id=PROJECT_ID, title="Selection gate", outline_text="")
+    )
+    session.add(
+        ChapterGoal(
+            chapter_id=CHAPTER_ID,
+            project_id=PROJECT_ID,
+            planned_scene_count=1,
+            chapter_goal="A reunion turns dangerous.",
+        )
+    )
     session.add(ChapterState(chapter_id=CHAPTER_ID, current_phase="drafting"))
     session.add(
         SceneCard(
@@ -186,20 +209,28 @@ def _make_orchestrator(session) -> Orchestrator:
     support = ScenePipelineOnlineFake()
     orchestrator = Orchestrator(
         session,
-        scene_generation_service=SceneGenerationService(session, llm_client=FakeSceneClient()),
+        scene_generation_service=SceneGenerationService(
+            session, llm_client=FakeSceneClient()
+        ),
         hard_qc_engine=HardQcEngine(session, llm_client=FakePassQcClient(_hard_pass())),
         soft_qc_engine=SoftQcEngine(session, llm_client=FakePassQcClient(_soft_pass())),
         planning_service=NearFinalPlanningService(session, llm_client=support),
         near_final_service=NearFinalAcceptanceService(session, llm_client=support),
     )
-    orchestrator.scene_blueprint_service = SceneBlueprintService(session, llm_client=support)
+    orchestrator.scene_blueprint_service = SceneBlueprintService(
+        session, llm_client=support
+    )
     return orchestrator
 
 
 def _selection_gate(session) -> HumanReviewEvent:
-    events = session.execute(
-        select(HumanReviewEvent).order_by(HumanReviewEvent.created_at.desc())
-    ).scalars().all()
+    events = (
+        session.execute(
+            select(HumanReviewEvent).order_by(HumanReviewEvent.created_at.desc())
+        )
+        .scalars()
+        .all()
+    )
     for event in events:
         if (event.details_json or {}).get("gate_type") == "style_candidate_selection":
             return event
@@ -207,6 +238,7 @@ def _selection_gate(session) -> HumanReviewEvent:
 
 
 # ---------- 暂停：关键场景未选择前不可归档 ----------
+
 
 def test_critical_scene_pauses_before_selection(session) -> None:
     _seed_scene(session)
@@ -226,12 +258,104 @@ def test_critical_scene_pauses_before_selection(session) -> None:
     gate = _selection_gate(session)
     details = gate.details_json
     assert state.run_checkpoint == "selection_wait"
-    assert state.run_checkpoint_json["artifact_refs"]["selection_event_id"] == gate.event_id
-    assert state.run_checkpoint_json["artifact_refs"]["selection_candidate_row_ids"] == details["candidate_row_ids"]
+    assert (
+        state.run_checkpoint_json["artifact_refs"]["selection_event_id"]
+        == gate.event_id
+    )
+    assert (
+        state.run_checkpoint_json["artifact_refs"]["selection_candidate_row_ids"]
+        == details["candidate_row_ids"]
+    )
+    rankings = state.run_checkpoint_json["artifact_refs"]["style_candidate_rankings"]
+    assert len(rankings) == len(details["candidate_row_ids"])
+    assert all(
+        item["rerank"]["reason"] == "bundle_has_no_style_profile" for item in rankings
+    )
+    assert all(item["rerank"]["applied_mode"] == "shadow" for item in rankings)
     assert details["decision_status"] == "awaiting"
     assert details["candidate_row_ids"]
     assert sorted(details["blinded_order"]) == sorted(details["candidate_row_ids"])
     assert "tokens_used" in details
+    assert details["style_feedback_snapshot"]["candidate_count"] == len(
+        details["candidate_row_ids"]
+    )
+    assert "Provider-generated draft" not in json.dumps(
+        details["style_feedback_snapshot"],
+        ensure_ascii=False,
+    )
+
+
+def test_explicit_style_selection_reason_records_non_activating_feedback(
+    client,
+    session,
+) -> None:
+    _seed_scene(session)
+    _make_orchestrator(session).run_scene(SCENE_ID)
+    session.commit()
+    gate = _selection_gate(session)
+    selected_row_id = gate.details_json["candidate_row_ids"][0]
+
+    response = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{selected_row_id}/select",
+        json={
+            "no_clear_difference": False,
+            "duration_ms": 1234,
+            "preference_tags": ["style_match"],
+        },
+        headers={"X-Idempotency-Key": "w3-style-feedback-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["style_feedback_recorded"] is True
+    session.refresh(gate)
+    feedback = gate.details_json["style_feedback"]
+    assert feedback["preference_tags"] == ["style_match"]
+    assert feedback["style_attributed"] is True
+    assert feedback["policy_evidence_eligible"] is False
+    assert gate.status == "resolved"
+    history = gate.details_json["decision_history"]
+    assert history[-1]["duration_ms"] == 1234
+    assert history[-1]["style_feedback_id"] == feedback["feedback_id"]
+
+
+def test_selection_rejects_unknown_feedback_reason(client, session) -> None:
+    _seed_scene(session)
+    row_ids = ["w3_cand_reason"]
+    _seed_manual_gate(session, row_ids, row_ids)
+
+    response = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{row_ids[0]}/select",
+        json={"preference_tags": ["imitate_author_identity"]},
+        headers={"X-Idempotency-Key": "w3-style-feedback-invalid"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_candidate_gate_excludes_a_candidate_already_proven_to_copy_reference(
+    session,
+) -> None:
+    _seed_scene(session)
+    copied = SimpleNamespace(
+        row_id="copy",
+        content="一段已经被本地连续重叠检测确认的候选正文。",
+        ranking_audit={"plagiarism_checked": True, "plagiarism_passed": False},
+    )
+    safe = SimpleNamespace(
+        row_id="safe",
+        content="另一段没有复刻来源文本的候选正文。",
+        ranking_audit={"plagiarism_checked": True, "plagiarism_passed": True},
+    )
+
+    offered = Orchestrator(session)._offer_candidates_for_selection(
+        session.get(SceneCard, SCENE_ID),
+        session.get(SceneRunState, SCENE_ID),
+        {},
+        [copied, safe],
+    )
+
+    assert offered == ["safe"]
+    assert _selection_gate(session).details_json["candidate_row_ids"] == ["safe"]
 
 
 def test_standard_scene_does_not_pause(session) -> None:
@@ -260,7 +384,10 @@ def test_adopt_refuses_before_selection(client, session) -> None:
 
 # ---------- 盲化视图 ----------
 
-def _seed_manual_gate(session, row_ids: list[str], blinded: list[str]) -> HumanReviewEvent:
+
+def _seed_manual_gate(
+    session, row_ids: list[str], blinded: list[str]
+) -> HumanReviewEvent:
     for i, row_id in enumerate(row_ids):
         session.add(
             SceneDraft(
@@ -299,7 +426,9 @@ def _seed_manual_gate(session, row_ids: list[str], blinded: list[str]) -> HumanR
     return event
 
 
-def test_blinded_candidates_view_strips_scores_and_uses_blinded_order(client, session) -> None:
+def test_blinded_candidates_view_strips_scores_and_uses_blinded_order(
+    client, session
+) -> None:
     _seed_scene(session)
     row_ids = ["w3_cand_a", "w3_cand_b", "w3_cand_c"]
     blinded = ["w3_cand_b", "w3_cand_c", "w3_cand_a"]
@@ -315,12 +444,15 @@ def test_blinded_candidates_view_strips_scores_and_uses_blinded_order(client, se
         assert candidate["content"]  # 展示完整正文，不只预览
 
     # 作者主动展开：附分数但不得重排（分数只做标注，不做默认排序）
-    scored = client.get(f"/api/v1/scenes/{SCENE_ID}/style-candidates?include_scores=true").json()["data"]
+    scored = client.get(
+        f"/api/v1/scenes/{SCENE_ID}/style-candidates?include_scores=true"
+    ).json()["data"]
     assert [c["row_id"] for c in scored["candidates"]] == blinded
     assert all("adversarial_score" in c for c in scored["candidates"])
 
 
 # ---------- 终选锁定与重开 ----------
+
 
 def test_select_locks_and_reopen_allows_change(client, session) -> None:
     _seed_scene(session)
@@ -372,7 +504,10 @@ def test_select_locks_and_reopen_allows_change(client, session) -> None:
     assert details["selected_row_id"] == "w3_cand_b"
     history = details.get("decision_history") or []
     assert any(entry.get("action") == "reopen" for entry in history)
-    assert any(entry.get("action") == "select" and entry.get("row_id") == "w3_cand_a" for entry in history)
+    assert any(
+        entry.get("action") == "select" and entry.get("row_id") == "w3_cand_a"
+        for entry in history
+    )
 
 
 def test_select_outside_gate_candidates_rejected(client, session) -> None:
@@ -401,6 +536,7 @@ def test_select_outside_gate_candidates_rejected(client, session) -> None:
 
 
 # ---------- resume：选择后安全续跑 ----------
+
 
 def test_resume_requires_selection(client, session) -> None:
     _seed_scene(session)
@@ -453,11 +589,16 @@ def test_select_then_resume_archives_the_chosen_candidate(client, session) -> No
     if final.content != chosen_content:
         from novel_system.db.models import AttemptTracker
 
-        attempts = session.execute(
-            select(AttemptTracker).where(AttemptTracker.scene_id == SCENE_ID)
-        ).scalars().all()
+        attempts = (
+            session.execute(
+                select(AttemptTracker).where(AttemptTracker.scene_id == SCENE_ID)
+            )
+            .scalars()
+            .all()
+        )
         assert any(
-            (attempt.details_json or {}).get("source_style_draft_row_id") == chosen_row_id
+            (attempt.details_json or {}).get("source_style_draft_row_id")
+            == chosen_row_id
             for attempt in attempts
         ), "修订稿的来源必须是作者选中稿"
 
@@ -468,7 +609,11 @@ def test_select_then_resume_archives_the_chosen_candidate(client, session) -> No
         headers={"X-Idempotency-Key": "w3-resume-2"},
     )
     assert again.status_code in (200, 409)
-    finals = session.execute(select(FinalScene).where(FinalScene.scene_id == SCENE_ID)).scalars().all()
+    finals = (
+        session.execute(select(FinalScene).where(FinalScene.scene_id == SCENE_ID))
+        .scalars()
+        .all()
+    )
     assert len(finals) == 1
 
     session.refresh(gate)
@@ -486,11 +631,14 @@ def test_selection_resume_surfaces_lifecycle_budget_boundary_as_recoverable_payl
     session.commit()
     gate = _selection_gate(session)
     chosen_row_id = gate.details_json["candidate_row_ids"][0]
-    assert client.post(
-        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
-        json={},
-        headers={"X-Idempotency-Key": "w3-select-budget-boundary"},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+            json={},
+            headers={"X-Idempotency-Key": "w3-select-budget-boundary"},
+        ).status_code
+        == 200
+    )
 
     def reject_at_budget(self, scene_id: str):  # noqa: ANN001, ANN202
         raise LLMAccountingRejected(
@@ -498,7 +646,9 @@ def test_selection_resume_surfaces_lifecycle_budget_boundary_as_recoverable_payl
             "scene token budget exhausted before dispatch",
         )
 
-    monkeypatch.setattr(Orchestrator, "_resume_after_selection_pipeline", reject_at_budget)
+    monkeypatch.setattr(
+        Orchestrator, "_resume_after_selection_pipeline", reject_at_budget
+    )
     resumed = client.post(
         f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
         json={},
@@ -546,15 +696,20 @@ def test_select_then_resume_accepts_completed_de_template_candidate_without_repl
     )
     state = session.get(SceneRunState, SCENE_ID)
     work_items = state.run_checkpoint_json["artifact_refs"]["style_work_items"]
-    chosen_item = next(item for item in work_items if item["final"]["row_id"] == chosen.row_id)
+    chosen_item = next(
+        item for item in work_items if item["final"]["row_id"] == chosen.row_id
+    )
     assert chosen_item["de_template_outcome"]["status"] == "completed"
     assert chosen_item["base"]["row_id"] != chosen_item["final"]["row_id"]
 
-    assert client.post(
-        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen.row_id}/select",
-        json={},
-        headers={"X-Idempotency-Key": "w3-select-de-template"},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen.row_id}/select",
+            json={},
+            headers={"X-Idempotency-Key": "w3-select-de-template"},
+        ).status_code
+        == 200
+    )
     style_rows_before = list(
         session.execute(
             select(SceneDraft.row_id)
@@ -584,26 +739,32 @@ def test_select_then_resume_accepts_completed_de_template_candidate_without_repl
 
     assert resumed.status_code == 200, resumed.text
     assert resumed.json()["data"]["scene_status"] == "archived"
-    assert list(
-        session.execute(
-            select(SceneDraft.row_id)
-            .where(
-                SceneDraft.scene_id == SCENE_ID,
-                SceneDraft.stage.in_(("style_draft", "de_template")),
-            )
-            .order_by(SceneDraft.row_id)
-        ).scalars()
-    ) == style_rows_before
-    assert list(
-        session.execute(
-            select(LlmCall.llm_call_id)
-            .where(
-                LlmCall.scene_id == SCENE_ID,
-                LlmCall.step.in_(("style_draft", "de_template")),
-            )
-            .order_by(LlmCall.llm_call_id)
-        ).scalars()
-    ) == style_call_ids_before
+    assert (
+        list(
+            session.execute(
+                select(SceneDraft.row_id)
+                .where(
+                    SceneDraft.scene_id == SCENE_ID,
+                    SceneDraft.stage.in_(("style_draft", "de_template")),
+                )
+                .order_by(SceneDraft.row_id)
+            ).scalars()
+        )
+        == style_rows_before
+    )
+    assert (
+        list(
+            session.execute(
+                select(LlmCall.llm_call_id)
+                .where(
+                    LlmCall.scene_id == SCENE_ID,
+                    LlmCall.step.in_(("style_draft", "de_template")),
+                )
+                .order_by(LlmCall.llm_call_id)
+            ).scalars()
+        )
+        == style_call_ids_before
+    )
 
 
 def test_resume_rejects_selected_candidate_with_non_style_lineage_stage_without_provider_replay(
@@ -615,11 +776,14 @@ def test_resume_rejects_selected_candidate_with_non_style_lineage_stage_without_
     session.commit()
     gate = _selection_gate(session)
     chosen_row_id = gate.details_json["candidate_row_ids"][0]
-    assert client.post(
-        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
-        json={},
-        headers={"X-Idempotency-Key": "w3-select-invalid-stage"},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+            json={},
+            headers={"X-Idempotency-Key": "w3-select-invalid-stage"},
+        ).status_code
+        == 200
+    )
     chosen = session.get(SceneDraft, chosen_row_id)
     chosen.stage = "soft_patch"
     session.commit()
@@ -647,11 +811,14 @@ def test_selection_resume_validates_budget_checkpoint_before_provider_work(
     session.commit()
     gate = _selection_gate(session)
     chosen_row_id = gate.details_json["candidate_row_ids"][0]
-    assert client.post(
-        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
-        json={},
-        headers={"X-Idempotency-Key": f"w3-select-budget-{mutation}"},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+            json={},
+            headers={"X-Idempotency-Key": f"w3-select-budget-{mutation}"},
+        ).status_code
+        == 200
+    )
     state = session.get(SceneRunState, SCENE_ID)
     if mutation == "budget":
         state.scene_token_budget += 1
@@ -673,7 +840,9 @@ def test_selection_resume_validates_budget_checkpoint_before_provider_work(
     assert session.scalar(select(func.count()).select_from(LlmCall)) == before_calls
 
 
-def test_resume_rejects_selected_candidate_whose_durable_source_was_tampered(client, session) -> None:
+def test_resume_rejects_selected_candidate_whose_durable_source_was_tampered(
+    client, session
+) -> None:
     _seed_scene(session)
     _make_orchestrator(session).run_scene(SCENE_ID)
     session.commit()
@@ -699,17 +868,22 @@ def test_resume_rejects_selected_candidate_whose_durable_source_was_tampered(cli
     assert resumed.json()["error"]["code"] == "RUN_CHECKPOINT_CORRUPT"
 
 
-def test_resume_reports_missing_checkpoint_candidate_without_provider_replay(client, session) -> None:
+def test_resume_reports_missing_checkpoint_candidate_without_provider_replay(
+    client, session
+) -> None:
     _seed_scene(session)
     _make_orchestrator(session).run_scene(SCENE_ID)
     session.commit()
     gate = _selection_gate(session)
     chosen_row_id = gate.details_json["candidate_row_ids"][0]
-    assert client.post(
-        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
-        json={},
-        headers={"X-Idempotency-Key": "w3-select-missing-candidate"},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+            json={},
+            headers={"X-Idempotency-Key": "w3-select-missing-candidate"},
+        ).status_code
+        == 200
+    )
     session.delete(session.get(SceneDraft, chosen_row_id))
     session.commit()
     before_calls = session.scalar(select(func.count()).select_from(LlmCall))
@@ -725,17 +899,22 @@ def test_resume_reports_missing_checkpoint_candidate_without_provider_replay(cli
     assert session.scalar(select(func.count()).select_from(LlmCall)) == before_calls
 
 
-def test_resume_validates_neutral_prefix_before_post_selection_provider_work(client, session) -> None:
+def test_resume_validates_neutral_prefix_before_post_selection_provider_work(
+    client, session
+) -> None:
     _seed_scene(session)
     _make_orchestrator(session).run_scene(SCENE_ID)
     session.commit()
     gate = _selection_gate(session)
     chosen_row_id = gate.details_json["candidate_row_ids"][0]
-    assert client.post(
-        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
-        json={},
-        headers={"X-Idempotency-Key": "w3-select-missing-neutral"},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+            json={},
+            headers={"X-Idempotency-Key": "w3-select-missing-neutral"},
+        ).status_code
+        == 200
+    )
     state = session.get(SceneRunState, SCENE_ID)
     neutral_row_id = state.run_checkpoint_json["artifact_refs"]["neutral_draft_row_id"]
     session.delete(session.get(SceneDraft, neutral_row_id))
@@ -753,19 +932,26 @@ def test_resume_validates_neutral_prefix_before_post_selection_provider_work(cli
     assert session.scalar(select(func.count()).select_from(LlmCall)) == before_calls
 
 
-def test_resume_validates_hard_qc_report_content_hash_before_provider_work(client, session) -> None:
+def test_resume_validates_hard_qc_report_content_hash_before_provider_work(
+    client, session
+) -> None:
     _seed_scene(session)
     _make_orchestrator(session).run_scene(SCENE_ID)
     session.commit()
     gate = _selection_gate(session)
     chosen_row_id = gate.details_json["candidate_row_ids"][0]
-    assert client.post(
-        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
-        json={},
-        headers={"X-Idempotency-Key": "w3-select-corrupt-hard-report"},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+            json={},
+            headers={"X-Idempotency-Key": "w3-select-corrupt-hard-report"},
+        ).status_code
+        == 200
+    )
     state = session.get(SceneRunState, SCENE_ID)
-    report = session.get(QcReport, state.run_checkpoint_json["artifact_refs"]["qc_report_id"])
+    report = session.get(
+        QcReport, state.run_checkpoint_json["artifact_refs"]["qc_report_id"]
+    )
     report.rewrite_brief_json = [{"instruction": "tampered after checkpoint"}]
     session.commit()
     before_calls = session.scalar(select(func.count()).select_from(LlmCall))
@@ -791,13 +977,21 @@ def test_resume_uses_contiguous_hashes_when_first_generated_candidate_is_filtere
     _seed_scene(session)
     original_scan = source_safety.scan_source_safety
 
-    def _filter_first_style_candidate(text: str, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+    def _filter_first_style_candidate(
+        text: str, *args, **kwargs
+    ):  # noqa: ANN002, ANN003, ANN202
         if "draft #2" in text:
             return {"safe": False, "matches": [{"rule": "test-filter"}]}
         return original_scan(text, *args, **kwargs)
 
-    monkeypatch.setattr(source_safety, "scan_source_safety", _filter_first_style_candidate)
-    monkeypatch.setattr(Orchestrator, "_best_of_n_count", staticmethod(lambda contract, criticality=None: 2))
+    monkeypatch.setattr(
+        source_safety, "scan_source_safety", _filter_first_style_candidate
+    )
+    monkeypatch.setattr(
+        Orchestrator,
+        "_best_of_n_count",
+        staticmethod(lambda contract, criticality=None: 2),
+    )
     _make_orchestrator(session).run_scene(SCENE_ID)
     session.commit()
     gate = _selection_gate(session)
@@ -808,11 +1002,14 @@ def test_resume_uses_contiguous_hashes_when_first_generated_candidate_is_filtere
     assert offered[0] != all_candidates[0]
     chosen_row_id = offered[0]
 
-    assert client.post(
-        f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
-        json={},
-        headers={"X-Idempotency-Key": "w3-select-filtered-first"},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+            json={},
+            headers={"X-Idempotency-Key": "w3-select-filtered-first"},
+        ).status_code
+        == 200
+    )
     resumed = client.post(
         f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
         json={},

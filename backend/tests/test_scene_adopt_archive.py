@@ -138,6 +138,11 @@ def test_adopt_exact_author_revision_archives_the_submitted_text_not_stale_pipel
     assert saved.revision_no == data["draft_revision_no"]
     assert data["author_draft"]["revision_no"] == data["draft_revision_no"]
     assert data["author_draft"]["canonical_dirty"] is False
+    assert data["canon_continuity"] == {
+        "status": "unavailable",
+        "complete": False,
+        "reason": "projectless_legacy_scene",
+    }
 
 
 def test_adopt_without_any_draft_409(client, session):

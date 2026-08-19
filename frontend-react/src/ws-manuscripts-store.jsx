@@ -125,6 +125,66 @@ const WsManuStore = {
     return result;
   },
 
+  /** 正文抽取结果只有经过作者裁决，才会成为后续生成可见的正史事实。 */
+  async decideCanonCandidate(projectId, chapterId, candidateId, decision) {
+    if (!projectId || !chapterId || !candidateId) throw new Error("缺少正史候选定位信息。");
+    const result = await apiPost(
+      `/api/v1/projects/${projectId}/canon/candidates/${candidateId}/decision`,
+      decision,
+    );
+    this.invalidate(chapterId);
+    const loaded = await this.refresh(chapterId);
+    if (!loaded || loaded.status !== "ready") {
+      throw new Error((loaded && loaded.error && loaded.error.message) || "候选已处理，但正史状态刷新失败。");
+    }
+    return result;
+  },
+
+  /** 所有候选裁决结束后，由作者显式确认整场事实清单已经核对完整。 */
+  async verifySceneCanon(projectId, chapterId, sceneId, verification) {
+    if (!projectId || !chapterId || !sceneId) throw new Error("缺少场景定位信息，无法确认正史。");
+    const result = await apiPost(
+      `/api/v1/projects/${projectId}/canon/scenes/${sceneId}/verify`,
+      verification,
+    );
+    this.invalidate(chapterId);
+    const loaded = await this.refresh(chapterId);
+    if (!loaded || loaded.status !== "ready") {
+      throw new Error((loaded && loaded.error && loaded.error.message) || "场景已确认，但正史状态刷新失败。");
+    }
+    return result;
+  },
+
+  /** 作者可从当前终稿的原文证据手工补录模型漏掉的持久事实。 */
+  async createCanonCandidate(projectId, chapterId, sceneId, candidate) {
+    if (!projectId || !chapterId || !sceneId) throw new Error("缺少场景定位信息，无法补录事实。");
+    const result = await apiPost(
+      `/api/v1/projects/${projectId}/canon/scenes/${sceneId}/candidates`,
+      candidate,
+    );
+    this.invalidate(chapterId);
+    const loaded = await this.refresh(chapterId);
+    if (!loaded || loaded.status !== "ready") {
+      throw new Error((loaded && loaded.error && loaded.error.message) || "事实已补录，但正史状态刷新失败。");
+    }
+    return result;
+  },
+
+  /** 作者主动请求一次真实模型提取；自动提取关闭/失败时仍有明确恢复入口。 */
+  async extractSceneCanon(projectId, chapterId, sceneId) {
+    if (!projectId || !chapterId || !sceneId) throw new Error("缺少场景定位信息，无法提取事实。");
+    const result = await apiPost(
+      `/api/v1/projects/${projectId}/canon/scenes/${sceneId}/extract`,
+      {},
+    );
+    this.invalidate(chapterId);
+    const loaded = await this.refresh(chapterId);
+    if (!loaded || loaded.status !== "ready") {
+      throw new Error((loaded && loaded.error && loaded.error.message) || "提取已完成，但正史状态刷新失败。");
+    }
+    return result;
+  },
+
   /** 同步读：{ completion, assembled, aggregate, scenes:[{sceneId, paras, live, charCount}] } | null */
   body(chapterId) {
     const hit = manuCache[chapterId];
@@ -146,6 +206,7 @@ const WsManuStore = {
       completion: detail.completion_status || "empty",
       assembled: detail.assembled || null,
       aggregate: detail.aggregate || null,
+      canonContinuity: detail.canon_continuity || null,
       missingSceneIds: (detail.assembled && detail.assembled.missing_scene_ids) || [],
       scenes,
     };

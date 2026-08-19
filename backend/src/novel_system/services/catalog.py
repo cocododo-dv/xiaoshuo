@@ -230,7 +230,7 @@ class CatalogService:
                     ChapterManuscriptService,
                 )
 
-                ChapterManuscriptService(self.session).require_complete(chapter_id)
+                ChapterManuscriptService(self.session).require_publishable(chapter_id)
             updates["state"] = state
         if "words_target" in body:
             value = body["words_target"]

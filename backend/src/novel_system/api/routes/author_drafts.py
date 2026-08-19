@@ -44,7 +44,7 @@ class AuthorDraftSaveRequest(StrictAuthorDraftRequest):
 
 class CanonicalPromotionRequest(StrictAuthorDraftRequest):
     # Keep these optional at the transport boundary so the domain service can
-    # retain its existing 400/409 error codes for omitted reconciliation data.
+    # apply the fail-closed ``requires_reconcile`` default.
     base_revision_no: int | None = Field(default=None, ge=1, le=INT64_MAX)
     expected_current_final_scene_row_id: Identifier | None = None
     narrative_effect: str | None = Field(default=None, max_length=64)
@@ -207,8 +207,9 @@ def promote_author_draft_canonical(
 ):
     """Promote one saved scene AuthorDraft revision into canonical FinalScene.
 
-    The v1 safety subset accepts only an explicit ``facts_unchanged`` assertion.
-    Revisions that need narrative-event reconciliation fail closed with 409.
+    ``requires_reconcile`` publishes the exact author revision while keeping its
+    canon ledger pending. ``facts_unchanged`` is accepted only when the previous
+    final already has a complete, hash-matched canon commit.
     """
 
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"

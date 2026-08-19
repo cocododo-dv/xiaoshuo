@@ -20,6 +20,7 @@ from novel_system.api.routes import (
     author_drafts,
     author_desk,
     catalog,
+    canon_continuity,
     chapter_manuscripts,
     chapter_plan,
     chapters,
@@ -397,6 +398,7 @@ def create_app() -> FastAPI:
         )
 
     app.include_router(catalog.router)
+    app.include_router(canon_continuity.router)
     app.include_router(chapter_plan.router)
     app.include_router(trash.router)
     app.include_router(chapters.router)

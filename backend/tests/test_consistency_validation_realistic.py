@@ -81,7 +81,12 @@ def _seed(session) -> NarrativeEventLog:
     session.flush()
 
     log = NarrativeEventLog(session)
-    common = dict(project_id=PROJECT_ID, chapter_id=CHAPTER_ID)
+    common = dict(
+        project_id=PROJECT_ID,
+        chapter_id=CHAPTER_ID,
+        authority_status="accepted",
+        source_kind="test_fixture",
+    )
     # 林远: alive, 北境, 右臂已断, 失去断剑
     log.log_event(**common, scene_id=SETUP_SCENE_IDS[0], event_type="character_state",
                   entity_type="character", entity_id="林远", fact_key="alive", fact_value="alive")
@@ -343,6 +348,7 @@ class TestHardQcReadsFullStateDespitePovProjection:
             project_id=PROJECT_ID, chapter_id=CHAPTER_ID, scene_id=SETUP_SCENE_IDS[2],
             event_type="character_state", entity_type="character", entity_id="沧澜城城主",
             fact_key="secret_held_by", fact_value="城主藏了传国玉玺",
+            authority_status="accepted", source_kind="test_fixture",
         )
         session.commit()
 

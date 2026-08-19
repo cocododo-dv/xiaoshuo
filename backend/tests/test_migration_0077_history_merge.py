@@ -13,7 +13,7 @@ from novel_system.tools.database_preflight import inspect_database
 REAL_ONLY_HEAD = "20260717_0075"
 CHAPTERING_HEAD = "20260725_0076"
 MERGED_HEAD = "20260802_0077"
-CURRENT_HEAD = "20260805_0081"
+CURRENT_HEAD = "20260818_0082"
 
 
 def _config() -> Config:

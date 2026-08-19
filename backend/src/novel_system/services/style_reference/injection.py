@@ -20,7 +20,9 @@ Strategy 实现摘要:
 
 from __future__ import annotations
 
+import hashlib
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -31,6 +33,10 @@ from novel_system.services.style_reference.config_loader import (
 )
 from novel_system.services.style_reference.metrics_recorder import MetricsRecorder
 from novel_system.services.style_reference.repository import StyleReferenceRepository
+from novel_system.services.style_reference.runtime_contract import (
+    StyleGenerationContext,
+    validate_style_runtime_contract,
+)
 from novel_system.services.style_reference.schemas import (
     InjectionStrategy,
     SystemPromptFragments,
@@ -65,10 +71,13 @@ def injection_task_defaults() -> list[dict[str, Any]]:
         {
             "task_type": task.value,
             "default_strategy": strategy.value,
-            "refresh_every_chars": refresh if task is TaskType.LONG_FORM_CONTINUATION else 0,
+            "refresh_every_chars": (
+                refresh if task is TaskType.LONG_FORM_CONTINUATION else 0
+            ),
         }
         for task, strategy in DEFAULT_STRATEGY_BY_TASK.items()
     ]
+
 
 # 预算单位是**字符数**（配置注释：汉字 ~1 字 = 1 token 的粗估），
 # 截断走 _truncate_lines(text, max_chars)——键名沿用 *_max_tokens 仅为配置兼容（审计 P-20）。
@@ -117,7 +126,9 @@ def _truncate_lines(text: str, max_chars: int) -> str:
     return text[:cut]
 
 
-def _cap_fragments(frag: "SystemPromptFragments", budget: int) -> "SystemPromptFragments":
+def _cap_fragments(
+    frag: "SystemPromptFragments", budget: int
+) -> "SystemPromptFragments":
     """PR-16 叠加专属:按 ratio(0.6/0.3/0.1)硬截 3 block(不管 strategy)。
 
     anti_plagiarism_block 是红线段,**永不截断**,原样保留。
@@ -129,7 +140,9 @@ def _cap_fragments(frag: "SystemPromptFragments", budget: int) -> "SystemPromptF
     return SystemPromptFragments(
         positive_block=_truncate_lines(frag.positive_block, int(budget * 0.6)),
         forbidden_block=_truncate_lines(frag.forbidden_block, int(budget * 0.3)),
-        metric_anchor_block=_truncate_lines(frag.metric_anchor_block, int(budget * 0.1)),
+        metric_anchor_block=_truncate_lines(
+            frag.metric_anchor_block, int(budget * 0.1)
+        ),
         anti_plagiarism_block=frag.anti_plagiarism_block,
         strategy=frag.strategy,
     )
@@ -150,7 +163,9 @@ def _merge_forbidden_blocks(*blocks: str) -> str:
     return "[禁忌模式]\n" + "\n".join(items)
 
 
-def _merge_fragments(layers_frags: list["SystemPromptFragments"]) -> "SystemPromptFragments":
+def _merge_fragments(
+    layers_frags: list["SystemPromptFragments"],
+) -> "SystemPromptFragments":
     """PR-19 — 多层合并(由泛到具体):positive 顺序拼 / forbidden 全层去重 /
     metric 最具体优先(反向取首个非空)/ strategy 取最具体层。
 
@@ -166,7 +181,7 @@ def _merge_fragments(layers_frags: list["SystemPromptFragments"]) -> "SystemProm
         if not block:
             continue
         if positive_parts and block.startswith("[正向风格特征]"):
-            block = block[len("[正向风格特征]"):].lstrip("\n")
+            block = block[len("[正向风格特征]") :].lstrip("\n")
             if not block:
                 continue
         positive_parts.append(block)
@@ -217,7 +232,7 @@ def ordered_character_ids(pov_id, onstage_ids) -> list[str]:
     ordered: list[str] = []
     if pov_id:
         ordered.append(pov_id)
-    for cid in (onstage_ids or []):
+    for cid in onstage_ids or []:
         if cid and cid != pov_id:
             ordered.append(cid)
     return ordered
@@ -263,6 +278,11 @@ class InjectionService:
         self._last_binding_id: str | None = None
         self._last_base_binding_id: str | None = None
         self._last_layer_count: int = 0
+        self._last_runtime_contract_hash: str | None = None
+        self._last_runtime_profile_ids: list[str] = []
+        self._last_runtime_binding_ids: list[str] = []
+        self._last_context_audit: dict[str, Any] | None = None
+        self.last_runtime_audit: dict[str, Any] | None = None
         # §9 Defect B: drift-corrective few-shot context — set by caller before
         # fragments_for() to override the default ptype priority with dimension-targeted
         # exemplars ("show, don't tell" drift correction).
@@ -287,10 +307,84 @@ class InjectionService:
         (scene > character > project > global);character_ids 为 onstage 多角色匹配集。
         """
         fragments = self._resolve_fragments(
-            project_id, task_type, character_ids=character_ids, scene_id=scene_id,
+            project_id,
+            task_type,
+            character_ids=character_ids,
+            scene_id=scene_id,
         )
         self._record_invocation(project_id, task_type, fragments)
         return fragments
+
+    def fragments_for_contract(
+        self,
+        contract: dict[str, Any],
+        *,
+        project_id: str | None,
+        context: StyleGenerationContext | None = None,
+        drift_ptype_priority: list[str] | None = None,
+    ) -> SystemPromptFragments:
+        """Render the exact frozen bundle lineage instead of re-resolving live bindings."""
+        frozen = validate_style_runtime_contract(contract)
+        task_type = str(frozen["task_type"])
+        layers = list(frozen["layers"])
+        rendered = [
+            self._render_contract_layer(
+                layer,
+                context_text=context.query_text if context is not None else None,
+                drift_ptype_priority=drift_ptype_priority,
+            )
+            for layer in layers
+        ]
+        if len(rendered) == 1:
+            fragments = rendered[0]
+        else:
+            total = self._budget_total()
+            weights = list(range(1, len(rendered) + 1))
+            weight_sum = sum(weights)
+            fragments = _merge_fragments(
+                [
+                    _cap_fragments(
+                        fragment,
+                        total * weights[index] // weight_sum,
+                    )
+                    for index, fragment in enumerate(rendered)
+                ]
+            )
+
+        self._last_profile_id = str(layers[-1]["profile"]["profile_id"])
+        self._last_binding_id = str(layers[-1]["binding"]["binding_id"])
+        self._last_base_binding_id = (
+            str(layers[0]["binding"]["binding_id"]) if len(layers) > 1 else None
+        )
+        self._last_layer_count = len(layers)
+        self._last_runtime_contract_hash = str(frozen["contract_hash"])
+        self._last_runtime_profile_ids = list(frozen["profile_ids"])
+        self._last_runtime_binding_ids = list(frozen["binding_ids"])
+        self._last_context_audit = context.audit_dict() if context is not None else None
+        self._record_invocation(project_id, task_type, fragments)
+        return fragments
+
+    def _render_contract_layer(
+        self,
+        layer: dict[str, Any],
+        *,
+        context_text: str | None,
+        drift_ptype_priority: list[str] | None,
+    ) -> SystemPromptFragments:
+        profile = SimpleNamespace(**dict(layer["profile"]))
+        binding = dict(layer["binding"])
+        try:
+            strategy = InjectionStrategy(str(binding["strategy"]))
+        except ValueError:
+            strategy = InjectionStrategy.A
+        return self._render(
+            profile,
+            strategy,
+            dict(binding.get("config_json") or {}),
+            drift_ptype_priority=drift_ptype_priority,
+            context_text=context_text,
+            frozen_layer=layer,
+        )
 
     def _resolve_fragments(
         self,
@@ -303,7 +397,10 @@ class InjectionService:
         if not project_id and not character_ids and not scene_id:
             return SystemPromptFragments()
         layers = self.resolve_binding_layers(
-            project_id, task_type, character_ids=character_ids, scene_id=scene_id,
+            project_id,
+            task_type,
+            character_ids=character_ids,
+            scene_id=scene_id,
         )
         if not layers:
             return SystemPromptFragments()
@@ -320,7 +417,7 @@ class InjectionService:
             for i, b in enumerate(layers)
         ]
         merged = _merge_fragments(capped)
-        self._last_profile_id = layers[-1].profile_id      # 最具体层
+        self._last_profile_id = layers[-1].profile_id  # 最具体层
         self._last_binding_id = layers[-1].binding_id
         self._last_base_binding_id = layers[0].binding_id  # 最泛层
         self._last_layer_count = n
@@ -348,7 +445,9 @@ class InjectionService:
         except ValueError:
             strategy = InjectionStrategy.A
         return self._render(
-            profile, strategy, binding.config_json or {},
+            profile,
+            strategy,
+            binding.config_json or {},
             drift_ptype_priority=self.drift_ptype_priority,
             context_text=self.context_text,
         )
@@ -364,6 +463,25 @@ class InjectionService:
     ) -> None:
         prefix = fragments.to_system_prompt_prefix()
         outcome = "hit" if prefix else "miss"
+        runtime_profile_ids = list(self._last_runtime_profile_ids)
+        if not runtime_profile_ids and self._last_profile_id:
+            runtime_profile_ids = [self._last_profile_id]
+        runtime_binding_ids = list(self._last_runtime_binding_ids)
+        if not runtime_binding_ids and self._last_binding_id:
+            runtime_binding_ids = [self._last_binding_id]
+        runtime_audit = {
+            "outcome": outcome,
+            "task_type": task_type,
+            "strategy": fragments.strategy.value,
+            "contract_hash": self._last_runtime_contract_hash,
+            "profile_ids": runtime_profile_ids,
+            "binding_ids": runtime_binding_ids,
+            "layer_count": self._last_layer_count or (1 if prefix else 0),
+            "context": self._last_context_audit,
+            "prefix_chars": len(prefix),
+            "prefix_sha256": hashlib.sha256(prefix.encode("utf-8")).hexdigest(),
+        }
+        self.last_runtime_audit = runtime_audit
         MetricsRecorder.record(
             self.session,
             "injection_invoked",
@@ -379,6 +497,9 @@ class InjectionService:
                 "layered": self._last_base_binding_id is not None,
                 "base_binding_id": self._last_base_binding_id,
                 "layer_count": self._last_layer_count or (1 if prefix else 0),
+                "runtime_contract_hash": self._last_runtime_contract_hash,
+                "runtime_profile_ids": runtime_profile_ids,
+                "context": self._last_context_audit,
             },
         )
         # 用完即清,避免下一次 invocation 错误复用
@@ -386,6 +507,10 @@ class InjectionService:
         self._last_binding_id = None
         self._last_base_binding_id = None
         self._last_layer_count = 0
+        self._last_runtime_contract_hash = None
+        self._last_runtime_profile_ids = []
+        self._last_runtime_binding_ids = []
+        self._last_context_audit = None
 
     # ------------------------------------------------------------- binding 选取
     def _active_bindings(self, task_type: str) -> list:
@@ -432,14 +557,21 @@ class InjectionService:
 
         def _rank(b) -> int:
             return _binding_rank(
-                b, project_id=project_id, character_ids=character_ids, scene_id=scene_id,
+                b,
+                project_id=project_id,
+                character_ids=character_ids,
+                scene_id=scene_id,
             )
 
         candidates = [b for b in bindings if _rank(b) < 99]
         if not candidates:
             return None
         candidates.sort(
-            key=lambda b: (_rank(b), _char_order(b, character_ids), -1 * _ts_to_int(b.created_at))
+            key=lambda b: (
+                _rank(b),
+                _char_order(b, character_ids),
+                -1 * _ts_to_int(b.created_at),
+            )
         )
         return candidates[0]
 
@@ -466,7 +598,10 @@ class InjectionService:
 
         def _rank(b) -> int:
             return _binding_rank(
-                b, project_id=project_id, character_ids=character_ids, scene_id=scene_id,
+                b,
+                project_id=project_id,
+                character_ids=character_ids,
+                scene_id=scene_id,
             )
 
         def _pick(allowed: set[int]):
@@ -474,7 +609,11 @@ class InjectionService:
             if not cands:
                 return None
             cands.sort(
-                key=lambda b: (_rank(b), _char_order(b, character_ids), -1 * _ts_to_int(b.created_at))
+                key=lambda b: (
+                    _rank(b),
+                    _char_order(b, character_ids),
+                    -1 * _ts_to_int(b.created_at),
+                )
             )
             return cands[0]
 
@@ -482,7 +621,10 @@ class InjectionService:
             """PR-20 — 全部 rank1 命中,pov 优先 + created_at 决平,按 character_id 去重(每角色一层)。"""
             cands = [b for b in bindings if _rank(b) == 1]
             cands.sort(
-                key=lambda b: (_char_order(b, character_ids), -1 * _ts_to_int(b.created_at))
+                key=lambda b: (
+                    _char_order(b, character_ids),
+                    -1 * _ts_to_int(b.created_at),
+                )
             )
             seen: set[str] = set()
             out = []
@@ -492,16 +634,16 @@ class InjectionService:
                     out.append(b)
             return out
 
-        base = _pick({2, 3})              # project > global(基底,单)
+        base = _pick({2, 3})  # project > global(基底,单)
         characters = _pick_all_characters()  # onstage 全配角,pov 优先(PR-20)
-        scene_b = _pick({0})              # scene(最具体,单)
+        scene_b = _pick({0})  # scene(最具体,单)
         layers = []
         if base is not None:
             layers.append(base)
         layers.extend(characters)
         if scene_b is not None:
             layers.append(scene_b)
-        return layers                     # 由泛到具体
+        return layers  # 由泛到具体
 
     def describe_binding_layers(
         self,
@@ -518,7 +660,10 @@ class InjectionService:
         """
         total = self._budget_total()
         layers = self.resolve_binding_layers(
-            project_id, task_type, character_ids=character_ids, scene_id=scene_id,
+            project_id,
+            task_type,
+            character_ids=character_ids,
+            scene_id=scene_id,
         )
         if not layers:
             return {"layers": [], "merged": None, "budget_total": total}
@@ -545,25 +690,35 @@ class InjectionService:
                 "metric_anchor_block": len(frag.metric_anchor_block),
             }
             profile = self.repo.get_profile(binding.profile_id)
-            out_layers.append({
-                "rank": rank_by_scope.get(binding.scope, 9),
-                "scope": binding.scope,
-                "scope_ref_id": binding.scope_ref_id,
-                "binding_id": binding.binding_id,
-                "profile_id": binding.profile_id,
-                "profile_title": getattr(profile, "title", None),
-                "strategy": binding.strategy,
-                "weight": weights[i],
-                "budget_chars": budgets[i],
-                "block_chars": block_chars,
-                "fragment_count": sum(1 for v in block_chars.values() if v),
-            })
+            out_layers.append(
+                {
+                    "rank": rank_by_scope.get(binding.scope, 9),
+                    "scope": binding.scope,
+                    "scope_ref_id": binding.scope_ref_id,
+                    "binding_id": binding.binding_id,
+                    "profile_id": binding.profile_id,
+                    "profile_title": getattr(profile, "title", None),
+                    "strategy": binding.strategy,
+                    "weight": weights[i],
+                    "budget_chars": budgets[i],
+                    "block_chars": block_chars,
+                    "fragment_count": sum(1 for v in block_chars.values() if v),
+                }
+            )
         prefix = merged.to_system_prompt_prefix()
-        strategy_val = merged.strategy.value if hasattr(merged.strategy, "value") else str(merged.strategy)
+        strategy_val = (
+            merged.strategy.value
+            if hasattr(merged.strategy, "value")
+            else str(merged.strategy)
+        )
         return {
             "layers": out_layers,
             "budget_total": total,
-            "merged": {"layer_count": n, "strategy": strategy_val, "prefix_chars": len(prefix)},
+            "merged": {
+                "layer_count": n,
+                "strategy": strategy_val,
+                "prefix_chars": len(prefix),
+            },
         }
 
     def _render(
@@ -574,24 +729,43 @@ class InjectionService:
         *,
         drift_ptype_priority: list[str] | None = None,
         context_text: str | None = None,
+        frozen_layer: dict[str, Any] | None = None,
     ) -> SystemPromptFragments:
         sub_dims_raw = config.get("sub_dimensions")
         sub_dims = [str(s) for s in sub_dims_raw] if sub_dims_raw else None
         positive = self._render_positive(profile)
-        forbidden = self._render_forbidden(profile, sub_dims=sub_dims)
+        forbidden = self._render_forbidden(
+            profile,
+            sub_dims=sub_dims,
+            frozen_findings=(
+                list(frozen_layer.get("forbidden_findings") or [])
+                if frozen_layer is not None
+                else None
+            ),
+        )
         metric = self._render_metric(profile)
         few_shot = ""
         rag_block = ""
 
         if strategy == InjectionStrategy.B:
-            positive, forbidden, metric = self._apply_budget(positive, forbidden, metric)
-            few_shot = self._render_few_shot(profile, drift_ptype_priority=drift_ptype_priority)
+            positive, forbidden, metric = self._apply_budget(
+                positive, forbidden, metric
+            )
+            few_shot = self._render_few_shot(
+                profile,
+                drift_ptype_priority=drift_ptype_priority,
+                frozen_layer=frozen_layer,
+            )
         elif strategy == InjectionStrategy.C:
             # 立项 C — 真召回:positive 全文 + forbidden 摘要 + RAG 检索片段(metric 不注)。
             # 空召回(无索引/无 query)时 rag_block="",C 优雅退化到 positive + forbidden 摘要。
             forbidden = self._summarize_forbidden(forbidden, max_chars=200)
             metric = ""
-            rag_block = self._render_rag(profile, context_text=context_text)
+            rag_block = self._render_rag(
+                profile,
+                context_text=context_text,
+                frozen_layer=frozen_layer,
+            )
         elif strategy == InjectionStrategy.MIXED:
             # PR-9 §"intensity 语义" — 0-100 缩放 ratio:0 → 0.3x, 50 → 0.9x, 100 → 1.5x;
             # 但三块截断额之和封顶 system_prompt_max_tokens(配置语义是 max,
@@ -607,25 +781,49 @@ class InjectionService:
             f_ratio = float(budget.get("forbidden_block_ratio", 0.3))
             m_ratio = float(budget.get("metric_anchor_block_ratio", 0.1))
             caps = {
-                "positive": int(total * p_ratio * scale) if config.get("include_positive", True) else 0,
-                "forbidden": int(total * f_ratio * scale) if config.get("include_forbidden", True) else 0,
-                "metric": int(total * m_ratio * scale) if config.get("include_metric", False) else 0,
+                "positive": (
+                    int(total * p_ratio * scale)
+                    if config.get("include_positive", True)
+                    else 0
+                ),
+                "forbidden": (
+                    int(total * f_ratio * scale)
+                    if config.get("include_forbidden", True)
+                    else 0
+                ),
+                "metric": (
+                    int(total * m_ratio * scale)
+                    if config.get("include_metric", False)
+                    else 0
+                ),
             }
             cap_sum = sum(caps.values())
             if cap_sum > total > 0:
                 shrink = total / cap_sum
                 caps = {k: int(v * shrink) for k, v in caps.items()}
-            positive = _truncate_lines(positive, caps["positive"]) if caps["positive"] else ""
-            forbidden = _truncate_lines(forbidden, caps["forbidden"]) if caps["forbidden"] else ""
+            positive = (
+                _truncate_lines(positive, caps["positive"]) if caps["positive"] else ""
+            )
+            forbidden = (
+                _truncate_lines(forbidden, caps["forbidden"])
+                if caps["forbidden"]
+                else ""
+            )
             metric = _truncate_lines(metric, caps["metric"]) if caps["metric"] else ""
             # mixed = A + B:few-shot 样例块也随混合策略注入(自带 few_shot_block_max_chars
             # 预算截断,不参与上面三块的比例分配)
-            few_shot = self._render_few_shot(profile, drift_ptype_priority=drift_ptype_priority)
+            few_shot = self._render_few_shot(
+                profile,
+                drift_ptype_priority=drift_ptype_priority,
+                frozen_layer=frozen_layer,
+            )
 
         # Wave 7 §5.9 — few-shot 例句与 RAG 召回片段是参考书**原文派生物**,进 LLM 前
         # 必须先中和指令模式再用「非指令数据」边界封装(主防线),堵不可信文本提示词注入。
         # positive/forbidden/metric 是抽象特征(非原文),不封装;anti_plagiarism 是我方红线。
-        from novel_system.services.style_reference.untrusted_data import secure_reference_block
+        from novel_system.services.style_reference.untrusted_data import (
+            secure_reference_block,
+        )
 
         if few_shot.strip():
             few_shot = secure_reference_block(few_shot, kind="few_shot")
@@ -642,7 +840,14 @@ class InjectionService:
             or few_shot.strip()
             or rag_block.strip()
         ):
-            anti_plagiarism = self._render_anti_plagiarism(profile)
+            anti_plagiarism = self._render_anti_plagiarism(
+                profile,
+                frozen_terms=(
+                    list(frozen_layer.get("banned_terms") or [])
+                    if frozen_layer is not None
+                    else None
+                ),
+            )
 
         return SystemPromptFragments(
             positive_block=positive,
@@ -654,7 +859,13 @@ class InjectionService:
             strategy=strategy,
         )
 
-    def _render_rag(self, profile, *, context_text: str | None) -> str:
+    def _render_rag(
+        self,
+        profile,
+        *,
+        context_text: str | None,
+        frozen_layer: dict[str, Any] | None = None,
+    ) -> str:
         """Strategy C — 按 context_text 从三粒度索引检索参考风格片段,渲染 rag_block。
 
         query 来源:续写最新上下文(context_text);为空时回退用 profile 叙事概述
@@ -673,14 +884,31 @@ class InjectionService:
         )
         from novel_system.services.style_reference.policy import cloud_llm_allowed
 
+        frozen_book = (frozen_layer.get("book") or {}) if frozen_layer else None
+        if frozen_book is not None and not bool(
+            frozen_book.get("cloud_llm_allowed_at_freeze")
+        ):
+            return ""
         book = self.repo.get_book(getattr(profile, "book_id", None))
-        if book is not None and not cloud_llm_allowed(book):
+        if frozen_layer is not None and (book is None or not cloud_llm_allowed(book)):
+            return ""
+        if frozen_book is not None and str(
+            getattr(book, "text_checksum", "") or ""
+        ) != str(frozen_book.get("text_checksum") or ""):
+            logger.warning(
+                "frozen style book checksum changed; skipping RAG for %s",
+                getattr(profile, "profile_id", None),
+            )
+            return ""
+        if frozen_layer is None and book is not None and not cloud_llm_allowed(book):
             return ""
 
         cfg = load_rag_config()
         query = (context_text or "").strip()
         if not query:
-            query = ((profile.profile_json or {}).get("narrative_summary") or "").strip()
+            query = (
+                (profile.profile_json or {}).get("narrative_summary") or ""
+            ).strip()
         if not query:
             return ""
         max_q = int(cfg.get("rag_context_query_max_chars", 2000))
@@ -694,7 +922,13 @@ class InjectionService:
             return ""
         return render_rag_block(snippets, config=cfg)
 
-    def _render_few_shot(self, profile, *, drift_ptype_priority: list[str] | None = None) -> str:
+    def _render_few_shot(
+        self,
+        profile,
+        *,
+        drift_ptype_priority: list[str] | None = None,
+        frozen_layer: dict[str, Any] | None = None,
+    ) -> str:
         """Strategy B few-shot:从 profile.scene_samples_index 直读样例引文。
 
         每种段落类型最多取 1 条,按对风格感最有信息量的类型优先;
@@ -711,8 +945,15 @@ class InjectionService:
         """
         from novel_system.services.style_reference.policy import cloud_llm_allowed
 
+        frozen_book = (frozen_layer.get("book") or {}) if frozen_layer else None
+        if frozen_book is not None and not bool(
+            frozen_book.get("cloud_llm_allowed_at_freeze")
+        ):
+            return ""
         book = self.repo.get_book(getattr(profile, "book_id", None))
-        if book is not None and not cloud_llm_allowed(book):
+        if frozen_layer is not None and (book is None or not cloud_llm_allowed(book)):
+            return ""
+        if frozen_layer is None and book is not None and not cloud_llm_allowed(book):
             return ""
         budget = _load_budget()
         k = int(budget.get("few_shot_k", 3))
@@ -720,20 +961,28 @@ class InjectionService:
         block_max = int(budget.get("few_shot_block_max_chars", 480))
         if k <= 0:
             return ""
-        samples_index: dict[str, Any] = (
-            (profile.profile_json or {}).get("scene_samples_index") or {}
-        )
+        samples_index: dict[str, Any] = (profile.profile_json or {}).get(
+            "scene_samples_index"
+        ) or {}
         if not isinstance(samples_index, dict) or not samples_index:
             return ""
         # §9: drift-corrective priority overrides static default when active
         if drift_ptype_priority:
             # Merge: drift-relevant types first, then remaining types in default order
             _default_order = [
-                "dialogue", "description_env", "action", "psychology",
-                "narration", "description_char", "transition", "flashback",
+                "dialogue",
+                "description_env",
+                "action",
+                "psychology",
+                "narration",
+                "description_char",
+                "transition",
+                "flashback",
             ]
             seen = set(drift_ptype_priority)
-            preferred = tuple(drift_ptype_priority) + tuple(p for p in _default_order if p not in seen)
+            preferred = tuple(drift_ptype_priority) + tuple(
+                p for p in _default_order if p not in seen
+            )
         else:
             preferred = (
                 "dialogue",
@@ -752,14 +1001,34 @@ class InjectionService:
         )
         lines = [header]
         picked = 0
+        frozen_quote_hashes = None
+        if frozen_layer is not None:
+            frozen_quote_hashes = {
+                str(item.get("quote_id")): str(item.get("quote_sha256"))
+                for item in (frozen_layer.get("sample_quote_refs") or [])
+                if isinstance(item, dict)
+                and item.get("quote_id")
+                and item.get("quote_sha256")
+            }
         for ptype in preferred:
             if picked >= k:
                 break
             quote_ids = samples_index.get(ptype) or []
             if not quote_ids:
                 continue
-            quote = self.repo.get_quote(str(quote_ids[0]))
+            quote_id = str(quote_ids[0])
+            if frozen_quote_hashes is not None and quote_id not in frozen_quote_hashes:
+                continue
+            quote = self.repo.get_quote(quote_id)
             text = (getattr(quote, "quote_text", "") or "").strip() if quote else ""
+            if (
+                text
+                and frozen_quote_hashes is not None
+                and hashlib.sha256(text.encode("utf-8")).hexdigest()
+                != frozen_quote_hashes[quote_id]
+            ):
+                logger.warning("frozen style quote changed; skipping %s", quote_id)
+                continue
             if not text:
                 continue
             lines.append(f"- ({ptype})「{_truncate(text, quote_max)}」")
@@ -768,7 +1037,12 @@ class InjectionService:
             return ""
         return _truncate_lines("\n".join(lines), block_max)
 
-    def _render_anti_plagiarism(self, profile) -> str:
+    def _render_anti_plagiarism(
+        self,
+        profile,
+        *,
+        frozen_terms: list[str] | None = None,
+    ) -> str:
         """渲染 §A.5 红线段:固定模板 + banned_terms(scope=generation)填充。
 
         模板文件缺失时使用内置兜底——红线段不允许因部署缺配置而消失。
@@ -777,10 +1051,16 @@ class InjectionService:
             template = load_text_template("anti_plagiarism_template")
         except FileNotFoundError:
             template = _FALLBACK_ANTI_PLAGIARISM
-        terms = [
-            (t.term or "").strip()
-            for t in self.repo.list_banned_terms(profile.profile_id, scope="generation")
-        ]
+        terms = (
+            [str(term or "").strip() for term in frozen_terms]
+            if frozen_terms is not None
+            else [
+                (t.term or "").strip()
+                for t in self.repo.list_banned_terms(
+                    profile.profile_id, scope="generation"
+                )
+            ]
+        )
         terms = [t for t in terms if t]
         if terms:
             terms_text = "\n".join(f"- {t}" for t in terms)
@@ -793,8 +1073,12 @@ class InjectionService:
     def _render_positive(self, profile) -> str:
         data = profile.profile_json or {}
         narrative = (data.get("narrative_summary") or "").strip()
-        features = [f.strip() for f in (data.get("style_features") or []) if str(f).strip()]
-        patterns = [p.strip() for p in (data.get("narrative_patterns") or []) if str(p).strip()]
+        features = [
+            f.strip() for f in (data.get("style_features") or []) if str(f).strip()
+        ]
+        patterns = [
+            p.strip() for p in (data.get("narrative_patterns") or []) if str(p).strip()
+        ]
         if not (narrative or features or patterns):
             return ""
         lines: list[str] = ["[正向风格特征]"]
@@ -808,7 +1092,13 @@ class InjectionService:
             lines.extend(f"- {item}" for item in patterns)
         return "\n".join(lines)
 
-    def _render_forbidden(self, profile, *, sub_dims: list[str] | None = None) -> str:
+    def _render_forbidden(
+        self,
+        profile,
+        *,
+        sub_dims: list[str] | None = None,
+        frozen_findings: list[dict[str, Any]] | None = None,
+    ) -> str:
         """渲染禁忌模式块。
 
         ``sub_dims`` 为 None 或空 list 时**全部 16 维**;否则按 sub_dim 过滤
@@ -817,10 +1107,16 @@ class InjectionService:
         """
         rules = [
             r.strip()
-            for r in ((profile.profile_json or {}).get("banned_replication_rules") or [])
+            for r in (
+                (profile.profile_json or {}).get("banned_replication_rules") or []
+            )
             if str(r).strip()
         ]
-        finding_statements = self._collect_forbidden_finding_statements(profile, sub_dims=sub_dims)
+        finding_statements = self._collect_forbidden_finding_statements(
+            profile,
+            sub_dims=sub_dims,
+            frozen_findings=frozen_findings,
+        )
         if not (rules or finding_statements):
             return ""
         lines = ["[禁忌模式]"]
@@ -838,7 +1134,20 @@ class InjectionService:
         profile,
         *,
         sub_dims: list[str] | None = None,
+        frozen_findings: list[dict[str, Any]] | None = None,
     ) -> list[str]:
+        if frozen_findings is not None:
+            sub_dim_filter = set(sub_dims) if sub_dims else None
+            return [
+                str(item.get("statement") or "").strip()
+                for item in frozen_findings
+                if item.get("status") != "rejected"
+                and (
+                    sub_dim_filter is None
+                    or item.get("sub_dimension") in sub_dim_filter
+                )
+                and str(item.get("statement") or "").strip()
+            ]
         ids = profile.source_finding_ids_json or []
         statements: list[str] = []
         sub_dim_filter = set(sub_dims) if sub_dims else None
@@ -871,12 +1180,16 @@ class InjectionService:
             if std is None:
                 lines.append(f"- {metric_name}:目标 {float(mean):.2f}")
             else:
-                lines.append(f"- {metric_name}:目标 {float(mean):.2f} ± {float(std):.2f}")
+                lines.append(
+                    f"- {metric_name}:目标 {float(mean):.2f} ± {float(std):.2f}"
+                )
         if len(lines) == 1:
             return ""
         return "\n".join(lines)
 
-    def _apply_budget(self, positive: str, forbidden: str, metric: str) -> tuple[str, str, str]:
+    def _apply_budget(
+        self, positive: str, forbidden: str, metric: str
+    ) -> tuple[str, str, str]:
         budget = _load_budget()
         total = int(budget.get("system_prompt_max_tokens", 800))
         p_ratio = float(budget.get("positive_block_ratio", 0.6))

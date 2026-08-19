@@ -97,6 +97,7 @@ def test_extracted_event_does_not_override_high_confidence_spec(session):
         project_id="PROJ_NE", chapter_id="ch1", scene_id="sc1",
         event_type="location_change", entity_type="character",
         entity_id="hero", fact_key="location",
+        authority_status="accepted", source_kind="test_fixture",
     )
     log.log_event(**common, fact_value="北境", confidence="high")        # spec（权威）
     log.log_event(**common, fact_value="南境", confidence="extracted")   # advisory（更晚）
@@ -116,6 +117,7 @@ def test_later_high_confidence_event_still_wins(session):
         project_id="PROJ_EVO", chapter_id="ch1",
         event_type="character_state", entity_type="character",
         entity_id="hero", fact_key="alive",
+        authority_status="accepted", source_kind="test_fixture",
     )
     log.log_event(**base, scene_id="sc1", fact_value="alive", confidence="high")
     log.log_event(**base, scene_id="sc2", fact_value="dead", confidence="high")

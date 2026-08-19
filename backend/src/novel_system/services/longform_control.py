@@ -22,6 +22,8 @@ from novel_system.db.models import (
     VoiceProfile,
     WriterEvaluation,
 )
+from novel_system.services.canon_continuity import CanonContinuityService
+from novel_system.services.errors import DomainError
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 
@@ -43,6 +45,7 @@ class LongformControlService:
         candidates = self._candidates_by_chapter(chapter_ids)
         qc_reports = self._qc_reports_by_chapter(chapter_ids)
         llm_errors = self._llm_errors_by_chapter(chapter_ids)
+        canon_statuses = self._canon_status_by_chapter(chapters)
 
         chapter_rows = [
             self._chapter_row(
@@ -54,6 +57,7 @@ class LongformControlService:
                 aggregate=aggregates.get(chapter.chapter_id),
                 evaluations=evaluations.get(chapter.chapter_id, []),
                 candidates=candidates.get(chapter.chapter_id, []),
+                canon_status=canon_statuses.get(chapter.chapter_id),
             )
             for chapter in chapters
         ]
@@ -201,6 +205,33 @@ class LongformControlService:
                 grouped[row.chapter_id].append(row)
         return grouped
 
+    def _canon_status_by_chapter(
+        self,
+        chapters: list[ChapterGoal],
+    ) -> dict[str, dict[str, Any]]:
+        """Reuse the authoritative canon read model for dashboard status.
+
+        A legacy ``SceneRunState.narrative_sync_status='synced'`` is only a
+        hint.  It must not make the long-form dashboard green without a
+        current-final, hash-matched active commit and complete snapshot.
+        """
+
+        service = CanonContinuityService(self.session)
+        result: dict[str, dict[str, Any]] = {}
+        for chapter in chapters:
+            if not chapter.project_id:
+                continue
+            try:
+                result[chapter.chapter_id] = service.chapter_status(
+                    chapter.project_id,
+                    chapter.chapter_id,
+                )
+            except DomainError:
+                # Legacy/projectless rows remain visibly incomplete. The rest
+                # of this read-only dashboard should still be inspectable.
+                continue
+        return result
+
     def _chapter_row(
         self,
         chapter: ChapterGoal,
@@ -212,10 +243,13 @@ class LongformControlService:
         aggregate: ChapterMemory | None,
         evaluations: list[WriterEvaluation],
         candidates: list[RevisionCandidate],
+        canon_status: dict[str, Any] | None,
     ) -> dict[str, Any]:
         generated_scene_ids: list[str] = []
         missing_scene_ids: list[str] = []
         assembled_parts: list[str] = []
+        canon_synced_scene_count = 0
+        canon_pending_scene_ids: list[str] = []
         for scene in scenes:
             state = scene_states.get(scene.scene_id)
             final_row = final_scenes.get(state.current_final_scene_row_id) if state and state.current_final_scene_row_id else None
@@ -224,6 +258,13 @@ class LongformControlService:
                 continue
             generated_scene_ids.append(scene.scene_id)
             assembled_parts.append(final_row.content or "")
+            if canon_status is None:
+                # No authoritative ownership/status can be established for a
+                # legacy row. Fail closed instead of trusting the old flag.
+                canon_pending_scene_ids.append(scene.scene_id)
+        if canon_status is not None:
+            canon_synced_scene_count = int(canon_status["synced_scene_count"])
+            canon_pending_scene_ids = list(canon_status["pending_scene_ids"])
         assembled_content = "\n".join(assembled_parts)
         comparison_status = "aggregate_missing"
         if aggregate is not None:
@@ -245,6 +286,14 @@ class LongformControlService:
             "average_writer_score": round(mean(scores), 2) if scores else None,
             "open_revision_candidate_count": sum(1 for row in candidates if row.status == "candidate"),
             "requires_human_review_count": sum(1 for row in evaluations if row.requires_human_review),
+            "canon_continuity": {
+                "complete": bool(canon_status and canon_status["complete"]),
+                "synced_scene_count": canon_synced_scene_count,
+                "pending_scene_ids": canon_pending_scene_ids,
+                "pending_candidate_count": int(
+                    canon_status["pending_candidate_count"] if canon_status else 0
+                ),
+            },
         }
 
     @staticmethod
@@ -751,6 +800,16 @@ class LongformControlService:
                         "chapter_id": chapter_id,
                         "scene_id": scene_id,
                         "message": "scene is missing final text",
+                    }
+                )
+            for scene_id in row.get("canon_continuity", {}).get("pending_scene_ids", []):
+                alerts.append(
+                    {
+                        "alert_type": "canon_review_pending",
+                        "severity": "blocker",
+                        "chapter_id": chapter_id,
+                        "scene_id": scene_id,
+                        "message": "scene continuity facts are not committed to canon",
                     }
                 )
             for evaluation in evaluations.get(chapter_id, []):

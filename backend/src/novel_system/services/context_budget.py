@@ -79,6 +79,20 @@ CONTINUITY_DROP_ORDER: tuple[str, ...] = (
     "scene_memory_digest",
 )
 
+# neutral_draft 只负责事件、因果与连续性骨架。下面这些 section 都会把
+# 目标风格提前施加到结构草稿上，既与“Keep the prose neutral”冲突，也让后续
+# style_draft 的风格增益无法被单独衡量。人物 POV/voice contract 不在这里：它们
+# 属于角色身份与连续性约束，而不是被模仿作品的目标文风。
+NEUTRAL_DRAFT_STYLE_SECTIONS: tuple[str, ...] = (
+    "style_profile",
+    "author_preference_profile",
+    "style_rules",
+    "banned_rules",
+    "style_observations",
+    "narrative_patterns",
+    "calibration_lines",
+)
+
 CONTINUITY_POLICY: list[str] = [
     "drop_similar_scene_context",
     "drop_raw_style_rules_when_style_profile_exists",
@@ -93,6 +107,11 @@ TASK_KIND_POLICIES: dict[str, list[str]] = {
     "drafting": [
         "preserve_author_instruction",
         "preserve_style_profile_author_preference_and_calibration",
+        *CONTINUITY_POLICY,
+    ],
+    "neutral_draft": [
+        "omit_target_style_context_until_style_pass",
+        "preserve_character_identity_and_continuity_context",
         *CONTINUITY_POLICY,
     ],
     "hard_qc": [
@@ -147,6 +166,10 @@ def apply_context_budget(
         "continuity_warning": None,
     }
     section_lookup = {section.name: section for section in sections}
+
+    if normalized_task_kind == "neutral_draft":
+        for section_name in NEUTRAL_DRAFT_STYLE_SECTIONS:
+            _omit_section(section_lookup, section_name)
 
     if _rendered_prompt_tokens(
         system_prompt=system_prompt,

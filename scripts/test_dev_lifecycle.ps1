@@ -109,9 +109,6 @@ Assert-True -Condition (Test-Path $restartWrapper) -Message "Missing wrapper: re
 
 try {
     Invoke-CheckedScript -FilePath $stopWrapper
-    Wait-Until -Label "ports 8000/5173 to be closed" -Condition {
-        (Test-PortClosed -Port 8000) -and (Test-PortClosed -Port 5173)
-    } -TimeoutSeconds 20
 
     Invoke-CheckedScript -FilePath $startWrapper
     $backendUrl = Read-RequiredText -Path $backendUrlFile

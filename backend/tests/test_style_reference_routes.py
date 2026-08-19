@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from novel_system.api.app import create_app
+from novel_system.db.models import StyleReferenceProfile
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 
@@ -549,6 +550,31 @@ def test_finding_review_happy(client: TestClient) -> None:
     assert resp.status_code == 200
     assert resp.json()["data"]["decision"] == "approved"
     assert resp.json()["data"]["review_id"].startswith("review_style_ref_finding_")
+
+
+def test_rejecting_finding_invalidates_profiles_derived_from_same_run(
+    client: TestClient,
+) -> None:
+    book_id = _import_book(client)
+    _, finding_id, profile_id = _seed_full_chain(book_id)
+    with SessionLocal() as session:
+        profile = session.get(StyleReferenceProfile, profile_id)
+        profile.status = "active"
+        session.commit()
+
+    resp = client.post(
+        f"{PREFIX}/findings/{finding_id}/review",
+        json={"decision": "rejected", "comment": "evidence does not support it"},
+        headers={"X-Idempotency-Key": "rev_invalidates_profile"},
+    )
+
+    assert resp.status_code == 200
+    assert profile_id in resp.json()["data"]["invalidated_profile_ids"]
+    with SessionLocal() as session:
+        profile = session.get(StyleReferenceProfile, profile_id)
+        assert profile.status == "draft"
+        assert profile.coverage_json["stale"] is True
+        assert profile.coverage_json["stale_finding_id"] == finding_id
 
 
 def test_finding_review_invalid_decision(client: TestClient) -> None:

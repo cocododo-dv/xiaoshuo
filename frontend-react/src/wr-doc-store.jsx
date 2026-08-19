@@ -585,7 +585,7 @@ const WrDocs = {
     const data = await apiPost(`/api/v1/author-drafts/${m.draftId}/promote-canonical`, {
       base_revision_no: m.revision,
       expected_current_final_scene_row_id: expectedFinal == null ? null : expectedFinal,
-      narrative_effect: options.narrativeEffect || "facts_unchanged",
+      narrative_effect: options.narrativeEffect || "requires_reconcile",
       accepted_warning_codes: options.acceptedWarningCodes || [],
     });
     m.currentFinalSceneRowId = data.final_scene_row_id;

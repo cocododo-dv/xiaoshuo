@@ -16,6 +16,7 @@ from novel_system.db.models import (
     SceneRunState,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.errors import DomainError
 from novel_system.services.reference_safety import ReferenceSafetyService
 from novel_system.services.source_safety import source_profile_ids_from_snapshot
@@ -66,6 +67,7 @@ class ChapterManuscriptService:
             "source_safety_scan": source_safety_scan,
             "writer_review_summary": writer_review_summary,
             "editorial_workspace": editorial_workspace,
+            "canon_continuity": self._canon_continuity(chapter),
             "scenes": scene_entries,
         }
 
@@ -94,6 +96,24 @@ class ChapterManuscriptService:
             )
         return contract
 
+    def require_publishable(self, chapter_id: str) -> dict[str, Any]:
+        """Require both canonical prose coverage and committed continuity facts."""
+
+        contract = self.require_complete(chapter_id)
+        chapter = self.lifecycle.require_active_chapter(chapter_id)
+        if not chapter.project_id:
+            raise DomainError(
+                "CHAPTER_PROJECT_REQUIRED",
+                "chapter has no project owner and cannot publish continuity canon",
+                status_code=409,
+                details={"chapter_id": chapter_id},
+            )
+        continuity = CanonContinuityService(self.session).require_chapter_complete(
+            chapter.project_id,
+            chapter_id,
+        )
+        return {**contract, "canon_continuity": continuity}
+
     def _chapter_list_item(self, chapter: ChapterGoal) -> dict[str, Any]:
         chapter_state = self.session.get(ChapterState, chapter.chapter_id)
         scenes = self._active_scenes(chapter.chapter_id)
@@ -113,7 +133,28 @@ class ChapterManuscriptService:
             "comparison_status": self._comparison_status(assembled["content"], aggregate),
             "aggregate_row_id": aggregate["row_id"] if aggregate else None,
             "writer_review_summary": WriterReviewService(self.session).chapter_summary(chapter.chapter_id),
+            "canon_continuity": self._canon_continuity(chapter),
         }
+
+    def _canon_continuity(self, chapter: ChapterGoal) -> dict[str, Any]:
+        if not chapter.project_id:
+            return {
+                "project_id": None,
+                "chapter_id": chapter.chapter_id,
+                "complete": False,
+                "status": "unavailable",
+                "scene_count": 0,
+                "synced_scene_count": 0,
+                "pending_scene_ids": [],
+                "missing_final_scene_ids": [],
+                "pending_candidate_count": 0,
+                "scenes": [],
+                "snapshot": None,
+            }
+        return CanonContinuityService(self.session).chapter_status(
+            chapter.project_id,
+            chapter.chapter_id,
+        )
 
     def _active_scenes(self, chapter_id: str) -> list[SceneCard]:
         return self.session.execute(

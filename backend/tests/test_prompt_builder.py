@@ -19,7 +19,11 @@ from novel_system.db.models import (
     StyleRule,
 )
 from novel_system.services.bundle_builder import BundleBuilder
-from novel_system.services.prompt_builder import PromptBuilder, PromptConfigurationError, load_prompt_templates
+from novel_system.services.prompt_builder import (
+    PromptBuilder,
+    PromptConfigurationError,
+    load_prompt_templates,
+)
 
 
 def _bundle_snapshot() -> dict:
@@ -41,7 +45,11 @@ def _bundle_snapshot() -> dict:
         "ordered_injections": [
             {"slot": "chapter_goal", "ref_id": "CH001", "digest_key": "chapter_goal"},
             {"slot": "scene_card", "ref_id": "CH001_SC01", "digest_key": "scene_card"},
-            {"slot": "style_observations", "ref_id": "STY_SCENE_01", "digest_key": "style_observation"},
+            {
+                "slot": "style_observations",
+                "ref_id": "STY_SCENE_01",
+                "digest_key": "style_observation",
+            },
         ],
         "inline_digests": {
             "chapter_goal": "Close the reunion chapter with a traceable reveal.",
@@ -111,7 +119,11 @@ def test_bundle_snapshot_carries_active_reference_profile_provenance(session) ->
             stats_json={"rights_declaration": {"declared": True, "send_rights": True}},
         )
     )
-    session.add(StyleReferenceRun(run_id="sr_run_ref_prov", book_id="sr_book_ref_prov", status="done"))
+    session.add(
+        StyleReferenceRun(
+            run_id="sr_run_ref_prov", book_id="sr_book_ref_prov", status="done"
+        )
+    )
     session.add(
         StyleReferenceProfile(
             profile_id="sr_profile_ref_prov",
@@ -137,7 +149,25 @@ def test_bundle_snapshot_carries_active_reference_profile_provenance(session) ->
 
     snapshot = BundleBuilder(session).build("CH_REF_PROV_SC01")["snapshot"]
 
-    assert snapshot["source_version_refs"]["reference_profile_ids"] == ["sr_profile_ref_prov"]
+    assert snapshot["source_version_refs"]["reference_profile_ids"] == [
+        "sr_profile_ref_prov"
+    ]
+    from novel_system.services.style_reference.runtime_contract import (
+        style_runtime_contract_from_bundle,
+    )
+
+    contract = style_runtime_contract_from_bundle(snapshot)
+    assert contract is not None
+    assert contract["profile_ids"] == ["sr_profile_ref_prov"]
+    assert contract["binding_ids"] == ["sr_bind_ref_prov"]
+    assert (
+        snapshot["source_version_refs"]["style_reference_runtime_contract_hash"]
+        == contract["contract_hash"]
+    )
+    assert (
+        snapshot["source_version_refs"]["style_reference_runtime_contract_status"]
+        == "frozen"
+    )
 
 
 def test_prompt_builder_includes_required_sections_and_stable_hash() -> None:
@@ -155,18 +185,36 @@ def test_prompt_builder_includes_required_sections_and_stable_hash() -> None:
     assert "Character Continuity Contract" in payload["user_prompt"]
     assert '"display_name":"Mira"' in payload["user_prompt"]
     assert "same language as the chapter goal and scene card" in payload["user_prompt"]
-    assert "Preserve character identity and pronoun continuity" in payload["user_prompt"]
-    assert "When pronouns are ambiguous, repeat the character name" in payload["user_prompt"]
+    assert (
+        "Preserve character identity and pronoun continuity" in payload["user_prompt"]
+    )
+    assert (
+        "When pronouns are ambiguous, repeat the character name"
+        in payload["user_prompt"]
+    )
     assert "Required top-level JSON keys: scene_text" in payload["user_prompt"]
-    assert "Return only valid JSON. Do not wrap it in markdown fences." in payload["user_prompt"]
+    assert (
+        "Return only valid JSON. Do not wrap it in markdown fences."
+        in payload["user_prompt"]
+    )
     assert "POV Voice" in payload["user_prompt"]
-    assert "Style Rules" in payload["user_prompt"]
+    assert "Style Rules" not in payload["user_prompt"]
     assert "Open Foreshadow" in payload["user_prompt"]
-    assert "Close the reunion chapter with a traceable reveal." in payload["user_prompt"]
-    assert "Reunite the leads and turn the old letter into immediate action." in payload["user_prompt"]
+    assert (
+        "Close the reunion chapter with a traceable reveal." in payload["user_prompt"]
+    )
+    assert (
+        "Reunite the leads and turn the old letter into immediate action."
+        in payload["user_prompt"]
+    )
     assert payload["prompt_hash"] == repeated["prompt_hash"]
     assert payload["token_budget"]["compressed_sections"] == []
-    assert payload["token_budget"]["omitted_sections"] == []
+    assert payload["token_budget"]["omitted_sections"] == [
+        "style_rules",
+        "banned_rules",
+        "style_observations",
+        "calibration_lines",
+    ]
     assert "chapter_goal" in payload["token_budget"]["included_sections"]
     assert payload["token_budget"]["split_scene_recommended"] is False
 
@@ -178,7 +226,9 @@ def test_prompt_builder_hash_changes_only_for_relevant_inputs() -> None:
     relevant_change = deepcopy(baseline_snapshot)
 
     irrelevant_change["source_version_refs"]["debug_timestamp"] = "2026-04-14T21:00:00Z"
-    relevant_change["inline_digests"]["scene_card"] = "The leads reunite, but the letter clue stays buried."
+    relevant_change["inline_digests"][
+        "scene_card"
+    ] = "The leads reunite, but the letter clue stays buried."
 
     baseline = builder.build(baseline_snapshot, "neutral_draft")
     same_hash = builder.build(irrelevant_change, "neutral_draft")
@@ -198,16 +248,21 @@ def test_prompt_builder_enforces_budget_using_rendered_prompt_shape() -> None:
     payload = builder.build(snapshot, "neutral_draft", max_input_tokens=threshold)
 
     assert payload["token_budget"]["estimated_input_tokens"] <= threshold
-    assert payload["token_budget"]["section_status"]["similar_scene_context"]["status"] == "omitted"
+    assert (
+        payload["token_budget"]["section_status"]["similar_scene_context"]["status"]
+        == "omitted"
+    )
 
 
-def test_prompt_builder_applies_continuity_compaction_order_and_split_scene_recommendation() -> None:
+def test_prompt_builder_applies_continuity_compaction_order_and_split_scene_recommendation() -> (
+    None
+):
     builder = PromptBuilder()
     snapshot = _bundle_snapshot()
     snapshot["inline_digests"]["chapter_goal"] = " ".join(["Goal pressure"] * 80)
     snapshot["inline_digests"]["scene_card"] = " ".join(["Scene pressure"] * 80)
 
-    payload = builder.build(snapshot, "neutral_draft", max_input_tokens=120)
+    payload = builder.build(snapshot, "style_draft", max_input_tokens=120)
     budget = payload["token_budget"]
 
     assert budget["section_status"]["similar_scene_context"]["status"] == "omitted"
@@ -224,6 +279,52 @@ def test_prompt_builder_applies_continuity_compaction_order_and_split_scene_reco
     assert "The door closed like a sentence left unfinished." in payload["user_prompt"]
     assert "## Scene Summary" in payload["user_prompt"]
     assert "## Chapter Summary" in payload["user_prompt"]
+
+
+def test_neutral_draft_omits_target_style_context_but_style_pass_keeps_it() -> None:
+    builder = PromptBuilder()
+    snapshot = _bundle_snapshot()
+    snapshot["inline_digests"].update(
+        {
+            "style_profile": "STYLE_FEATURE_CONTRACT_v1\nrhythm: clipped target beats.",
+            "author_preference_profile": "Prefer a named author's surface cadence.",
+            "narrative_pattern": "Delay every reveal with the target author's pattern.",
+        }
+    )
+
+    neutral = builder.build(snapshot, "neutral_draft")
+    styled = builder.build(snapshot, "style_draft")
+
+    expected_omissions = {
+        "style_profile",
+        "author_preference_profile",
+        "style_rules",
+        "banned_rules",
+        "style_observations",
+        "narrative_patterns",
+        "calibration_lines",
+    }
+    neutral_budget = neutral["token_budget"]
+    assert neutral_budget["task_kind"] == "neutral_draft"
+    assert expected_omissions.issubset(set(neutral_budget["omitted_sections"]))
+    assert all(
+        neutral_budget["section_status"][name]["status"] == "omitted"
+        for name in expected_omissions
+    )
+    assert "## POV Voice" in neutral["user_prompt"]
+    assert "## Style Feature Contract" not in neutral["user_prompt"]
+    assert "## Author Preference Profile" not in neutral["user_prompt"]
+    assert "## Style Rules" not in neutral["user_prompt"]
+    assert "## Banned Rules" not in neutral["user_prompt"]
+    assert "## Style Observations" not in neutral["user_prompt"]
+    assert "## Narrative Patterns" not in neutral["user_prompt"]
+    assert "## Calibration Lines" not in neutral["user_prompt"]
+
+    styled_budget = styled["token_budget"]
+    assert styled_budget["task_kind"] == "drafting"
+    assert expected_omissions.issubset(set(styled_budget["included_sections"]))
+    assert "## Style Feature Contract" in styled["user_prompt"]
+    assert "## Narrative Patterns" in styled["user_prompt"]
 
 
 def test_prompt_builder_returns_isolated_schema_copies() -> None:
@@ -246,9 +347,15 @@ def test_prompt_builder_renders_style_feature_contract_for_style_draft() -> None
     builder = PromptBuilder()
     snapshot = _bundle_snapshot()
     snapshot["ordered_injections"].append(
-        {"slot": "style_profile", "ref_id": "STYLE_FEATURE_CONTRACT_v1", "digest_key": "style_profile"}
+        {
+            "slot": "style_profile",
+            "ref_id": "STYLE_FEATURE_CONTRACT_v1",
+            "digest_key": "style_profile",
+        }
     )
-    snapshot["inline_digests"]["style_profile"] = """
+    snapshot["inline_digests"][
+        "style_profile"
+    ] = """
 {
   "contract_version": "STYLE_FEATURE_CONTRACT_v1",
   "features": {
@@ -267,7 +374,9 @@ def test_prompt_builder_renders_style_feature_contract_for_style_draft() -> None
     payload = builder.build(snapshot, "style_draft")
 
     assert "## Style Feature Contract" in payload["user_prompt"]
-    assert "Preserve character identity and pronoun continuity" in payload["user_prompt"]
+    assert (
+        "Preserve character identity and pronoun continuity" in payload["user_prompt"]
+    )
     assert "STYLE_FEATURE_CONTRACT_v1" in payload["user_prompt"]
     assert "rhythm" in payload["user_prompt"]
     assert "syntax" in payload["user_prompt"]
@@ -280,7 +389,9 @@ def test_prompt_builder_renders_style_feature_contract_for_style_draft() -> None
 def test_prompt_builder_injects_literary_freshness_budget() -> None:
     builder = PromptBuilder()
     snapshot = _bundle_snapshot()
-    snapshot["inline_digests"]["literary_freshness_budget"] = """
+    snapshot["inline_digests"][
+        "literary_freshness_budget"
+    ] = """
 {
   "schema_version": "literary_freshness_budget_v1",
   "avoid_action_templates": ["pronoun_looked_at_object_then_silence"],
@@ -331,15 +442,24 @@ def test_writer_chapter_revision_schema_returns_plan_and_selected_passages() -> 
         "selected_rewrite_passages",
         "diff_summary",
     ]
-    passage_schema = payload["structured_schema"]["properties"]["selected_rewrite_passages"]["items"]
+    passage_schema = payload["structured_schema"]["properties"][
+        "selected_rewrite_passages"
+    ]["items"]
     assert passage_schema["required"] == ["source_excerpt", "revised_text", "reason"]
-    assert "Required top-level JSON keys: revision_plan, selected_rewrite_passages, diff_summary" in payload["user_prompt"]
+    assert (
+        "Required top-level JSON keys: revision_plan, selected_rewrite_passages, diff_summary"
+        in payload["user_prompt"]
+    )
 
 
 def test_writer_passage_patch_schema_is_manual_only_and_targeted() -> None:
     payload = PromptBuilder().build(_bundle_snapshot(), "writer_passage_patch")
 
-    assert payload["structured_schema"]["required"] == ["patches", "rationale", "manual_only"]
+    assert payload["structured_schema"]["required"] == [
+        "patches",
+        "rationale",
+        "manual_only",
+    ]
     patch_schema = payload["structured_schema"]["properties"]["patches"]["items"]
     assert patch_schema["required"] == [
         "target_text_ref",
@@ -349,7 +469,10 @@ def test_writer_passage_patch_schema_is_manual_only_and_targeted() -> None:
         "changed_dimensions",
         "why_it_helps",
     ]
-    assert "Required top-level JSON keys: patches, rationale, manual_only" in payload["user_prompt"]
+    assert (
+        "Required top-level JSON keys: patches, rationale, manual_only"
+        in payload["user_prompt"]
+    )
 
 
 def test_hard_qc_uses_runtime_minimum_budget_for_default_runs(tmp_path) -> None:
@@ -402,14 +525,25 @@ def test_prompt_builder_passes_template_task_kind_to_context_budget() -> None:
 
     hard_qc = builder.build(_bundle_snapshot(), "hard_qc", max_input_tokens=120)
     drafting = builder.build(_bundle_snapshot(), "style_draft", max_input_tokens=120)
-    chapter_review = builder.build(_bundle_snapshot(), "chapter_summary", max_input_tokens=120)
+    chapter_review = builder.build(
+        _bundle_snapshot(), "chapter_summary", max_input_tokens=120
+    )
 
     assert hard_qc["token_budget"]["task_kind"] == "hard_qc"
-    assert "drop_style_context_before_fact_context" in hard_qc["token_budget"]["continuity_policy"]
+    assert (
+        "drop_style_context_before_fact_context"
+        in hard_qc["token_budget"]["continuity_policy"]
+    )
     assert drafting["token_budget"]["task_kind"] == "drafting"
-    assert "preserve_style_profile_author_preference_and_calibration" in drafting["token_budget"]["continuity_policy"]
+    assert (
+        "preserve_style_profile_author_preference_and_calibration"
+        in drafting["token_budget"]["continuity_policy"]
+    )
     assert chapter_review["token_budget"]["task_kind"] == "chapter_review"
-    assert "preserve_chapter_promise_payoff_and_memory" in chapter_review["token_budget"]["continuity_policy"]
+    assert (
+        "preserve_chapter_promise_payoff_and_memory"
+        in chapter_review["token_budget"]["continuity_policy"]
+    )
 
 
 def test_hard_qc_schema_requires_rewrite_brief_for_runtime_validator() -> None:
@@ -459,7 +593,9 @@ templates:
     try:
         load_prompt_templates(missing_field_path)
     except PromptConfigurationError as exc:
-        assert str(exc) == "template neutral_draft is missing required fields: task_prompt"
+        assert (
+            str(exc) == "template neutral_draft is missing required fields: task_prompt"
+        )
     else:
         raise AssertionError("expected missing-field prompt config to be rejected")
 
@@ -471,7 +607,9 @@ templates:
         raise AssertionError("expected wrong-type prompt config to be rejected")
 
 
-def test_load_prompt_templates_rejects_invalid_structured_schema_shape(tmp_path) -> None:
+def test_load_prompt_templates_rejects_invalid_structured_schema_shape(
+    tmp_path,
+) -> None:
     invalid_schema_path = tmp_path / "prompts_invalid_schema.yaml"
     invalid_schema_path.write_text(
         """
@@ -492,12 +630,16 @@ templates:
     try:
         load_prompt_templates(invalid_schema_path)
     except PromptConfigurationError as exc:
-        assert str(exc) == "template neutral_draft.structured_schema.type must be 'object'"
+        assert (
+            str(exc) == "template neutral_draft.structured_schema.type must be 'object'"
+        )
     else:
         raise AssertionError("expected invalid structured_schema shape to be rejected")
 
 
-def test_load_prompt_templates_rejects_unsupported_structured_schema_type(tmp_path) -> None:
+def test_load_prompt_templates_rejects_unsupported_structured_schema_type(
+    tmp_path,
+) -> None:
     invalid_schema_path = tmp_path / "prompts_invalid_schema_type.yaml"
     invalid_schema_path.write_text(
         """
@@ -527,10 +669,14 @@ templates:
             "has unsupported value dictionary"
         )
     else:
-        raise AssertionError("expected unsupported structured_schema type to be rejected")
+        raise AssertionError(
+            "expected unsupported structured_schema type to be rejected"
+        )
 
 
-def test_load_prompt_templates_rejects_required_fields_missing_from_properties_when_closed(tmp_path) -> None:
+def test_load_prompt_templates_rejects_required_fields_missing_from_properties_when_closed(
+    tmp_path,
+) -> None:
     invalid_schema_path = tmp_path / "prompts_invalid_required.yaml"
     invalid_schema_path.write_text(
         """
@@ -561,7 +707,9 @@ templates:
             "continuity_notes"
         )
     else:
-        raise AssertionError("expected closed-schema required/property mismatch to be rejected")
+        raise AssertionError(
+            "expected closed-schema required/property mismatch to be rejected"
+        )
 
 
 def test_bundle_builder_adds_style_observation_digest_to_snapshot(session) -> None:
@@ -647,23 +795,36 @@ def test_bundle_builder_adds_style_observation_digest_to_snapshot(session) -> No
     payload = BundleBuilder(session).build("CH900_SC01")
     snapshot = payload["snapshot"]
 
-    assert snapshot["source_version_refs"]["style_observation_ids"] == ["STY_ALPHA", "STY_GATE"]
+    assert snapshot["source_version_refs"]["style_observation_ids"] == [
+        "STY_ALPHA",
+        "STY_GATE",
+    ]
     assert snapshot["inline_digests"]["style_observation"] == (
         "Let pauses land before exposition.\n\nGesture before explanation at reunion moments."
     )
-    assert {
-        item["digest_key"]
-        for item in snapshot["ordered_injections"]
-    } >= {"chapter_goal", "scene_card", "style_observation", "style_profile"}
-    assert snapshot["source_version_refs"]["style_profile_contract"] == "STYLE_FEATURE_CONTRACT_v1"
+    assert {item["digest_key"] for item in snapshot["ordered_injections"]} >= {
+        "chapter_goal",
+        "scene_card",
+        "style_observation",
+        "style_profile",
+    }
+    assert (
+        snapshot["source_version_refs"]["style_profile_contract"]
+        == "STYLE_FEATURE_CONTRACT_v1"
+    )
     assert "STYLE_FEATURE_CONTRACT_v1" in snapshot["inline_digests"]["style_profile"]
     assert "rhythm" in snapshot["inline_digests"]["style_profile"]
     assert "imagery" in snapshot["inline_digests"]["style_profile"]
     assert "calibration_lines" in snapshot["inline_digests"]["style_profile"]
-    assert "The gate clicked shut like a verdict." in snapshot["inline_digests"]["style_profile"]
+    assert (
+        "The gate clicked shut like a verdict."
+        in snapshot["inline_digests"]["style_profile"]
+    )
 
 
-def test_bundle_builder_prefers_scoped_calibration_over_unrelated_global_lines(session) -> None:
+def test_bundle_builder_prefers_scoped_calibration_over_unrelated_global_lines(
+    session,
+) -> None:
     session.add(
         ChapterGoal(
             chapter_id="CH902",
@@ -711,11 +872,16 @@ def test_bundle_builder_prefers_scoped_calibration_over_unrelated_global_lines(s
     snapshot = payload["snapshot"]
 
     assert snapshot["source_version_refs"]["calibration_line_ids"] == ["CAL_CH902"]
-    assert snapshot["inline_digests"]["calibration_line"] == "Use glass-rain evidence before explanation."
+    assert (
+        snapshot["inline_digests"]["calibration_line"]
+        == "Use glass-rain evidence before explanation."
+    )
     assert "unrelated old gate" not in snapshot["inline_digests"]["style_profile"]
 
 
-def test_bundle_builder_scene_digest_includes_operational_scene_constraints(session) -> None:
+def test_bundle_builder_scene_digest_includes_operational_scene_constraints(
+    session,
+) -> None:
     session.add(
         ChapterGoal(
             chapter_id="CH901",
@@ -748,7 +914,10 @@ def test_bundle_builder_scene_digest_includes_operational_scene_constraints(sess
     assert "Goal: Test the initiate without copying source material." in scene_digest
     assert "Location: Moon bridge" in scene_digest
     assert "Beats: arrival; seal wakes; choice under pressure" in scene_digest
-    assert "Required beats to weave naturally: the spirit seal glows like cold jade" in scene_digest
+    assert (
+        "Required beats to weave naturally: the spirit seal glows like cold jade"
+        in scene_digest
+    )
     assert "Forbidden text: Do not use source names." in scene_digest
     assert "Exit change: The mountain gate answers." in scene_digest
     assert "Hook: continue" in scene_digest
@@ -813,7 +982,9 @@ def test_bundle_builder_uses_only_prior_scene_memory(session) -> None:
     assert second_snapshot["inline_digests"]["scene_memory"] == "prior scene memory"
 
 
-def test_bundle_builder_adds_literary_freshness_budget_from_prior_final_scenes(session) -> None:
+def test_bundle_builder_adds_literary_freshness_budget_from_prior_final_scenes(
+    session,
+) -> None:
     session.add(
         ChapterGoal(
             chapter_id="CH903",
@@ -823,9 +994,24 @@ def test_bundle_builder_adds_literary_freshness_budget_from_prior_final_scenes(s
     )
     session.add_all(
         [
-            SceneCard(scene_id="CH903_SC01", chapter_id="CH903", scene_seq=1, scene_goal="First exchange."),
-            SceneCard(scene_id="CH903_SC02", chapter_id="CH903", scene_seq=2, scene_goal="Second exchange."),
-            SceneCard(scene_id="CH903_SC03", chapter_id="CH903", scene_seq=3, scene_goal="Break the pattern."),
+            SceneCard(
+                scene_id="CH903_SC01",
+                chapter_id="CH903",
+                scene_seq=1,
+                scene_goal="First exchange.",
+            ),
+            SceneCard(
+                scene_id="CH903_SC02",
+                chapter_id="CH903",
+                scene_seq=2,
+                scene_goal="Second exchange.",
+            ),
+            SceneCard(
+                scene_id="CH903_SC03",
+                chapter_id="CH903",
+                scene_seq=3,
+                scene_goal="Break the pattern.",
+            ),
             SceneRunState(scene_id="CH903_SC01"),
             SceneRunState(scene_id="CH903_SC02"),
             SceneRunState(scene_id="CH903_SC03"),
@@ -855,7 +1041,9 @@ def test_bundle_builder_adds_literary_freshness_budget_from_prior_final_scenes(s
     assert "literary_freshness_budget_v1" in budget
     assert "pronoun_looked_at_object_then_silence" in budget
     assert "avoid_summary_endings" in budget
-    assert snapshot["source_version_refs"]["literary_freshness_source_final_scene_ids"] == [
+    assert snapshot["source_version_refs"][
+        "literary_freshness_source_final_scene_ids"
+    ] == [
         "final_scene_CH903_SC01_v1",
         "final_scene_CH903_SC02_v1",
     ]

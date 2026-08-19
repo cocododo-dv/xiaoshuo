@@ -73,6 +73,10 @@ def _timeline_payload(event: TimelineEvent) -> dict[str, Any]:
         "entity_refs": event.entity_refs_json or [],
         "note": event.note or "",
         "display_order": event.display_order,
+        "event_mode": event.event_mode,
+        "realization_status": event.realization_status,
+        "realized_canon_commit_id": event.realized_canon_commit_id,
+        "realized_scene_id": event.realized_scene_id,
         "updated_at": event.updated_at,
     }
 
@@ -193,6 +197,17 @@ class LibraryService:
     def delete_timeline_event(self, project_id: str, event_id: str) -> dict[str, Any]:
         project = self._require_project(project_id)
         event = self._require_event(project.project_id, event_id)
+        if event.realization_status == "realized":
+            raise DomainError(
+                "TIMELINE_REALIZED_EVENT_IMMUTABLE",
+                "a realized timeline event is bound to committed canon and cannot be deleted",
+                status_code=409,
+                details={
+                    "event_id": event.event_id,
+                    "canon_commit_id": event.realized_canon_commit_id,
+                    "scene_id": event.realized_scene_id,
+                },
+            )
         self.session.delete(event)
         self.session.flush()
         return {"event_id": event_id, "deleted": True}

@@ -10,6 +10,7 @@ resolve 端点在同一事务里执行 effect 并把卡置 resolved；未知 typ
 - rule_canon         P7 控制塔桥接通时注册（adjudicate 同一服务）
 - create_entity / add_timeline_event  P6 资料库接通时注册
 """
+
 from __future__ import annotations
 
 from typing import Any, Callable
@@ -27,7 +28,9 @@ def register_effect(effect_type: str, handler: EffectHandler) -> None:
     _REGISTRY[effect_type] = handler
 
 
-def run_effect(session: Session, project_id: str | None, effect: dict[str, Any]) -> dict[str, Any]:
+def run_effect(
+    session: Session, project_id: str | None, effect: dict[str, Any]
+) -> dict[str, Any]:
     effect_type = str((effect or {}).get("type") or "").strip()
     handler = _REGISTRY.get(effect_type)
     if handler is None:
@@ -51,12 +54,16 @@ def run_effect(session: Session, project_id: str | None, effect: dict[str, Any])
 # ---------------------------------------------------------------------------
 
 
-def _insert_scene(session: Session, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _insert_scene(
+    session: Session, project_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
     from novel_system.services.catalog import CatalogService
 
     chapter_id = str(payload.get("chapter_id") or "").strip()
     if not chapter_id:
-        raise DomainError("REVIEW_EFFECT_INVALID", "insert_scene requires chapter_id", status_code=400)
+        raise DomainError(
+            "REVIEW_EFFECT_INVALID", "insert_scene requires chapter_id", status_code=400
+        )
     scene = dict(payload.get("scene") or {})
     body = {
         "title": scene.get("title"),
@@ -69,18 +76,30 @@ def _insert_scene(session: Session, project_id: str, payload: dict[str, Any]) ->
     return CatalogService(session).create_scene(project_id, chapter_id, body)
 
 
-def _rename_chapter(session: Session, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _rename_chapter(
+    session: Session, project_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
     from novel_system.services.catalog import CatalogService
 
     chapter_id = str(payload.get("chapter_id") or "").strip()
     title = str(payload.get("title") or "").strip()
     if not chapter_id or not title:
-        raise DomainError("REVIEW_EFFECT_INVALID", "rename_chapter requires chapter_id and title", status_code=400)
-    return CatalogService(session).update_chapter(project_id, chapter_id, {"title": title})
+        raise DomainError(
+            "REVIEW_EFFECT_INVALID",
+            "rename_chapter requires chapter_id and title",
+            status_code=400,
+        )
+    return CatalogService(session).update_chapter(
+        project_id, chapter_id, {"title": title}
+    )
 
 
-def _bind_style_profile(session: Session, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    from novel_system.services.style_reference.materialization import MaterializationService
+def _bind_style_profile(
+    session: Session, project_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    from novel_system.services.style_reference.materialization import (
+        MaterializationService,
+    )
     from novel_system.services.style_reference.schemas import (
         BindingScope,
         InjectionStrategy,
@@ -89,7 +108,11 @@ def _bind_style_profile(session: Session, project_id: str, payload: dict[str, An
 
     profile_id = str(payload.get("profile_id") or "").strip()
     if not profile_id:
-        raise DomainError("REVIEW_EFFECT_INVALID", "bind_style_profile requires profile_id", status_code=400)
+        raise DomainError(
+            "REVIEW_EFFECT_INVALID",
+            "bind_style_profile requires profile_id",
+            status_code=400,
+        )
     scope_value = str(payload.get("scope") or "project")
     raw_scope_ref = str(payload.get("scope_ref_id") or "").strip()
     # 立项 A — scene/character 级绑定必须显式带目标 id;缺失则拒绝(否则静默回退
@@ -112,6 +135,7 @@ def _bind_style_profile(session: Session, project_id: str, payload: dict[str, An
         "profile_id": result.profile_id,
         "binding_id": result.binding_id,
         "review_ids": result.review_ids,
+        "rag_index": result.rag_index,
     }
 
 
@@ -136,7 +160,9 @@ def _style_injection_config(payload: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
-def _create_entity(session: Session, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _create_entity(
+    session: Session, project_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
     from novel_system.services.library import LibraryService
 
     return LibraryService(session).create_entity(
@@ -152,7 +178,9 @@ def _create_entity(session: Session, project_id: str, payload: dict[str, Any]) -
     )
 
 
-def _add_timeline_event(session: Session, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _add_timeline_event(
+    session: Session, project_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
     from novel_system.services.library import LibraryService
 
     return LibraryService(session).create_timeline_event(
@@ -167,13 +195,17 @@ def _add_timeline_event(session: Session, project_id: str, payload: dict[str, An
     )
 
 
-def _rule_canon(session: Session, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _rule_canon(
+    session: Session, project_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
     """P7 链路①：设定裁决 —— 与塔的 adjudicate 同一服务函数（同源单一状态）。"""
     from novel_system.services.longform_adjudication import adjudicate_finding
 
     finding_id = str(payload.get("finding_id") or "").strip()
     if not finding_id:
-        raise DomainError("REVIEW_EFFECT_INVALID", "rule_canon requires finding_id", status_code=400)
+        raise DomainError(
+            "REVIEW_EFFECT_INVALID", "rule_canon requires finding_id", status_code=400
+        )
     return adjudicate_finding(
         session,
         project_id,

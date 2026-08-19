@@ -325,8 +325,14 @@ def _async_worker(
                 policy_allows_llm = cloud_llm_allowed(book) if book is not None else True
                 semantic: list = []
                 forbid_sem: list = []
-                semantic_degraded = False
-                if llm_enabled and llm_client is not None and policy_allows_llm:
+                semantic_available = bool(
+                    llm_enabled and llm_client is not None and policy_allows_llm
+                )
+                # async_full 的 pass 必须代表语义路真实执行过。LLM 未启用、
+                # 无 client、策略禁止出云，或 critic 返回空结果时，只能给
+                # partial，不能借 core 中 sync_only 的缺省分数伪装成完整通过。
+                semantic_degraded = not semantic_available
+                if semantic_available:
                     try:
                         semantic = check_semantic(
                             generated_text,
@@ -342,6 +348,8 @@ def _async_worker(
                             raise
                         semantic_degraded = True
                         logger.warning("async_worker semantic failed: %s", exc)
+                    if not semantic:
+                        semantic_degraded = True
                     _heartbeat_report(bg_session, report_id)
                     try:
                         forbid_sem = check_forbidden_semantic(
