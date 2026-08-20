@@ -110,13 +110,29 @@ export function previewStyleReferenceProfile(profileId) {
   return apiPost(`${PREFIX}/profiles/${encodeURIComponent(profileId)}/preview`, {});
 }
 
-export function applyStyleReferenceProfile(profileId, { scope, scopeRefId = null, taskType = "scene_generation", strategy = "A" }) {
-  return apiPost(`${PREFIX}/profiles/${encodeURIComponent(profileId)}/apply`, {
+export function applyStyleReferenceProfile(profileId, {
+  scope,
+  scopeRefId = null,
+  taskType = "scene_generation",
+  strategy = null,
+  intensity = null,
+  subDimensions = null,
+  includePositive = null,
+  includeForbidden = null,
+  includeMetric = null,
+}) {
+  const payload = {
     scope,
     scope_ref_id: scopeRefId,
     task_type: taskType,
-    strategy,
-  });
+  };
+  if (strategy != null) payload.strategy = strategy;
+  if (intensity != null) payload.intensity = intensity;
+  if (subDimensions != null) payload.sub_dimensions = subDimensions;
+  if (includePositive != null) payload.include_positive = includePositive;
+  if (includeForbidden != null) payload.include_forbidden = includeForbidden;
+  if (includeMetric != null) payload.include_metric = includeMetric;
+  return apiPost(`${PREFIX}/profiles/${encodeURIComponent(profileId)}/apply`, payload);
 }
 
 // --- Bindings ---
@@ -175,21 +191,22 @@ export function fetchBindingInjectionPreview(bindingId) {
 }
 
 export function dryrunInjectionPreview(profileId, {
-  strategy = "A",
+  strategy = null,
   taskType = "scene_generation",
   intensity = 50,
   subDimensions = [],
   includePositive = true,
   includeForbidden = true,
-  includeMetric = false,
+  includeMetric = null,
 } = {}) {
-  return apiPost(`${PREFIX}/profiles/${encodeURIComponent(profileId)}/injection-preview`, {
-    strategy,
+  const payload = {
     task_type: taskType,
     intensity,
     sub_dimensions: subDimensions,
     include_positive: includePositive,
     include_forbidden: includeForbidden,
-    include_metric: includeMetric,
-  });
+  };
+  if (strategy != null) payload.strategy = strategy;
+  if (includeMetric != null) payload.include_metric = includeMetric;
+  return apiPost(`${PREFIX}/profiles/${encodeURIComponent(profileId)}/injection-preview`, payload);
 }

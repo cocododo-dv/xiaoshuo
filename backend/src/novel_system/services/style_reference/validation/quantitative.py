@@ -15,6 +15,10 @@ narration_ratio 恒 1、其余恒 0,对照 baseline 是系统性伪偏差:对话
 必然把 pass_rate 拖到 0.8 以下,QC gate 恒 PARTIAL/FAIL。对照只保留 18 个纯文本
 统计指标(句长/标点/词表/感官密度),与「quant 不依赖 paragraph_type 精确性」的
 既有约定一致;8 项仍保留在 metrics_baseline / 抽取锚点 / 前端展示。
+
+2026-08:``compute_generated_metrics`` 额外返回 5 个纯文本段落形态指标，供注入
+偏差提示与候选重排使用；``check_quantitative_against_baseline`` 仍只遍历冻结的
+``METRIC_NAMES``，因此不改变既有 QC pass-rate 分母。
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from novel_system.services.style_reference.metrics import (
     METRIC_NAMES,
     MetricsEngine,
     ParagraphRecord,
+    compute_prose_shape_metrics,
 )
 from novel_system.services.style_reference.schemas import QuantitativeReportItem
 
@@ -69,6 +74,11 @@ def _wrap_as_paragraphs(generated_text: str) -> list[ParagraphRecord]:
 def _dim_for_metric(metric: str) -> str:
     if metric.startswith("sensory_"):
         return "scene"
+    if metric.startswith("paragraph_") or metric in {
+        "single_sentence_paragraph_ratio",
+        "quote_led_paragraph_ratio",
+    }:
+        return "narrative"
     if metric in {
         "dialogue_ratio",
         "psychology_ratio",
@@ -84,11 +94,13 @@ def _dim_for_metric(metric: str) -> str:
 
 
 def compute_generated_metrics(generated_text: str) -> dict[str, float]:
-    """Compute text-observable metrics once for validation and candidate ranking."""
+    """计算全部可观测指标；旧 QC 仍只消费冻结的 26 项子集。"""
     paragraphs = _wrap_as_paragraphs(generated_text)
     if not paragraphs:
         return {}
-    return MetricsEngine().compute_all(paragraphs)
+    metrics = MetricsEngine().compute_all(paragraphs)
+    metrics.update(compute_prose_shape_metrics(paragraphs))
+    return metrics
 
 
 def check_quantitative(

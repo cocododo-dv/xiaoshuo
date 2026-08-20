@@ -38,7 +38,7 @@ const defaultDraft = () => ({
   scope: "project",
   scope_ref_id: "",
   task_type: "scene_generation",
-  strategy: "A",
+  strategy: "mixed",
   intensity: 50,
   sub_dimensions: [
     "language.sentence_structure", "language.vocabulary", "language.rhetoric", "language.punctuation",
@@ -46,6 +46,9 @@ const defaultDraft = () => ({
     "scene.environment", "scene.character_portrayal", "scene.dialogue", "scene.sensory_priority",
     "theme.emotional_tone", "theme.values", "theme.motifs", "theme.narrative_philosophy",
   ],
+  include_positive: true,
+  include_forbidden: true,
+  include_metric: true,
 });
 
 describe("ProfileApplyDialog", () => {
@@ -78,9 +81,10 @@ describe("ProfileApplyDialog", () => {
     await nextTick();
     expect(emitted.submit).toHaveLength(1);
     const payload = emitted.submit[0];
-    expect(payload.strategy).toBe("A");
+    expect(payload.strategy).toBe("mixed");
     expect(payload.intensity).toBe(50);
     expect(payload.sub_dimensions.length).toBe(16);
+    expect(payload.include_metric).toBe(true);
   });
 
   it("点击关闭 × 触发 close emit", async () => {

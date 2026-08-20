@@ -5728,7 +5728,7 @@ class Orchestrator:
             or not isinstance(gate_decision.get("triggered"), bool)
             or not isinstance(de_template_outcome, dict)
             or de_template_outcome.get("status")
-            not in {"not_required", "completed", "failed"}
+            not in {"not_required", "completed", "failed", "rejected"}
             or source_base_row_id != item["base"]["row_id"]
             or (
                 not gate_decision["triggered"]
@@ -5766,6 +5766,20 @@ class Orchestrator:
             raise DomainError(
                 "RUN_CHECKPOINT_CORRUPT",
                 "failed de-template outcome is invalid",
+                status_code=409,
+            )
+        if de_template_outcome["status"] == "rejected" and (
+            not isinstance(de_template_outcome.get("llm_call_id"), str)
+            or not isinstance(de_template_outcome.get("execution_step_key"), str)
+            or not isinstance(de_template_outcome.get("artifact_execution_id"), str)
+            or de_template_outcome.get("accounting_status") != "settled"
+            or not isinstance(de_template_outcome.get("row_id"), str)
+            or not isinstance(de_template_outcome.get("acceptance"), dict)
+            or de_template_outcome["acceptance"].get("accepted") is not False
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "rejected de-template outcome is invalid",
                 status_code=409,
             )
         descriptor = self._style_artifact_descriptor(
@@ -5969,7 +5983,8 @@ class Orchestrator:
                 not isinstance(gate, dict)
                 or not isinstance(gate.get("triggered"), bool)
                 or not isinstance(outcome, dict)
-                or outcome.get("status") not in {"not_required", "completed", "failed"}
+                or outcome.get("status")
+                not in {"not_required", "completed", "failed", "rejected"}
                 or (not gate["triggered"] and outcome.get("status") != "not_required")
                 or (gate["triggered"] and outcome.get("status") == "not_required")
             ):
@@ -5996,7 +6011,7 @@ class Orchestrator:
                 source_neutral_draft_row_id=neutral_row_id,
                 source_base_row_id=base.row_id,
             )
-            if outcome["status"] in {"not_required", "failed"} and (
+            if outcome["status"] in {"not_required", "failed", "rejected"} and (
                 final.row_id != base.row_id
                 or final.llm_call_id != base.llm_call_id
                 or final.content != base.content
@@ -6031,8 +6046,82 @@ class Orchestrator:
                     execution_step_key=f"{base_step_key}:de_template",
                     source_base_row_id=base.row_id,
                 )
+            if outcome["status"] == "rejected":
+                self._validate_rejected_style_de_template_outcome(
+                    outcome,
+                    scene_id=scene_id,
+                    bundle=bundle,
+                    execution_step_key=f"{base_step_key}:de_template",
+                    source_base_row_id=base.row_id,
+                )
             products.append((base, final))
         return products
+
+    def _validate_rejected_style_de_template_outcome(
+        self,
+        outcome: dict[str, Any],
+        *,
+        scene_id: str,
+        bundle: dict[str, Any],
+        execution_step_key: str,
+        source_base_row_id: str,
+    ) -> None:
+        owner = self._validate_artifact_execution_owner(
+            outcome.get("artifact_execution_id")
+        )
+        call = self._validate_checkpoint_llm_output(
+            scene_id=scene_id,
+            llm_call_id=outcome.get("llm_call_id"),
+            execution_step_key=outcome.get("execution_step_key"),
+            execution_id=owner,
+        )
+        row_id = outcome.get("row_id")
+        row = self.session.get(SceneDraft, row_id) if isinstance(row_id, str) else None
+        acceptance = outcome.get("acceptance")
+        if (
+            call.step != "de_template"
+            or outcome.get("status") != "rejected"
+            or outcome.get("execution_step_key") != execution_step_key
+            or outcome.get("accounting_status") != "settled"
+            or not isinstance(acceptance, dict)
+            or acceptance.get("accepted") is not False
+            or row is None
+            or row.scene_id != scene_id
+            or row.stage != "de_template"
+            or row.status != "rejected"
+            or row.source_bundle_id != bundle["bundle_id"]
+            or row.source_bundle_hash != bundle["bundle_snapshot_hash"]
+            or row.generation_llm_call_id != call.llm_call_id
+        ):
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "rejected de-template artifact ledger is invalid",
+                status_code=409,
+            )
+        matching_attempts = []
+        for attempt in self.session.execute(
+            select(AttemptTracker).where(
+                AttemptTracker.scene_id == scene_id,
+                AttemptTracker.step == "de_template",
+                AttemptTracker.status == "completed",
+                AttemptTracker.source_bundle_id == bundle["bundle_id"],
+            )
+        ).scalars():
+            details = attempt.details_json or {}
+            if (
+                details.get("row_id") == row.row_id
+                and details.get("llm_call_id") == call.llm_call_id
+                and details.get("source_style_draft_row_id")
+                == source_base_row_id
+                and details.get("acceptance") == acceptance
+            ):
+                matching_attempts.append(attempt)
+        if len(matching_attempts) != 1:
+            raise DomainError(
+                "RUN_CHECKPOINT_CORRUPT",
+                "rejected de-template attempt is missing or duplicated",
+                status_code=409,
+            )
 
     def _validate_failed_style_de_template_outcome(
         self,

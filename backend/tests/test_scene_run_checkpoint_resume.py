@@ -578,13 +578,27 @@ class _AccountedTestClient(OnlineAccountedExecution):
         return response
 
 
+_DURABLE_SCENE_VARIANTS = (
+    "门轴在雨声里轻响，值夜人收起账册，把最后一盏灯推到窗前。",
+    "她没有立刻回答，只用指尖抹去杯沿的水痕，等走廊重新安静。",
+    "钟声落下时，他已越过空院；纸页贴在胸前，被冷风吹得发颤。",
+    "先传来钥匙碰撞，随后黑暗里亮起火星，照见墙角未干的泥印。",
+    "旧信压在石块下面，孩子绕开积水，将约定的红绳系回门环。",
+    "炉灰忽然塌陷。两个人同时停手，谁也没有去碰露出的铜片。",
+)
+
+
+def _durable_scene_text(request_count: int) -> str:
+    return _DURABLE_SCENE_VARIANTS[(request_count - 1) % len(_DURABLE_SCENE_VARIANTS)]
+
+
 class _CountingGenerationClient(_AccountedTestClient):
     def __init__(self) -> None:
         self.requests: list[LLMRequest] = []
 
     def generate(self, request: LLMRequest) -> LLMResponse:
         self.requests.append(request)
-        payload = {"scene_text": f"durable draft {len(self.requests)}"}
+        payload = {"scene_text": _durable_scene_text(len(self.requests))}
         return _response(payload, f"generation-{len(self.requests)}")
 
 
@@ -650,7 +664,7 @@ class _FailSecondCandidateOnceClient(_CountingGenerationClient):
         self.requests.append(request)
         if len(self.requests) == 3:
             raise ValueError("candidate two failed once")
-        payload = {"scene_text": f"durable draft {len(self.requests)}"}
+        payload = {"scene_text": _durable_scene_text(len(self.requests))}
         return _response(payload, f"generation-{len(self.requests)}")
 
 
@@ -659,7 +673,7 @@ class _FailDeTemplateClient(_CountingGenerationClient):
         self.requests.append(request)
         if request.node_id == "style_patch":
             raise ValueError("de-template provider failed")
-        payload = {"scene_text": f"durable draft {len(self.requests)}"}
+        payload = {"scene_text": _durable_scene_text(len(self.requests))}
         return _response(payload, f"generation-{len(self.requests)}")
 
 
@@ -668,7 +682,7 @@ class _FailFourthGenerationClient(_CountingGenerationClient):
         self.requests.append(request)
         if len(self.requests) == 4:
             raise ValueError("next candidate failed after de-template")
-        payload = {"scene_text": f"durable draft {len(self.requests)}"}
+        payload = {"scene_text": _durable_scene_text(len(self.requests))}
         return _response(payload, f"generation-{len(self.requests)}")
 
 
@@ -684,7 +698,7 @@ class _FailAutoCritiquePatchClient(_CountingGenerationClient):
         if request.node_id == "style_patch":
             raise ValueError("auto-critique patch provider failed")
         return _response(
-            {"scene_text": f"durable draft {len(self.requests)}"},
+            {"scene_text": _durable_scene_text(len(self.requests))},
             f"generation-{len(self.requests)}",
         )
 
@@ -698,7 +712,7 @@ class _UnparseableAutoCritiquePatchClient(_CountingGenerationClient):
                 "auto-patch-unparseable",
             )
         return _response(
-            {"scene_text": f"durable draft {len(self.requests)}"},
+            {"scene_text": _durable_scene_text(len(self.requests))},
             f"generation-{len(self.requests)}",
         )
 

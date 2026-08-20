@@ -29,6 +29,7 @@ from novel_system.services.llm_client import LLMRequest, LLMResponse
 from novel_system.services.near_final import NearFinalAcceptanceService
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
+from novel_system.services import scene_generation as scene_generation_module
 from novel_system.services.scene_generation import SceneGenerationService
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 from tests.real_llm_fakes import install_online_pipeline
@@ -186,6 +187,20 @@ def _make_orchestrator(
     return Orchestrator(session, **kwargs)
 
 
+def _allow_legacy_neutral_required_fact_gap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model a pre-validation neutral draft for downstream Hard-QC coverage."""
+
+    original = scene_generation_module._assess_neutral_draft
+
+    def assess(scene, content):  # noqa: ANN001, ANN202
+        result = original(scene, content)
+        if set(result.get("reasons") or []) == {"required_facts_missing"}:
+            return {**result, "accepted": True, "reasons": []}
+        return result
+
+    monkeypatch.setattr(scene_generation_module, "_assess_neutral_draft", assess)
+
+
 # ---------- G-03 核心：软性意见不再断头 ----------
 
 def test_soft_qc_llm_human_review_without_hard_evidence_still_archives(session) -> None:
@@ -259,9 +274,13 @@ def test_hard_qc_llm_rewrite_without_hard_evidence_continues_to_archive(session)
 
 # ---------- 只有真实 Q0/Q1 能阻断 ----------
 
-def test_verified_missing_required_text_still_blocks_and_keeps_draft(session) -> None:
+def test_verified_missing_required_text_still_blocks_and_keeps_draft(
+    session,
+    monkeypatch,
+) -> None:
     """确定性复核成立的 Q1（必备元素确实缺失）仍阻断，且正文保留、早退契约齐备。"""
     _seed_scene(session)  # must_include 未出现在 provider 草稿中 → 确定性缺失
+    _allow_legacy_neutral_required_fact_gap(monkeypatch)
     orchestrator = _make_orchestrator(
         session,
         hard_qc_client=FakeQcClient(
@@ -539,8 +558,9 @@ def test_style_gate_plagiarism_still_blocks(session) -> None:
 
 # ---------- adopt-current：只有真实 Q0/Q1 拒绝归档 ----------
 
-def test_adopt_rejects_verified_hard_block(client, session) -> None:
+def test_adopt_rejects_verified_hard_block(client, session, monkeypatch) -> None:
     _seed_scene(session)
+    _allow_legacy_neutral_required_fact_gap(monkeypatch)
     orchestrator = _make_orchestrator(
         session,
         hard_qc_client=FakeQcClient(

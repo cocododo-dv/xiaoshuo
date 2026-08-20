@@ -195,7 +195,9 @@ def test_neutral_draft_does_not_receive_style_reference_injection(session) -> No
             return SimpleNamespace(
                 llm_call_id="llm_call_neutral_plain",
                 response=SimpleNamespace(
-                    structured_output={"scene_text": "中性事实草稿"}
+                    structured_output={
+                        "scene_text": "门外的脚步停住了，他把信封放到桌上，等对面的人先开口。"
+                    }
                 ),
             )
 
@@ -211,7 +213,7 @@ def test_neutral_draft_does_not_receive_style_reference_injection(session) -> No
     inject_spy.assert_not_called()
     assert runner.calls[0]["prompt"]["system_prompt"] == "NEUTRAL_BASE_SYSTEM"
     assert "短句白话" not in runner.calls[0]["prompt"]["system_prompt"]
-    assert result.content == "中性事实草稿"
+    assert result.content == "门外的脚步停住了，他把信封放到桌上，等对面的人先开口。"
 
 
 def test_long_form_continuation_node_carries_refresh_every_chars() -> None:

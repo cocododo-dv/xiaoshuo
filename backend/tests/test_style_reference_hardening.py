@@ -981,7 +981,7 @@ def test_bind_style_profile_effect_without_config_stays_empty():
         session.commit()
         binding = StyleReferenceRepository(session).get_binding(result["binding_id"])
         assert binding.config_json == {}
-        assert binding.strategy == "A"
+        assert binding.strategy == "mixed"
         assert binding.scope_ref_id == "proj_effectplain"
 
 

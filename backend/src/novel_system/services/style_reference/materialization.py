@@ -71,7 +71,7 @@ class MaterializationService:
         scope: BindingScope | str,
         scope_ref_id: str | None,
         task_type: TaskType | str = TaskType.SCENE_GENERATION,
-        strategy: InjectionStrategy | str = InjectionStrategy.A,
+        strategy: InjectionStrategy | str | None = None,
         config_json: dict[str, Any] | None = None,
     ) -> MaterializeResult:
         """``config_json`` 落入 binding(intensity / sub_dimensions / include 开关),
@@ -104,6 +104,13 @@ class MaterializationService:
                 "archived profile cannot be applied",
                 status_code=409,
             )
+
+        if strategy is None:
+            from novel_system.services.style_reference.injection import (
+                default_injection_strategy,
+            )
+
+            strategy = default_injection_strategy(task_type)
 
         # 1. finding → ReviewItem(按 sub_dim layer 分发)
         review_ids: list[str] = []

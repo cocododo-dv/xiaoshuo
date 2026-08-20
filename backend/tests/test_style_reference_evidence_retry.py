@@ -20,6 +20,8 @@ from novel_system.services.style_reference.extractors import (
     ExtractionRetryPolicy,
     LanguageExtractor,
 )
+from novel_system.services.style_reference.extractors.base import _ExtractLLMError
+from novel_system.services.style_reference.dimensions import SubDimension
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 
@@ -206,3 +208,186 @@ def test_retry_path_always_empty_accepts_after_one_retry(fake_extractor_llm) -> 
     extractions = _extractions_for_run(run_id)
     purposes = [e.purpose for e in extractions]
     assert purposes.count("full_retry") == 4, f"应各 1 次 full_retry,实际 {purposes}"
+
+
+def test_invalid_evidence_is_removed_without_dropping_the_salvageable_finding(
+    session,
+) -> None:
+    extractor = LanguageExtractor(
+        session,
+        object(),
+        run_id="sr_run_salvage",
+        book_id="sr_book_salvage",
+    )
+    structured = {
+        "observations": [
+            {
+                "statement": "用首尾动作形成照应",
+                "finding_kind": "observation",
+                "sub_dimension": "language.sentence_structure",
+                "evidence": [
+                    {
+                        "paragraph_id": "p1",
+                        "span": [0, 3],
+                        "quote": "甲走了",
+                        "anchor_kind": "paragraph_quote",
+                    },
+                    {
+                        "paragraph_id": "p1",
+                        "span": [0, 0],
+                        "quote": "甲走了……乙留下",
+                        "anchor_kind": "paragraph_quote",
+                    },
+                ],
+            }
+        ],
+        "forbidden_patterns": [],
+    }
+
+    findings, failed = extractor._parse_extraction_response(
+        structured,
+        SubDimension.LANGUAGE_SENTENCE_STRUCTURE,
+        {"p1": "甲走了。风吹过院子。乙留下。"},
+    )
+
+    assert findings == []
+    assert len(failed) == 1
+    assert [item.quote for item in failed[0].evidence] == ["甲走了"]
+
+
+def test_empty_nested_quote_keeps_valid_sibling_and_enters_supplement_path(
+    session,
+) -> None:
+    extractor = LanguageExtractor(
+        session,
+        object(),
+        run_id="sr_run_empty_nested_quote",
+        book_id="sr_book_empty_nested_quote",
+    )
+    structured = {
+        "observations": [
+            {
+                "statement": "用首尾动作形成照应",
+                "evidence": [
+                    {
+                        "paragraph_id": "p1",
+                        "span": [0, 3],
+                        "quote": "甲走了",
+                        "anchor_kind": "paragraph_quote",
+                    },
+                    {
+                        "paragraph_id": "p1",
+                        "span": None,
+                        "quote": "",
+                        "anchor_kind": "paragraph_quote",
+                    },
+                ],
+            }
+        ],
+        "forbidden_patterns": [],
+    }
+
+    findings, failed = extractor._parse_extraction_response(
+        structured,
+        SubDimension.LANGUAGE_SENTENCE_STRUCTURE,
+        {"p1": "甲走了。风吹过院子。"},
+    )
+
+    assert findings == []
+    assert len(failed) == 1
+    assert [item.quote for item in failed[0].evidence] == ["甲走了"]
+
+
+def test_duplicate_evidence_does_not_satisfy_the_two_evidence_minimum(
+    session,
+) -> None:
+    extractor = LanguageExtractor(
+        session,
+        object(),
+        run_id="sr_run_dedupe",
+        book_id="sr_book_dedupe",
+    )
+    repeated = {
+        "paragraph_id": "p1",
+        "span": [0, 3],
+        "quote": "甲走了",
+        "anchor_kind": "paragraph_quote",
+    }
+    structured = {
+        "observations": [
+            {
+                "statement": "用短动作起句",
+                "finding_kind": "observation",
+                "sub_dimension": "language.sentence_structure",
+                "evidence": [repeated, dict(repeated)],
+            }
+        ],
+        "forbidden_patterns": [],
+    }
+
+    findings, failed = extractor._parse_extraction_response(
+        structured,
+        SubDimension.LANGUAGE_SENTENCE_STRUCTURE,
+        {"p1": "甲走了。"},
+    )
+
+    assert findings == []
+    assert len(failed) == 1
+    assert len(failed[0].evidence) == 1
+
+
+def test_many_invalid_findings_skip_per_item_supplements_and_full_retry_once(
+    fake_extractor_llm,
+) -> None:
+    book_id, run_id = _ingest_and_run("adaptive_batch")
+    client = fake_extractor_llm("many_invalid_then_default")
+
+    with SessionLocal() as session:
+        results = LanguageExtractor(
+            session,
+            client,
+            run_id=run_id,
+            book_id=book_id,
+        ).extract_all_sub_dimensions()
+        session.commit()
+
+    assert sum(len(result.findings) for result in results) == 16
+    assert client.call_count == 8
+    assert all(
+        call["node_id"] != "style_ref_supplement_evidence"
+        for call in client.call_log
+    )
+    purposes = [row.purpose for row in _extractions_for_run(run_id)]
+    assert purposes.count("full_retry") == 4
+
+
+def test_initial_llm_failure_retries_subdimension_without_aborting_the_run(
+    fake_extractor_llm,
+    monkeypatch,
+) -> None:
+    book_id, run_id = _ingest_and_run("llm_failure_retry")
+    client = fake_extractor_llm("default")
+    with SessionLocal() as session:
+        extractor = LanguageExtractor(
+            session,
+            client,
+            run_id=run_id,
+            book_id=book_id,
+        )
+        original = extractor._extract_once
+        attempts: dict[str, int] = {}
+
+        def flaky_extract_once(sub_dim, *args, **kwargs):  # noqa: ANN001, ANN202
+            attempts[sub_dim.value] = attempts.get(sub_dim.value, 0) + 1
+            if attempts[sub_dim.value] == 1:
+                raise _ExtractLLMError("truncated JSON")
+            return original(sub_dim, *args, **kwargs)
+
+        monkeypatch.setattr(extractor, "_extract_once", flaky_extract_once)
+        results = extractor.extract_all_sub_dimensions()
+        session.commit()
+
+    assert sum(len(result.findings) for result in results) == 16
+    assert set(attempts.values()) == {2}
+    purposes = [row.purpose for row in _extractions_for_run(run_id)]
+    assert purposes.count("full_retry") == 4

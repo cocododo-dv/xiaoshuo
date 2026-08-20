@@ -31,10 +31,11 @@ from novel_system.services.style_reference.dimensions import (
 from novel_system.services.style_reference.errors import (
     BannedAdjectiveError,
     EvidenceShortError,
-    EvidenceSpanError,
     StyleReferenceError,
 )
-from novel_system.services.style_reference.evidence import validate_evidence_spans
+from novel_system.services.style_reference.evidence import (
+    align_evidence_to_paragraph_lookup,
+)
 from novel_system.services.style_reference.metrics import (
     METRIC_NAMES,
     MetricsEngine,
@@ -73,6 +74,7 @@ class ExtractionRetryPolicy:
     """两级重试控制(§6.6)。"""
 
     max_targeted_retries: int = 2
+    max_targeted_findings_per_batch: int = 2
     max_full_retries: int = 1
 
 
@@ -235,10 +237,20 @@ class BaseExtractor:
 
     # ------------------------------------------------------------------ public
 
-    def extract_all_sub_dimensions(self) -> list[ExtractionRunResult]:
+    def extract_all_sub_dimensions(
+        self,
+        *,
+        skip_sub_dimensions: set[SubDimension] | None = None,
+    ) -> list[ExtractionRunResult]:
         """对 layer 下 4 个 sub_dim 各跑一遍 extract_with_retry。"""
         results: list[ExtractionRunResult] = []
+        skipped = skip_sub_dimensions or set()
         for sub_dim in self.sub_dimensions:
+            if sub_dim in skipped:
+                # 恢复中断 run 时仍重放一次确定性采样，以推进共享 RNG 到与
+                # 未中断执行相同的位置；不发 LLM、不重复落库。
+                self._sample_paragraphs(sub_dim)
+                continue
             result = self._extract_with_retry(sub_dim)
             results.append(result)
             if self._checkpoint is not None:
@@ -267,6 +279,17 @@ class BaseExtractor:
         except _PartialResult as partial:
             findings = partial.findings
             failed = partial.failed
+        except _ExtractLLMError as exc:
+            # 单个 sub_dim 的供应商截断/空正文不应拖垮整本 Profile。把它视为
+            # 一次“空的初抽”，复用下方受 max_full_retries 限制的整维重试；
+            # 重试仍失败时落一个 0 finding 终态，覆盖报告会如实显示缺口。
+            logger.warning(
+                "Initial extraction failed for %s; retrying whole sub-dimension: %s",
+                sub_dim.value,
+                exc,
+            )
+            findings = []
+            failed = []
         result.extractions_created += 1
 
         if not failed:
@@ -300,7 +323,16 @@ class BaseExtractor:
 
         # Step 2: 第一级 — 单 obs 定向补抽
         promoted: list[ExtractionFindingInput] = []
-        for _ in range(self.retry_policy.max_targeted_retries):
+        targeted_retry_rounds = self.retry_policy.max_targeted_retries
+        if len(failed) > self.retry_policy.max_targeted_findings_per_batch:
+            logger.warning(
+                "Skipping per-finding supplements for %s: %d failed findings exceed batch limit %d",
+                sub_dim.value,
+                len(failed),
+                self.retry_policy.max_targeted_findings_per_batch,
+            )
+            targeted_retry_rounds = 0
+        for _ in range(targeted_retry_rounds):
             still_failed: list[ExtractionFindingInput] = []
             for finding in list(failed):
                 try:
@@ -314,8 +346,12 @@ class BaseExtractor:
                 # 2026-07 勘误:shim 的原始 evidence(首轮 LLM 产出)因 Pydantic 在
                 # ≥2 条校验处提前失败,从未过 span 校验——伪造引文可借补证晋升入库
                 # (再经 few-shot 注入)。合并前按与补证同一套规则过滤原始条目。
-                original_valid = _span_valid_evidence(finding.evidence, paragraph_lookup)
-                merged = original_valid + list(extras)
+                original_valid = _span_valid_evidence(
+                    finding.evidence, paragraph_lookup
+                )
+                merged = _span_valid_evidence(
+                    original_valid + list(extras), paragraph_lookup
+                )
                 if len(merged) >= 2:
                     finding.evidence = merged
                     promoted.append(finding)
@@ -431,10 +467,10 @@ class BaseExtractor:
         EvidenceShortError 触发的 finding 被收入 `failed` 列表;BannedAdjective /
         EvidenceSpan 触发的 finding 直接丢弃(不可补救)。
         """
-        # §6.5 数量上限(ExtractionOutput 契约 obs ≤8 / fp ≤3):此前只写在
+        # 校准后的数量上限(ExtractionOutput 契约 obs ≤6 / fp ≤2):此前只写在
         # schema 注释里从未执行,LLM 超发时全部入库。超出部分截断。
-        observations = (structured.get("observations") or [])[:8]
-        forbidden = (structured.get("forbidden_patterns") or [])[:3]
+        observations = (structured.get("observations") or [])[:6]
+        forbidden = (structured.get("forbidden_patterns") or [])[:2]
 
         findings: list[ExtractionFindingInput] = []
         failed: list[ExtractionFindingInput] = []
@@ -446,6 +482,16 @@ class BaseExtractor:
             if not isinstance(item, dict):
                 continue
             item = _normalize_finding_item(dict(item))
+            raw_evidence = item.get("evidence")
+            raw_evidence_count = (
+                len(raw_evidence) if isinstance(raw_evidence, list) else 0
+            )
+            item["evidence"] = _salvage_parseable_evidence(raw_evidence)
+            if len(item["evidence"]) < raw_evidence_count:
+                logger.warning(
+                    "Dropped %d structurally invalid evidence items before finding validation",
+                    raw_evidence_count - len(item["evidence"]),
+                )
             item.setdefault("finding_kind", kind.value)
             item.setdefault("sub_dimension", sub_dim.value)
 
@@ -474,11 +520,22 @@ class BaseExtractor:
                 failed.append(short)
                 continue
 
-            # evidence span 校验:失败直接丢弃(不重试,因 LLM 已经返回此 evidence)
-            try:
-                validate_evidence_spans(finding, paragraph_lookup)
-            except EvidenceSpanError as exc:
-                logger.warning("EvidenceSpan invalid, dropping finding: %s", exc)
+            # 引文逐条对齐，而不是“一条坏引文拖垮整条 finding”。保留合法、
+            # 去重后的证据；不足 2 条时进入既有定向补证链。伪造/拼接引文本身
+            # 仍然 fail-closed，绝不会落库。
+            original_count = len(finding.evidence)
+            valid_evidence = _span_valid_evidence(
+                finding.evidence, paragraph_lookup
+            )
+            finding.evidence = valid_evidence
+            if len(valid_evidence) < 2:
+                logger.warning(
+                    "Evidence alignment kept %d/%d items; supplementing finding: %s",
+                    len(valid_evidence),
+                    original_count,
+                    statement[:80],
+                )
+                failed.append(finding)
                 continue
 
             findings.append(finding)
@@ -745,6 +802,35 @@ def _normalize_finding_item(item: dict) -> dict:
     return item
 
 
+def _salvage_parseable_evidence(raw: Any) -> list[dict[str, Any]]:
+    """逐条过滤坏 evidence，避免一个空 quote 拖垮整条可补救 finding。
+
+    这里只放宽容器/结构容错；通过后的条目仍会在 `_span_valid_evidence`
+    中逐条核对原段落，伪造或拼接引文不会因此落库。
+    """
+    if isinstance(raw, dict):
+        candidates = [raw]
+    elif isinstance(raw, list):
+        candidates = raw
+    else:
+        candidates = []
+    salvaged: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        normalized = dict(candidate)
+        quote = normalized.get("quote")
+        if not isinstance(quote, str) or not quote.strip():
+            continue
+        normalized["quote"] = quote.strip()
+        try:
+            parsed = ExtractionEvidenceInput.model_validate(normalized)
+        except ValidationError:
+            continue
+        salvaged.append(parsed.model_dump(mode="python"))
+    return salvaged
+
+
 def _span_valid_evidence(
     evidence_list: list[ExtractionEvidenceInput],
     paragraph_lookup: dict[str, str],
@@ -756,16 +842,24 @@ def _span_valid_evidence(
     evidence 合并前也走这里(2026-07 勘误:此前原始条目未经校验即可晋升入库)。
     """
     validated: list[ExtractionEvidenceInput] = []
+    seen: set[tuple[Any, ...]] = set()
     for ev in evidence_list:
         if ev.anchor_kind in (AnchorKind.COUNTER_EXAMPLE, AnchorKind.AUTHOR_AVOIDANCE):
-            validated.append(ev)
+            aligned = ev
+        else:
+            aligned = align_evidence_to_paragraph_lookup(ev, paragraph_lookup)
+            if aligned is None:
+                continue
+        identity = (
+            aligned.anchor_kind.value,
+            aligned.paragraph_id,
+            aligned.span,
+            aligned.quote,
+        )
+        if identity in seen:
             continue
-        if ev.paragraph_id is None:
-            continue
-        text = paragraph_lookup.get(ev.paragraph_id)
-        if text is None or ev.quote not in text:
-            continue
-        validated.append(ev)
+        seen.add(identity)
+        validated.append(aligned)
     return validated
 
 

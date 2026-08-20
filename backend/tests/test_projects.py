@@ -308,7 +308,7 @@ def test_ready_reference_profile_can_bind_to_project_but_draft_profile_cannot(cl
             "scope": "project",
             "scope_ref_id": project["project_id"],
             "task_type": "scene_generation",
-            "strategy": "A",
+            "strategy": "mixed",
         }
     ]
 

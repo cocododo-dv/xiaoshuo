@@ -75,9 +75,12 @@ const localDraft = reactive({
   scope: "project",
   scope_ref_id: "",
   task_type: "scene_generation",
-  strategy: "A",
+  strategy: "mixed",
   intensity: 50,
   sub_dimensions: [...ALL_SUB_DIMS],
+  include_positive: true,
+  include_forbidden: true,
+  include_metric: true,
 });
 
 watch(
@@ -87,11 +90,14 @@ watch(
     localDraft.scope = next.scope || "project";
     localDraft.scope_ref_id = next.scope_ref_id || "";
     localDraft.task_type = next.task_type || "scene_generation";
-    localDraft.strategy = next.strategy || "A";
+    localDraft.strategy = next.strategy || "mixed";
     localDraft.intensity = Number(next.intensity ?? 50);
     localDraft.sub_dimensions = Array.isArray(next.sub_dimensions) && next.sub_dimensions.length > 0
       ? [...next.sub_dimensions]
       : [...ALL_SUB_DIMS];
+    localDraft.include_positive = next.include_positive ?? true;
+    localDraft.include_forbidden = next.include_forbidden ?? true;
+    localDraft.include_metric = next.include_metric ?? true;
   },
   { immediate: true, deep: true },
 );
@@ -131,6 +137,9 @@ function snapshot() {
     strategy: localDraft.strategy,
     intensity: localDraft.intensity,
     sub_dimensions: [...localDraft.sub_dimensions],
+    include_positive: localDraft.include_positive,
+    include_forbidden: localDraft.include_forbidden,
+    include_metric: localDraft.include_metric,
   };
 }
 

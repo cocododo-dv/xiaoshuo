@@ -33,6 +33,8 @@ _FROZEN_PROFILE_JSON_KEYS = frozenset(
         "narrative_patterns",
         "banned_replication_rules",
         "calibration_guidance",
+        "generation_safe_forbidden_findings",
+        "source_overlap_filter",
     }
 )
 _ALLOWED_STRATEGIES = frozenset({"A", "B", "C", "mixed"})
@@ -103,31 +105,55 @@ def build_style_runtime_contract(
         ):
             raise ValueError("style profile finding ids must be a list")
         source_finding_ids = list(copy.deepcopy(raw_finding_ids))
-        forbidden_findings: list[dict[str, Any]] = []
-        for finding_id in source_finding_ids:
-            finding = repo.get_finding(str(finding_id))
-            if (
-                finding is None
-                or getattr(finding, "finding_kind", None) != "forbidden_pattern"
-            ):
-                continue
-            forbidden_findings.append(
-                {
-                    "finding_id": str(finding.finding_id),
-                    "sub_dimension": str(finding.sub_dimension or ""),
-                    "statement": str(finding.statement or ""),
-                    "status": str(finding.status or ""),
-                }
-            )
+        safe_forbidden = raw_profile_json.get(
+            "generation_safe_forbidden_findings"
+        )
+        if isinstance(safe_forbidden, list):
+            forbidden_findings = copy.deepcopy(safe_forbidden)
+        else:
+            # 旧 Profile 没有确定性原文重合过滤审计时保留兼容路径；新 Profile
+            # 一律冻结合成阶段产出的 generation_safe 列表。
+            forbidden_findings: list[dict[str, Any]] = []
+            for finding_id in source_finding_ids:
+                finding = repo.get_finding(str(finding_id))
+                if (
+                    finding is None
+                    or getattr(finding, "finding_kind", None)
+                    != "forbidden_pattern"
+                ):
+                    continue
+                forbidden_findings.append(
+                    {
+                        "finding_id": str(finding.finding_id),
+                        "sub_dimension": str(finding.sub_dimension or ""),
+                        "statement": str(finding.statement or ""),
+                        "status": str(finding.status or ""),
+                    }
+                )
 
         quote_refs: list[dict[str, str]] = []
+        paragraph_refs: dict[str, dict[str, str]] = {}
         for quote_id in _quote_ids(profile_json):
             quote = repo.get_quote(quote_id)
             quote_text = str(getattr(quote, "quote_text", "") or "")
             if quote_text:
-                quote_refs.append(
-                    {"quote_id": quote_id, "quote_sha256": _text_hash(quote_text)}
-                )
+                quote_ref = {
+                    "quote_id": quote_id,
+                    "quote_sha256": _text_hash(quote_text),
+                }
+                paragraph_id = str(getattr(quote, "paragraph_id", "") or "")
+                paragraph = repo.get_paragraph(paragraph_id) if paragraph_id else None
+                paragraph_text = str(getattr(paragraph, "text", "") or "")
+                if paragraph_id and paragraph_text:
+                    quote_ref["paragraph_id"] = paragraph_id
+                    paragraph_refs.setdefault(
+                        paragraph_id,
+                        {
+                            "paragraph_id": paragraph_id,
+                            "paragraph_sha256": _text_hash(paragraph_text),
+                        },
+                    )
+                quote_refs.append(quote_ref)
 
         banned_terms = sorted(
             {
@@ -175,6 +201,7 @@ def build_style_runtime_contract(
             "forbidden_findings": forbidden_findings,
             "banned_terms": banned_terms,
             "sample_quote_refs": quote_refs,
+            "sample_paragraph_refs": list(paragraph_refs.values()),
             "book": book_snapshot,
         }
         layer["layer_hash"] = _json_hash(layer)
@@ -245,8 +272,10 @@ def validate_style_runtime_contract(payload: Mapping[str, Any]) -> dict[str, Any
             layer.get("banned_terms"), list
         ):
             raise ValueError("style runtime contract safety inputs are invalid")
-        if not isinstance(layer.get("sample_quote_refs"), list) or not isinstance(
-            layer.get("book"), Mapping
+        if (
+            not isinstance(layer.get("sample_quote_refs"), list)
+            or not isinstance(layer.get("sample_paragraph_refs", []), list)
+            or not isinstance(layer.get("book"), Mapping)
         ):
             raise ValueError("style runtime contract source references are invalid")
         if any(
@@ -265,16 +294,32 @@ def validate_style_runtime_contract(payload: Mapping[str, Any]) -> dict[str, Any
             not isinstance(term, str) or not term for term in layer["banned_terms"]
         ):
             raise ValueError("style runtime contract banned terms are malformed")
+        paragraph_ids: list[str] = []
+        for paragraph_ref in layer.get("sample_paragraph_refs", []):
+            if not isinstance(paragraph_ref, Mapping):
+                raise ValueError("style runtime contract paragraph reference is malformed")
+            paragraph_id = str(paragraph_ref.get("paragraph_id") or "")
+            paragraph_sha256 = str(paragraph_ref.get("paragraph_sha256") or "")
+            if (
+                not paragraph_id
+                or paragraph_id in paragraph_ids
+                or _SHA256_RE.fullmatch(paragraph_sha256) is None
+            ):
+                raise ValueError("style runtime contract paragraph reference is malformed")
+            paragraph_ids.append(paragraph_id)
+
         quote_ids: list[str] = []
         for quote_ref in layer["sample_quote_refs"]:
             if not isinstance(quote_ref, Mapping):
                 raise ValueError("style runtime contract quote reference is malformed")
             quote_id = str(quote_ref.get("quote_id") or "")
             quote_sha256 = str(quote_ref.get("quote_sha256") or "")
+            paragraph_id = str(quote_ref.get("paragraph_id") or "")
             if (
                 not quote_id
                 or quote_id in quote_ids
                 or _SHA256_RE.fullmatch(quote_sha256) is None
+                or (paragraph_id and paragraph_id not in paragraph_ids)
             ):
                 raise ValueError("style runtime contract quote reference is malformed")
             quote_ids.append(quote_id)

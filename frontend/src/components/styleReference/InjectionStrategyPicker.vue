@@ -25,7 +25,7 @@ const STRATEGIES = Object.freeze([
   { value: "mixed", label: "策略 MIXED", desc: "组合策略,可调强度与子维度" },
 ]);
 
-const strategy = computed(() => props.modelValue.strategy || "A");
+const strategy = computed(() => props.modelValue.strategy || "mixed");
 const intensity = computed(() => Number(props.modelValue.intensity ?? 50));
 const subDimensions = computed(() => props.modelValue.sub_dimensions || []);
 const isMixed = computed(() => strategy.value === "mixed");

@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from novel_system.services.style_reference.metrics import METRIC_NAMES
-from novel_system.services.style_reference.validation.quantitative import check_quantitative
+from novel_system.services.style_reference.metrics import (
+    METRIC_NAMES,
+    PROSE_SHAPE_METRIC_NAMES,
+)
+from novel_system.services.style_reference.validation.quantitative import (
+    check_quantitative,
+    compute_generated_metrics,
+)
 
 
 @dataclass
@@ -132,3 +138,19 @@ def test_type_ratio_metrics_excluded_even_with_full_baseline() -> None:
     )
     # 对照面 = 26 - 8 = 18 项纯文本统计指标
     assert len(got_metrics) == len(METRIC_NAMES) - len(TYPE_RATIO_METRICS)
+
+
+def test_generated_metrics_expose_paragraph_shape_without_changing_qc_denominator() -> None:
+    text = "甲乙丙丁。\n\n这是明显更长的第二段，用来制造段落长度差。"
+    generated = compute_generated_metrics(text)
+    assert set(PROSE_SHAPE_METRIC_NAMES) <= generated.keys()
+    assert generated["paragraphs_per_1k"] > 0
+
+    baseline = {
+        name: {"mean": generated[name], "std": 1.0}
+        for name in (*METRIC_NAMES, *PROSE_SHAPE_METRIC_NAMES)
+    }
+    reports = check_quantitative(text, _profile_with_baseline(baseline))
+    got_metrics = {report.metric for report in reports}
+    assert not (got_metrics & set(PROSE_SHAPE_METRIC_NAMES))
+    assert len(got_metrics) == len(METRIC_NAMES) - 8

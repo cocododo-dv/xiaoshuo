@@ -791,12 +791,16 @@ class SystemConfigService:
         }
 
     def save_llm_node_routes(self, *, payload: dict[str, Any], actor_ref: str) -> dict[str, Any]:
+        current_models = dict(self._category_payload("models").get("parsed") or {})
         config_payload = {
             "model_profiles": dict(payload.get("model_profiles") or {}),
             "task_routing": dict(payload.get("task_routing") or {}),
             "node_routing": dict(payload.get("node_routing") or {}),
             "retry_budget": dict(payload.get("retry_budget") or {}),
             "job_runtime": dict(payload.get("job_runtime") or {}),
+            # 节点高级编辑表单不提交角色槽元数据；保存时必须沿用当前绑定，
+            # 否则一次无关的温度/预算调整会让设置页静默丢失三个角色分工。
+            "role_assignments": dict(current_models.get("role_assignments") or {}),
         }
         routing_config = parse_model_routing_config(config_payload)
         if _bool_value(payload.get("activate", False)):

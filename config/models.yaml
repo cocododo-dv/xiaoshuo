@@ -69,43 +69,43 @@ task_routing:
   style_ref_paragraph_classify_bulk:
     provider: openai_compatible
     model: gpt-5-mini
-    temperature: 0.1
+    temperature: 0.0
     max_output_tokens: 2000
     response_format: json_object
   style_ref_extract_language:
     provider: openai_compatible
     model: gpt-5
-    temperature: 0.15
-    max_output_tokens: 3200
+    temperature: 0.0
+    max_output_tokens: 6400
     response_format: json_object
   style_ref_extract_narrative:
     provider: openai_compatible
     model: gpt-5
-    temperature: 0.15
-    max_output_tokens: 3200
+    temperature: 0.0
+    max_output_tokens: 6400
     response_format: json_object
   style_ref_extract_scene:
     provider: openai_compatible
     model: gpt-5
-    temperature: 0.15
-    max_output_tokens: 3200
+    temperature: 0.0
+    max_output_tokens: 6400
     response_format: json_object
   style_ref_extract_theme:
     provider: openai_compatible
     model: gpt-5
-    temperature: 0.15
-    max_output_tokens: 3200
+    temperature: 0.0
+    max_output_tokens: 6400
     response_format: json_object
   style_ref_supplement_evidence:
     provider: openai_compatible
     model: gpt-5-mini
-    temperature: 0.15
-    max_output_tokens: 1500
+    temperature: 0.0
+    max_output_tokens: 3000
     response_format: json_object
   style_ref_synthesize_profile:
     provider: openai_compatible
     model: gpt-5
-    temperature: 0.2
+    temperature: 0.0
     max_output_tokens: 3500
     response_format: json_object
   style_ref_preview_generate:

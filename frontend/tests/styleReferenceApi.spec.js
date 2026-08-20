@@ -129,6 +129,29 @@ describe("styleReference API client URL 拼装", () => {
     });
   });
 
+  it("applyProfile forwards MIXED controls instead of dropping them", async () => {
+    await sr.applyStyleReferenceProfile("sr_profile_x", {
+      scope: "project",
+      strategy: "mixed",
+      intensity: 80,
+      subDimensions: ["language.punctuation"],
+      includePositive: true,
+      includeForbidden: true,
+      includeMetric: true,
+    });
+    expect(JSON.parse(calls[0].init.body)).toEqual({
+      scope: "project",
+      scope_ref_id: null,
+      task_type: "scene_generation",
+      strategy: "mixed",
+      intensity: 80,
+      sub_dimensions: ["language.punctuation"],
+      include_positive: true,
+      include_forbidden: true,
+      include_metric: true,
+    });
+  });
+
   it("deleteBinding DELETE", async () => {
     await sr.deleteStyleReferenceBinding("sr_bind_1");
     expect(calls[0].init.method).toBe("DELETE");

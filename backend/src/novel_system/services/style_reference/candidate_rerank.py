@@ -33,7 +33,10 @@ from novel_system.services.style_reference.injection import (
     InjectionService,
     ordered_character_ids,
 )
-from novel_system.services.style_reference.metrics import METRIC_NAMES
+from novel_system.services.style_reference.metrics import (
+    METRIC_NAMES,
+    PROSE_SHAPE_METRIC_NAMES,
+)
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import (
     blend_profile_metric_baselines,
@@ -52,8 +55,10 @@ from novel_system.services.style_reference.validation.quantitative import (
 )
 
 
-SCORER_VERSION = "style_candidate_rerank_v1"
-_TEXT_METRICS = tuple(name for name in METRIC_NAMES if name not in TYPE_RATIO_METRICS)
+SCORER_VERSION = "style_candidate_rerank_v2"
+_TEXT_METRICS = tuple(
+    name for name in METRIC_NAMES if name not in TYPE_RATIO_METRICS
+) + PROSE_SHAPE_METRIC_NAMES
 _MAX_STYLE_WEIGHT = 0.25
 _MAX_QUALITY_DROP = 0.08
 _MIN_ACTIVE_METRICS = 12
@@ -62,6 +67,7 @@ _MIN_ACTIVE_CHARS = 300
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 _METRIC_GROUPS: dict[str, tuple[str, ...]] = {
+    "paragraph_shape": PROSE_SHAPE_METRIC_NAMES,
     "sentence_shape": (
         "avg_sentence_length",
         "sentence_length_std",
@@ -442,7 +448,11 @@ def assess_candidate_text(
             assessment.style_score = sum(assessment.group_scores.values()) / len(
                 assessment.group_scores
             )
-        metric_coverage = min(1.0, assessment.metric_count / max(1, len(_TEXT_METRICS)))
+        # 老画像没有 2026-08 新增的段落形态 baseline；置信度应按该画像实际可比
+        # 的 target 数计算，不能仅因 schema 迭代把历史画像系统性降权。
+        metric_coverage = min(
+            1.0, assessment.metric_count / max(1, len(target.metrics))
+        )
         length_coverage = min(
             1.0, assessment.substantive_chars / max(1, policy.min_substantive_chars)
         )

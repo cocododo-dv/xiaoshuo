@@ -29,6 +29,7 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.bundle_builder import BundleBuilder
+from novel_system.services.errors import DomainError
 from novel_system.services.llm_client import (
     LLMRequest,
     LLMResponse,
@@ -188,7 +189,13 @@ class StyleBenchmarkLiveRunner:
                 scope=BindingScope.PROJECT,
                 scope_ref_id=self.project_id,
                 task_type=TaskType.SCENE_GENERATION,
-                strategy=InjectionStrategy.A,
+                strategy=InjectionStrategy.MIXED,
+                config_json={
+                    "intensity": 100,
+                    "include_positive": True,
+                    "include_forbidden": True,
+                    "include_metric": True,
+                },
             )
             binding = self.repo.get_binding(applied.binding_id)
             if binding is None:
@@ -258,12 +265,32 @@ class StyleBenchmarkLiveRunner:
                 hashlib.sha256(seed_material.encode("utf-8")).hexdigest()[:16],
                 16,
             )
-            run_result = RunOrchestrator(
+            run_orchestrator = RunOrchestrator(
                 self.session,
                 llm_client=self.client,
                 llm_enabled=True,
                 rng=random.Random(seed),
-            ).start_extract_run(book.book_id, background=False)
+            )
+            resumable_runs = [
+                candidate
+                for candidate in self.repo.list_runs(book_id=book.book_id)
+                if candidate.status in {
+                    RunStatus.RUNNING.value,
+                    RunStatus.FAILED.value,
+                }
+            ]
+            if self.resume and resumable_runs:
+                resumable_runs.sort(
+                    key=lambda row: (row.created_at or "", row.run_id)
+                )
+                run_result = run_orchestrator.resume_extract_run(
+                    resumable_runs[-1].run_id
+                )
+            else:
+                run_result = run_orchestrator.start_extract_run(
+                    book.book_id,
+                    background=False,
+                )
             run = self.repo.get_run(run_result.run_id)
             if run is None or run.status != RunStatus.DONE.value:
                 raise StyleBenchmarkError(f"作者 {author.author_id} 的风格抽取未完成")
@@ -305,12 +332,27 @@ class StyleBenchmarkLiveRunner:
                 "为保证泄漏审计完整，不能自动重跑，请使用新的输出目录"
             )
         before = len(self.client.records)
-        result = SceneGenerationService(
-            self.session, llm_client=self.client
-        ).generate_neutral_draft(
-            self._scene_id(case),
-            bundle,
-        )
+        try:
+            result = SceneGenerationService(
+                self.session, llm_client=self.client
+            ).generate_neutral_draft(
+                self._scene_id(case),
+                bundle,
+            )
+        except DomainError as exc:
+            # 场景正文不会写入 checkpoint；只输出无正文的结构化失败原因，方便
+            # 判断是事实、长度还是完整性门，并保证 --resume 能从该单元重试。
+            self.session.rollback()
+            self.progress(
+                "generation_failed",
+                {
+                    "case_id": case.case_id,
+                    "arm": "neutral",
+                    "error_code": exc.code,
+                    "details": dict(exc.details or {}),
+                },
+            )
+            raise
         self.session.commit()
         prompt = self.client.prompt_for_call(
             self.session, result.llm_call_id, since=before
@@ -441,9 +483,15 @@ class StyleBenchmarkLiveRunner:
                     planning_mode="outline_driven",
                 )
             )
+        # The isolated live runner deliberately uses ``autoflush=False`` so
+        # LLM checkpoints control every durable boundary.  Flush each FK tier
+        # explicitly: relying on incidental ``Session.get`` autoflush made the
+        # unit-test session pass while a real empty benchmark database tried to
+        # insert chapter_goals before its story_projects parent.
+        self.session.flush()
+
         for index, case in enumerate(self.manifest.cases, start=1):
             chapter_id = self._chapter_id(case)
-            scene_id = self._scene_id(case)
             if self.session.get(ChapterGoal, chapter_id) is None:
                 self.session.add(
                     ChapterGoal(
@@ -454,9 +502,15 @@ class StyleBenchmarkLiveRunner:
                         chapter_goal=case.prompt,
                     )
                 )
+        self.session.flush()
+
+        for case in self.manifest.cases:
+            chapter_id = self._chapter_id(case)
+            if self.session.get(ChapterState, chapter_id) is None:
                 self.session.add(
                     ChapterState(chapter_id=chapter_id, current_phase="drafting")
                 )
+            scene_id = self._scene_id(case)
             if self.session.get(SceneCard, scene_id) is None:
                 self.session.add(
                     SceneCard(
@@ -467,7 +521,7 @@ class StyleBenchmarkLiveRunner:
                         scene_goal=case.prompt,
                         beats_json=[group[0] for group in case.required_term_groups],
                         must_include_text="；".join(
-                            group[0] for group in case.required_term_groups
+                            "|".join(group) for group in case.required_term_groups
                         ),
                         target_length_band=f"{case.min_chars}-{case.max_chars} Chinese characters",
                         scene_type=case.scene_function,
@@ -475,6 +529,11 @@ class StyleBenchmarkLiveRunner:
                         onstage_chars_json=[],
                     )
                 )
+        self.session.flush()
+
+        for case in self.manifest.cases:
+            scene_id = self._scene_id(case)
+            if self.session.get(SceneRunState, scene_id) is None:
                 self.session.add(SceneRunState(scene_id=scene_id, scene_status="ready"))
         self.session.commit()
 

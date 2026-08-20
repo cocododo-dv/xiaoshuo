@@ -220,6 +220,61 @@ class RunOrchestrator:
             sub_dim_results=[],
         )
 
+    def resume_extract_run(self, run_id: str) -> RunResult:
+        """接续已中断的同步抽取 run，只重跑没有最终持久化标记的 sub_dim。"""
+        if not self._llm_enabled or self._llm_client is None:
+            raise LLMRequiredError(operation="resume_extract_run")
+        run = self.repo.get_run(run_id)
+        if run is None:
+            raise DomainError(
+                "STYLE_REFERENCE_RUN_NOT_FOUND",
+                f"run {run_id!r} not found",
+                status_code=404,
+            )
+        if run.status == RunStatus.DONE.value:
+            layers = self._requested_layers(run)
+            return RunResult(
+                run_id=run_id,
+                book_id=run.book_id,
+                status=RunStatus.DONE.value,
+                layers=[layer.value for layer in layers],
+                sub_dim_results=[],
+            )
+        if run.status not in {RunStatus.RUNNING.value, RunStatus.FAILED.value}:
+            raise DomainError(
+                "STYLE_REFERENCE_RUN_NOT_RESUMABLE",
+                f"run {run_id!r} status {run.status!r} cannot be resumed",
+                status_code=409,
+            )
+        book = self.repo.get_book(run.book_id)
+        if book is None:
+            raise DomainError(
+                "STYLE_REFERENCE_BOOK_NOT_FOUND",
+                f"book {run.book_id!r} not found",
+                status_code=404,
+            )
+        ensure_cloud_llm_allowed(book, operation="resume_extract_run")
+        layers = self._requested_layers(run)
+        completed = self._completed_sub_dimensions(run_id)
+        self.repo.update_run(
+            run_id,
+            status=RunStatus.RUNNING.value,
+            phase=RunPhase.EXTRACT.value,
+            dispatch_state="running",
+            heartbeat_at=_utcnow_iso(),
+            finished_at=None,
+            error_code=None,
+            error_text=None,
+            retryable=False,
+        )
+        return self._execute(
+            run_id,
+            run.book_id,
+            layers,
+            progress_commits=False,
+            completed_sub_dimensions=completed,
+        )
+
     def _execute(
         self,
         run_id: str,
@@ -227,6 +282,7 @@ class RunOrchestrator:
         layers: list[Layer],
         *,
         progress_commits: bool,
+        completed_sub_dimensions: set[str] | None = None,
     ) -> RunResult:
         """逐层执行抽取并更新 run 状态。
 
@@ -285,7 +341,16 @@ class RunOrchestrator:
                         else None
                     ),
                 )
-                sub_dim_results.extend(extractor.extract_all_sub_dimensions())
+                skip = {
+                    sub_dim
+                    for sub_dim in extractor.sub_dimensions
+                    if sub_dim.value in (completed_sub_dimensions or set())
+                }
+                sub_dim_results.extend(
+                    extractor.extract_all_sub_dimensions(
+                        skip_sub_dimensions=skip,
+                    )
+                )
         except Exception:
             self.repo.update_run(
                 run_id,
@@ -308,13 +373,7 @@ class RunOrchestrator:
             "layers_done": len(layers),
             "current_layer": None,
         }
-        coverage["sub_dimensions"] = {
-            r.sub_dimension.value: {
-                "findings": len(r.findings),
-                "extractions": r.extractions_created,
-            }
-            for r in sub_dim_results
-        }
+        coverage["sub_dimensions"] = self._persisted_subdimension_coverage(run_id)
         self.repo.update_run(
             run_id,
             status=RunStatus.DONE.value,
@@ -337,6 +396,57 @@ class RunOrchestrator:
             layers=[layer.value for layer in layers],
             sub_dim_results=sub_dim_results,
         )
+
+    @staticmethod
+    def _requested_layers(run: StyleReferenceRun) -> list[Layer]:
+        raw = run.requested_layers_json or []
+        try:
+            layers = [Layer(str(value)) for value in raw]
+        except ValueError as exc:
+            raise DomainError(
+                "STYLE_REFERENCE_RUN_NOT_RESUMABLE",
+                f"run {run.run_id!r} has invalid requested layers",
+                status_code=409,
+            ) from exc
+        if not layers:
+            raise DomainError(
+                "STYLE_REFERENCE_RUN_NOT_RESUMABLE",
+                f"run {run.run_id!r} has no requested layers",
+                status_code=409,
+            )
+        return layers
+
+    def _completed_sub_dimensions(self, run_id: str) -> set[str]:
+        completed: set[str] = set()
+        for extraction in self.repo.list_extractions(run_id=run_id):
+            payload = extraction.raw_payload_json or {}
+            if (
+                extraction.status == "done"
+                and isinstance(payload, dict)
+                and "findings_count" in payload
+            ):
+                completed.add(str(extraction.sub_dimension))
+        return completed
+
+    def _persisted_subdimension_coverage(
+        self,
+        run_id: str,
+    ) -> dict[str, dict[str, int]]:
+        extraction_counts: dict[str, int] = {}
+        for extraction in self.repo.list_extractions(run_id=run_id):
+            key = str(extraction.sub_dimension)
+            extraction_counts[key] = extraction_counts.get(key, 0) + 1
+        finding_counts: dict[str, int] = {}
+        for finding in self.repo.list_findings(run_id=run_id):
+            key = str(finding.sub_dimension)
+            finding_counts[key] = finding_counts.get(key, 0) + 1
+        return {
+            key: {
+                "findings": finding_counts.get(key, 0),
+                "extractions": extraction_counts.get(key, 0),
+            }
+            for key in sorted(set(extraction_counts) | set(finding_counts))
+        }
 
     def _observed_status(self, run_id: str) -> str | None:
         """读 run 当前状态(跨事务可见);run 行消失返回 None(按 CANCELLED 处理)。"""

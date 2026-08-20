@@ -7,8 +7,11 @@ from __future__ import annotations
 
 from novel_system.services.style_reference.metrics import (
     METRIC_NAMES,
+    PROSE_SHAPE_METRIC_NAMES,
     MetricsEngine,
     ParagraphRecord,
+    compute_prose_shape_from_text,
+    compute_prose_shape_metrics,
 )
 
 
@@ -38,6 +41,32 @@ def test_compute_with_variance_returns_tuples() -> None:
     ]
     result = _engine().compute_with_variance(paragraphs)
     assert all(isinstance(v, tuple) and len(v) == 2 for v in result.values())
+
+
+def test_prose_shape_metrics_are_separate_from_frozen_26_metric_contract() -> None:
+    paragraphs = [
+        ParagraphRecord(text="“走吧。”", paragraph_type="dialogue"),
+        ParagraphRecord(text="天亮了。他没动。", paragraph_type="narration"),
+    ]
+
+    result = compute_prose_shape_metrics(paragraphs)
+
+    assert set(result) == set(PROSE_SHAPE_METRIC_NAMES)
+    assert set(result).isdisjoint(METRIC_NAMES)
+    assert result["paragraph_mean_chars"] == pytest.approx(6.5)
+    assert result["paragraph_length_std_chars"] == pytest.approx(1.5)
+    assert result["paragraphs_per_1k"] == pytest.approx(2 * 1000 / 13)
+    assert result["single_sentence_paragraph_ratio"] == pytest.approx(0.5)
+    assert result["quote_led_paragraph_ratio"] == pytest.approx(0.5)
+
+
+def test_prose_shape_from_text_uses_blank_lines_as_real_paragraph_boundaries() -> None:
+    result = compute_prose_shape_from_text(
+        "“先别开门。”\n这仍在同一段。\n\n他把手收了回来。"
+    )
+
+    assert result["paragraphs_per_1k"] > 0
+    assert result["quote_led_paragraph_ratio"] == pytest.approx(0.5)
 
 
 def test_avg_sentence_length() -> None:

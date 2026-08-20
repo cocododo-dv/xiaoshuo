@@ -217,15 +217,23 @@ def fake_extractor_llm():
             return {}
 
     def _two_evidence_for(p: dict, *, n: int = 2) -> list[dict]:
+        text = p.get("text", "") or "ph_quote"
+        if n == 1:
+            spans = [(0, min(20, len(text)))]
+        else:
+            split = max(1, len(text) // 2)
+            spans = [(0, split), (split, len(text))]
+            spans.extend((0, min(20, len(text))) for _ in range(max(0, n - 2)))
         return [
             {
                 "paragraph_id": p.get("paragraph_id"),
-                "span": [0, min(20, len(p.get("text", "")))],
-                "quote": (p.get("text", "") or "ph_quote")[:20],
+                "span": [start, end],
+                "quote": text[start:end],
                 "illustrates_dims": [],
                 "anchor_kind": "paragraph_quote",
             }
-            for _ in range(n)
+            for start, end in spans
+            if end > start
         ]
 
     class FakeExtractorLLM(AccountedGenerateMixin):
@@ -278,6 +286,38 @@ def fake_extractor_llm():
                         {"observations": [], "forbidden_patterns": []}
                     )
                 # 第二次(空结果 full_retry)落到 default 分支返回正常内容
+            if self.rule == "many_invalid_then_default":
+                self._extract_calls[sub_dim] = self._extract_calls.get(sub_dim, 0) + 1
+                if self._extract_calls[sub_dim] == 1:
+                    return _FakeLLMResponse(
+                        {
+                            "observations": [
+                                {
+                                    "statement": f"{sub_dim} invalid batch #{i}",
+                                    "confidence": "medium",
+                                    "finding_kind": "observation",
+                                    "sub_dimension": sub_dim,
+                                    "evidence": [
+                                        {
+                                            "paragraph_id": paragraphs[0].get("paragraph_id"),
+                                            "span": [0, 0],
+                                            "quote": f"不存在的拼接引文甲{i}",
+                                            "anchor_kind": "paragraph_quote",
+                                        },
+                                        {
+                                            "paragraph_id": paragraphs[0].get("paragraph_id"),
+                                            "span": [0, 0],
+                                            "quote": f"不存在的拼接引文乙{i}",
+                                            "anchor_kind": "paragraph_quote",
+                                        },
+                                    ],
+                                }
+                                for i in range(3)
+                            ],
+                            "forbidden_patterns": [],
+                        }
+                    )
+                # 大面积证据失败应整维重抽；第二次落到 default 分支。
 
             observations: list[dict] = []
             forbidden: list[dict] = []

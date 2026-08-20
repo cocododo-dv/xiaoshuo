@@ -88,7 +88,16 @@ def test_ingest_upload_happy_path(ingest_service: IngestService) -> None:
     assert book.total_chars == len(SAMPLE_TEXT.strip())
     assert result.paragraphs_count == 5
     stats = book.stats_json
-    assert set(stats.keys()) >= {"metrics", "input_assessment", "classifier_calibration", "paragraph_type_distribution", "safety"}
+    assert set(stats.keys()) >= {
+        "metrics",
+        "prose_shape_metrics",
+        "input_assessment",
+        "classifier_calibration",
+        "paragraph_type_distribution",
+        "safety",
+    }
+    assert len(stats["metrics"]) == 26
+    assert len(stats["prose_shape_metrics"]) == 5
     # 离线 fallback 标记
     assert stats["classifier_calibration"]["fallback_to_heuristic"] is True
     # 段落分布非空
@@ -195,8 +204,14 @@ def test_ingest_luxun_placeholder(ingest_service: IngestService) -> None:
     assert "paragraph_type_distribution" in stats
     # metrics 26 项
     assert len(stats["metrics"]) == 26
+    # 段落形态另存，不改变冻结的 26 项 QC 分母
+    assert len(stats["prose_shape_metrics"]) == 5
+    assert "paragraph_mean_chars" in stats["prose_shape_metrics"]
     # 每个 metric 都含 mean / std / sample_count
-    for name, m in stats["metrics"].items():
+    for name, m in {
+        **stats["metrics"],
+        **stats["prose_shape_metrics"],
+    }.items():
         assert "mean" in m
         assert "std" in m
         assert "sample_count" in m

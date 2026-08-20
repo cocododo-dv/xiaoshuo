@@ -628,6 +628,10 @@ def test_apply_profile(client: TestClient) -> None:
     assert data["binding_id"]
     # finding observation + language → style_rule_set;+ calibration_candidate(2 lines profile_json 含 1)
     assert "style_rule_set" in data["item_type_counts"]
+    with SessionLocal() as session:
+        binding = StyleReferenceRepository(session).get_binding(data["binding_id"])
+        assert binding is not None
+        assert binding.strategy == "mixed"
 
 
 def test_list_bindings(client: TestClient) -> None:

@@ -421,15 +421,15 @@ class ExtractionFindingInput(BaseModel):
 class ExtractionOutput(BaseModel):
     """LLM 抽取响应 structured_output 的顶层结构。
 
-    §6.5:observations 0-8 条,forbidden_patterns 0-3 条。BaseExtractor 解析
+    校准契约:observations 0-6 条,forbidden_patterns 0-2 条。BaseExtractor 解析
     LLM 响应时把 structured_output 通过 `ExtractionOutput.model_validate(...)`
     转入;Pydantic 错误由 BaseExtractor 捕获并按重试链路处理。
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    observations: list[ExtractionFindingInput] = Field(default_factory=list, max_length=8)
-    forbidden_patterns: list[ExtractionFindingInput] = Field(default_factory=list, max_length=3)
+    observations: list[ExtractionFindingInput] = Field(default_factory=list, max_length=6)
+    forbidden_patterns: list[ExtractionFindingInput] = Field(default_factory=list, max_length=2)
 
 
 class SupplementEvidenceOutput(BaseModel):
@@ -640,9 +640,9 @@ class SystemPromptFragments(BaseModel):
         blocks = [
             block
             for block in (
+                self.metric_anchor_block,
                 self.positive_block,
                 self.forbidden_block,
-                self.metric_anchor_block,
                 self.few_shot_block,
                 self.rag_block,
             )
@@ -669,13 +669,13 @@ class InjectionPreviewRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    strategy: InjectionStrategy = InjectionStrategy.A
+    strategy: InjectionStrategy | None = None
     task_type: TaskType = TaskType.SCENE_GENERATION
     intensity: int = Field(default=50, ge=0, le=100)
     sub_dimensions: list[str] = Field(default_factory=list, max_length=128)
     include_positive: bool = True
     include_forbidden: bool = True
-    include_metric: bool = False
+    include_metric: bool | None = None
 
 
 class InjectionPreviewResponse(BaseModel):

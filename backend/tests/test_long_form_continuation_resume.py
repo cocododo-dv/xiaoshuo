@@ -207,8 +207,8 @@ def test_long_form_continuation_resumes_from_first_missing_segment(session, monk
     ]
     assert reconciled == runner.calls
     retry_refreshes = refresh_contexts[first_run_refresh_count:]
-    assert retry_refreshes[0] == "source"
-    assert retry_refreshes[1].endswith("source\nsegment-0")
+    assert retry_refreshes[0].endswith("source\nsegment-0")
+    assert retry_refreshes[1].endswith("source\nsegment-0segment-1")
     assert result.content == "segment-0segment-1segment-2"
     assert session.query(SceneDraft).filter_by(stage="long_form_continuation_segment").count() == 3
     session.refresh(first_call)

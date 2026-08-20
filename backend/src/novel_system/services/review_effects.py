@@ -123,12 +123,14 @@ def _bind_style_profile(
             f"bind_style_profile scope={scope_value} requires scope_ref_id",
             status_code=400,
         )
+    raw_strategy = payload.get("strategy")
+    strategy = InjectionStrategy(str(raw_strategy)) if raw_strategy else None
     result = MaterializationService(session).apply_profile(
         profile_id,
         scope=BindingScope(scope_value),
         scope_ref_id=raw_scope_ref or project_id,
         task_type=TaskType(str(payload.get("task_type") or "scene_generation")),
-        strategy=InjectionStrategy(str(payload.get("strategy") or "A")),
+        strategy=strategy,
         config_json=_style_injection_config(payload) or None,
     )
     return {

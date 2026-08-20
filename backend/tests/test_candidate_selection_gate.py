@@ -767,6 +767,94 @@ def test_select_then_resume_accepts_completed_de_template_candidate_without_repl
     )
 
 
+def test_rejected_de_template_is_audited_and_checkpoint_resume_uses_base_fallback(
+    client,
+    session,
+    monkeypatch,
+) -> None:
+    _seed_scene(session)
+    monkeypatch.setattr(
+        "novel_system.services.scene_generation._anti_template_quality_gate",
+        lambda *args, **kwargs: {
+            "triggered": True,
+            "rewrite_pass": 1,
+            "score": 0.0,
+            "risk_dimensions": ["model_voice"],
+            "quality_signal_ids": ["quality:selection-rejected-de-template"],
+            "findings": [],
+        },
+    )
+    monkeypatch.setattr(
+        "novel_system.services.scene_generation._assess_de_template_rewrite",
+        lambda **kwargs: {
+            "accepted": False,
+            "reasons": ["test_rejection"],
+        },
+    )
+
+    _make_orchestrator(session).run_scene(SCENE_ID)
+    session.commit()
+
+    gate = _selection_gate(session)
+    offered_row_ids = gate.details_json["candidate_row_ids"]
+    state = session.get(SceneRunState, SCENE_ID)
+    work_items = state.run_checkpoint_json["artifact_refs"]["style_work_items"]
+    assert work_items
+    assert all(item["de_template_outcome"]["status"] == "rejected" for item in work_items)
+    assert all(item["final"]["row_id"] == item["base"]["row_id"] for item in work_items)
+    rejected_row_ids = {
+        item["de_template_outcome"]["row_id"] for item in work_items
+    }
+    assert rejected_row_ids.isdisjoint(offered_row_ids)
+    assert all(
+        session.get(SceneDraft, row_id).stage == "de_template"
+        and session.get(SceneDraft, row_id).status == "rejected"
+        for row_id in rejected_row_ids
+    )
+
+    chosen_row_id = offered_row_ids[0]
+    assert (
+        client.post(
+            f"/api/v1/scenes/{SCENE_ID}/style-candidates/{chosen_row_id}/select",
+            json={},
+            headers={"X-Idempotency-Key": "w3-select-rejected-de-template"},
+        ).status_code
+        == 200
+    )
+    style_call_ids_before = list(
+        session.execute(
+            select(LlmCall.llm_call_id)
+            .where(
+                LlmCall.scene_id == SCENE_ID,
+                LlmCall.step.in_(("style_draft", "de_template")),
+            )
+            .order_by(LlmCall.llm_call_id)
+        ).scalars()
+    )
+
+    resumed = client.post(
+        f"/api/v1/scenes/{SCENE_ID}/resume-after-selection",
+        json={},
+        headers={"X-Idempotency-Key": "w3-resume-rejected-de-template"},
+    )
+
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["data"]["scene_status"] == "archived"
+    assert (
+        list(
+            session.execute(
+                select(LlmCall.llm_call_id)
+                .where(
+                    LlmCall.scene_id == SCENE_ID,
+                    LlmCall.step.in_(("style_draft", "de_template")),
+                )
+                .order_by(LlmCall.llm_call_id)
+            ).scalars()
+        )
+        == style_call_ids_before
+    )
+
+
 def test_resume_rejects_selected_candidate_with_non_style_lineage_stage_without_provider_replay(
     client,
     session,

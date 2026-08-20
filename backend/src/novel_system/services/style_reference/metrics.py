@@ -85,6 +85,17 @@ METRIC_NAMES: tuple[str, ...] = (
     "sensory_gustatory_per_1k",
 )
 
+# 不并入既有 26 项验证契约，避免改变已冻结的 QC 分母；这些指标单独落入
+# book.stats_json.prose_shape_metrics，再与 Profile 的 metrics_baseline 合并供
+# 生成注入使用。它们完全由正文换段/标点形状计算，不依赖段型分类器。
+PROSE_SHAPE_METRIC_NAMES: tuple[str, ...] = (
+    "paragraph_mean_chars",
+    "paragraph_length_std_chars",
+    "paragraphs_per_1k",
+    "single_sentence_paragraph_ratio",
+    "quote_led_paragraph_ratio",
+)
+
 # 常量词表。
 # 2026-07 勘误:原字符串含重复字符(`——` 两个 `—`、`\"\"` 两个 ASCII 引号、
 # ASCII `:` 出现两次),`_density_per_1k_chars` 按字符逐个 count 会**双计**;
@@ -239,6 +250,62 @@ class MetricsEngine:
         raise ValueError(f"unknown metric: {name}")
 
 
+def compute_prose_shape_metrics(
+    paragraphs: list[ParagraphRecord],
+) -> dict[str, float]:
+    """计算可直接作用于生成稿的段落形状，不读取 paragraph_type。"""
+    usable = [p for p in paragraphs if str(p.text or "").strip()]
+    if not usable:
+        return {name: 0.0 for name in PROSE_SHAPE_METRIC_NAMES}
+    lengths = [_visible_length(p.text) for p in usable]
+    total_chars = max(1, sum(lengths))
+    return {
+        "paragraph_mean_chars": statistics.fmean(lengths),
+        "paragraph_length_std_chars": (
+            statistics.pstdev(lengths) if len(lengths) > 1 else 0.0
+        ),
+        "paragraphs_per_1k": len(usable) * 1000.0 / total_chars,
+        "single_sentence_paragraph_ratio": sum(
+            1 for p in usable if _paragraph_sentence_count(p.text) <= 1
+        )
+        / len(usable),
+        "quote_led_paragraph_ratio": sum(
+            1 for p in usable if _looks_like_quote_led_dialogue(p.text)
+        )
+        / len(usable),
+    }
+
+
+def compute_prose_shape_with_variance(
+    paragraphs: list[ParagraphRecord],
+) -> dict[str, tuple[float, float]]:
+    """返回全文段落形状均值与约场景大小的块间自然波动。"""
+    if not paragraphs:
+        return {name: (0.0, 0.0) for name in PROSE_SHAPE_METRIC_NAMES}
+    means = compute_prose_shape_metrics(paragraphs)
+    chunks = _chunk_by_chars(paragraphs, _VARIANCE_CHUNK_CHARS)
+    result: dict[str, tuple[float, float]] = {}
+    for name in PROSE_SHAPE_METRIC_NAMES:
+        values = [compute_prose_shape_metrics(chunk)[name] for chunk in chunks]
+        std = statistics.pstdev(values) if len(values) > 1 else 0.0
+        result[name] = (means[name], std)
+    return result
+
+
+def compute_prose_shape_from_text(text: str) -> dict[str, float]:
+    """按真实空行切段计算生成稿形状；与隐藏评测的可解释定义对齐。"""
+    parts = [
+        part.strip()
+        for part in re.split(r"\n\s*\n", str(text or ""))
+        if part.strip()
+    ]
+    if not parts and str(text or "").strip():
+        parts = [str(text).strip()]
+    return compute_prose_shape_metrics(
+        [ParagraphRecord(text=part, paragraph_type="narration") for part in parts]
+    )
+
+
 # 块间方差的目标块大小(字符)。≈ 一个场景的长度,与回测对照的「单段生成文本」
 # 同粒度;语料按段落累积到该字数即切块,余段并入最后一块。
 _VARIANCE_CHUNK_CHARS = 1500
@@ -295,6 +362,24 @@ def _sentence_length_ratio(text: str, predicate: Callable[[int], bool]) -> float
         return 0.0
     matched = sum(1 for s in sentences if predicate(len(s)))
     return matched / len(sentences)
+
+
+def _visible_length(text: str) -> int:
+    return sum(1 for char in str(text or "") if not char.isspace())
+
+
+def _looks_like_quote_led_dialogue(text: str) -> bool:
+    return str(text or "").lstrip().startswith(("“", "‘", "「", "『", '"', "—"))
+
+
+def _paragraph_sentence_count(text: str) -> int:
+    """忽略分句后残留的闭引号，避免 ``“走吧。”`` 被算成两句。"""
+    parts = [
+        part
+        for part in split_sentences(str(text or ""))
+        if re.search(r"[\w\u3400-\u9fff]", part)
+    ]
+    return len(parts) or (1 if str(text or "").strip() else 0)
 
 
 def _density_per_1k_chars(text: str, chars: str) -> float:

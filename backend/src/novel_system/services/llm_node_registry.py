@@ -191,7 +191,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "style_reference",
         template_name="style_ref_paragraph_classify_bulk",
         model="gpt-5-mini",
-        temperature=0.1,
+        # 分析节点必须可复算；创作随机性只留给生成节点。
+        temperature=0.0,
         max_output_tokens=2000,
     ),
     LLMNodeSpec(
@@ -200,8 +201,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "style_reference",
         template_name="style_ref_extract_language",
         model="gpt-5",
-        temperature=0.15,
-        max_output_tokens=3200,
+        temperature=0.0,
+        max_output_tokens=6400,
     ),
     LLMNodeSpec(
         "style_ref_extract_narrative",
@@ -209,8 +210,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "style_reference",
         template_name="style_ref_extract_narrative",
         model="gpt-5",
-        temperature=0.15,
-        max_output_tokens=3200,
+        temperature=0.0,
+        max_output_tokens=6400,
     ),
     LLMNodeSpec(
         "style_ref_extract_scene",
@@ -218,8 +219,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "style_reference",
         template_name="style_ref_extract_scene",
         model="gpt-5",
-        temperature=0.15,
-        max_output_tokens=3200,
+        temperature=0.0,
+        max_output_tokens=6400,
     ),
     LLMNodeSpec(
         "style_ref_extract_theme",
@@ -227,8 +228,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "style_reference",
         template_name="style_ref_extract_theme",
         model="gpt-5",
-        temperature=0.15,
-        max_output_tokens=3200,
+        temperature=0.0,
+        max_output_tokens=6400,
     ),
     LLMNodeSpec(
         "style_ref_supplement_evidence",
@@ -236,8 +237,8 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "style_reference",
         template_name="style_ref_supplement_evidence",
         model="gpt-5-mini",
-        temperature=0.15,
-        max_output_tokens=1500,
+        temperature=0.0,
+        max_output_tokens=3000,
     ),
     LLMNodeSpec(
         "style_ref_synthesize_profile",
@@ -245,7 +246,7 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         "style_reference",
         template_name="style_ref_synthesize_profile",
         model="gpt-5",
-        temperature=0.2,
+        temperature=0.0,
         max_output_tokens=3500,
     ),
     LLMNodeSpec(

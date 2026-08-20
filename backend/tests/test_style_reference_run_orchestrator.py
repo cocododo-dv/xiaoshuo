@@ -20,6 +20,7 @@ from novel_system.services.style_reference.dimensions import Layer
 from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.run_orchestrator import RunOrchestrator
+from novel_system.services.style_reference.repository import StyleReferenceRepository
 
 
 SAMPLE_TEXT = """这是叙述段落 0,介绍清晨场景与人物心情,长度足够触发分段。
@@ -185,3 +186,65 @@ def test_start_run_rejects_when_book_has_active_run() -> None:
             orch.start_extract_run(book_id, background=True)
         assert exc_info.value.code == "STYLE_REFERENCE_RUN_ALREADY_ACTIVE"
         assert exc_info.value.status_code == 409
+
+
+def test_resume_run_skips_finalized_subdimensions_and_finishes_remaining_three(
+    fake_extractor_llm,
+) -> None:
+    book_id = _ingest("resume_partial")
+    run_id = "sr_run_resume_partial"
+    client = fake_extractor_llm("default")
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        repo.create_run(
+            run_id=run_id,
+            book_id=book_id,
+            status="running",
+            phase="extract",
+            dispatch_state="running",
+            requested_layers_json=["language"],
+            coverage_json={
+                "progress": {
+                    "layers_total": 1,
+                    "layers_done": 0,
+                    "current_layer": "language",
+                }
+            },
+        )
+        repo.create_extraction(
+            extraction_id="sr_ext_resume_completed",
+            book_id=book_id,
+            run_id=run_id,
+            layer="language",
+            sub_dimension="language.sentence_structure",
+            raw_payload_json={"findings_count": 0},
+            status="done",
+            validation_errors_json=[],
+            purpose="extract",
+        )
+        session.commit()
+
+        result = RunOrchestrator(
+            session,
+            llm_client=client,
+            llm_enabled=True,
+        ).resume_extract_run(run_id)
+        session.commit()
+
+        run = repo.get_run(run_id)
+        sentence_rows = repo.list_extractions(
+            run_id=run_id,
+            sub_dimension="language.sentence_structure",
+        )
+
+    assert result.status == "done"
+    assert len(result.sub_dim_results) == 3
+    assert client.call_count == 3
+    assert len(sentence_rows) == 1
+    assert run.coverage_json["progress"]["layers_done"] == 1
+    assert set(run.coverage_json["sub_dimensions"]) == {
+        "language.sentence_structure",
+        "language.vocabulary",
+        "language.rhetoric",
+        "language.punctuation",
+    }

@@ -94,14 +94,22 @@ templates:
             additionalProperties: true
 
   neutral_draft:
-    version: "2026-07-06.v3"
-    input_token_budget: 2600
+    version: "2026-08-20.v5"
+    # A deterministic repair includes the rejected draft plus the same frozen
+    # scene facts. 2600 rejected a real 1455-char repair at 2774 estimated
+    # tokens before provider dispatch, then the old caller exposed the invalid
+    # original. Keep enough bounded headroom for one repair without weakening
+    # the scene-splitting guard for genuinely oversized inputs.
+    input_token_budget: 3200
     system_prompt: |
       You are drafting a neutral, continuity-safe web-novel scene.
       Follow the supplied bundle facts exactly and preserve causal clarity.
+      Return a complete scene, never a synopsis, excerpt, outline, or sample-sized fragment.
+      The Scene Card target length band is a hard output constraint: estimate visible Chinese prose characters before returning and keep scene_text inside the band.
     task_prompt: |
       Write the next scene draft from the supplied bundle snapshot.
       Keep the prose neutral in style while honoring all explicit constraints.
+      Cover every must-include constraint explicitly and satisfy the full target length band. If more development is needed, expand action-reaction beats, blocking, concrete consequences, and information release without inventing a new event.
       Treat Scene Literary Blueprint v2 as a readability proposal, not background summary: put visible_desire on the page, force forced_choice, make price_paid concrete, release information_release through action, and end on ending_action.
       If Longform Structure Guidance is present, treat it as editorial pressure for arc, promise, payoff, and information release; do not let it override hard facts in the chapter goal or scene card.
       If Character Pressure Blueprint is present, make the character's hidden fear, wrong belief, shame point, avoidance strategy, relationship debt, and current mask visible through action or omission.
@@ -214,13 +222,16 @@ templates:
             type: string
 
   style_draft:
-    version: "2026-07-06.v3"
+    version: "2026-08-19.v6"
     input_token_budget: 2600
     system_prompt: |
       You are drafting a stylistically tuned web-novel scene from a structured Style Feature Contract.
       Preserve bundle facts exactly, keep continuity safe, and apply reusable craft-level traits rather than copying any protected author.
+      Return the complete rewritten scene, never a synopsis, excerpt, outline, or sample-sized fragment.
+      The Scene Card target length band is a hard constraint: estimate visible Chinese prose characters before returning and keep scene_text inside it. Reference samples demonstrate style only; never imitate their length, content, names, or events.
     task_prompt: |
-      Rewrite the supplied source draft (the labeled source section in the context) with stronger style adherence, without changing factual continuity.
+      Recompose the supplied source draft with stronger style adherence, without changing factual continuity. Treat the source as an immutable event-and-fact scaffold, not as prose to line-edit: do not preserve its sentence shapes, paragraph breaks, image sequence, diction, or rhetorical order when they conflict with the Style Reference blocks. Rebuild the prose from a blank page while preserving POV, names, chronology, required objects, causal steps, ending function, and every must-include fact.
+      Cover every must-include constraint explicitly and satisfy the full target length band. If the source draft is too short, expand existing action-reaction beats, blocking, concrete consequences, and information release; do not add a new plot event.
       Preserve the Scene Literary Blueprint v2 pressure: visible_desire, forced_choice, price_paid, information_release, relationship_turn, image_anchor, ending_action, and next_scene_pull must remain legible in prose.
       If an Author Preference Profile section is present, obey the author's preferred revision moves and avoid the AI traces the author commonly rejects.
       If Longform Structure Guidance is present, use it as structural pressure for arc, payoff, and release timing; do not let it override hard continuity or scene-card facts.
@@ -235,6 +246,7 @@ templates:
       - paragraph_density: block length, line-break frequency, compression level.
       - dialogue_ratio: spoken line share and silence around speech.
       Avoid all banned moves and keep calibration lines as tonal references, not text to copy.
+      If a [量化硬锚点] block is present, set the target paragraph count and punctuation range before drafting, compose to that architecture, and verify them once before returning. Treat these as operational ranges: count blank-line-separated paragraphs and merge or split only at narrative-unit boundaries; never put every sentence in its own paragraph, and never overshoot punctuation targets by decorating each sentence. The source draft's paragraphing is explicitly non-authoritative.
       Guard against the five most common AI-voice failures on top of the dimensions above:
       - perception filter: at least one sensory or emotional beat per paragraph must be filtered through the POV character's body or immediate feeling, not narrated from a neutral, all-knowing distance.
       - no summary endings: end paragraphs and the scene on action or unresolved tension, never on a sentence that states what just happened or what it meant.
@@ -253,6 +265,88 @@ templates:
           type: array
           items:
             type: string
+
+  style_length_patch:
+    version: "2026-08-20.v3"
+    input_token_budget: 2600
+    system_prompt: |
+      You produce exact, minimal, segment-addressed edits for a Chinese novel scene whose reusable style and facts
+      are already correct but whose visible-character count is outside a hard range. The labeled source contains
+      synthetic segment markers such as ⟦S001⟧; those markers are addresses, not prose. Never rewrite, summarize,
+      continue, or return the whole scene. Return only an allowed segment_id and its new_text. Preserve all required
+      facts, chronology, names, POV, and the ending function. The caller will locate, apply, and validate every edit
+      deterministically; you never need to copy source text as an address.
+    task_prompt: |
+      Return 1-6 edits using only segment IDs explicitly listed as editable in the dynamic contract. Never use the
+      protected ending segment. For expansion, the caller preserves the selected segment and inserts new_text
+      immediately after it; new_text must add concrete action-reaction, blocking, perception, or consequence in the
+      same event. For compression, new_text replaces only the selected segment and must be shorter, deleting only
+      repetition or decorative description while keeping adjacent prose grammatical. Use each segment_id at most
+      once. Make the combined visible-character delta land inside the stated correction window. Do not put segment
+      markers, ellipses, or placeholders in new_text. Do not include scene_text, copied source text, or commentary.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - edits
+      properties:
+        edits:
+          type: array
+          minItems: 1
+          maxItems: 6
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - segment_id
+              - new_text
+            properties:
+              segment_id:
+                type: string
+                pattern: "^S[0-9]{3}$"
+              new_text:
+                type: string
+                maxLength: 1000
+
+  style_salvage_patch:
+    version: "2026-08-20.v1"
+    input_token_budget: 3000
+    system_prompt: |
+      You perform one bounded, segment-addressed style salvage on an already approved Chinese novel scene after a
+      complete style rewrite was rejected as extremely underlength. The labeled source contains synthetic markers
+      such as ⟦S001⟧; they are addresses, not prose. Preserve the unselected source verbatim and never touch the
+      protected ending segment. Rewrite exactly one allowed middle segment so it expresses the supplied reusable
+      style mechanisms while preserving every fact, name, causal step, chronology, POV, and scene function.
+    task_prompt: |
+      Return exactly one edit with an allowed segment_id and replacement new_text. Keep new_text within the stated
+      visible-character window for that segment. Do not summarize the whole scene, move events between segments,
+      introduce new facts, quote reference prose, or include segment markers, ellipses, placeholders, copied source
+      text, scene_text, or commentary. The caller will apply the replacement and validate facts, length, integrity,
+      substantive change, and frozen-profile conformance deterministically.
+    structured_schema:
+      type: object
+      additionalProperties: false
+      required:
+        - edits
+      properties:
+        edits:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - segment_id
+              - new_text
+            properties:
+              segment_id:
+                type: string
+                pattern: "^S[0-9]{3}$"
+              new_text:
+                type: string
+                minLength: 20
+                maxLength: 600
 
   long_form_continuation:
     version: "2026-07-04.v2"
@@ -624,20 +718,28 @@ templates:
     structured_schema: *paragraph_classify_schema
 
   style_ref_extract_language:
-    version: "2026-07-04.v2"
+    version: "2026-08-19.v5"
     input_token_budget: 3000
     system_prompt: |
       你是中文叙事风格抽取专家。给定一个 sub_dimension(如 language.rhetoric)
       与一批段落,产出该 sub_dimension 下的:
-        - observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
-        - forbidden_patterns(反向禁忌,0-3 条,允许为空)
+        - observations(正向特征,通常 3-6 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
+        - forbidden_patterns(反向禁忌,0-2 条,允许为空)
       下列硬指标已对全文计算完毕,你提取的 observation 必须与之一致;
       若你的描述与硬指标矛盾,以硬指标为准重新组织语言。
       约束:
       - 每条 observation / forbidden_pattern 必须 ≥ 2 evidence;每条 evidence 引用
         paragraph_id + span + 原文 quote(quote 必须是段落原句,不允许改写)
+      - 每条 evidence.quote 必须是某一个给定 paragraphs[].text 中单段、连续、逐字一致的
+        子串,paragraph_id 必须原样复制该段 ID。严禁拼接不相邻短语、摘要式删节或自行增删
+        标点;原文没有省略号时,quote 中也不得添加“……”或"..."。若填写 span,它必须是
+        给定 text 上从 0 开始、左闭右开的 [start,end),且 text[start:end] 必须等于 quote
       - 严禁使用空泛形容词(如"文笔优美""画面感强""叙事流畅"等),要用具体、可
         被验证的写作机制描述
+      - statement 只写可迁移的抽象机制,不得引用、复述或举例展示参考原文;
+        任何原文字词只允许出现在 evidence.quote
+      - 每条 quote 只截取足以证明机制的一小段连续原文,建议 15-80 字、绝不超过 160 字;
+        statement 不超过 120 字。不要输出 note,illustrates_dims 等非必需可选字段
       - forbidden_pattern 描述作者明确不会用的写作模式(反向写作习惯);evidence 可以是
         paragraph_quote / author_avoidance(统计反推)/ counter_example(LLM 合成反例)
     task_prompt: |
@@ -655,7 +757,7 @@ templates:
       properties:
         observations:
           type: array
-          maxItems: 8
+          maxItems: 6
           items:
             type: object
             additionalProperties: false
@@ -663,6 +765,7 @@ templates:
             properties:
               statement:
                 type: string
+                maxLength: 180
               confidence:
                 type: string
                 enum: [high, medium, low]
@@ -688,6 +791,7 @@ templates:
                       maxItems: 2
                     quote:
                       type: string
+                      maxLength: 160
                     illustrates_dims:
                       type: array
                       items: {type: string}
@@ -700,13 +804,13 @@ templates:
                       type: integer
         forbidden_patterns:
           type: array
-          maxItems: 3
+          maxItems: 2
           items:
             type: object
             additionalProperties: false
             required: [statement, finding_kind, evidence, sub_dimension]
             properties:
-              statement: {type: string}
+              statement: {type: string, maxLength: 180}
               confidence:
                 type: string
                 enum: [high, medium, low]
@@ -720,18 +824,25 @@ templates:
                 items: *extract_evidence_schema
 
   style_ref_extract_narrative:
-    version: "2026-07-04.v2"
+    version: "2026-08-19.v5"
     input_token_budget: 3000
     system_prompt: |
       你是中文叙事风格抽取专家(叙事层)。给定一个 sub_dimension(如
       narrative.pacing)与一批段落,产出该 sub_dimension 下的
-      observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
-      与 forbidden_patterns(反向禁忌,0-3 条,允许为空)。
+      observations(正向特征,通常 3-6 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
+      与 forbidden_patterns(反向禁忌,0-2 条,允许为空)。
       约束与 style_ref_extract_language 一致;尤其注意叙事层关心视角(perspective)、
       节奏(pacing)、时间处理(time_handling)、信息密度(information_density)。
       叙事层容易写成"张弛有度"式的空泛结论——每条 observation 必须绑定一个具体、可指认的
       叙事决策点(如在哪一类节点切换视点、在哪种场景压缩或拉长时间、信息在何时释放给读者),
       而不是笼统描述整体印象。
+      每条 evidence.quote 必须是某一个给定 paragraphs[].text 中单段、连续、逐字一致的子串,
+      paragraph_id 原样复制该段 ID;严禁拼接不相邻短语或添加原文没有的省略号。若填写 span,
+      使用给定 text 上从 0 开始、左闭右开的 [start,end),并保证 text[start:end] == quote。
+      statement 只写可迁移的抽象机制,不得引用、复述或举例展示参考原文;
+      任何原文字词只允许出现在 evidence.quote。
+      每条 quote 建议 15-80 字、绝不超过 160 字,statement 不超过 120 字;
+      不要输出 note,illustrates_dims 等非必需可选字段。
     task_prompt: |
       输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
       请按 schema 输出 observations 与 forbidden_patterns。
@@ -741,13 +852,13 @@ templates:
     structured_schema: *extract_output_schema
 
   style_ref_extract_scene:
-    version: "2026-07-04.v2"
+    version: "2026-08-19.v5"
     input_token_budget: 3000
     system_prompt: |
       你是中文叙事场景层风格抽取专家(scene)。给定一个 sub_dimension
       (如 scene.dialogue)与一批段落,产出该 sub_dimension 下的
-      observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
-      与 forbidden_patterns(反向禁忌,0-3 条,允许为空)。
+      observations(正向特征,通常 3-6 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
+      与 forbidden_patterns(反向禁忌,0-2 条,允许为空)。
       场景层重点:
       - environment:场所、天气、自然物的呈现机制(空间布局 / 视点切换 / 光影)
       - character_portrayal:人物外貌、衣着、神态、行为的展示手法
@@ -757,6 +868,13 @@ templates:
       不要重复报告这些数字本身,而要描述作者如何布置/调度这些元素的策略与手法。
       约束与 language / narrative 层一致:每条 finding ≥2 evidence;严禁空泛
       形容词("画面感强""感官丰富"等);forbidden_pattern 描述模式而非引用。
+      每条 evidence.quote 必须是某一个给定 paragraphs[].text 中单段、连续、逐字一致的子串,
+      paragraph_id 原样复制该段 ID;严禁拼接不相邻短语或添加原文没有的省略号。若填写 span,
+      使用给定 text 上从 0 开始、左闭右开的 [start,end),并保证 text[start:end] == quote。
+      statement 只写可迁移的抽象机制,不得引用、复述或举例展示参考原文;
+      任何原文字词只允许出现在 evidence.quote。
+      每条 quote 建议 15-80 字、绝不超过 160 字,statement 不超过 120 字;
+      不要输出 note,illustrates_dims 等非必需可选字段。
     task_prompt: |
       输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
       请按 schema 输出 observations 与 forbidden_patterns。
@@ -766,13 +884,13 @@ templates:
     structured_schema: *extract_output_schema
 
   style_ref_extract_theme:
-    version: "2026-07-04.v2"
+    version: "2026-08-19.v5"
     input_token_budget: 3000
     system_prompt: |
       你是中文叙事主题层风格抽取专家(theme)。给定一个 sub_dimension
       (如 theme.emotional_tone)与一批段落,产出该 sub_dimension 下的
-      observations(正向特征,通常 3-8 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
-      与 forbidden_patterns(反向禁忌,0-3 条,允许为空)。
+      observations(正向特征,通常 3-6 条;样本确实高度匮乏时可以更少,但 0 条应是罕见例外而非默认结果)
+      与 forbidden_patterns(反向禁忌,0-2 条,允许为空)。
       主题层重点:
       - emotional_tone:情绪基调与节奏(克制 / 沸腾 / 灰冷 / 高亢)
       - values:作品潜在的价值观倾向(集体 vs 个体 / 出世 vs 入世)
@@ -784,6 +902,13 @@ templates:
       本层是反抄袭关键层:书中具体的招牌意象、专属符号系统本身只能作为 forbidden_pattern
       登记"不可复用",绝不能包装成 observation 里"可迁移的写作素材"——observation 只能
       描述抽象的运用手法(如"擅长用自然物象承载情绪转折"),不能点名可直接套用的具体意象。
+      每条 evidence.quote 必须是某一个给定 paragraphs[].text 中单段、连续、逐字一致的子串,
+      paragraph_id 原样复制该段 ID;严禁拼接不相邻短语或添加原文没有的省略号。若填写 span,
+      使用给定 text 上从 0 开始、左闭右开的 [start,end),并保证 text[start:end] == quote。
+      statement 只写可迁移的抽象机制,不得引用、复述或举例展示参考原文;
+      任何原文字词只允许出现在 evidence.quote。
+      每条 quote 建议 15-80 字、绝不超过 160 字,statement 不超过 120 字;
+      不要输出 note,illustrates_dims 等非必需可选字段。
     task_prompt: |
       输入 payload 含 sub_dimension / metrics_anchor / paragraphs。
       请按 schema 输出 observations 与 forbidden_patterns。
@@ -793,12 +918,15 @@ templates:
     structured_schema: *extract_output_schema
 
   style_ref_supplement_evidence:
-    version: "2026-07-04.v2"
+    version: "2026-08-19.v3"
     input_token_budget: 2000
     system_prompt: |
       你是中文段落证据补抽专家。某条已抽出的 observation 当前 evidence 不足(<2)。
       在给定的段落池中找出能支撑该 observation 的额外 evidence——quote 必须逐字取自
       给定段落原文,不允许改写、缩写或臆造。
+      每条 quote 必须是某一个给定 paragraphs[].text 中单段、连续、逐字一致的子串,
+      paragraph_id 原样复制该段 ID;严禁拼接不相邻短语或添加原文没有的省略号。若填写 span,
+      使用给定 text 上从 0 开始、左闭右开的 [start,end),并保证 text[start:end] == quote。
     task_prompt: |
       输入 payload 含 finding_statement / finding_kind / sub_dimension /
       existing_evidence_count / paragraphs。
@@ -813,13 +941,14 @@ templates:
           items: *extract_evidence_schema
 
   style_ref_synthesize_profile:
-    version: "2026-07-04.v2"
-    input_token_budget: 4000
+    version: "2026-08-20.v7"
+    input_token_budget: 5000
     system_prompt: |
       你是中文叙事风格 Profile 聚合专家。给定一本书 16 个 sub_dim(语言/叙事/场景/主题
-      四层 × 各 4 维度)的 findings 摘要(observations + forbidden_patterns)与硬指标
+      四层 × 各 4 维度)的已验证 findings 摘要(observations + forbidden_patterns)与硬指标
       baseline,聚合为一份 StyleProfile,包含:
-        - profile_title:简短(<20 字)的画像标题,例如"冷峻克制的市井白描"
+        - profile_title:简短(<20 字)的机制型画像标题,必须从本次 payload 独立归纳;
+          不得套用固定的气质标签或沿用提示中的示例措辞
         - narrative_summary:80-200 字的整体风格简述,综合语言/叙事/场景/主题四层特征
         - style_features:可迁移的语言层/节奏层写作机制,每条写成"做什么/不做什么"的可执行
           指令句,例如"对话前少用提示动词,以动作代替说话方式"——不是鉴赏式描述
@@ -834,12 +963,29 @@ templates:
       - 输出字段全部为短句陈述(<120 字),不要复述 evidence
       - 严禁空泛形容词("文笔优美""画面感强")
       - 严禁照抄原文(banned_replication_rules 描述模式而非引用)
+      - finding_summaries 已由逐字证据验证,你只需聚合其中的抽象 statement;不得反推、杜撰
+        或索要参考原文,只保留脱离原文后仍可执行的抽象机制
+      - profile_title 与 narrative_summary 中的情绪、地域、阶层、哲思、讽刺等高层标签,
+        只有在 finding_summaries 中存在直接对应的 theme finding 时才能使用;缺失 theme 层时
+        只概括实际出现的语言、句段、标点、叙事与场景机制,不得凭印象补齐
+      - metrics_baseline 是最高优先级的结构事实。narrative_summary、style_features、
+        narrative_patterns、calibration_guidance 中凡涉及句长、长短句比例、段落组织、
+        标点频率、语域或修辞代理频率的描述,都必须服从对应数字;不得只在概述里遵守、
+        却在后续数组中写出相反指令
+      - finding_summaries 的 confidence / status / evidence_count 表示证据强度。approved、
+        high 且跨多条证据的机制优先;pending、low 或仅 2 条局部证据只能写成有条件的
+        可选机制,不得扩张成“大量、密集、高频、总是、连续”等全书频率结论。若定性
+        statement 与 metrics_baseline 冲突,舍弃该频率判断,保留不冲突的叙事机制
     task_prompt: |
-      输入 payload 含 book_title / sub_dimensions / metrics_baseline / sample_quotes。
+      输入 payload 含 book_title / sub_dimensions / metrics_baseline / finding_summaries;
+      finding_summaries 已按子维度覆盖优先并压入预算,不要把未出现的 finding 当作反例。
+      只聚合 payload 实际存在的子维度;不要为了看起来完整而推断缺失层。
       请按 schema 输出 profile;style_features / narrative_patterns / banned_replication_rules
       每个数组 4-10 条,calibration_guidance 同样需要 4-10 条、不得返回空数组。
       若某个数组暂时不足 4 条,回头再检视 16 个 sub_dim 的 findings 摘要,通常能补齐;
-      16 层信息全部读完再下笔,不要只看前几个 sub_dim 就收尾。
+      16 个子维度信息全部读完再下笔,不要只看前几个 sub_dim 就收尾。
+      若 payload 含 validation_retry,说明上一次结果为空、无效或与原文字词重合;本次必须
+      按其中 violations 修正,但不要复述 validation_retry 文本。
     structured_schema:
       type: object
       additionalProperties: false
@@ -853,20 +999,30 @@ templates:
       properties:
         profile_title:
           type: string
+          minLength: 1
+          maxLength: 20
         narrative_summary:
           type: string
+          minLength: 1
+          maxLength: 200
         style_features:
           type: array
-          items: {type: string}
+          minItems: 1
+          maxItems: 10
+          items: {type: string, minLength: 1, maxLength: 120}
         narrative_patterns:
           type: array
-          items: {type: string}
+          minItems: 1
+          maxItems: 10
+          items: {type: string, minLength: 1, maxLength: 120}
         banned_replication_rules:
           type: array
-          items: {type: string}
+          maxItems: 10
+          items: {type: string, minLength: 1, maxLength: 120}
         calibration_guidance:
           type: array
-          items: {type: string}
+          maxItems: 10
+          items: {type: string, minLength: 1, maxLength: 120}
 
   style_ref_preview_generate:
     version: "2026-07-04.v2"

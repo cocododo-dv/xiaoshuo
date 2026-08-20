@@ -30,7 +30,12 @@ from novel_system.services.llm_client import (
     LLMResponse,
     OnlineAccountedExecution,
 )
-from novel_system.db.models import SceneCard, StoryProject
+from novel_system.db.models import (
+    ChapterState,
+    SceneCard,
+    SceneRunState,
+    StoryProject,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -218,10 +223,15 @@ def test_score_covers_style_content_copy_leakage_and_lineage() -> None:
     assert report["summary"]["prompt_leakage_pass_rate"] == 1.0
     assert report["summary"]["identity_blinding_pass_rate"] == 1.0
     assert report["summary"]["module_lineage_coverage"] == 1.0
+    assert report["summary"]["styled_non_neutral_rate"] == 1.0
+    assert set(report["summary"]["per_author"]) == set(bundle.public.author_ids)
     assert set(report["gates"]) == {
         "reference_calibrated",
         "style_attribution",
+        "balanced_style_attribution",
         "paired_contrast",
+        "balanced_paired_contrast",
+        "styled_output_changed",
         "positive_neutral_gain",
         "content_preserved",
         "all_required_facts_preserved",
@@ -333,6 +343,56 @@ def test_neutral_lineage_rejects_any_style_profile() -> None:
     assert report["gates"]["module_lineage_verified"] is False
 
 
+def test_exact_neutral_fallback_cannot_count_as_successful_style_generation() -> None:
+    bundle = _bundle()
+    payload = _results_payload(bundle)
+    case_id = bundle.public.cases[0].case_id
+    neutral = next(
+        row
+        for row in payload["generations"]
+        if row["case_id"] == case_id and row["arm"] == "neutral"
+    )
+    styled = next(
+        row
+        for row in payload["generations"]
+        if row["case_id"] == case_id and row["arm"] == "styled"
+    )
+    styled["generated_text"] = neutral["generated_text"]
+
+    report = score_style_benchmark(bundle, payload)
+
+    assert report["summary"]["exact_neutral_fallback_count"] == 1
+    assert report["summary"]["styled_non_neutral_rate"] < 1.0
+    assert report["gates"]["styled_output_changed"] is False
+    assert report["benchmark_passed"] is False
+
+
+def test_neutral_reformat_cannot_count_as_successful_style_generation() -> None:
+    bundle = _bundle()
+    payload = _results_payload(bundle)
+    case_id = bundle.public.cases[0].case_id
+    neutral = next(
+        row
+        for row in payload["generations"]
+        if row["case_id"] == case_id and row["arm"] == "neutral"
+    )
+    styled = next(
+        row
+        for row in payload["generations"]
+        if row["case_id"] == case_id and row["arm"] == "styled"
+    )
+    # 只增加段间空白，原始哈希会变化，但规范化正文仍与中性稿完全相同。
+    styled["generated_text"] = neutral["generated_text"].replace("。", "。\n\n")
+
+    report = score_style_benchmark(bundle, payload)
+
+    assert report["summary"]["exact_neutral_fallback_count"] == 0
+    assert report["summary"]["neutral_equivalent_fallback_count"] == 1
+    assert report["summary"]["styled_non_neutral_rate"] < 1.0
+    assert report["gates"]["styled_output_changed"] is False
+    assert report["benchmark_passed"] is False
+
+
 def test_result_matrix_must_be_complete() -> None:
     bundle = _bundle()
     payload = _results_payload(bundle)
@@ -410,6 +470,9 @@ def test_prompt_recording_client_keeps_exact_messages_for_leak_audit() -> None:
 def test_live_runner_seeds_isolated_scene_matrix_without_calling_llm(
     session, tmp_path: Path
 ) -> None:
+    # Match run_live_benchmark_workspace: no query-triggered autoflush is
+    # available to hide a missing FK-tier flush.
+    session.autoflush = False
     manifest = load_style_benchmark_manifest(PUBLIC, workspace_root=ROOT)
     runner = StyleBenchmarkLiveRunner(
         session,
@@ -423,6 +486,14 @@ def test_live_runner_seeds_isolated_scene_matrix_without_calling_llm(
     assert session.get(StoryProject, runner.project_id)
     assert all(
         session.get(SceneCard, runner._scene_id(case)) for case in manifest.cases
+    )
+    assert all(
+        session.get(ChapterState, runner._chapter_id(case))
+        for case in manifest.cases
+    )
+    assert all(
+        session.get(SceneRunState, runner._scene_id(case))
+        for case in manifest.cases
     )
 
 

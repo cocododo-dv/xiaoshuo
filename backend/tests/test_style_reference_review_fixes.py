@@ -7,7 +7,7 @@
 - D6 resolve 选取单点过滤非 active profile 的 binding(注入 / qc gate 一致)
 - D7 终态(被 reap/取消)的 run 不被后台 worker 复活
 - D8 binding 决平时间戳微秒精度
-- D9 抽取数量上限 obs ≤8 / fp ≤3
+- D9 抽取数量上限 obs ≤6 / fp ≤2
 - D10 import-path 后缀白名单(任意服务器文件读取面收窄)
 - D1 synthesizer 的 quotes run-scoped(跨 run 引文不混入 profile)
 
@@ -439,7 +439,7 @@ def test_promoted_finding_drops_fabricated_original_evidence() -> None:
 
 
 # ---------------------------------------------------------------------------
-# D9 — 抽取数量上限 obs ≤8 / fp ≤3
+# D9 — 抽取数量上限 obs ≤6 / fp ≤2
 # ---------------------------------------------------------------------------
 
 
@@ -515,8 +515,8 @@ def test_extraction_output_caps_enforced() -> None:
 
     obs = [f for f in result.findings if f.finding_kind == FindingKind.OBSERVATION]
     fp = [f for f in result.findings if f.finding_kind == FindingKind.FORBIDDEN_PATTERN]
-    assert len(obs) == 8, f"observations 上限 8,实际 {len(obs)}"
-    assert len(fp) == 3, f"forbidden_patterns 上限 3,实际 {len(fp)}"
+    assert len(obs) == 6, f"observations 上限 6,实际 {len(obs)}"
+    assert len(fp) == 2, f"forbidden_patterns 上限 2,实际 {len(fp)}"
 
 
 # ---------------------------------------------------------------------------
@@ -746,7 +746,7 @@ def test_end_to_end_few_shot_spans_multiple_paragraph_types(fake_extractor_llm) 
     ptypes_in_block = {
         pt
         for pt in ("dialogue", "psychology", "narration", "description_env", "flashback", "transition")
-        if f"({pt})" in fragments.few_shot_block
+        if f"({pt}" in fragments.few_shot_block
     }
     assert len(ptypes_in_block) >= 2, (
         f"few-shot 应覆盖 ≥2 种段型(修复前恒 1 条 narration),实际 {ptypes_in_block};"

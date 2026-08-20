@@ -255,7 +255,7 @@ describe("outline-driven project dashboard", () => {
       scope: "project",
       scope_ref_id: "PRJ_FLOW",
       task_type: "scene_generation",
-      strategy: "A",
+      strategy: "mixed",
     };
     let dashboardCalls = 0;
 

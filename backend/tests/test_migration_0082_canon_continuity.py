@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import sqlite3
 from pathlib import Path
@@ -7,12 +8,24 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import create_engine
 
+from novel_system.db.models import Base
 from novel_system.tools.database_preflight import inspect_database
 
 
 PREVIOUS_HEAD = "20260805_0081"
 CURRENT_HEAD = "20260818_0082"
+
+
+def _migration_module():
+    backend_dir = Path(__file__).resolve().parents[1]
+    path = backend_dir / "alembic" / "versions" / "20260818_0082_canon_continuity.py"
+    spec = importlib.util.spec_from_file_location("migration_0082_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _config() -> Config:
@@ -65,6 +78,25 @@ def _insert_legacy_event(
         """,
         (event_id, json.dumps(payload, ensure_ascii=False)),
     )
+
+
+def test_0082_materialized_schema_check_rejects_missing_nonindexed_column(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migration = _migration_module()
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    try:
+        Base.metadata.create_all(engine)
+        with engine.begin() as connection:
+            monkeypatch.setattr(migration.op, "get_bind", lambda: connection)
+            assert migration._upgrade_already_materialized() is True
+
+            connection.exec_driver_sql(
+                "ALTER TABLE canon_commits DROP COLUMN decision_note"
+            )
+            assert migration._upgrade_already_materialized() is False
+    finally:
+        engine.dispose()
 
 
 def test_0082_backfills_legacy_authority_fail_closed_and_downgrades_cleanly(

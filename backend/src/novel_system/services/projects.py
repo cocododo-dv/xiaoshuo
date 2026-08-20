@@ -41,7 +41,6 @@ from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.style_reference.materialization import MaterializationService
 from novel_system.services.style_reference.schemas import (
     BindingScope,
-    InjectionStrategy,
     TaskType,
 )
 from novel_system.services.system_config import SystemConfigService
@@ -225,7 +224,6 @@ class ProjectService:
             scope=BindingScope.PROJECT,
             scope_ref_id=project.project_id,
             task_type=TaskType.SCENE_GENERATION,
-            strategy=InjectionStrategy.A,
         )
         self.session.flush()
         binding = self.session.get(StyleReferenceInjectionBinding, result.binding_id)

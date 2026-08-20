@@ -422,7 +422,6 @@ export const useProjectDashboardStore = defineStore("projectDashboard", {
           scope: "project",
           scopeRefId: projectId,
           taskType: "scene_generation",
-          strategy: "A",
         });
         this.profileBindDraft = "";
         await this.loadDashboard(projectId);

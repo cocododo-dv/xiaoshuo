@@ -4,18 +4,24 @@
 #
 # 这是任务级常量;InjectionService 在 strategy=B 时按 ratio 切上限,超长截尾保头部。
 system_prompt_max_tokens: 800
-positive_block_ratio: 0.6
-forbidden_block_ratio: 0.3
-metric_anchor_block_ratio: 0.1
+# 2026-08 校准：段落形态和稳定标点比长篇抽象概述更可执行，保证硬锚点有
+# 足够空间；三项仍严格合计 1.0。
+positive_block_ratio: 0.5
+forbidden_block_ratio: 0.2
+metric_anchor_block_ratio: 0.3
 
-# Strategy B few-shot 样例(2026-06 加固轮:B 从「预算变体」升级为真 few-shot)
-# few_shot_k:最多注入的样例段数(按 paragraph_type 各取 1,优先级见 injection.py)
-# few_shot_quote_max_chars:单条样例截断上限
+# Strategy B few-shot 样例(2026-08:优先 quote 所在的代表性完整父段落)
+# few_shot_k:最多注入的样例段数(每种 paragraph_type 最多 1 条)
+# few_shot_quote_max_chars:旧数据没有父段落时的短引文回退上限
+# paragraph min/max:完整父段落候选范围；过短无结构、过长挤占生成预算
 # few_shot_block_max_chars:整个 [风格样例] 块上限(在 system_prompt 预算之外,
 #   随样例必附反抄袭红线段,该块不参与三块 ratio 分配)
 few_shot_k: 3
 few_shot_quote_max_chars: 120
-few_shot_block_max_chars: 480
+few_shot_paragraph_min_chars: 40
+few_shot_paragraph_max_chars: 360
+few_shot_candidate_scan_per_type: 12
+few_shot_block_max_chars: 900
 
 # 立项 C — Strategy C(RAG)三粒度内容克制风格召回预算。
 # ANN 只索引句段形状/标点/虚词等风格签名,不索引原文题材词;候选池再按连续

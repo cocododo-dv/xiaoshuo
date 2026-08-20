@@ -125,12 +125,12 @@ function defaultApplyDraft() {
     scope: "project",
     scope_ref_id: "",
     task_type: "scene_generation",
-    strategy: "A",
+    strategy: "mixed",
     intensity: 50,
     sub_dimensions: [...ALL_SUB_DIMS_FOR_APPLY],
     include_positive: true,
     include_forbidden: true,
-    include_metric: false,
+    include_metric: true,
   };
 }
 
@@ -581,6 +581,11 @@ export const useReferenceLearningStore = defineStore("referenceLearning", {
           scopeRefId: this.applyDraft.scope_ref_id || null,
           taskType: this.applyDraft.task_type,
           strategy: this.applyDraft.strategy,
+          intensity: this.applyDraft.intensity,
+          subDimensions: this.applyDraft.sub_dimensions,
+          includePositive: this.applyDraft.include_positive,
+          includeForbidden: this.applyDraft.include_forbidden,
+          includeMetric: this.applyDraft.include_metric,
         });
         this.lastApplicationGuidance = result || null;
         await this.loadBindings(profileId);

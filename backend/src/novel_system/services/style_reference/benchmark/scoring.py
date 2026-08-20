@@ -34,7 +34,10 @@ PROMPT_LEAK_NGRAM_CHARS = 12
 DEFAULT_THRESHOLDS = {
     "reference_macro_accuracy": 0.65,
     "style_attribution_accuracy": 0.65,
+    "style_attribution_min_per_author": 0.60,
     "paired_contrast_accuracy": 0.65,
+    "paired_contrast_min_per_author": 0.60,
+    "styled_non_neutral_rate": 1.0,
     "content_preservation_mean": 0.9,
     "content_full_pass_rate": 1.0,
     "length_full_pass_rate": 1.0,
@@ -111,6 +114,12 @@ def score_style_benchmark(
                 "arm": sample.arm,
                 "target_author_id": sample.target_author_id,
                 "generated_text_sha256": sample.text_hash,
+                # 只改换行、空白或标点不能证明风格模块真的改写了正文。保留
+                # 原始哈希用于血缘审计，同时用与抄袭守卫相同的规范化规则
+                # 生成第二个哈希，专门识别“中性稿仅重新排版”的假阳性。
+                "generated_normalized_sha256": hash_text(
+                    normalize_text_for_matching(sample.generated_text)
+                ),
                 "generated_char_count": _visible_char_count(sample.generated_text),
                 "predicted_author_id": predicted_author,
                 "similarities": similarities,
@@ -142,8 +151,14 @@ def score_style_benchmark(
         >= effective_thresholds["reference_macro_accuracy"],
         "style_attribution": summary["style_attribution_accuracy"]
         >= effective_thresholds["style_attribution_accuracy"],
+        "balanced_style_attribution": summary["style_attribution_min_per_author"]
+        >= effective_thresholds["style_attribution_min_per_author"],
         "paired_contrast": summary["paired_contrast_accuracy"]
         >= effective_thresholds["paired_contrast_accuracy"],
+        "balanced_paired_contrast": summary["paired_contrast_min_per_author"]
+        >= effective_thresholds["paired_contrast_min_per_author"],
+        "styled_output_changed": summary["styled_non_neutral_rate"]
+        >= effective_thresholds["styled_non_neutral_rate"],
         "positive_neutral_gain": summary["mean_neutral_gain"] > 0.0,
         "content_preserved": summary["content_preservation_mean"]
         >= effective_thresholds["content_preservation_mean"],
@@ -513,6 +528,9 @@ def _aggregate(
     styled_lookup = {(row["case_id"], row["target_author_id"]): row for row in styled}
     target_margins = [float(row["target_margin"]) for row in styled]
     paired_margins: list[float] = []
+    paired_margins_by_author: dict[str, list[float]] = {
+        author_id: [] for author_id in bundle.public.author_ids
+    }
     neutral_gains: list[float] = []
     for case in bundle.public.cases:
         neutral_row = neutral[case.case_id]
@@ -524,12 +542,11 @@ def _aggregate(
                 if other != target_author_id
             ]
             target_similarity = float(target_row["similarities"][target_author_id])
-            paired_margins.append(
-                target_similarity
-                - max(
-                    float(row["similarities"][target_author_id]) for row in decoy_rows
-                )
+            paired_margin = target_similarity - max(
+                float(row["similarities"][target_author_id]) for row in decoy_rows
             )
+            paired_margins.append(paired_margin)
+            paired_margins_by_author[target_author_id].append(paired_margin)
             neutral_scores = neutral_row["similarities"]
             neutral_margin = float(neutral_scores[target_author_id]) - max(
                 float(score)
@@ -547,6 +564,55 @@ def _aggregate(
     identity_pass_count = sum(
         1 for row in identity_rows if row["verified"] and row["passed"]
     )
+    per_author: dict[str, dict[str, Any]] = {}
+    for author_id in bundle.public.author_ids:
+        author_rows = [row for row in styled if row["target_author_id"] == author_id]
+        author_paired = paired_margins_by_author[author_id]
+        per_author[author_id] = {
+            "sample_count": len(author_rows),
+            "style_attribution_accuracy": round(
+                sum(bool(row["attributed_correctly"]) for row in author_rows)
+                / len(author_rows),
+                4,
+            ),
+            "mean_target_margin": round(
+                statistics.fmean(float(row["target_margin"]) for row in author_rows),
+                6,
+            ),
+            "paired_contrast_accuracy": round(
+                sum(margin > 0 for margin in author_paired) / len(author_paired),
+                4,
+            ),
+            "mean_paired_contrast_margin": round(
+                statistics.fmean(author_paired), 6
+            ),
+            "exact_neutral_fallback_count": sum(
+                row["generated_text_sha256"]
+                == neutral[row["case_id"]]["generated_text_sha256"]
+                for row in author_rows
+            ),
+            "neutral_equivalent_fallback_count": sum(
+                row["generated_normalized_sha256"]
+                == neutral[row["case_id"]]["generated_normalized_sha256"]
+                for row in author_rows
+            ),
+        }
+    attribution_min = min(
+        float(row["style_attribution_accuracy"]) for row in per_author.values()
+    )
+    paired_min = min(
+        float(row["paired_contrast_accuracy"]) for row in per_author.values()
+    )
+    styled_non_neutral_count = sum(
+        row["generated_normalized_sha256"]
+        != neutral[row["case_id"]]["generated_normalized_sha256"]
+        for row in styled
+    )
+    exact_neutral_fallback_count = sum(
+        row["generated_text_sha256"]
+        == neutral[row["case_id"]]["generated_text_sha256"]
+        for row in styled
+    )
     return {
         "case_count": len(bundle.public.cases),
         "generation_count": len(scored),
@@ -554,12 +620,21 @@ def _aggregate(
         "style_attribution_accuracy": round(
             sum(bool(row["attributed_correctly"]) for row in styled) / len(styled), 4
         ),
+        "style_attribution_min_per_author": round(attribution_min, 4),
         "mean_target_margin": round(statistics.fmean(target_margins), 6),
         "paired_contrast_accuracy": round(
             sum(margin > 0 for margin in paired_margins) / len(paired_margins), 4
         ),
+        "paired_contrast_min_per_author": round(paired_min, 4),
         "mean_paired_contrast_margin": round(statistics.fmean(paired_margins), 6),
         "mean_neutral_gain": round(statistics.fmean(neutral_gains), 6),
+        "styled_non_neutral_rate": round(
+            styled_non_neutral_count / len(styled), 4
+        ),
+        "exact_neutral_fallback_count": exact_neutral_fallback_count,
+        "neutral_equivalent_fallback_count": len(styled)
+        - styled_non_neutral_count,
+        "per_author": per_author,
         "content_preservation_mean": round(
             statistics.fmean(
                 float(row["content_preservation"]["score"]) for row in scored

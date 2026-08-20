@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from novel_system.services.qc_constraints import (
+    constraint_alternatives,
     constraint_terms,
     contains_forbidden_term,
     issue_mentions_source,
@@ -10,6 +11,12 @@ from novel_system.services.qc_constraints import (
 
 def test_constraint_terms_normalize_supported_delimiters_and_ignore_noise() -> None:
     assert constraint_terms("盐钟， 潮声; x\n旧名单") == ["盐钟", "潮声", "旧名单"]
+
+
+def test_constraint_alternatives_supports_explicit_equivalent_spellings() -> None:
+    assert constraint_alternatives("钢琴键|琴键｜白键") == ["钢琴键", "琴键", "白键"]
+    assert source_field_satisfied("钢琴键|琴键", "他一直留着那枚琴键。") is True
+    assert source_field_satisfied("钢琴键|琴键", "收音机仍在响。") is False
 
 
 def test_forbidden_and_required_checks_share_the_same_leaf_contract() -> None:

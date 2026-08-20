@@ -136,6 +136,58 @@ def test_save_role_routes_activate_updates_overview_inference(client, monkeypatc
     assert data["overview"]["missing_active_routes"] == []
 
 
+def test_advanced_node_route_save_preserves_active_role_assignments(
+    client, monkeypatch
+) -> None:
+    _enable_admin(monkeypatch)
+    _create_provider(client)
+    role_response = client.post(
+        "/api/v1/system-config/llm/role-routes",
+        headers=ADMIN_HEADERS,
+        json={
+            "assignments": {
+                "extraction": {
+                    "provider_id": "main_provider",
+                    "model": "test-model-a",
+                }
+            },
+            "activate": True,
+        },
+    )
+    assert role_response.status_code == 200
+
+    route_response = client.post(
+        "/api/v1/system-config/llm/node-routes",
+        headers=ADMIN_HEADERS,
+        json={
+            "activate": False,
+            "node_routing": {
+                "style_ref_extract_language": {
+                    "provider": "openai_compatible",
+                    "provider_id": "main_provider",
+                    "model": "test-model-a",
+                    "temperature": 0.0,
+                    "max_output_tokens": 6400,
+                    "response_format": "json_object",
+                    "reasoning_level": "medium",
+                    "api_mode": "chat",
+                    "credential_mode": "none",
+                }
+            },
+            "retry_budget": {},
+            "job_runtime": {},
+        },
+    )
+
+    assert route_response.status_code == 200
+    assert route_response.json()["data"]["snapshot"]["parsed"]["role_assignments"] == {
+        "extraction": {
+            "provider_id": "main_provider",
+            "model": "test-model-a",
+        }
+    }
+
+
 def test_save_role_routes_partial_assignment_activates_incrementally(client, monkeypatch) -> None:
     """只分配一个槽位也能激活:校验范围限于本次触达的节点。"""
     _enable_admin(monkeypatch)

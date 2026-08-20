@@ -17,7 +17,161 @@ branch_labels = None
 depends_on = None
 
 
+def _upgrade_already_materialized() -> bool:
+    """Recognize databases created by the historical dynamic base migration.
+
+    Some published 0006 databases were created from the then-live ORM metadata,
+    so they already contain this revision's complete schema while Alembic still
+    reports an older revision.  Only skip when every object owned by 0082 is
+    present; a partially materialized schema must continue through the normal
+    migration path and fail visibly instead of being stamped as complete.
+    """
+
+    inspector = sa.inspect(op.get_bind())
+    required_tables = {
+        "canon_commits",
+        "fact_candidates",
+        "continuity_snapshots",
+    }
+    if not required_tables <= set(inspector.get_table_names()):
+        return False
+
+    required_columns = {
+        "canon_commits": {
+            "commit_id",
+            "project_id",
+            "chapter_id",
+            "scene_id",
+            "final_scene_row_id",
+            "final_content_hash",
+            "commit_kind",
+            "candidate_ids_json",
+            "source_final_scene_row_id",
+            "status",
+            "actor_ref",
+            "decision_note",
+            "created_at",
+        },
+        "timeline_events": {
+            "event_mode",
+            "realization_status",
+            "realized_canon_commit_id",
+            "realized_scene_id",
+        },
+        "narrative_events": {
+            "authority_status",
+            "source_kind",
+            "final_scene_row_id",
+            "canon_commit_id",
+        },
+        "fact_candidates": {
+            "candidate_id",
+            "project_id",
+            "chapter_id",
+            "scene_id",
+            "final_scene_row_id",
+            "staged_event_id",
+            "event_type",
+            "entity_type",
+            "raw_entity_ref",
+            "resolved_entity_id",
+            "entity_resolution_status",
+            "entity_candidates_json",
+            "fact_key",
+            "fact_value",
+            "evidence_text",
+            "evidence_start",
+            "evidence_end",
+            "source_kind",
+            "confidence",
+            "criticality",
+            "planned_timeline_event_id",
+            "status",
+            "canon_commit_id",
+            "decided_by",
+            "decided_at",
+            "decision_note",
+            "created_at",
+            "updated_at",
+        },
+        "continuity_snapshots": {
+            "snapshot_id",
+            "project_id",
+            "scope_type",
+            "scope_id",
+            "chapter_id",
+            "scene_id",
+            "final_scene_row_id",
+            "latest_commit_id",
+            "status",
+            "summary_text",
+            "state_deltas_json",
+            "knowledge_deltas_json",
+            "relationship_deltas_json",
+            "item_deltas_json",
+            "timeline_deltas_json",
+            "open_obligations_json",
+            "entity_ids_json",
+            "source_commit_ids_json",
+            "metadata_json",
+            "created_at",
+            "updated_at",
+        },
+    }
+    for table_name, column_names in required_columns.items():
+        if not inspector.has_table(table_name):
+            return False
+        materialized_columns = {
+            column["name"] for column in inspector.get_columns(table_name)
+        }
+        if not column_names <= materialized_columns:
+            return False
+
+    required_indexes = {
+        "canon_commits": {
+            "ix_canon_commits_project_scene_final",
+            "ix_canon_commits_chapter",
+            "ix_canon_commits_scene",
+            "ix_canon_commits_final_scene",
+            "ix_canon_commits_source_final_scene",
+        },
+        "timeline_events": {
+            "ix_timeline_events_realized_canon_commit_id",
+            "ix_timeline_events_realized_scene_id",
+        },
+        "narrative_events": {
+            "ix_narrative_events_authority_project_scene",
+            "ix_narrative_events_final_scene",
+            "ix_narrative_events_canon_commit",
+        },
+        "fact_candidates": {
+            "ix_fact_candidates_project_chapter_status",
+            "ix_fact_candidates_scene_status",
+            "ix_fact_candidates_final_scene",
+            "ix_fact_candidates_chapter",
+            "ix_fact_candidates_planned_timeline",
+            "ix_fact_candidates_canon_commit",
+        },
+        "continuity_snapshots": {
+            "ix_continuity_snapshots_chapter",
+            "ix_continuity_snapshots_scene",
+            "ix_continuity_snapshots_final_scene",
+            "ix_continuity_snapshots_latest_commit",
+        },
+    }
+    for table_name, index_names in required_indexes.items():
+        materialized_indexes = {
+            index["name"] for index in inspector.get_indexes(table_name)
+        }
+        if not index_names <= materialized_indexes:
+            return False
+    return True
+
+
 def upgrade() -> None:
+    if _upgrade_already_materialized():
+        return
+
     op.create_table(
         "canon_commits",
         sa.Column("commit_id", sa.String(), nullable=False),

@@ -5,6 +5,13 @@
 #
 # TODO(PR-7): validation/quantitative.py 用此 floor 与自适应 std 取 max
 
+# 生成稿可直接观测的段落形态（不进入旧 QC 分母；供候选重排/诊断）。
+paragraph_mean_chars: 15.0
+paragraph_length_std_chars: 15.0
+paragraphs_per_1k: 1.5
+single_sentence_paragraph_ratio: 0.08
+quote_led_paragraph_ratio: 0.05
+
 avg_sentence_length: 3.0
 sentence_length_std: 2.0
 short_sentence_ratio: 0.05

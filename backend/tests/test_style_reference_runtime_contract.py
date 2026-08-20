@@ -155,6 +155,7 @@ def test_contract_is_hashed_tamper_evident_and_contains_no_raw_quote(session) ->
             ).hexdigest(),
         }
     ]
+    assert contract["layers"][0]["sample_paragraph_refs"] == []
 
     tampered = copy.deepcopy(contract)
     tampered["layers"][0]["profile"]["profile_json"]["style_features"] = [
@@ -162,6 +163,41 @@ def test_contract_is_hashed_tamper_evident_and_contains_no_raw_quote(session) ->
     ]
     with pytest.raises(ValueError, match="hash mismatch"):
         validate_style_runtime_contract(tampered)
+
+
+def test_contract_freezes_only_generation_safe_forbidden_findings(session) -> None:
+    seeded = _seed_reference(session, seed="safe_forbidden_contract", strategy="A")
+    profile = seeded.repo.get_profile(seeded.profile_id)
+    profile.profile_json = {
+        **dict(profile.profile_json or {}),
+        "generation_safe_forbidden_findings": [
+            {
+                "finding_id": "safe_forbidden_1",
+                "sub_dimension": "language.vocabulary",
+                "statement": "避免复用参考文本中的具体措辞",
+                "status": "approved",
+            }
+        ],
+        "source_overlap_filter": {"applied": True, "threshold_chars": 8},
+    }
+    session.flush()
+
+    contract = build_style_runtime_contract(
+        seeded.repo,
+        [seeded.binding],
+        task_type="scene_generation",
+    )
+
+    assert contract is not None
+    assert contract["layers"][0]["forbidden_findings"] == [
+        {
+            "finding_id": "safe_forbidden_1",
+            "sub_dimension": "language.vocabulary",
+            "statement": "避免复用参考文本中的具体措辞",
+            "status": "approved",
+        }
+    ]
+    assert validate_style_runtime_contract(contract) == contract
 
 
 def test_frozen_contract_render_does_not_follow_later_profile_or_binding_edits(
@@ -266,6 +302,71 @@ def test_frozen_few_shot_requires_unchanged_quote_and_current_send_rights(
         context=context,
     )
     assert revoked.few_shot_block == ""
+
+
+def test_frozen_few_shot_prefers_hashed_complete_parent_paragraph(session) -> None:
+    seeded = _seed_reference(session, seed="paragraph", strategy="B")
+    paragraph_id = "contract_paragraph_parent"
+    paragraph_text = (
+        "檐下的人没有立即进屋，只把湿伞靠在墙角。"
+        + seeded.quote_text
+        + "院门外又响了一阵水声，他等那声音过去，才慢慢抬手拨亮灯芯。"
+    )
+    seeded.repo.create_paragraph(
+        paragraph_id=paragraph_id,
+        book_id=seeded.book_id,
+        paragraph_index=0,
+        paragraph_type="narration",
+        start_offset=0,
+        end_offset=len(paragraph_text),
+        text=paragraph_text,
+        char_count=len(paragraph_text),
+        classifier_confidence=0.9,
+    )
+    quote = seeded.repo.get_quote(seeded.quote_id)
+    quote.paragraph_id = paragraph_id
+    session.flush()
+
+    contract = build_style_runtime_contract(
+        seeded.repo,
+        [seeded.binding],
+        task_type="scene_generation",
+    )
+
+    assert contract is not None
+    layer = contract["layers"][0]
+    assert layer["sample_quote_refs"][0]["paragraph_id"] == paragraph_id
+    assert layer["sample_paragraph_refs"] == [
+        {
+            "paragraph_id": paragraph_id,
+            "paragraph_sha256": hashlib.sha256(
+                paragraph_text.encode("utf-8")
+            ).hexdigest(),
+        }
+    ]
+    assert paragraph_text not in json.dumps(contract, ensure_ascii=False)
+
+    context = extract_style_generation_context(
+        "她在门外停步。", source_kind="generation_source"
+    )
+    original = InjectionService(session).fragments_for_contract(
+        contract,
+        project_id=seeded.project_id,
+        context=context,
+    )
+    assert "完整参考段落" in original.few_shot_block
+    assert "院门外又响了一阵水声" in original.few_shot_block
+
+    paragraph = seeded.repo.get_paragraph(paragraph_id)
+    paragraph.text = seeded.quote_text + "这段父段落后来被改过。"
+    session.flush()
+    changed = InjectionService(session).fragments_for_contract(
+        contract,
+        project_id=seeded.project_id,
+        context=context,
+    )
+    assert "院门外又响了一阵水声" not in changed.few_shot_block
+    assert seeded.quote_text in changed.few_shot_block
 
 
 def test_frozen_rag_requires_unchanged_reference_book_checksum(

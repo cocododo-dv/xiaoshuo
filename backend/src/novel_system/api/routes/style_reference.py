@@ -45,6 +45,7 @@ from novel_system.services.style_reference.run_orchestrator import (
 )
 from novel_system.services.style_reference.injection import (
     InjectionService,
+    default_injection_strategy,
     injection_task_defaults,
 )
 from novel_system.services.style_reference.metrics_aggregator import MetricsAggregator
@@ -136,7 +137,7 @@ class ApplyProfileRequest(ApplyConfigMixin):
     scope: str = Field(min_length=1, max_length=64)
     scope_ref_id: str | None = Field(default=None, max_length=255)
     task_type: str = Field(default="scene_generation", min_length=1, max_length=64)
-    strategy: str = Field(default="A", min_length=1, max_length=64)
+    strategy: str | None = Field(default=None, min_length=1, max_length=64)
 
     def injection_config(self) -> dict[str, Any]:
         """非空注入配置 → binding.config_json(端到端打通 intensity 滑块)。"""
@@ -1082,7 +1083,8 @@ def apply_profile(
         try:
             scope = BindingScope(body["scope"])
             task_type = TaskType(body.get("task_type") or "scene_generation")
-            strategy = InjectionStrategy(body.get("strategy") or "A")
+            raw_strategy = body.get("strategy")
+            strategy = InjectionStrategy(raw_strategy) if raw_strategy else None
         except ValueError as exc:
             raise DomainError(
                 "STYLE_REFERENCE_APPLY_PARAM_INVALID",
@@ -1527,9 +1529,11 @@ def dryrun_injection_preview(
         "sub_dimensions": payload.sub_dimensions,
         "include_positive": payload.include_positive,
         "include_forbidden": payload.include_forbidden,
-        "include_metric": payload.include_metric,
     }
-    fragments = InjectionService(session)._render(profile, payload.strategy, config)
+    if payload.include_metric is not None:
+        config["include_metric"] = payload.include_metric
+    strategy = payload.strategy or default_injection_strategy(payload.task_type)
+    fragments = InjectionService(session)._render(profile, strategy, config)
     return ok(
         {
             "fragments": fragments.model_dump(),

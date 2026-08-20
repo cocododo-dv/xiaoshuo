@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -36,7 +38,19 @@ from novel_system.services.prompt_builder import PromptConfigurationError
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
 from novel_system.services.scene_blueprint import SceneBlueprintService
-from novel_system.services.scene_generation import SceneGenerationService, StyleGenerationResult
+from novel_system.services.scene_generation import (
+    SceneGenerationService,
+    StyleGenerationResult,
+    _apply_style_length_patch,
+    _apply_style_salvage_patch,
+    _assess_de_template_rewrite,
+    _assess_style_anchor_conformance,
+    _extract_scene_text,
+    _neutral_length_instruction,
+    _normalize_style_paragraph_shape,
+    _scene_text_integrity_markers,
+    _style_repair_length_instruction,
+)
 from tests.accounted_llm_fakes import AccountedGenerateMixin
 from tests.real_llm_fakes import ScenePipelineOnlineFake
 
@@ -89,6 +103,82 @@ class FakeSceneClient(AccountedGenerateMixin):
         )
 
 
+class FakeNeutralLengthRepairClient(AccountedGenerateMixin):
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        scene_text = (
+            "红色信封。" * 60
+            if len(self.requests) == 1
+            else "她接过红色信封，退到门边。脚步停在楼梯口，她没有拆信，只把信封压进掌心。"
+        )
+        payload = {"scene_text": scene_text}
+        request_id = f"resp_neutral_length_{len(self.requests)}"
+        return LLMResponse(
+            request_id=request_id,
+            provider="fake-provider",
+            model="fake-neutral-model",
+            text=__import__("json").dumps(payload, ensure_ascii=False),
+            structured_output=payload,
+            response_format="json_object",
+            raw_response={
+                "id": request_id,
+                "model": "fake-neutral-model",
+                "usage": {},
+                "finish_reason": "stop",
+            },
+            usage={"input_tokens": 80, "output_tokens": 20, "total_tokens": 100},
+            finish_reason="stop",
+        )
+
+
+class FakeNeutralRequiredFactRepairClient(AccountedGenerateMixin):
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        scene_text = (
+            "季青看见了那张还款记录，却没有追问。"
+            if len(self.requests) == 1
+            else "季青看见了那张还款记录，终于明白旧债是周伯代还的，却没有追问。"
+        )
+        payload = {"scene_text": scene_text}
+        request_id = f"resp_neutral_fact_{len(self.requests)}"
+        return LLMResponse(
+            request_id=request_id,
+            provider="fake-provider",
+            model="fake-neutral-model",
+            text=__import__("json").dumps(payload, ensure_ascii=False),
+            structured_output=payload,
+            response_format="json_object",
+            raw_response={
+                "id": request_id,
+                "model": "fake-neutral-model",
+                "usage": {},
+                "finish_reason": "stop",
+            },
+            usage={"input_tokens": 80, "output_tokens": 20, "total_tokens": 100},
+            finish_reason="stop",
+        )
+
+
+class FakeNeutralInvalidRepairClient(FakeNeutralLengthRepairClient):
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        response = super().generate(request)
+        if len(self.requests) == 2:
+            scene_text = "红色信封。" * 2
+            payload = {"scene_text": scene_text}
+            response = replace(
+                response,
+                text=__import__("json").dumps(payload, ensure_ascii=False),
+                structured_output=payload,
+            )
+        return response
+
+
 class FakeFailingClient(AccountedGenerateMixin):
     def generate(self, request: LLMRequest) -> LLMResponse:
         raise ValueError("malformed provider payload")
@@ -132,7 +222,222 @@ class FakeDeTemplateClient(AccountedGenerateMixin):
         )
 
 
-def _seed_scene(session, *, must_include_text: str | None = "A red envelope changes hands.") -> None:
+class FakeRegressiveDeTemplateClient(AccountedGenerateMixin):
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        if request.node_id == "style_patch":
+            scene_text = "她走了。"
+            request_id = "resp_fake_de_template_regressed"
+        else:
+            scene_text = (
+                "她低头看着红色信封，沉默了片刻。"
+                "他低头看着录音，沉默了片刻。"
+                "她低头看着门缝，沉默了片刻。"
+                "她知道真相必须公开。"
+            )
+            request_id = "resp_fake_style_with_required_fact"
+        payload = {"scene_text": scene_text}
+        return LLMResponse(
+            request_id=request_id,
+            provider="fake-provider",
+            model="fake-model",
+            text=__import__("json").dumps(payload, ensure_ascii=False),
+            structured_output=payload,
+            response_format="json_object",
+            raw_response={"id": request_id, "model": "fake-model", "usage": {}},
+            usage={"input_tokens": 80, "output_tokens": 20, "total_tokens": 100},
+            finish_reason="stop",
+        )
+
+
+class FakeMissingSceneTextPatchClient(FakeDeTemplateClient):
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        if request.node_id != "style_patch":
+            return super().generate(request)
+        self.requests.append(request)
+        payload = {"style_notes": ["provider omitted scene_text"]}
+        return LLMResponse(
+            request_id="resp_fake_patch_missing_scene_text",
+            provider="fake-provider",
+            model="fake-patch-model",
+            text=__import__("json").dumps(payload, ensure_ascii=False),
+            structured_output=payload,
+            response_format="json_object",
+            raw_response={
+                "id": "resp_fake_patch_missing_scene_text",
+                "model": "fake-patch-model",
+                "usage": {},
+            },
+            usage={"input_tokens": 80, "output_tokens": 5, "total_tokens": 85},
+            finish_reason="stop",
+        )
+
+
+class FakeUnsafeBaseThenSafePatchClient(AccountedGenerateMixin):
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        if request.node_id == "style_patch":
+            scene_text = "她接过红色信封，没有拆。门外脚步停住，她把信封压进抽屉，转身关灯。"
+            request_id = "resp_safe_style_patch"
+        else:
+            scene_text = "她低头看着门缝，沉默了片刻。" * 20
+            request_id = "resp_unsafe_style_base"
+        payload = {"scene_text": scene_text}
+        return LLMResponse(
+            request_id=request_id,
+            provider="fake-provider",
+            model="fake-model",
+            text=__import__("json").dumps(payload, ensure_ascii=False),
+            structured_output=payload,
+            response_format="json_object",
+            raw_response={"id": request_id, "model": "fake-model", "usage": {}},
+            usage={"input_tokens": 80, "output_tokens": 20, "total_tokens": 100},
+            finish_reason="stop",
+        )
+
+
+class FakeLengthOnlyLocalPatchClient(AccountedGenerateMixin):
+    neutral = "她接过红色信封，站在门边等了片刻。楼梯上传来脚步，她没有拆信，只把它握在手里。"
+    removable = (
+        "窗外的雨水沿着窗框一遍又一遍地滑落，墙上的影子也一遍又一遍地晃动，"
+        "同一阵脚步声被反复描写了许多次，除此之外没有发生任何新的事情。"
+    )
+    replacement = "窗外雨声未停。"
+    ending = "她仍把信封握在手里。"
+
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        if request.node_id == "style_patch":
+            payload = {
+                "edits": [
+                    {
+                        "segment_id": "S003",
+                        "new_text": self.replacement,
+                    }
+                ]
+            }
+            request_id = "resp_local_length_patch"
+        else:
+            payload = {"scene_text": self.neutral + self.removable + self.ending}
+            request_id = "resp_length_only_style_base"
+        return LLMResponse(
+            request_id=request_id,
+            provider="fake-provider",
+            model="fake-model",
+            text=__import__("json").dumps(payload, ensure_ascii=False),
+            structured_output=payload,
+            response_format="json_object",
+            raw_response={"id": request_id, "model": "fake-model", "usage": {}},
+            usage={"input_tokens": 80, "output_tokens": 20, "total_tokens": 100},
+            finish_reason="stop",
+        )
+
+
+class FakeFactRepairThenLengthPatchClient(AccountedGenerateMixin):
+    neutral = "她接过红色信封，站在门边等了片刻。楼梯上传来脚步，她没有拆信。"
+    repaired_but_short = "她接过红色信封，没有拆。门外脚步忽然停住。"
+    insertion = "雨水沿着门槛漫开，她后退半步，仍盯着楼梯口，直到那阵脚步再次逼近。"
+
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        patch_count = sum(
+            prior.node_id == "style_patch" for prior in self.requests
+        )
+        if request.node_id != "style_patch":
+            payload = {"scene_text": "她在门边等。"}
+            request_id = "resp_fact_and_length_unsafe_base"
+        elif patch_count == 1:
+            payload = {"scene_text": self.repaired_but_short}
+            request_id = "resp_fact_repaired_length_short"
+        else:
+            payload = {
+                "edits": [
+                    {
+                        "segment_id": "S001",
+                        "new_text": self.insertion,
+                    }
+                ]
+            }
+            request_id = "resp_followup_local_length_patch"
+        return LLMResponse(
+            request_id=request_id,
+            provider="fake-provider",
+            model="fake-model",
+            text=__import__("json").dumps(payload, ensure_ascii=False),
+            structured_output=payload,
+            response_format="json_object",
+            raw_response={"id": request_id, "model": "fake-model", "usage": {}},
+            usage={"input_tokens": 80, "output_tokens": 20, "total_tokens": 100},
+            finish_reason="stop",
+        )
+
+
+class FakeExtremeUnderlengthThenSalvageClient(AccountedGenerateMixin):
+    paragraph_one = (
+        "她接过红色信封，没有拆，只把封口对着灯光看了一遍。"
+        "楼梯上的脚步停住，门外却没有人敲门。"
+    )
+    paragraph_two = (
+        "她后退半步，将信封压在桌角，听见雨水沿着窗棂往下流。"
+        "那阵脚步又响了一次，比先前更近。"
+    )
+    ending = "她仍没有拆信，伸手熄了灯，站在黑暗里等。"
+    neutral = "\n\n".join((paragraph_one, paragraph_two, ending))
+    extreme_short = "她接过红色信封，没有拆，倚门听着那阵越来越近的脚步。"
+    replacement = (
+        "红色信封到了她手里，还是一个小小的纸包；她不拆，"
+        "只向灯下一照。楼梯上的脚步停了，门也很客气，并不响。"
+    )
+
+    def __init__(self) -> None:
+        self.requests: list[LLMRequest] = []
+
+    def generate(self, request: LLMRequest) -> LLMResponse:
+        self.requests.append(request)
+        if request.node_id == "style_patch":
+            payload = {
+                "edits": [
+                    {
+                        "segment_id": "S001",
+                        "new_text": self.replacement,
+                    }
+                ]
+            }
+            request_id = "resp_bounded_style_salvage"
+        else:
+            payload = {"scene_text": self.extreme_short}
+            request_id = "resp_extreme_underlength_style"
+        return LLMResponse(
+            request_id=request_id,
+            provider="fake-provider",
+            model="fake-model",
+            text=__import__("json").dumps(payload, ensure_ascii=False),
+            structured_output=payload,
+            response_format="json_object",
+            raw_response={"id": request_id, "model": "fake-model", "usage": {}},
+            usage={"input_tokens": 80, "output_tokens": 20, "total_tokens": 100},
+            finish_reason="stop",
+        )
+
+
+def _seed_scene(
+    session,
+    *,
+    must_include_text: str | None = "A red envelope changes hands.",
+    target_length_band: str = "short",
+) -> None:
     session.add(StoryProject(project_id="PROJECT100", title="Scene generation", outline_text=""))
     session.add(
         ChapterGoal(
@@ -155,7 +460,7 @@ def _seed_scene(session, *, must_include_text: str | None = "A red envelope chan
             scene_goal="Force both characters to reveal what they know.",
             beats_json=["arrival", "reveal", "standoff"],
             must_include_text=must_include_text,
-            target_length_band="short",
+            target_length_band=target_length_band,
             scene_type="reunion",
             is_chapter_last=0,
         )
@@ -331,7 +636,14 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
     assert style_request.reasoning_level == "medium"
     assert any("Approved Neutral Draft" in message["content"] for message in style_request.messages)
     assert any("Provider-generated neutral scene text." in message["content"] for message in style_request.messages)
-    assert any("Rewrite the supplied source draft" in message["content"] for message in style_request.messages)
+    assert any(
+        "Recompose the supplied source draft" in message["content"]
+        for message in style_request.messages
+    )
+    assert any(
+        "immutable event-and-fact scaffold" in message["content"]
+        for message in style_request.messages
+    )
     assert sum(message["content"].count("Return JSON that matches the structured schema exactly.") for message in style_request.messages) == 1
 
     assert neutral_draft.content == "Provider-generated neutral scene text."
@@ -396,7 +708,7 @@ def test_run_scene_persists_provider_neutral_draft_and_bundle_linkage(session) -
     assert soft_qc["branch"] == "continue"
 
 
-def test_scene_generation_does_not_append_required_scene_text_when_provider_omits_it(session) -> None:
+def test_scene_generation_rejects_required_scene_text_when_provider_omits_it(session) -> None:
     _seed_scene(session)
     bundle = {
         "bundle_id": "bundle_CH100_SC01",
@@ -409,9 +721,159 @@ def test_scene_generation_does_not_append_required_scene_text_when_provider_omit
     }
     service = SceneGenerationService(session, llm_client=FakeSceneClient())
 
-    neutral = service.generate_neutral_draft("CH100_SC01", bundle)
+    with pytest.raises(DomainError) as exc:
+        service.generate_neutral_draft("CH100_SC01", bundle)
 
-    assert neutral.content == "Provider-generated neutral scene text."
+    assert exc.value.code == "NEUTRAL_DRAFT_REPAIR_INVALID"
+    assert session.execute(
+        select(SceneDraft).where(SceneDraft.stage == "neutral_draft")
+    ).scalars().all() == []
+
+
+def test_neutral_draft_retries_once_when_numeric_length_band_is_missed(
+    session,
+) -> None:
+    _seed_scene(
+        session,
+        must_include_text="红色信封",
+        target_length_band="30-100 Chinese characters",
+    )
+    bundle = {
+        "bundle_id": "bundle_CH100_SC01",
+        "bundle_snapshot_hash": "bundle_hash_demo",
+        "snapshot": {
+            "scene_id": "CH100_SC01",
+            "chapter_id": "CH100",
+            "inline_digests": {"scene_card": "红色信封必须交到她手中。"},
+        },
+    }
+    client = FakeNeutralLengthRepairClient()
+
+    result = SceneGenerationService(
+        session, llm_client=client
+    ).generate_neutral_draft("CH100_SC01", bundle)
+
+    drafts = session.execute(
+        select(SceneDraft).order_by(SceneDraft.created_at, SceneDraft.row_id)
+    ).scalars().all()
+    rejected = next(draft for draft in drafts if draft.stage == "neutral_rejected")
+    active = next(draft for draft in drafts if draft.stage == "neutral_draft")
+    attempt = session.execute(
+        select(AttemptTracker).where(AttemptTracker.step == "neutral_draft")
+    ).scalar_one()
+    calls = session.execute(
+        select(LlmCall).order_by(LlmCall.created_at)
+    ).scalars().all()
+
+    assert len(client.requests) == 2
+    assert [call.step for call in calls] == [
+        "neutral_draft",
+        "neutral_draft_repair",
+    ]
+    assert "Absolute final range: 30-100" in client.requests[0].messages[1]["content"]
+    assert "previous attempt" in client.requests[1].messages[1]["content"]
+    assert "Rejected Neutral Draft Requiring One Deterministic Repair" in client.requests[1].messages[1]["content"]
+    assert "Deterministic Neutral Repair Brief" in client.requests[1].messages[1]["content"]
+    assert "红色信封。" * 3 in client.requests[1].messages[1]["content"]
+    assert "Remove at least 210 visible characters" in client.requests[1].messages[1]["content"]
+    assert client.requests[1].temperature == 0.1
+    assert rejected.status == "rejected"
+    assert rejected.content == "红色信封。" * 60
+    assert active.content == result.content
+    assert result.content.startswith("她接过红色信封")
+    assert attempt.details_json["repair"]["accepted"] is True
+    assert attempt.details_json["validation"]["accepted"] is True
+    assert session.get(SceneRunState, "CH100_SC01").total_attempt_count == 1
+
+
+def test_neutral_repair_keeps_an_already_valid_source_in_a_local_length_window() -> None:
+    scene = SimpleNamespace(target_length_band="700-1350 Chinese characters")
+
+    instruction = _neutral_length_instruction(
+        scene,
+        previous_length=900,
+        retry=True,
+    )
+
+    assert "previous length already passed" in instruction
+    assert "within 810-990 visible characters" in instruction
+    assert "smallest localized edits" in instruction
+
+
+def test_neutral_draft_repairs_missing_alternative_even_without_length_band(session) -> None:
+    _seed_scene(
+        session,
+        must_include_text="季青；代还|还清",
+        target_length_band="",
+    )
+    bundle = {
+        "bundle_id": "bundle_CH100_SC01",
+        "bundle_snapshot_hash": "bundle_hash_demo",
+        "snapshot": {
+            "scene_id": "CH100_SC01",
+            "chapter_id": "CH100",
+            "inline_digests": {"scene_card": "季青发现旧债由周伯代还。"},
+        },
+    }
+    client = FakeNeutralRequiredFactRepairClient()
+
+    result = SceneGenerationService(
+        session, llm_client=client
+    ).generate_neutral_draft("CH100_SC01", bundle)
+
+    repair_prompt = client.requests[1].messages[1]["content"]
+    assert len(client.requests) == 2
+    assert "代还|还清" in repair_prompt
+    assert "vertical bar means alternatives" in repair_prompt
+    assert "代还" in result.content
+    attempt = session.execute(
+        select(AttemptTracker).where(AttemptTracker.step == "neutral_draft")
+    ).scalar_one()
+    assert attempt.details_json["repair"]["accepted"] is True
+    assert attempt.details_json["validation"]["accepted"] is True
+
+
+def test_neutral_draft_fails_closed_when_the_only_repair_is_still_invalid(
+    session,
+) -> None:
+    _seed_scene(
+        session,
+        must_include_text="红色信封",
+        target_length_band="30-100 Chinese characters",
+    )
+    bundle = {
+        "bundle_id": "bundle_CH100_SC01",
+        "bundle_snapshot_hash": "bundle_hash_demo",
+        "snapshot": {
+            "scene_id": "CH100_SC01",
+            "chapter_id": "CH100",
+            "inline_digests": {"scene_card": "红色信封必须交到她手中。"},
+        },
+    }
+
+    with pytest.raises(DomainError) as exc:
+        SceneGenerationService(
+            session,
+            llm_client=FakeNeutralInvalidRepairClient(),
+        ).generate_neutral_draft("CH100_SC01", bundle)
+
+    assert exc.value.code == "NEUTRAL_DRAFT_REPAIR_INVALID"
+    assert session.execute(
+        select(SceneDraft).where(SceneDraft.stage == "neutral_draft")
+    ).scalars().all() == []
+    rejected = session.execute(
+        select(SceneDraft).where(SceneDraft.stage == "neutral_rejected")
+    ).scalar_one()
+    assert rejected.status == "rejected"
+    attempt = session.execute(
+        select(AttemptTracker).where(
+            AttemptTracker.step == "neutral_draft",
+            AttemptTracker.status == "failed",
+        )
+    ).scalar_one()
+    assert attempt.details_json["error_code"] == "NEUTRAL_DRAFT_REPAIR_INVALID"
+    assert attempt.details_json["validation"]["accepted"] is False
+    assert session.get(SceneRunState, "CH100_SC01").current_neutral_draft_row_id is None
 
 
 def test_bundle_and_style_prompt_include_only_approved_runtime_author_preference(session) -> None:
@@ -471,7 +933,7 @@ def test_bundle_and_style_prompt_include_only_approved_runtime_author_preference
 
 
 def test_author_instruction_is_frozen_into_bundle_and_reaches_neutral_prompt(session) -> None:
-    _seed_scene(session)
+    _seed_scene(session, must_include_text=None)
     note = "把选择提前到第一段，结尾不要解释。"
     bundle = BundleBuilder(session).build("CH100_SC01", author_note=note)
 
@@ -494,7 +956,7 @@ def test_author_instruction_is_frozen_into_bundle_and_reaches_neutral_prompt(ses
 
 
 def test_generate_style_draft_runs_one_de_template_pass_for_high_risk_anti_template(session) -> None:
-    _seed_scene(session)
+    _seed_scene(session, must_include_text=None)
     bundle = {
         "bundle_id": "bundle_CH100_SC01",
         "bundle_snapshot_hash": "bundle_hash_demo",
@@ -511,7 +973,11 @@ def test_generate_style_draft_runs_one_de_template_pass_for_high_risk_anti_templ
 
     assert len(fake_client.requests) == 2
     assert fake_client.requests[1].node_id == "style_patch"
+    assert fake_client.requests[1].temperature == 0.3
     assert "De-template Rewrite Brief" in fake_client.requests[1].messages[1]["content"]
+    assert "Deterministic Style Repair Length Guard" in fake_client.requests[1].messages[1]["content"]
+    assert "Edit the labeled style draft directly" in fake_client.requests[1].messages[1]["content"]
+    assert "Recompose the supplied source draft" not in fake_client.requests[1].messages[1]["content"]
     assert "quality:scene:CH100_SC01:template_action_reuse" in fake_client.requests[1].messages[1]["content"]
 
     drafts = session.execute(select(SceneDraft).order_by(SceneDraft.created_at.asc(), SceneDraft.row_id.asc())).scalars().all()
@@ -532,6 +998,674 @@ def test_generate_style_draft_runs_one_de_template_pass_for_high_risk_anti_templ
     assert attempts["de_template"].details_json["quality_gate"]["triggered"] is True
     assert attempts["de_template"].details_json["quality_gate"]["rewrite_pass"] == 1
     assert session.get(SceneRunState, "CH100_SC01").current_style_draft_row_id == drafts[1].row_id
+
+
+def test_de_template_rewrite_is_audited_but_rejected_when_required_fact_is_lost(session) -> None:
+    _seed_scene(session, must_include_text="红色信封")
+    bundle = {
+        "bundle_id": "bundle_CH100_SC01",
+        "bundle_snapshot_hash": "bundle_hash_demo",
+        "snapshot": {
+            "scene_id": "CH100_SC01",
+            "chapter_id": "CH100",
+            "inline_digests": {"scene_card": "Goal"},
+        },
+    }
+    fake_client = FakeRegressiveDeTemplateClient()
+
+    result = SceneGenerationService(
+        session,
+        llm_client=fake_client,
+    ).generate_style_draft(
+        "CH100_SC01",
+        bundle,
+        neutral_draft_row_id="draft_neutral_CH100_SC01",
+        neutral_content="红色信封被递到她手里。",
+    )
+
+    drafts = session.execute(
+        select(SceneDraft).order_by(SceneDraft.created_at.asc(), SceneDraft.row_id.asc())
+    ).scalars().all()
+    base = next(draft for draft in drafts if draft.stage == "style_draft")
+    rejected = next(draft for draft in drafts if draft.stage == "de_template")
+    attempt = session.execute(
+        select(AttemptTracker).where(AttemptTracker.step == "de_template")
+    ).scalar_one()
+
+    assert result.row_id == base.row_id
+    assert result.content == base.content
+    assert rejected.content == "她走了。"
+    assert rejected.status == "rejected"
+    assert attempt.details_json["acceptance"]["accepted"] is False
+    assert "required_facts_regressed" in attempt.details_json["acceptance"]["reasons"]
+    assert session.get(SceneRunState, "CH100_SC01").current_style_draft_row_id == base.row_id
+
+
+def test_de_template_missing_scene_text_is_audited_and_falls_back_to_base(session) -> None:
+    _seed_scene(session, must_include_text=None)
+    bundle = {
+        "bundle_id": "bundle_CH100_SC01",
+        "bundle_snapshot_hash": "bundle_hash_demo",
+        "snapshot": {
+            "scene_id": "CH100_SC01",
+            "chapter_id": "CH100",
+            "inline_digests": {"scene_card": "Goal"},
+        },
+    }
+    client = FakeMissingSceneTextPatchClient()
+
+    result = SceneGenerationService(
+        session,
+        llm_client=client,
+    ).generate_style_draft(
+        "CH100_SC01",
+        bundle,
+        neutral_draft_row_id="draft_neutral_CH100_SC01",
+        neutral_content="Approved neutral draft.",
+    )
+
+    base = session.execute(
+        select(SceneDraft).where(SceneDraft.stage == "style_draft")
+    ).scalar_one()
+    failed = session.execute(
+        select(AttemptTracker).where(
+            AttemptTracker.step == "de_template",
+            AttemptTracker.status == "failed",
+        )
+    ).scalar_one()
+    assert result.row_id == base.row_id
+    assert result.content == base.content
+    assert failed.details_json["error_code"] == "SCENE_GENERATION_RESPONSE_INVALID"
+    assert failed.details_json["business_attempt_consumed"] is True
+    assert session.get(SceneRunState, "CH100_SC01").current_style_draft_row_id == base.row_id
+
+
+def test_extract_scene_text_normalizes_double_encoded_unicode_fragments() -> None:
+    payload = {"scene_text": "她走进雨\\u6ccc\\u4e2d，神色依u7136平静。"}
+    response = LLMResponse(
+        request_id="resp_unicode_normalize",
+        provider="fake-provider",
+        model="fake-model",
+        text=__import__("json").dumps(payload, ensure_ascii=False),
+        structured_output=payload,
+        response_format="json_object",
+        raw_response={"id": "resp_unicode_normalize", "usage": {}},
+        usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        finish_reason="stop",
+    )
+
+    assert _extract_scene_text(response) == "她走进雨泌中，神色依然平静。"
+
+
+@pytest.mark.parametrize(
+    "text,marker",
+    [
+        ("```json\n{\"scene_text\": \"她走了。\"}\n```", "model_response_artifact"),
+        ("Let me refine the final JSON before returning it.", "model_response_artifact"),
+        ("他停住；C季青却没有回头。", "orphan_ascii_before_cjk"),
+    ],
+)
+def test_scene_text_integrity_rejects_provider_response_artifacts(
+    text: str, marker: str
+) -> None:
+    assert marker in _scene_text_integrity_markers(text)
+
+
+def test_unsafe_base_is_audited_then_retried_from_approved_neutral_fallback(
+    session, monkeypatch
+) -> None:
+    _seed_scene(session, must_include_text="红色信封")
+    scene = session.get(SceneCard, "CH100_SC01")
+    scene.target_length_band = "30-100 Chinese characters"
+    session.commit()
+    bundle = {
+        "bundle_id": "bundle_CH100_SC01",
+        "bundle_snapshot_hash": "bundle_hash_demo",
+        "snapshot": {
+            "scene_id": "CH100_SC01",
+            "chapter_id": "CH100",
+            "inline_digests": {"scene_card": "Goal"},
+        },
+    }
+    neutral = "她接过红色信封，站在门边等了片刻。楼梯上传来脚步，她没有拆信，只把它握在手里。"
+
+    client = FakeUnsafeBaseThenSafePatchClient()
+    service = SceneGenerationService(
+        session,
+        llm_client=client,
+    )
+    original_inject = service._inject_style_reference
+    injection_calls: list[None] = []
+
+    def recording_inject(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        injection_calls.append(None)
+        return original_inject(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_inject_style_reference", recording_inject)
+    result = service.generate_style_draft(
+        "CH100_SC01",
+        bundle,
+        neutral_draft_row_id="draft_neutral_CH100_SC01",
+        neutral_content=neutral,
+    )
+
+    drafts = session.execute(
+        select(SceneDraft).order_by(SceneDraft.created_at.asc(), SceneDraft.row_id.asc())
+    ).scalars().all()
+    rejected = next(draft for draft in drafts if draft.stage == "style_rejected")
+    fallback = next(draft for draft in drafts if draft.stage == "style_draft")
+    patched = next(draft for draft in drafts if draft.stage == "de_template")
+    base_attempt = session.execute(
+        select(AttemptTracker).where(AttemptTracker.step == "style_draft")
+    ).scalar_one()
+
+    assert rejected.status == "rejected"
+    assert len(rejected.content) > 100
+    assert fallback.content == neutral
+    assert base_attempt.details_json["base_safety"]["accepted"] is False
+    assert base_attempt.details_json["rejected_candidate_row_id"] == rejected.row_id
+    assert "required_facts_regressed" in base_attempt.details_json["base_safety"]["reasons"]
+    assert "target_length_not_met" in base_attempt.details_json["base_safety"]["reasons"]
+    assert result.row_id == patched.row_id
+    assert result.content == patched.content
+    assert "红色信封" in result.content
+    repair_prompt = client.requests[1].messages[1]["content"]
+    assert "Rejected Style Draft Requiring One Safety Repair" in repair_prompt
+    assert "Safety Repair Brief" in repair_prompt
+    assert "De-template Rewrite Brief" not in repair_prompt
+    assert "她低头看着门缝" in repair_prompt
+    assert "Every final required constraint must be explicit." in repair_prompt
+    assert "include at least one literal alternative from each group: 红色信封" in repair_prompt
+    assert "working window at 40-90" in repair_prompt
+    assert "Deterministic Style Repair Length Guard" in repair_prompt
+    assert "Absolute final range: 30-100" in repair_prompt
+    assert "Expand by at least" not in repair_prompt
+    assert "Edit the labeled rejected style draft directly" in repair_prompt
+    assert "Recompose the supplied source draft" not in repair_prompt
+    assert client.requests[1].temperature == 0.1
+    style_prompt = client.requests[0].messages[1]["content"]
+    assert "Deterministic Style Rewrite Length Guard" in style_prompt
+    # 安全修复编辑的是已经风格化的拒绝稿，不能按拒绝稿的新长度再次重算并叠加
+    # 一份冲突的风格量化约束；完整风格注入只发生在首轮生成。
+    assert len(injection_calls) == 1
+    repair_attempt = session.execute(
+        select(AttemptTracker).where(AttemptTracker.step == "de_template")
+    ).scalar_one()
+    assert (
+        repair_attempt.details_json["repair_source_style_draft_row_id"]
+        == rejected.row_id
+    )
+    assert (
+        repair_attempt.details_json["source_style_draft_row_id"]
+        == fallback.row_id
+    )
+
+
+def test_length_only_unsafe_style_uses_exact_local_patch_instead_of_full_rewrite(
+    session,
+) -> None:
+    _seed_scene(
+        session,
+        must_include_text="红色信封",
+        target_length_band="30-80 Chinese characters",
+    )
+    bundle = {
+        "bundle_id": "bundle_CH100_SC01",
+        "bundle_snapshot_hash": "bundle_hash_demo",
+        "snapshot": {
+            "scene_id": "CH100_SC01",
+            "chapter_id": "CH100",
+            "inline_digests": {"scene_card": "Goal"},
+        },
+    }
+    client = FakeLengthOnlyLocalPatchClient()
+
+    result = SceneGenerationService(
+        session,
+        llm_client=client,
+    ).generate_style_draft(
+        "CH100_SC01",
+        bundle,
+        neutral_draft_row_id="draft_neutral_CH100_SC01",
+        neutral_content=client.neutral,
+    )
+
+    assert len(client.requests) == 2
+    assert result.content == client.neutral + client.replacement + client.ending
+    assert 30 <= sum(not char.isspace() for char in result.content) <= 80
+    patch_prompt = client.requests[1].messages[1]["content"]
+    assert "Deterministic Local Length Patch Contract" in patch_prompt
+    assert "Return edits only, never scene_text" in patch_prompt
+    assert "Recompose the supplied source draft" not in patch_prompt
+    attempt = session.execute(
+        select(AttemptTracker).where(AttemptTracker.step == "de_template")
+    ).scalar_one()
+    assert attempt.details_json["acceptance"]["accepted"] is True
+    assert attempt.details_json["length_patch"]["valid"] is True
+    assert attempt.details_json["length_patch"]["mode"] == "compress"
+    schema = client.requests[1].response_schema["schema"]
+    allowed_ids = schema["properties"]["edits"]["items"]["properties"][
+        "segment_id"
+    ]["enum"]
+    assert "S003" in allowed_ids
+    assert "S004" not in allowed_ids
+
+
+def test_fact_repair_can_finish_with_one_local_length_followup(session) -> None:
+    _seed_scene(
+        session,
+        must_include_text="红色信封",
+        target_length_band="45-100 Chinese characters",
+    )
+    bundle = {
+        "bundle_id": "bundle_CH100_SC01",
+        "bundle_snapshot_hash": "bundle_hash_demo",
+        "snapshot": {
+            "scene_id": "CH100_SC01",
+            "chapter_id": "CH100",
+            "inline_digests": {"scene_card": "Goal"},
+        },
+    }
+    client = FakeFactRepairThenLengthPatchClient()
+
+    result = SceneGenerationService(
+        session,
+        llm_client=client,
+    ).generate_style_draft(
+        "CH100_SC01",
+        bundle,
+        neutral_draft_row_id="draft_neutral_CH100_SC01",
+        neutral_content=client.neutral,
+    )
+
+    assert len(client.requests) == 3
+    assert "红色信封" in result.content
+    assert client.insertion in result.content
+    assert 45 <= sum(not char.isspace() for char in result.content) <= 100
+    attempts = session.execute(
+        select(AttemptTracker)
+        .where(AttemptTracker.step == "de_template")
+        .order_by(AttemptTracker.attempt_id.asc())
+    ).scalars().all()
+    assert len(attempts) == 2
+    assert attempts[0].details_json["acceptance"]["reasons"] == [
+        "target_length_not_met"
+    ]
+    assert attempts[1].details_json["acceptance"]["accepted"] is True
+    assert attempts[1].details_json["length_patch"]["valid"] is True
+    followup_schema = client.requests[2].response_schema["schema"]["properties"][
+        "edits"
+    ]
+    assert followup_schema["minItems"] == followup_schema["maxItems"] == 1
+    new_text_schema = followup_schema["items"]["properties"]["new_text"]
+    assert new_text_schema["minLength"] > 1
+
+
+def test_extreme_underlength_style_uses_bounded_neutral_salvage(
+    session,
+    monkeypatch,
+) -> None:
+    _seed_scene(
+        session,
+        must_include_text="红色信封",
+        target_length_band="100-260 Chinese characters",
+    )
+    bundle = {
+        "bundle_id": "bundle_CH100_SC01",
+        "bundle_snapshot_hash": "bundle_hash_demo",
+        "snapshot": {
+            "scene_id": "CH100_SC01",
+            "chapter_id": "CH100",
+            "inline_digests": {"scene_card": "Goal"},
+        },
+    }
+    client = FakeExtremeUnderlengthThenSalvageClient()
+    monkeypatch.setattr(
+        "novel_system.services.scene_generation._assess_style_rewrite_conformance",
+        lambda **_kwargs: {
+            "available": True,
+            "comparable": True,
+            "score_delta": -0.002,
+            "regressed": False,
+        },
+    )
+
+    result = SceneGenerationService(
+        session,
+        llm_client=client,
+    ).generate_style_draft(
+        "CH100_SC01",
+        bundle,
+        neutral_draft_row_id="draft_neutral_CH100_SC01",
+        neutral_content=client.neutral,
+    )
+
+    assert len(client.requests) == 2
+    assert result.content != client.neutral
+    assert client.replacement in result.content
+    assert client.paragraph_two in result.content
+    assert result.content.endswith(client.ending)
+    assert 100 <= sum(not char.isspace() for char in result.content) <= 260
+    salvage_attempt = session.execute(
+        select(AttemptTracker).where(
+            AttemptTracker.step == "style_salvage_patch"
+        )
+    ).scalar_one()
+    assert salvage_attempt.details_json["acceptance"]["accepted"] is True
+    assert salvage_attempt.details_json["style_salvage"]["valid"] is True
+    assert salvage_attempt.details_json["style_salvage"]["segment_id"] == "S001"
+    schema = client.requests[1].response_schema["schema"]
+    allowed_ids = schema["properties"]["edits"]["items"]["properties"][
+        "segment_id"
+    ]["enum"]
+    assert "S003" not in allowed_ids
+
+
+def test_style_salvage_patch_rejects_protected_ending_segment() -> None:
+    source = "\n".join(("甲" * 70, "乙" * 70, "丙" * 50))
+    payload = {"edits": [{"segment_id": "S003", "new_text": "丁" * 50}]}
+    response = LLMResponse(
+        request_id="resp_salvage_protected_ending",
+        provider="fake",
+        model="fake",
+        text=__import__("json").dumps(payload, ensure_ascii=False),
+        structured_output=payload,
+        response_format="json_object",
+        raw_response={},
+        usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        finish_reason="stop",
+    )
+
+    with pytest.raises(Exception, match="segment_id_not_editable"):
+        _apply_style_salvage_patch(
+            source_content=source,
+            response=response,
+            scene=SimpleNamespace(target_length_band="120-260 Chinese characters"),
+            llm_call_id="llm_salvage_protected_ending",
+        )
+
+
+def test_safety_repair_does_not_reject_safe_text_for_quality_score_drop(session) -> None:
+    _seed_scene(
+        session,
+        must_include_text="红色信封",
+        target_length_band="30-100 Chinese characters",
+    )
+    scene = session.get(SceneCard, "CH100_SC01")
+    rewritten = (
+        "她把红色信封压在桌角，没有拆。门外脚步停住，她抬头听了片刻，"
+        "随即关灯，把信封收进抽屉。"
+    )
+
+    assessment = _assess_de_template_rewrite(
+        scene=scene,
+        source_content="红色信封在她手中。",
+        authoritative_content="她接过红色信封，确认门外有人，随后把信封收好。",
+        rewritten_content=rewritten,
+        source_quality_gate={"score": 1.0, "findings": []},
+        style_conformance={
+            "available": True,
+            "comparable": True,
+            "regressed": True,
+            "score_delta": -0.2,
+        },
+    )
+
+    assert assessment["accepted"] is True
+    assert assessment["reasons"] == []
+    assert assessment["quality_non_regression_enforced"] is False
+    assert assessment["style_non_regression_enforced"] is False
+
+
+@pytest.mark.parametrize(
+    ("target_length_band", "source_length", "expected"),
+    [
+        (
+            "700-1350 Chinese characters",
+            642,
+            ("add 108-188 visible characters", "narrow 750-830"),
+        ),
+        (
+            "650-1250 Chinese characters",
+            1500,
+            ("remove 300-380 visible characters", "narrow 1120-1200"),
+        ),
+    ],
+)
+def test_style_repair_length_guard_targets_nearest_safe_boundary(
+    target_length_band: str,
+    source_length: int,
+    expected: tuple[str, str],
+) -> None:
+    scene = SimpleNamespace(target_length_band=target_length_band)
+
+    instruction = _style_repair_length_instruction(
+        scene,
+        source_length=source_length,
+    )
+
+    assert expected[0] in instruction
+    assert expected[1] in instruction
+
+
+def test_exact_style_length_patch_applies_non_overlapping_expansion() -> None:
+    source = "甲" * 40 + "。\n" + "乙" * 40 + "。\n" + "己" * 8
+    payload = {
+        "edits": [
+            {
+                "segment_id": "S002",
+                "new_text": "庚" * 30,
+            }
+        ]
+    }
+    response = LLMResponse(
+        request_id="resp_patch_expand",
+        provider="fake",
+        model="fake",
+        text=__import__("json").dumps(payload, ensure_ascii=False),
+        structured_output=payload,
+        response_format="json_object",
+        raw_response={},
+        usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        finish_reason="stop",
+    )
+
+    patched, audit = _apply_style_length_patch(
+        source_content=source,
+        response=response,
+        scene=SimpleNamespace(target_length_band="100-200 Chinese characters"),
+        llm_call_id="llm_patch_expand",
+    )
+
+    assert sum(not char.isspace() for char in patched) == 120
+    assert patched == "甲" * 40 + "。\n" + "乙" * 40 + "。" + "庚" * 30 + "\n" + "己" * 8
+    assert audit["valid"] is True
+    assert audit["mode"] == "expand"
+    assert audit["visible_delta"] == 30
+
+
+def test_exact_style_length_patch_uses_segment_id_to_disambiguate_repeated_span() -> None:
+    repeated = "可删片段" * 10
+    source = "\n".join(("甲" * 30, repeated, "乙" * 20, repeated, "丙" * 30))
+    payload = {
+        "edits": [
+            {
+                "segment_id": "S004",
+                "new_text": "",
+            }
+        ]
+    }
+    response = LLMResponse(
+        request_id="resp_patch_disambiguated_compress",
+        provider="fake",
+        model="fake",
+        text=__import__("json").dumps(payload, ensure_ascii=False),
+        structured_output=payload,
+        response_format="json_object",
+        raw_response={},
+        usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        finish_reason="stop",
+    )
+
+    patched, audit = _apply_style_length_patch(
+        source_content=source,
+        response=response,
+        scene=SimpleNamespace(target_length_band="100-130 Chinese characters"),
+        llm_call_id="llm_patch_disambiguated_compress",
+    )
+
+    assert patched == "\n".join(("甲" * 30, repeated, "乙" * 20, "", "丙" * 30))
+    assert audit["valid"] is True
+    assert audit["mode"] == "compress"
+    assert audit["deterministic_segment_address_validation"] is True
+
+
+def test_exact_style_length_patch_selects_safe_subset_of_oversized_insertions() -> None:
+    source = "\n".join(("甲" * 200, "乙" * 220, "丙" * 222))
+    payload = {
+        "edits": [
+            {"segment_id": "S001", "new_text": "丁" * 340},
+            {"segment_id": "S002", "new_text": "戊" * 391},
+        ]
+    }
+    response = LLMResponse(
+        request_id="resp_patch_subset_expand",
+        provider="fake",
+        model="fake",
+        text=__import__("json").dumps(payload, ensure_ascii=False),
+        structured_output=payload,
+        response_format="json_object",
+        raw_response={},
+        usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        finish_reason="stop",
+    )
+
+    patched, audit = _apply_style_length_patch(
+        source_content=source,
+        response=response,
+        scene=SimpleNamespace(target_length_band="700-1350 Chinese characters"),
+        llm_call_id="llm_patch_subset_expand",
+    )
+
+    assert sum(not char.isspace() for char in patched) == 982
+    assert audit["submitted_edit_count"] == 2
+    assert audit["edit_count"] == 1
+    assert audit["omitted_edit_count"] == 1
+    assert audit["segment_ids"] == ["S001"]
+
+
+def test_ordinary_de_template_rejects_measurable_frozen_style_regression(session) -> None:
+    _seed_scene(
+        session,
+        must_include_text="红色信封",
+        target_length_band="30-100 Chinese characters",
+    )
+    scene = session.get(SceneCard, "CH100_SC01")
+    source = "她把红色信封压在桌角，没有拆。门外脚步停住，她抬头听着，随后关灯。"
+    rewritten = "她把红色信封放在桌角。门外有人。她听了一会儿，然后关灯。"
+
+    assessment = _assess_de_template_rewrite(
+        scene=scene,
+        source_content=source,
+        rewritten_content=rewritten,
+        source_quality_gate={"score": 0.0, "findings": []},
+        style_conformance={
+            "available": True,
+            "comparable": True,
+            "regressed": True,
+            "score_delta": -0.010001,
+        },
+    )
+
+    assert assessment["accepted"] is False
+    assert "style_conformance_regressed" in assessment["reasons"]
+    assert assessment["style_non_regression_enforced"] is True
+
+
+def test_style_anchor_audit_turns_frozen_shape_gap_into_concrete_repair(
+    monkeypatch,
+) -> None:
+    profile = SimpleNamespace(
+        profile_id="frozen_profile",
+        profile_json={
+            "metrics_baseline": {
+                "paragraphs_per_1k": {"mean": 5.0, "std": 0.5},
+                "semicolon_density_per_1k": {"mean": 10.0, "std": 1.0},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "novel_system.services.scene_generation.resolve_style_runtime_contract_state",
+        lambda _bundle: SimpleNamespace(
+            status="frozen",
+            mode="frozen",
+            error_code=None,
+            contract={"frozen": True},
+        ),
+    )
+    monkeypatch.setattr(
+        "novel_system.services.scene_generation.contract_profile_objects",
+        lambda _contract: [profile],
+    )
+    text = "\n\n".join("他沿着走廊走到门边，又停下来看了一眼窗外的雨。" for _ in range(20))
+
+    audit = _assess_style_anchor_conformance(bundle={"snapshot": {}}, text=text)
+
+    assert audit["available"] is True
+    assert audit["requires_repair"] is True
+    assert {item["metric"] for item in audit["violations"]} == {
+        "paragraphs_per_1k",
+        "semicolon_density_per_1k",
+    }
+    assert any("Paragraph structure" in item for item in audit["repair_directions"])
+    assert any("Semicolon rhythm" in item for item in audit["repair_directions"])
+
+
+def test_style_paragraph_normalization_only_merges_and_preserves_text_sequence(
+    monkeypatch,
+) -> None:
+    target = SimpleNamespace(
+        target_hash="target_hash_demo",
+        metrics={
+            "paragraphs_per_1k": SimpleNamespace(
+                mean=5.0,
+                tolerance=1.0,
+            )
+        },
+    )
+    monkeypatch.setattr(
+        "novel_system.services.scene_generation.resolve_style_runtime_contract_state",
+        lambda _bundle: SimpleNamespace(
+            status="frozen",
+            mode="frozen",
+            error_code=None,
+            contract={"frozen": True},
+        ),
+    )
+    monkeypatch.setattr(
+        "novel_system.services.scene_generation.contract_profile_objects",
+        lambda _contract: [],
+    )
+    monkeypatch.setattr(
+        "novel_system.services.style_reference.candidate_rerank.build_style_target",
+        lambda _profiles: target,
+    )
+    text = "\n\n".join(
+        f"第{index}盏灯沿着长廊依次暗下，他走到门边，又停住听了一会雨声。"
+        for index in range(24)
+    )
+
+    normalized, audit = _normalize_style_paragraph_shape(
+        bundle={"snapshot": {}},
+        text=text,
+    )
+
+    assert audit["applied"] is True
+    assert audit["operation"] == "merge_adjacent_only"
+    assert audit["before_paragraph_count"] == 24
+    assert audit["after_paragraph_count"] == audit["preferred_count"]
+    assert "".join(normalized.split()) == "".join(text.split())
+    assert audit["content_sequence_preserved"] is True
 
 
 class _FakeBestOfNDeTemplateClient(AccountedGenerateMixin):
@@ -737,7 +1871,7 @@ def test_run_scene_records_neutral_prompt_builder_failure_and_clears_stale_state
 
 
 def test_run_scene_records_style_routing_failure(session, monkeypatch) -> None:
-    _seed_scene(session)
+    _seed_scene(session, must_include_text=None)
     _seed_scene_blueprint(session)
     _seed_scene_planning(session)
     monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "false")
@@ -792,7 +1926,11 @@ def test_run_scene_records_style_routing_failure(session, monkeypatch) -> None:
     attempt = session.execute(select(AttemptTracker).where(AttemptTracker.step == "style_draft")).scalars().one()
     state = session.get(SceneRunState, "CH100_SC01")
 
-    assert [llm_call.step for llm_call in llm_calls] == ["neutral_draft", "hard_qc", "style_draft"]
+    assert [llm_call.step for llm_call in llm_calls] == [
+        "neutral_draft",
+        "hard_qc",
+        "style_draft",
+    ]
     # 缺路由统一为引导性错误码(原为裸 "KeyError");原始 KeyError 仍向上抛(见 raises)
     assert llm_calls[-1].error_code == "LLM_ROUTE_NOT_CONFIGURED"
     assert attempt.status == "failed"
@@ -801,9 +1939,9 @@ def test_run_scene_records_style_routing_failure(session, monkeypatch) -> None:
     assert state.current_style_draft_row_id is None
 
 
-def test_online_draft_keeps_drafts_but_cannot_archive_missing_required_fact(session) -> None:
-    # 离线确定性生成已退役：接入在线记账替身后草稿照常生成，但缺失必含事实时
-    # 最终文本闸门仍拦住归档（FINAL_TEXT_CONTINUITY_BLOCKED），草稿与准定稿保留。
+def test_online_draft_cannot_advance_when_neutral_repair_still_misses_required_fact(session) -> None:
+    # 中性稿是事实骨架。首次生成和唯一一次修复都缺失必含事实时，必须在进入
+    # hard-QC/style 阶段前失败关闭，不能把已知不合格的原稿伪装成 active draft。
     _seed_scene(session)
     support = ScenePipelineOnlineFake()
 
@@ -818,39 +1956,32 @@ def test_online_draft_keeps_drafts_but_cannot_archive_missing_required_fact(sess
     orchestrator.scene_blueprint_service = SceneBlueprintService(session, llm_client=support)
     with pytest.raises(DomainError) as blocked:
         orchestrator.run_scene("CH100_SC01")
-    assert blocked.value.code == "FINAL_TEXT_CONTINUITY_BLOCKED"
-    assert "continuity:missing_required_text" in blocked.value.details["final_text_gate"]["archive_blockers"]
+    assert blocked.value.code == "NEUTRAL_DRAFT_REPAIR_INVALID"
     session.commit()
 
     llm_calls = session.execute(
         select(LlmCall).order_by(LlmCall.created_at.asc(), LlmCall.llm_call_id.asc())
     ).scalars().all()
-    llm_calls_by_step = {llm_call.step: llm_call for llm_call in llm_calls}
-    neutral_llm_call = llm_calls_by_step["neutral_draft"]
-    style_llm_call = llm_calls_by_step["style_draft"]
-    neutral_draft = session.execute(
+    generation_steps = [
+        llm_call.step
+        for llm_call in llm_calls
+        if llm_call.step in {"neutral_draft", "neutral_draft_repair", "hard_qc", "style_draft"}
+    ]
+    assert generation_steps == ["neutral_draft", "neutral_draft_repair"]
+    assert session.execute(
         select(SceneDraft).where(SceneDraft.stage == "neutral_draft")
-    ).scalars().one()
-    style_draft = session.execute(
-        select(SceneDraft).where(SceneDraft.stage == "style_draft")
-    ).scalars().one()
-    final_scene = session.execute(select(FinalScene)).scalars().one()
-    assert final_scene.status == "near_final_ready"
-
-    assert {"neutral_draft", "hard_qc", "style_draft", "soft_qc"}.issubset(llm_calls_by_step)
+    ).scalars().all() == []
+    # orchestrator 对失败场景回滚业务草稿；LLM 记账仍独立保留。
+    assert session.execute(
+        select(SceneDraft).where(SceneDraft.stage == "neutral_rejected")
+    ).scalars().all() == []
+    assert session.execute(select(FinalScene)).scalars().all() == []
     assert all(llm_call.provider == "test-online-provider" for llm_call in llm_calls)
     assert all(llm_call.finish_reason == "stop" for llm_call in llm_calls)
-    assert neutral_draft.content.startswith("Accounted online test draft")
-    assert "A red envelope changes hands." not in neutral_draft.content
-    assert "Clocktower Roof" not in neutral_draft.content
-    assert neutral_draft.generation_llm_call_id == neutral_llm_call.llm_call_id
-    assert style_draft.content != neutral_draft.content
-    assert style_draft.generation_llm_call_id == style_llm_call.llm_call_id
-    assert final_scene.content == style_draft.content
 
 
 def test_generate_style_draft_candidates_returns_sorted_list(session) -> None:
-    _seed_scene(session)
+    _seed_scene(session, must_include_text=None)
     fake_client = FakeSceneClient()
     service = SceneGenerationService(session, llm_client=fake_client)
     bundle_builder = BundleBuilder(session)
@@ -887,7 +2018,7 @@ def test_candidate_ranking_records_expected_quality_strategy_degradation(
 ) -> None:
     from novel_system.services.quality_strategy import QualityStrategyResolver
 
-    _seed_scene(session)
+    _seed_scene(session, must_include_text=None)
     service = SceneGenerationService(session, llm_client=FakeSceneClient())
     bundle = BundleBuilder(session).build("CH100_SC01")
     neutral = service.generate_neutral_draft("CH100_SC01", bundle)
@@ -927,7 +2058,7 @@ def test_candidate_ranking_does_not_hide_unexpected_strategy_errors(
 ) -> None:
     from novel_system.services.quality_strategy import QualityStrategyResolver
 
-    _seed_scene(session)
+    _seed_scene(session, must_include_text=None)
     service = SceneGenerationService(session, llm_client=FakeSceneClient())
     bundle = BundleBuilder(session).build("CH100_SC01")
     neutral = service.generate_neutral_draft("CH100_SC01", bundle)

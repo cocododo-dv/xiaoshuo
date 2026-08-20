@@ -8,10 +8,17 @@ from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.config_loader import clear_config_cache
 from novel_system.services.style_reference.injection import (
     InjectionService,
+    _metric_direction,
+    _reference_sample_style_distance,
+    _truncate_lines,
+    fit_fragments_to_input_budget,
     ordered_character_ids,
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
-from novel_system.services.style_reference.schemas import InjectionStrategy
+from novel_system.services.style_reference.schemas import (
+    InjectionStrategy,
+    SystemPromptFragments,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -113,14 +120,226 @@ def test_strategy_a_renders_all_three_blocks():
         fragments = InjectionService(session).fragments_for(project_id, "scene_generation")
     assert fragments.strategy == InjectionStrategy.A
     assert "正向风格特征" in fragments.positive_block
-    assert "短句频繁" in fragments.positive_block
+    assert "短句频繁" not in fragments.positive_block
+    assert "动词驱动" in fragments.positive_block
     assert "回环结构" in fragments.positive_block
     assert "禁堆砌华丽形容词" in fragments.forbidden_block
     assert "禁使用美轮美奂等套话" in fragments.forbidden_block
-    assert "avg_sentence_length" in fragments.metric_anchor_block
+    assert "句均字数" in fragments.metric_anchor_block
     prefix = fragments.to_system_prompt_prefix()
     assert prefix.startswith("[STYLE_REFERENCE]\n")
     assert prefix.endswith("[/STYLE_REFERENCE]\n\n")
+
+
+def test_metric_baseline_suppresses_conflicting_legacy_surface_guidance() -> None:
+    project_id = _seed(
+        seed="legacy_metric_conflict",
+        profile_json={
+            "narrative_summary": "短句密集并高频设问，但动作随后释放信息。",
+            "style_features": ["大量使用短句和反问", "让动作承担解释"],
+            "narrative_patterns": ["转折前先释放可见线索"],
+            "calibration_guidance": ["若句号不够密集就继续断句", "若解释过多就改回动作"],
+            "metrics_baseline": {
+                "avg_sentence_length": {"mean": 19.0, "std": 2.0},
+                "short_sentence_ratio": {"mean": 0.32, "std": 0.04},
+                "question_density_per_1k": {"mean": 0.3, "std": 0.1},
+            },
+        },
+        strategy="A",
+    )
+
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            project_id,
+            "scene_generation",
+        )
+
+    assert "短句密集" not in fragments.positive_block
+    assert "大量使用短句和反问" not in fragments.positive_block
+    assert "句号不够密集" not in fragments.positive_block
+    assert "让动作承担解释" in fragments.positive_block
+    assert "转折前先释放可见线索" in fragments.positive_block
+    assert "若解释过多就改回动作" in fragments.positive_block
+    assert "句均字数" in fragments.metric_anchor_block
+    assert "问号/千字" in fragments.metric_anchor_block
+
+
+def test_mixed_positive_budget_keeps_expression_narrative_and_calibration() -> None:
+    project_id = _seed(
+        seed="balanced_positive",
+        profile_json={
+            "narrative_summary": "克制而具体的叙述。" * 5,
+            "style_features": ["表达机制甲：长短句交替。" * 3, "表达机制乙。" * 8],
+            "narrative_patterns": ["叙事机制甲：动作之后再释放信息。" * 2, "叙事机制乙。" * 8],
+            "calibration_guidance": ["校准机制甲：偏离时减少解释。" * 2, "校准机制乙。" * 8],
+        },
+        strategy="mixed",
+        config_json={"intensity": 100},
+    )
+
+    with SessionLocal() as session:
+        block = InjectionService(session).fragments_for(
+            project_id, "scene_generation"
+        ).positive_block
+
+    assert len(block) <= 405
+    assert "表达机制甲" in block
+    assert "叙事机制甲" in block
+    assert "校准机制甲" in block
+    assert not block.rstrip().endswith(("风格要点:", "叙事模式:", "叙事模式："))
+
+
+def test_line_truncation_drops_orphan_subsection_heading() -> None:
+    block = "[正向风格特征]\n概述:动作推进。\n叙事模式:\n- 转折后留白。"
+
+    truncated = _truncate_lines(block, block.index("- 转折"))
+
+    assert truncated.endswith("概述:动作推进。")
+    assert "叙事模式" not in truncated
+
+
+def test_reference_sample_distance_rejects_punctuation_outlier() -> None:
+    baseline = {
+        "paragraph_mean_chars": {"mean": 90.0, "std": 15.0},
+        "paragraphs_per_1k": {"mean": 11.0, "std": 2.0},
+        "avg_sentence_length": {"mean": 22.0, "std": 4.0},
+        "short_sentence_ratio": {"mean": 0.15, "std": 0.05},
+        "punctuation_density_per_1k": {"mean": 135.0, "std": 15.0},
+        "question_density_per_1k": {"mean": 1.0, "std": 1.0},
+        "semicolon_density_per_1k": {"mean": 8.0, "std": 2.0},
+        "classical_word_ratio": {"mean": 0.08, "std": 0.03},
+        "colloquial_marker_ratio": {"mean": 0.02, "std": 0.02},
+    }
+    representative = (
+        "他沿着河岸慢慢走去，衣角沾了薄雾；远处的灯映在水上，"
+        "一层一层散开。他停住片刻，又将未说的话收了回去。"
+    )
+    outlier = (
+        "他为什么来？为什么停？为什么又走？谁知道呢！难道不是这样吗？"
+        "可他究竟等什么？又怕什么？谁能说清呢！"
+    )
+
+    assert _reference_sample_style_distance(
+        representative, baseline
+    ) < _reference_sample_style_distance(outlier, baseline)
+
+
+def test_final_input_budget_trims_metric_tail_before_style_or_safety_blocks():
+    fragments = SystemPromptFragments(
+        positive_block=(
+            "[正向风格特征]\n概述:动作推进。\n风格要点:\n"
+            "- 使用具体动词。\n- 让短句承担转折。"
+        ),
+        forbidden_block=(
+            "[禁忌模式]\n- 不总结主题。\n- 不复用同一意象。"
+        ),
+        metric_anchor_block=(
+            "[量化锚点]\n"
+            + "\n".join(
+                f"- 指标{i}:" + ("适度调整节奏" * 8) for i in range(6)
+            )
+        ),
+        anti_plagiarism_block=(
+            "## 严格禁止\n- 不得复用参考原文完整句子。"
+        ),
+        strategy=InjectionStrategy.A,
+    )
+    full_prefix = fragments.to_system_prompt_prefix()
+    from novel_system.services.context_budget import estimate_tokens
+
+    full_tokens = estimate_tokens(full_prefix + "BASE") + estimate_tokens("正文")
+    fitted, audit = fit_fragments_to_input_budget(
+        fragments,
+        base_system_prompt="BASE",
+        user_prompt="正文",
+        target_input_tokens=full_tokens - 30,
+    )
+
+    assert audit["compacted"] is True
+    assert audit["policy"] == "trim_metric_tail_preserve_style_and_safety_v1"
+    assert audit["final_estimated_input_tokens"] <= audit["target_input_tokens"]
+    assert fitted.positive_block == fragments.positive_block
+    assert fitted.forbidden_block == fragments.forbidden_block
+    assert fitted.anti_plagiarism_block == fragments.anti_plagiarism_block
+    assert len(fitted.metric_anchor_block) < len(fragments.metric_anchor_block)
+    assert audit["anti_plagiarism_preserved"] is True
+    prefix = fitted.to_system_prompt_prefix()
+    assert prefix.startswith("[STYLE_REFERENCE]\n")
+    assert prefix.endswith("[/STYLE_REFERENCE]\n\n")
+
+
+def test_metric_anchor_excludes_unobservable_type_ratios_and_uses_source_delta():
+    project_id = _seed(
+        seed="metric_delta",
+        profile_json={
+            "narrative_summary": "克制叙述。",
+            "style_features": ["长短句交替"],
+            "metrics_baseline": {
+                # 故意把段型指标放在最前，防止回归到 dict 前八项截取。
+                "dialogue_ratio": {"mean": 0.8, "std": 0.1},
+                "action_ratio": {"mean": 0.7, "std": 0.1},
+                "paragraph_mean_chars": {"mean": 90.0, "std": 12.0},
+                "paragraph_length_std_chars": {"mean": 45.0, "std": 8.0},
+                "paragraphs_per_1k": {"mean": 10.0, "std": 1.5},
+                "single_sentence_paragraph_ratio": {"mean": 0.2, "std": 0.05},
+                "quote_led_paragraph_ratio": {"mean": 0.1, "std": 0.03},
+                "avg_sentence_length": {"mean": 8.0, "std": 1.0},
+                "short_sentence_ratio": {"mean": 0.7, "std": 0.1},
+                "punctuation_density_per_1k": {"mean": 150.0, "std": 10.0},
+                "semicolon_density_per_1k": {"mean": 9.0, "std": 1.0},
+                "ellipsis_density_per_1k": {"mean": 0.0, "std": 0.1},
+                "classical_word_ratio": {"mean": 0.1, "std": 0.02},
+                "colloquial_marker_ratio": {"mean": 0.03, "std": 0.01},
+                "metaphor_density_per_1k": {"mean": 1.0, "std": 0.2},
+                "sensory_auditory_per_1k": {"mean": 3.0, "std": 0.5},
+            },
+        },
+        strategy="A",
+    )
+    with SessionLocal() as session:
+        service = InjectionService(session)
+        service.context_text = (
+            "雨敲着窗。她听见门外有人停住，又走开。"
+            "桌上的信没有拆，灯光把纸边照得发白。"
+            "她把手从门把上收回来，等那阵脚步彻底消失。"
+        )
+        fragments = service.fragments_for(project_id, "scene_generation")
+
+    block = fragments.metric_anchor_block
+    assert "dialogue_ratio" not in block
+    assert "action_ratio" not in block
+    assert "段均字数" in block
+    assert "千字换段数" in block
+    assert "分号/千字" in block
+    assert "句均字数" in block
+    assert block.index("段均字数") < block.index("分号/千字") < block.index("句均字数")
+    assert "当前约" in block
+    assert "目标约" in block
+    assert "勿机械凑数" in block
+    assert "按当前约" in block
+    assert "控制在" in block
+    assert "分散使用勿堆叠" in block
+
+
+def test_metric_direction_turns_shape_and_semicolon_rates_into_scene_counts():
+    paragraph = _metric_direction(
+        "paragraph_mean_chars",
+        current=40.0,
+        target=197.6,
+        std=12.0,
+        context_chars=834,
+    )
+    semicolon = _metric_direction(
+        "semicolon_density_per_1k",
+        current=0.0,
+        target=4.87,
+        std=1.0,
+        context_chars=834,
+    )
+
+    assert "全文约4段（3–5段）" in paragraph
+    assert "禁逐句分段" in paragraph
+    assert semicolon == "全文约4个，控制在3–5个，分散使用勿堆叠"
 
 
 def test_rejected_forbidden_finding_not_injected():
@@ -146,6 +365,37 @@ def test_rejected_forbidden_finding_not_injected():
     assert "已驳回的禁忌描述" not in prefix
 
 
+def test_generation_safe_forbidden_findings_replace_raw_source_findings():
+    project_id = _seed(
+        seed="safe_forbidden",
+        profile_json={
+            "narrative_summary": "s",
+            "style_features": ["f"],
+            "generation_safe_forbidden_findings": [
+                {
+                    "finding_id": "safe_1",
+                    "sub_dimension": "language.vocabulary",
+                    "statement": "只注入脱离原文的抽象禁忌",
+                    "status": "approved",
+                }
+            ],
+            "source_overlap_filter": {"applied": True, "threshold_chars": 8},
+        },
+        forbidden_findings=["这条原始发现包含不应进入提示的参考原句"],
+        strategy="A",
+    )
+
+    with SessionLocal() as session:
+        prefix = (
+            InjectionService(session)
+            .fragments_for(project_id, "scene_generation")
+            .to_system_prompt_prefix()
+        )
+
+    assert "只注入脱离原文的抽象禁忌" in prefix
+    assert "这条原始发现包含不应进入提示的参考原句" not in prefix
+
+
 def test_strategy_b_truncates_by_budget():
     long_features = ["特点描述" * 200]  # 单条 800 字
     project_id = _seed(
@@ -161,10 +411,10 @@ def test_strategy_b_truncates_by_budget():
     with SessionLocal() as session:
         fragments = InjectionService(session).fragments_for(project_id, "scene_generation")
     assert fragments.strategy == InjectionStrategy.B
-    # 默认 800 token,positive=0.6=480 字以内
-    assert len(fragments.positive_block) <= 480 + 5
-    assert len(fragments.forbidden_block) <= 240 + 5
-    assert len(fragments.metric_anchor_block) <= 80 + 5
+    # 默认 800 token；硬指标预算提升，保证段落形态与稳定标点不会只剩标题。
+    assert len(fragments.positive_block) <= 400 + 5
+    assert len(fragments.forbidden_block) <= 160 + 5
+    assert len(fragments.metric_anchor_block) <= 240 + 5
 
 
 def test_strategy_c_drops_metric_and_summarizes_forbidden():
@@ -208,6 +458,25 @@ def test_strategy_mixed_respects_config_switches():
     assert fragments.positive_block
     assert fragments.forbidden_block == ""
     assert fragments.metric_anchor_block
+
+
+def test_strategy_mixed_includes_metric_by_default():
+    project_id = _seed(
+        seed="sm_metric_default",
+        profile_json={
+            "narrative_summary": "summary",
+            "style_features": ["要点"],
+            "metrics_baseline": {
+                "paragraph_mean_chars": {"mean": 90.0, "std": 10.0}
+            },
+        },
+        strategy="mixed",
+    )
+    with SessionLocal() as session:
+        fragments = InjectionService(session).fragments_for(
+            project_id, "scene_generation"
+        )
+    assert "段均字数" in fragments.metric_anchor_block
 
 
 def test_empty_when_no_binding():
@@ -307,7 +576,7 @@ def test_mixed_intensity_scales_block_lengths():
     # forbidden_block 同理(若有内容)
     assert len(low.forbidden_block) < len(mid.forbidden_block) <= len(hi.forbidden_block)
     # 高强度上限不会超过 budget * 1.5 余量
-    assert len(hi.positive_block) <= 800 * 0.6 * 1.5 + 5
+    assert len(hi.positive_block) <= 800 * 0.5 * 1.5 + 5
 
 
 def test_mixed_sub_dimensions_filters_forbidden_findings():
@@ -343,7 +612,7 @@ def test_mixed_sub_dimensions_filters_forbidden_findings():
 
 
 def test_to_system_prompt_prefix_ordering():
-    """positive → forbidden → metric_anchor;空 block 跳过。"""
+    """硬指标先于可能冲突的抽象描述，其后 positive → forbidden。"""
     project_id = _seed(
         seed="order",
         profile_json={
@@ -357,8 +626,8 @@ def test_to_system_prompt_prefix_ordering():
         prefix = InjectionService(session).fragments_for(project_id, "scene_generation").to_system_prompt_prefix()
     pos_idx = prefix.index("正向风格特征")
     forbid_idx = prefix.index("禁忌模式")
-    metric_idx = prefix.index("量化锚点")
-    assert pos_idx < forbid_idx < metric_idx
+    metric_idx = prefix.index("量化硬锚点")
+    assert metric_idx < pos_idx < forbid_idx
 
 
 # ---------------------------------------------------------------------------

@@ -36,6 +36,9 @@ def _seed_profile_with_binding(
                 "narrative_summary": "短句白话",
                 "style_features": ["短句", "动词驱动"],
                 "banned_replication_rules": ["禁堆砌"],
+                "metrics_baseline": {
+                    "paragraph_mean_chars": {"mean": 80.0, "std": 10.0}
+                },
             },
             coverage_json={},
             source_finding_ids_json=[],
@@ -87,6 +90,19 @@ def test_dryrun_preview_200(client: TestClient) -> None:
     assert "短句" in data["fragments"]["positive_block"]
     # metric 关闭 → metric_anchor_block 空
     assert data["fragments"]["metric_anchor_block"] == ""
+
+
+def test_dryrun_scene_default_uses_mixed_with_metric(client: TestClient) -> None:
+    _, profile_id = _seed_profile_with_binding(seed="dryrun_default")
+    resp = client.post(
+        f"{PREFIX}/profiles/{profile_id}/injection-preview",
+        json={},
+    )
+
+    assert resp.status_code == 200, resp.text
+    fragments = resp.json()["data"]["fragments"]
+    assert fragments["strategy"] == "mixed"
+    assert "段均字数" in fragments["metric_anchor_block"]
 
 
 def test_dryrun_preview_422_invalid_intensity(client: TestClient) -> None:

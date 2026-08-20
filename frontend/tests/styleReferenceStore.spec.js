@@ -184,6 +184,12 @@ describe("referenceLearning store — reviewFinding 更新本地状态", () => {
 });
 
 describe("referenceLearning store — applyProfile 后载入 bindings", () => {
+  it("场景生成默认启用 MIXED 与量化锚点", () => {
+    const store = useReferenceLearningStore();
+    expect(store.applyDraft.strategy).toBe("mixed");
+    expect(store.applyDraft.include_metric).toBe(true);
+  });
+
   it("applyProfile 调 applyStyleReferenceProfile + loadBindings", async () => {
     api.applyStyleReferenceProfile.mockResolvedValue({
       profile_id: "p1",
@@ -195,11 +201,28 @@ describe("referenceLearning store — applyProfile 后载入 bindings", () => {
     });
     const store = useReferenceLearningStore();
     store.currentProfile = { profile_id: "p1" };
-    store.applyDraft = { scope: "project", scope_ref_id: "", task_type: "scene_generation", strategy: "A" };
+    store.applyDraft = {
+      scope: "project",
+      scope_ref_id: "",
+      task_type: "scene_generation",
+      strategy: "mixed",
+      intensity: 80,
+      sub_dimensions: ["language.punctuation"],
+      include_positive: true,
+      include_forbidden: true,
+      include_metric: true,
+    };
     await store.applyProfile("p1");
     expect(api.applyStyleReferenceProfile).toHaveBeenCalledWith(
       "p1",
-      expect.objectContaining({ scope: "project", taskType: "scene_generation", strategy: "A" }),
+      expect.objectContaining({
+        scope: "project",
+        taskType: "scene_generation",
+        strategy: "mixed",
+        intensity: 80,
+        subDimensions: ["language.punctuation"],
+        includeMetric: true,
+      }),
     );
     expect(store.bindings).toHaveLength(1);
   });

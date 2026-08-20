@@ -165,10 +165,11 @@ def test_candidate_closer_to_profile_scores_higher_with_group_balancing() -> Non
 
     assert close.style_eligible is True
     assert far.style_eligible is True
-    assert close.metric_count == 18
+    assert close.metric_count == 23
     assert close.style_score == pytest.approx(1.0)
     assert close.style_score > far.style_score
     assert set(close.group_scores) == {
+        "paragraph_shape",
         "sentence_shape",
         "punctuation_rhythm",
         "register",

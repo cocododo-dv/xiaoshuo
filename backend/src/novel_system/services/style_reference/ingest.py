@@ -40,7 +40,11 @@ from novel_system.services.style_reference.errors import (
     EmptyBookError,
     LLMRequiredError,
 )
-from novel_system.services.style_reference.metrics import MetricsEngine, ParagraphRecord
+from novel_system.services.style_reference.metrics import (
+    MetricsEngine,
+    ParagraphRecord,
+    compute_prose_shape_with_variance,
+)
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import CloudPolicy
@@ -496,6 +500,16 @@ class IngestService:
             name: {"mean": float(mean), "std": float(std), "sample_count": sample_count}
             for name, (mean, std) in metrics_with_var.items()
         }
+        prose_shape_block: dict[str, dict[str, float | int]] = {
+            name: {
+                "mean": float(mean),
+                "std": float(std),
+                "sample_count": sample_count,
+            }
+            for name, (mean, std) in compute_prose_shape_with_variance(
+                records
+            ).items()
+        }
 
         type_counter = Counter(c.paragraph_type for c in seg_result.classifications)
         type_distribution = {
@@ -505,6 +519,7 @@ class IngestService:
 
         return {
             "metrics": metrics_block,
+            "prose_shape_metrics": prose_shape_block,
             "classifier_calibration": seg_result.calibration,
             "paragraph_type_distribution": type_distribution,
         }

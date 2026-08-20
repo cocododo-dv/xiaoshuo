@@ -185,6 +185,7 @@ def test_apply_creates_binding_row() -> None:
     assert binding.scope == "scene"
     assert binding.scope_ref_id == "scene_99"
     assert binding.status == "active"
+    assert binding.strategy == "mixed"
 
 
 def test_apply_idempotent_same_inputs_no_extra_reviews() -> None:

@@ -37,6 +37,7 @@ from novel_system.services.llm_task_runner import (
 )
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.qc_engine import HardQcEngine, SoftQcEngine
+from novel_system.services import scene_generation as scene_generation_module
 from novel_system.services.scene_generation import SceneGenerationService
 from novel_system.services.scene_blueprint import SceneBlueprintService
 from novel_system.services.near_final import NearFinalAcceptanceService, NearFinalPlanningService
@@ -49,7 +50,7 @@ QC_REPORT_ID_RE = re.compile(r"^qc_report_CH100_SC01_\d{8}T\d{12}Z_[0-9a-f]{12}$
 
 
 class FakeSceneClient(AccountedGenerateMixin):
-    def __init__(self, *, satisfied_source: bool = False) -> None:
+    def __init__(self, *, satisfied_source: bool = True) -> None:
         self.requests: list[LLMRequest] = []
         self.satisfied_source = satisfied_source
 
@@ -278,6 +279,20 @@ def _make_orchestrator(
     )
     orchestrator.scene_blueprint_service = SceneBlueprintService(session, llm_client=support)
     return orchestrator
+
+
+def _allow_legacy_neutral_required_fact_gap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model a pre-validation neutral draft so Hard-QC remains defense in depth."""
+
+    original = scene_generation_module._assess_neutral_draft
+
+    def assess(scene, content):  # noqa: ANN001, ANN202
+        result = original(scene, content)
+        if set(result.get("reasons") or []) == {"required_facts_missing"}:
+            return {**result, "accepted": True, "reasons": []}
+        return result
+
+    monkeypatch.setattr(scene_generation_module, "_assess_neutral_draft", assess)
 
 
 def _base_qc_payload(*, resolution_code: str, next_action: str, issues: list[dict] | None = None) -> dict:
@@ -993,8 +1008,12 @@ def test_run_scene_does_not_waive_blocking_soft_qc_repeat_patch(session) -> None
     assert drift_issue["verified_by"]
 
 
-def test_run_scene_hard_qc_rewrite_branch_updates_counters_and_stops_before_style_generation(session) -> None:
+def test_run_scene_hard_qc_rewrite_branch_updates_counters_and_stops_before_style_generation(
+    session,
+    monkeypatch,
+) -> None:
     _seed_scene(session)
+    _allow_legacy_neutral_required_fact_gap(monkeypatch)
     orchestrator = _make_orchestrator(
         session,
         hard_qc_payload=_base_qc_payload(
@@ -1003,6 +1022,7 @@ def test_run_scene_hard_qc_rewrite_branch_updates_counters_and_stops_before_styl
             # Wave 2：阻断需 verified Q1——must_include 确实缺失（确定性复核成立）
             issues=[{"issue_key": "missing_required_text", "message": "缺少必备元素：红包交接未在正文出现"}],
         ),
+        scene_client=FakeSceneClient(satisfied_source=False),
     )
 
     result = orchestrator.run_scene("CH100_SC01")
@@ -1142,8 +1162,12 @@ def test_hard_qc_required_term_evidence_does_not_force_human_review(session) -> 
     assert issue["conflicts_with"] == []
 
 
-def test_run_scene_repeated_hard_qc_rewrite_escalates_to_human_review(session) -> None:
+def test_run_scene_repeated_hard_qc_rewrite_escalates_to_human_review(
+    session,
+    monkeypatch,
+) -> None:
     _seed_scene(session)
+    _allow_legacy_neutral_required_fact_gap(monkeypatch)
     first = _make_orchestrator(
         session,
         hard_qc_payload=_base_qc_payload(
@@ -1151,6 +1175,7 @@ def test_run_scene_repeated_hard_qc_rewrite_escalates_to_human_review(session) -
             next_action="partial_rewrite",
             issues=[{"issue_key": "missing_required_text", "message": "缺少必备元素：红包交接未在正文出现"}],
         ),
+        scene_client=FakeSceneClient(satisfied_source=False),
     )
 
     first_result = first.run_scene("CH100_SC01")
@@ -1163,6 +1188,7 @@ def test_run_scene_repeated_hard_qc_rewrite_escalates_to_human_review(session) -
             next_action="partial_rewrite",
             issues=[{"issue_key": "missing_required_text", "message": "缺少必备元素：红包交接仍未在正文出现"}],
         ),
+        scene_client=FakeSceneClient(satisfied_source=False),
     )
 
     second_result = second.run_scene("CH100_SC01")
@@ -1574,9 +1600,10 @@ def test_accepted_soft_risk_lets_matching_soft_qc_rerun_continue_with_audit(sess
 
 
 def test_run_scene_clears_stale_pointers_across_blocked_and_successful_reruns(
-    client, session
+    client, session, monkeypatch
 ) -> None:
     _seed_scene(session)
+    _allow_legacy_neutral_required_fact_gap(monkeypatch)
     state = session.get(SceneRunState, "CH100_SC01")
     state.current_style_draft_row_id = "draft_style_old"
     state.current_final_scene_row_id = "final_scene_old"
@@ -1590,6 +1617,7 @@ def test_run_scene_clears_stale_pointers_across_blocked_and_successful_reruns(
             next_action="partial_rewrite",
             issues=[{"issue_key": "missing_required_text", "message": "缺少必备元素：红包交接未在正文出现"}],
         ),
+        scene_client=FakeSceneClient(satisfied_source=False),
     )
 
     blocked_result = blocked.run_scene("CH100_SC01")

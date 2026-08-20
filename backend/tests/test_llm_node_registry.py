@@ -20,7 +20,10 @@
 """
 from __future__ import annotations
 
-from novel_system.services.llm_node_registry import llm_node_specs
+from pathlib import Path
+
+from novel_system.services.llm_client import load_model_routing_config
+from novel_system.services.llm_node_registry import get_llm_node_spec, llm_node_specs
 from novel_system.services.prompt_builder import load_prompt_templates
 
 
@@ -79,3 +82,25 @@ def test_prompts_yaml_templates_are_well_formed():
         or not (getattr(tpl, "task_prompt", "") or "").strip()
     ]
     assert not malformed, f"这些 prompts.yaml 模板缺少非空 system_prompt / task_prompt：{malformed}"
+
+
+def test_style_analysis_defaults_are_stable_and_have_verified_output_headroom():
+    """仓库 YAML 与系统设置的节点默认值必须同时保持确定性，避免同步后静默回退。"""
+    root = Path(__file__).resolve().parents[2]
+    routing = load_model_routing_config(root / "config" / "models.yaml")
+    expected = {
+        "style_ref_paragraph_classify_bulk": 2000,
+        "style_ref_extract_language": 6400,
+        "style_ref_extract_narrative": 6400,
+        "style_ref_extract_scene": 6400,
+        "style_ref_extract_theme": 6400,
+        "style_ref_supplement_evidence": 3000,
+        "style_ref_synthesize_profile": 3500,
+    }
+
+    for node_id, max_output_tokens in expected.items():
+        route = routing.task_routing[node_id]
+        spec = get_llm_node_spec(node_id)
+        assert spec is not None
+        assert route.temperature == spec.temperature == 0.0
+        assert route.max_output_tokens == spec.max_output_tokens == max_output_tokens

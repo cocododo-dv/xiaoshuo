@@ -11,12 +11,15 @@ from types import SimpleNamespace
 import pytest
 
 from novel_system.db.session import SessionLocal
+from novel_system.services.prompt_builder import PromptTemplate, load_prompt_templates
 from novel_system.services.style_reference.errors import LLMRequiredError
 from novel_system.services.style_reference.ingest import IngestService
 from novel_system.services.style_reference.profile_synthesizer import (
     ProfileSynthesizer,
     SynthesizeError,
     _build_sample_quotes_payload,
+    _estimate_synthesis_input_tokens,
+    _fit_synthesis_payload_to_budget,
 )
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from tests.accounted_llm_fakes import AccountedGenerateMixin
@@ -32,6 +35,16 @@ SAMPLE_TEXT = """这是一段叙述,介绍清晨场景。
 
 雪从天上飘下来。
 """
+
+
+def test_synthesis_prompt_does_not_anchor_every_profile_to_one_mood() -> None:
+    template = load_prompt_templates()["style_ref_synthesize_profile"]
+
+    assert template.version == "2026-08-20.v7"
+    assert "冷峻克制的市井白描" not in template.system_prompt
+    assert "只有在 finding_summaries 中存在直接对应的 theme finding" in template.system_prompt
+    assert "不得扩张成“大量、密集、高频、总是、连续”" in template.system_prompt
+    assert "只聚合 payload 实际存在的子维度" in template.task_prompt
 
 
 def _ingest_with_finding(book_seed: str) -> tuple[str, str]:
@@ -119,6 +132,30 @@ def _fake_llm_with_response(response_dict: dict):
     return _Client()
 
 
+def _fake_llm_with_responses(response_dicts: list[dict]):
+    class _Client(AccountedGenerateMixin):
+        def __init__(self) -> None:
+            self.responses = list(response_dicts)
+            self.requests = []
+
+        def generate(self, request):  # noqa: ANN001
+            self.requests.append(request)
+            response_dict = self.responses.pop(0)
+            return SimpleNamespace(
+                structured_output=response_dict,
+                text=json.dumps(response_dict, ensure_ascii=False),
+                usage={},
+                finish_reason="stop",
+                provider="fake",
+                model="fake",
+                response_format="json_object",
+                request_id=None,
+                raw_response={},
+            )
+
+    return _Client()
+
+
 # ---------------------------------------------------------------------------
 # Cases
 # ---------------------------------------------------------------------------
@@ -189,14 +226,64 @@ def test_synthesize_happy_path() -> None:
     assert profile.status == "draft"
     pj = profile.profile_json
     # profile_json 4 类应用建议 + narrative_summary + metrics_baseline + scene_samples_index + sub_dimensions
-    assert pj["narrative_summary"]
+    assert pj["narrative_summary"].startswith("量化基线")
+    assert pj["qualitative_summary"] == "短句+反讽+冷静叙述,克制情感"
     assert "metrics_baseline" in pj
+    assert "avg_sentence_length" in pj["metrics_baseline"]
+    assert "paragraph_mean_chars" in pj["metrics_baseline"]
+    assert "paragraphs_per_1k" in pj["metrics_baseline"]
     assert "scene_samples_index" in pj
     assert "sub_dimensions" in pj
     assert pj["style_features"] == ["善用短句", "反讽点缀", "白描+留白"]
     assert pj["banned_replication_rules"] == ["禁止堆砌华丽形容词"]
     # source_finding_ids_json 含所有 finding
     assert len(profile.source_finding_ids_json) == 2
+
+
+def test_synthesize_filters_reference_prose_from_generation_profile_fields() -> None:
+    book_id, run_id = _ingest_with_finding("source_filter")
+    copied = "这是一段叙述,介绍清晨场景。"
+    with SessionLocal() as session:
+        repo = StyleReferenceRepository(session)
+        forbidden = repo.get_finding("sr_find_source_filter_forbidden_pattern")
+        forbidden.statement = copied
+        session.commit()
+
+    client = _fake_llm_with_response(
+        {
+            "profile_title": "安全画像",
+            "narrative_summary": copied,
+            "style_features": [copied, "用动作承担解释，减少抽象判断"],
+            "narrative_patterns": [copied, "转折前先释放可见线索"],
+            "banned_replication_rules": [copied, "不复用专名和独特意象"],
+            "calibration_guidance": [copied, "若解释过多就改回动作"],
+        }
+    )
+    with SessionLocal() as session:
+        profile = ProfileSynthesizer(
+            session,
+            llm_client=client,
+            llm_enabled=True,
+        ).synthesize(book_id, run_id)
+        session.commit()
+
+    payload = profile.profile_json
+    serialized_generation_fields = json.dumps(
+        {
+            "summary": payload["narrative_summary"],
+            "features": payload["style_features"],
+            "patterns": payload["narrative_patterns"],
+            "rules": payload["banned_replication_rules"],
+            "calibration": payload["calibration_guidance"],
+            "forbidden": payload["generation_safe_forbidden_findings"],
+        },
+        ensure_ascii=False,
+    )
+    assert copied not in serialized_generation_fields
+    assert payload["style_features"] == ["用动作承担解释，减少抽象判断"]
+    assert payload["narrative_patterns"] == ["转折前先释放可见线索"]
+    assert payload["source_overlap_filter"]["summary_replaced"] is True
+    assert payload["source_overlap_filter"]["dropped_forbidden_finding_count"] == 1
 
 
 def test_synthesize_pydantic_validation_failure() -> None:
@@ -215,6 +302,142 @@ def test_synthesize_pydantic_validation_failure() -> None:
         synth = ProfileSynthesizer(session, llm_client=client, llm_enabled=True)
         with pytest.raises(SynthesizeError):
             synth.synthesize(book_id, run_id)
+
+
+def test_synthesize_retries_one_invalid_empty_profile_then_succeeds() -> None:
+    book_id, run_id = _ingest_with_finding("retryempty")
+    client = _fake_llm_with_responses(
+        [
+            {
+                "profile_title": "",
+                "narrative_summary": "",
+                "style_features": [],
+                "narrative_patterns": [],
+                "banned_replication_rules": [],
+                "calibration_guidance": [],
+            },
+            {
+                "profile_title": "克制叙事",
+                "narrative_summary": "以动作和节奏推进信息，减少直接判断。",
+                "style_features": ["用短句承接动作变化"],
+                "narrative_patterns": ["转折前先释放可见线索"],
+                "banned_replication_rules": [],
+                "calibration_guidance": ["若解释过多，改回人物动作"],
+            },
+        ]
+    )
+
+    with SessionLocal() as session:
+        profile = ProfileSynthesizer(
+            session,
+            llm_client=client,
+            llm_enabled=True,
+        ).synthesize(book_id, run_id)
+        session.commit()
+
+    assert len(client.requests) == 2
+    assert "validation_retry" in client.requests[1].messages[-1]["content"]
+    assert profile.profile_json["synthesis_attempts"]["attempt_count"] == 2
+    assert profile.profile_json["synthesis_attempts"]["retried"] is True
+    assert (
+        profile.profile_json["synthesis_attempts"]["first_failure"]["reason_code"]
+        == "invalid_or_empty_profile"
+    )
+
+
+def test_synthesize_retries_profile_with_broken_unicode_then_succeeds() -> None:
+    book_id, run_id = _ingest_with_finding("retryunicode")
+    client = _fake_llm_with_responses(
+        [
+            {
+                "profile_title": "损坏画像",
+                "narrative_summary": "减少文言词造成的阅读隔�0。",
+                "style_features": ["使用具体动作"],
+                "narrative_patterns": ["转折前先释放线索"],
+                "banned_replication_rules": [],
+                "calibration_guidance": [],
+            },
+            {
+                "profile_title": "有效画像",
+                "narrative_summary": "用具体动作推进信息，语域保持清楚。",
+                "style_features": ["使用具体动作"],
+                "narrative_patterns": ["转折前先释放线索"],
+                "banned_replication_rules": [],
+                "calibration_guidance": ["偏离时减少解释"],
+            },
+        ]
+    )
+
+    with SessionLocal() as session:
+        profile = ProfileSynthesizer(
+            session,
+            llm_client=client,
+            llm_enabled=True,
+        ).synthesize(book_id, run_id)
+        session.commit()
+
+    attempts = profile.profile_json["synthesis_attempts"]
+    assert len(client.requests) == 2
+    assert attempts["attempt_count"] == 2
+    assert attempts["first_failure"]["reason_code"] == "profile_text_integrity_invalid"
+    assert attempts["first_failure"]["violations"] == [
+        "narrative_summary:replacement_character"
+    ]
+    assert "�" not in json.dumps(profile.profile_json, ensure_ascii=False)
+
+
+def test_synthesis_payload_budget_keeps_sub_dimension_coverage() -> None:
+    dimensions = [f"layer.dimension_{index:02d}" for index in range(16)]
+    rows = [
+        {
+            "sub_dimension": dimension,
+            "finding_kind": kind,
+            "statement": f"{dimension} 的可执行风格机制" + "具体动作节奏" * 12,
+            "confidence": "high" if item_index == 0 else "medium",
+            "status": "approved" if item_index == 0 else "pending",
+            "evidence_count": 2,
+        }
+        for dimension in dimensions
+        for kind in ("observation", "forbidden_pattern")
+        for item_index in range(2)
+    ]
+    metrics = {
+        f"metric_{index:02d}": {"mean": float(index), "std": 0.1}
+        for index in range(40)
+    }
+    template = PromptTemplate(
+        name="style_ref_synthesize_profile",
+        version="test",
+        input_token_budget=5000,
+        system_prompt="聚合经过验证的抽象风格机制。",
+        task_prompt="覆盖各个子维度后输出结构化画像。",
+        structured_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["profile_title"],
+            "properties": {"profile_title": {"type": "string"}},
+        },
+    )
+    payload = {
+        "book_title": "测试书",
+        "sub_dimensions": {dimension: {} for dimension in dimensions},
+        "metrics_baseline": metrics,
+        "finding_summaries": rows,
+    }
+
+    fitted, audit = _fit_synthesis_payload_to_budget(payload, template)
+
+    assert _estimate_synthesis_input_tokens(template, fitted) <= 5000
+    assert audit["estimated_after"] <= audit["target_input_tokens"]
+    assert audit["finding_count_after"] < audit["finding_count_before"]
+    assert set(audit["covered_sub_dimensions"]) == set(dimensions)
+    assert all(audit["selected_by_dimension"][dimension] >= 1 for dimension in dimensions)
+    assert all(
+        {"confidence", "status", "evidence_count"}.issubset(row)
+        for row in fitted["finding_summaries"]
+    )
+    selected_counts = list(audit["selected_by_dimension"].values())
+    assert max(selected_counts) - min(selected_counts) <= 1
 
 
 def test_synthesize_rejects_empty_style_features() -> None:
@@ -288,8 +511,10 @@ def test_synthesize_excludes_rejected_findings() -> None:
         profile = synth.synthesize(book_id, run_id)
         session.commit()
 
-    # statement 不在 LLM payload(sample_quotes)里
+    # rejected statement 不进 finding_summaries；画像聚合也不再重复发送证据原文。
     assert captured and rejected_statement not in captured[0]
+    assert "finding_summaries" in captured[0]
+    assert "他低头看着脚下的路" not in captured[0]
     # finding_id 不在 source_finding_ids_json;原 2 条 pending finding 保留
     assert "sr_find_rej_rejected" not in profile.source_finding_ids_json
     assert len(profile.source_finding_ids_json) == 2
