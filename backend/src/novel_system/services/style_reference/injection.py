@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import re
 from types import SimpleNamespace
 from typing import Any
 
@@ -34,6 +35,7 @@ from novel_system.services.style_reference.config_loader import (
     load_yaml_config,
 )
 from novel_system.services.style_reference.metrics_recorder import MetricsRecorder
+from novel_system.services.style_reference.profile_fields import generation_safe_summary
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.runtime_contract import (
     StyleGenerationContext,
@@ -97,9 +99,11 @@ def injection_task_defaults() -> list[dict[str, Any]]:
 # 截断走 _truncate_lines(text, max_chars)——键名沿用 *_max_tokens 仅为配置兼容（审计 P-20）。
 _DEFAULT_BUDGET = {
     "system_prompt_max_tokens": 800,
-    "positive_block_ratio": 0.5,
-    "forbidden_block_ratio": 0.2,
-    "metric_anchor_block_ratio": 0.3,
+    "positive_block_ratio": 0.55,
+    "forbidden_block_ratio": 0.25,
+    "metric_anchor_block_ratio": 0.2,
+    "metric_guidance_mode": "soft_distribution",
+    "metric_guidance_max_items": 6,
 }
 
 # 配置文件缺失时的红线兜底:抄袭事前预防段不允许因部署缺配置而消失(§11 风险 11)
@@ -185,14 +189,22 @@ _METRIC_LABELS = {
     "sensory_gustatory_per_1k": "味觉词密度",
 }
 _METRIC_REQUIRED_ORDER: tuple[str, ...] = (
-    # 先放最稳定、最能跨题材区分文体的结构信号；预算截尾时仍保证这些在前。
+    # 先放最稳定、最能跨题材区分文体的结构信号；具体标点计数不进入生成
+    # 提示，避免模型通过机械凑数迎合与隐藏评分器同源的统计特征。
     "paragraph_mean_chars",
     "paragraphs_per_1k",
-    "semicolon_density_per_1k",
     "avg_sentence_length",
     "punctuation_density_per_1k",
     "classical_word_ratio",
     "colloquial_marker_ratio",
+)
+_DIRECT_PUNCTUATION_COUNT_METRICS = frozenset(
+    {
+        "dash_em_density_per_1k",
+        "ellipsis_density_per_1k",
+        "semicolon_density_per_1k",
+        "question_density_per_1k",
+    }
 )
 _RATIO_METRICS = frozenset(
     {
@@ -206,9 +218,9 @@ _RATIO_METRICS = frozenset(
 )
 
 # 已有/旧版 Profile 可能同时携带冻结数字和由 LLM 概括的表层频率判断。
-# 对可直接量化的域只保留数字真源；叙事视角、信息释放、动作组织等不能由
-# 这些指标覆盖的机制仍照常注入。按域检查可避免用一个笼统关键词过滤掉
-# 与指标无关的有效叙事建议。
+# 对可直接量化的域压制“高频、密集、至少”等数量断言；统计真值转成软分布，
+# 而标点/句段在何处承担什么功能的机制仍照常注入。按域检查可避免用一个
+# 笼统关键词过滤掉任意参考风格中真正有效的写作建议。
 _METRIC_GUIDANCE_DOMAINS: tuple[
     tuple[frozenset[str], tuple[str, ...]], ...
 ] = (
@@ -271,15 +283,45 @@ _METRIC_GUIDANCE_DOMAINS: tuple[
     ),
 )
 
+_QUANTITATIVE_GUIDANCE_MARKERS = (
+    "大量",
+    "密集",
+    "高频",
+    "低频",
+    "频繁",
+    "总是",
+    "连续",
+    "至少",
+    "不够",
+    "比例",
+    "占比",
+    "每千字",
+    "句均",
+    "段均",
+    "目标",
+    "当前",
+    "波动",
+    "主导",
+    "偏多",
+    "偏少",
+)
+
 
 def _is_metric_domain_guidance(text: str, baseline: dict[str, Any]) -> bool:
     normalized = str(text or "").strip()
     if not normalized:
         return False
-    return any(
+    domain_observed = any(
         any(metric in baseline for metric in metrics)
         and any(marker in normalized for marker in markers)
         for metrics, markers in _METRIC_GUIDANCE_DOMAINS
+    )
+    if not domain_observed:
+        return False
+    # 只压制会与冻结统计争夺“多少”的频率/配额断言。像“转折处用短句切断
+    # 长句”这样的功能机制仍是任意风格模仿所需的信息，不能一并删掉。
+    return bool(re.search(r"\d", normalized)) or any(
+        marker in normalized for marker in _QUANTITATIVE_GUIDANCE_MARKERS
     )
 
 
@@ -1516,18 +1558,17 @@ class InjectionService:
 
     def _render_positive(self, profile) -> str:
         data = profile.profile_json or {}
-        narrative = (data.get("narrative_summary") or "").strip()
+        narrative = generation_safe_summary(data)
         baseline = data.get("metrics_baseline") or {}
         has_baseline = isinstance(baseline, dict) and bool(baseline)
         if (
             has_baseline
             and narrative
-            and not narrative.startswith("量化基线（")
             and _is_metric_domain_guidance(narrative, baseline)
         ):
             # 兼容旧画像：早期 narrative_summary 由 LLM 直接生成，可能写出
-            # “短句密集/高频设问”等与冻结数字相反的结论。整句混合时无法
-            # 安全拆分，宁可省略旧概述，让量化锚点和非量化机制成为真源。
+            # “短句密集/高频设问”等与冻结统计相反的结论。整句混合时无法
+            # 安全拆分，宁可省略旧概述，让软分布和非量化机制成为真源。
             narrative = ""
         features = [
             f.strip()
@@ -1686,13 +1727,31 @@ class InjectionService:
             except Exception:  # pragma: no cover - optional local metric degradation
                 logger.warning("style metric delta computation degraded", exc_info=True)
 
+        budget = _load_budget()
+        guidance_mode = str(
+            budget.get("metric_guidance_mode", "soft_distribution")
+        ).strip().lower()
+        # 旧部署配置也不得重新开启精确配额；量化真值保留在 Profile、验证和
+        # 候选审计侧，生成提示只接收不可直接反推评分阈值的粗粒度分布。
+        if guidance_mode != "soft_distribution":
+            logger.warning(
+                "unsupported metric guidance mode %s; using soft_distribution",
+                guidance_mode,
+            )
+        try:
+            metric_limit = max(
+                1, min(8, int(budget.get("metric_guidance_max_items", 6)))
+            )
+        except (TypeError, ValueError):
+            metric_limit = 6
         selected = _select_actionable_metrics(
             baseline,
             current_metrics=current_metrics,
-            excluded=TYPE_RATIO_METRICS,
+            excluded=TYPE_RATIO_METRICS | _DIRECT_PUNCTUATION_COUNT_METRICS,
+            limit=metric_limit,
         )
         lines = [
-            "[量化硬锚点｜与抽象描述冲突时以此为准；先完成句段与标点目标，勿机械凑数]"
+            "[风格分布指导｜只控制整体倾向，不是逐项配额；不得为命中统计而机械加标点、拆段或填充句子]"
         ]
         paragraph_pair = {
             "paragraph_mean_chars",
@@ -1719,18 +1778,10 @@ class InjectionService:
             # 已知指标用紧凑中文名，避免 240 字预算被内部英文键名吃掉；未知扩展
             # 指标仍原样显示，确保未来字段不会静默消失。
             display_name = label
-            target_text = _format_metric_value(metric_name, mean)
+            tendency = _metric_tendency(metric_name, mean, std=std)
             if current is None:
-                spread = (
-                    f"，自然波动约±{_format_metric_value(metric_name, std)}"
-                    if std is not None and std > 0
-                    else ""
-                )
-                lines.append(
-                    f"- {display_name}：目标约{target_text}{spread}。"
-                )
+                lines.append(f"- {display_name}：参考倾向{tendency}；允许自然波动。")
                 continue
-            current_text = _format_metric_value(metric_name, current)
             direction = _metric_direction(
                 metric_name,
                 current=current,
@@ -1738,8 +1789,13 @@ class InjectionService:
                 std=std,
                 context_chars=context_chars,
             )
+            relation = _metric_relative_position(
+                current=current,
+                target=mean,
+                std=std,
+            )
             lines.append(
-                f"- {display_name}：当前约{current_text}，目标约{target_text}；{direction}。"
+                f"- {display_name}：参考倾向{tendency}；当前{relation}，{direction}。"
             )
         if len(lines) == 1:
             return ""
@@ -1841,25 +1897,28 @@ def _render_paragraph_shape_anchor(
         return ""
     current_mean = _finite_number(current_metrics.get("paragraph_mean_chars"))
     current_rate = _finite_number(current_metrics.get("paragraphs_per_1k"))
-    target_text = f"{target_mean:.1f}字/{target_rate:.1f}段"
-    if current_mean is None or current_rate is None:
-        return f"- 段均字数/千字换段数：目标约{target_text}。"
-
-    count_hint = _count_range_hint(
-        context_chars=context_chars,
-        target_count=(context_chars / max(target_mean, 1.0) if context_chars else None),
+    target_text = _metric_tendency(
+        "paragraph_mean_chars",
+        target_mean,
+        std=_finite_number(mean_stats.get("std")),
     )
+    if current_mean is None or current_rate is None:
+        return f"- 段落组织：参考倾向{target_text}；按叙事单元自然换段。"
+
     if current_mean + max(target_mean * 0.05, 1.0) < target_mean:
         action = "合并同一叙事单元，禁逐句分段"
     elif current_mean - max(target_mean * 0.05, 1.0) > target_mean:
         action = "只在叙事单元边界拆分"
     else:
         action = "保持当前段落幅度"
-    count_suffix = f"；{count_hint}" if count_hint else ""
+    relation = _metric_relative_position(
+        current=current_mean,
+        target=target_mean,
+        std=_finite_number(mean_stats.get("std")),
+    )
     return (
-        "- 段均字数/千字换段数："
-        f"当前约{current_mean:.1f}字/{current_rate:.1f}段，"
-        f"目标约{target_text}{count_suffix}；{action}。"
+        "- 段落组织："
+        f"参考倾向{target_text}；当前{relation}，{action}，不追求固定段数。"
     )
 
 
@@ -1916,12 +1975,6 @@ def _select_actionable_metrics(
     return selected[:limit]
 
 
-def _format_metric_value(metric_name: str, value: float) -> str:
-    if metric_name in _RATIO_METRICS:
-        return f"{value * 100:.1f}%"
-    return f"{value:.1f}"
-
-
 def _metric_direction(
     metric_name: str,
     *,
@@ -1933,39 +1986,16 @@ def _metric_direction(
     tolerance = max(abs(target) * 0.05, (std or 0.0) * 0.5, 0.01)
     increase = current < target
     if metric_name == "paragraph_mean_chars":
-        target_chars = max(1, round(target))
-        count_hint = _count_range_hint(
-            context_chars=context_chars,
-            target_count=(context_chars / target_chars if context_chars else None),
-        )
-        suffix = f"；{count_hint}" if count_hint else ""
         return (
-            f"合并同一叙事单元，约每{target_chars}字换段{suffix}，禁逐句分段"
+            "合并同一叙事单元，禁逐句分段"
             if increase
-            else f"在叙事单元边界拆段，约每{target_chars}字换段{suffix}"
+            else "只在叙事单元边界拆段"
         )
     if metric_name == "paragraphs_per_1k":
-        target_breaks = max(1, round(target))
-        count_hint = _count_range_hint(
-            context_chars=context_chars,
-            target_count=(
-                context_chars * target / 1000.0 if context_chars else None
-            ),
-        )
-        suffix = f"；{count_hint}" if count_hint else ""
         return (
-            f"每千字约保留{target_breaks}个功能段{suffix}"
+            "只在视角、动作或信息功能变化处自然换段"
             if increase
-            else f"合并同一叙事单元，每千字约{target_breaks}段{suffix}，禁逐句分段"
-        )
-    if metric_name == "semicolon_density_per_1k" and context_chars:
-        expected = max(0, round(context_chars * target / 1000.0))
-        natural_delta = round(context_chars * max(std or 0.0, 0.0) / 1000.0)
-        radius = max(1, min(2, natural_delta))
-        lower = max(0, expected - radius)
-        upper = expected + radius
-        return (
-            f"全文约{expected}个，控制在{lower}–{upper}个，分散使用勿堆叠"
+            else "合并功能重复的碎段，禁逐句分段"
         )
     if abs(current - target) <= tolerance:
         return "保持当前幅度"
@@ -2002,15 +2032,56 @@ def _metric_direction(
     return pair[0] if increase else pair[1]
 
 
-def _count_range_hint(
-    *, context_chars: int | None, target_count: float | None
+def _metric_relative_position(
+    *, current: float, target: float, std: float | None
 ) -> str:
-    if not context_chars or target_count is None:
-        return ""
-    expected = max(1, round(target_count))
-    lower = max(1, expected - 1)
-    upper = expected + 1
-    return f"按当前约{context_chars}字，全文约{expected}段（{lower}–{upper}段）"
+    tolerance = max(abs(target) * 0.08, (std or 0.0) * 0.75, 0.01)
+    if abs(current - target) <= tolerance:
+        return "已在参考的自然波动区间"
+    return "低于参考常态" if current < target else "高于参考常态"
+
+
+def _metric_tendency(metric_name: str, value: float, *, std: float | None) -> str:
+    """把精确统计量压成可执行但不可按数字投机的粗粒度风格倾向。"""
+
+    del std  # 自然波动用于相对位置判断，不把精确宽度暴露给生成器。
+    if metric_name == "paragraph_mean_chars":
+        if value < 45:
+            return "短段偏密"
+        if value < 110:
+            return "中等段幅、疏密交替"
+        return "长段舒展、换段较克制"
+    if metric_name == "paragraphs_per_1k":
+        if value < 8:
+            return "换段较少、段落承载较完整"
+        if value < 18:
+            return "换段适中、功能段清楚"
+        return "换段较密、短段节拍明显"
+    if metric_name == "avg_sentence_length":
+        if value < 12:
+            return "短句主导"
+        if value < 22:
+            return "长短句混合"
+        return "长句主导、短句作断点"
+    if metric_name == "sentence_length_std":
+        if value < 7:
+            return "句长起伏较小"
+        if value < 15:
+            return "句长起伏适中"
+        return "长短句反差明显"
+    if metric_name == "punctuation_density_per_1k":
+        if value < 100:
+            return "停顿稀疏、句群连续"
+        if value < 180:
+            return "停顿适中"
+        return "停顿较密，但仍须服从句义"
+    if metric_name in _RATIO_METRICS:
+        if value < 0.04:
+            return "低频"
+        if value < 0.14:
+            return "适量"
+        return "较高频"
+    return "保持稳定的整体分布"
 
 
 def _ts_to_int(ts: str | None) -> int:

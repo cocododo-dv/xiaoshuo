@@ -25,7 +25,9 @@ STYLE_RUNTIME_CONTRACT_VERSION = "style_reference_runtime_contract_v1"
 STYLE_CONTEXT_VERSION = "style_reference_generation_context_v1"
 _FROZEN_PROFILE_JSON_KEYS = frozenset(
     {
+        "reference_basis",
         "narrative_summary",
+        "qualitative_summary",
         "metrics_baseline",
         "scene_samples_index",
         "sub_dimensions",

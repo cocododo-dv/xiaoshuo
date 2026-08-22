@@ -963,6 +963,7 @@ def analyze_literary_quality(
     _add_template_action_reuse_signal(signals, findings, normalized)
     _add_image_field_reuse_signal(signals, findings, normalized)
     _add_syntax_monotony_signal(signals, findings, normalized)
+    _add_self_repetition_signal(signals, findings, normalized)
     _add_false_clarity_signal(signals, findings, normalized)
     _add_valid_ambiguity_signal(signals, findings, normalized)
     _add_expository_dialogue_signal(signals, findings, normalized)
@@ -1010,6 +1011,52 @@ def analyze_literary_quality(
         "human_judgment_required": True,
     }
     return signals, findings
+
+
+def _add_self_repetition_signal(
+    signals: dict[str, dict[str, Any]],
+    findings: list[dict[str, str]],
+    text: str,
+) -> None:
+    """Detect exact sentence reuse inside one passage.
+
+    Cross-scene repetition can still arrive through ``external_signals``.  This
+    local guard catches the higher-confidence failure where a generated scene
+    repeats the same substantive sentence verbatim; previously the dimension
+    existed but remained permanently clean without an external detector.
+    """
+
+    normalized_sentences: dict[str, list[str]] = {}
+    for sentence in _sentences(text):
+        compact = re.sub(r"[^A-Za-z0-9\u3400-\u9fff]+", "", sentence).casefold()
+        if len(compact) < 10:
+            continue
+        normalized_sentences.setdefault(compact, []).append(sentence.strip())
+    # 两次完全重复可能是有意的回环、人物口头禅或首尾照应，不能因为系统
+    # 支持任意参考风格就把这种作者选择一概当成 AI 痕迹。三次及以上才作为
+    # 高置信机械复读；更细腻的重复判断留给盲评。
+    repeated = [items for items in normalized_sentences.values() if len(items) >= 3]
+    if not repeated:
+        signals["self_repetition"] = {"risk": False, "score": 1.0, "evidence": ""}
+        return
+
+    duplicate_excess = sum(len(items) - 1 for items in repeated)
+    evidence = repeated[0][0]
+    score = max(0.0, 1.0 - 0.35 * duplicate_excess)
+    signals["self_repetition"] = {
+        "risk": True,
+        "score": round(score, 4),
+        "evidence": evidence,
+    }
+    findings.append(
+        _finding(
+            "self_repetition",
+            "revision",
+            "The passage repeats a substantive sentence verbatim.",
+            evidence,
+            "Keep the fact once; replace the repeated sentence with a new consequence, reaction, or information beat.",
+        )
+    )
 
 
 def fingerprint_literary_quality(text: str) -> dict[str, Any]:

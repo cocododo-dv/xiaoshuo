@@ -209,7 +209,7 @@ def test_synthesize_happy_path() -> None:
     book_id, run_id = _ingest_with_finding("happy")
     client = _fake_llm_with_response(
         {
-            "profile_title": "鲁迅风格 v1",
+            "profile_title": "清晨样本风格 v1",
             "narrative_summary": "短句+反讽+冷静叙述,克制情感",
             "style_features": ["善用短句", "反讽点缀", "白描+留白"],
             "narrative_patterns": ["人物对话引出冲突", "环境暗示情绪"],
@@ -222,9 +222,14 @@ def test_synthesize_happy_path() -> None:
         profile = synth.synthesize(book_id, run_id)
         session.commit()
 
-    assert profile.title == "鲁迅风格 v1"
+    assert profile.title == "清晨样本风格 v1"
     assert profile.status == "draft"
     pj = profile.profile_json
+    # 画像来自任意用户参考语料，不依赖固定作者枚举。
+    assert pj["reference_basis"]["mode"] == "reference_derived"
+    assert pj["reference_basis"]["fixed_author_allowlist"] is False
+    assert pj["reference_basis"]["book_id"] == book_id
+    assert pj["reference_basis"]["text_checksum"]
     # profile_json 4 类应用建议 + narrative_summary + metrics_baseline + scene_samples_index + sub_dimensions
     assert pj["narrative_summary"].startswith("量化基线")
     assert pj["qualitative_summary"] == "短句+反讽+冷静叙述,克制情感"

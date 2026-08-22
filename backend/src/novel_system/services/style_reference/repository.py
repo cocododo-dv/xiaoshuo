@@ -45,7 +45,7 @@ class StyleReferenceRepository:
     用法::
 
         repo = StyleReferenceRepository(session)
-        book = repo.create_book(book_id="sr_book_1", title="鲁迅短篇集", ...)
+        book = repo.create_book(book_id="sr_book_1", title="夜雨样章集", ...)
         repo.session.commit()
     """
 

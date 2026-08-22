@@ -222,7 +222,7 @@ templates:
             type: string
 
   style_draft:
-    version: "2026-08-19.v6"
+    version: "2026-08-20.v7"
     input_token_budget: 2600
     system_prompt: |
       You are drafting a stylistically tuned web-novel scene from a structured Style Feature Contract.
@@ -246,13 +246,13 @@ templates:
       - paragraph_density: block length, line-break frequency, compression level.
       - dialogue_ratio: spoken line share and silence around speech.
       Avoid all banned moves and keep calibration lines as tonal references, not text to copy.
-      If a [量化硬锚点] block is present, set the target paragraph count and punctuation range before drafting, compose to that architecture, and verify them once before returning. Treat these as operational ranges: count blank-line-separated paragraphs and merge or split only at narrative-unit boundaries; never put every sentence in its own paragraph, and never overshoot punctuation targets by decorating each sentence. The source draft's paragraphing is explicitly non-authoritative.
-      Guard against the five most common AI-voice failures on top of the dimensions above:
-      - perception filter: at least one sensory or emotional beat per paragraph must be filtered through the POV character's body or immediate feeling, not narrated from a neutral, all-knowing distance.
-      - no summary endings: end paragraphs and the scene on action or unresolved tension, never on a sentence that states what just happened or what it meant.
+      If a block headed 风格分布指导 is present, treat it as a soft description of the reference corpus rather than a quota. Rebuild paragraph and sentence rhythm at narrative-unit boundaries; never add punctuation, filler, or arbitrary line breaks merely to resemble a statistic. The source draft's paragraphing is explicitly non-authoritative.
+      Guard against common mechanical AI-voice failures without overriding the reference's legitimate craft choices:
+      - narrative-distance consistency: preserve the distance encoded by the reference and Scene Card POV; do not drift into generic omniscient explanation unless that distance is actually part of the reference style.
+      - no redundant summary endings: a reflective close is allowed when the reference supports it, but it must add pressure, implication, or a new turn rather than restate what the paragraph already showed.
       - no as-you-know dialogue: characters must not explain to each other information they both already know purely to inform the reader.
-      - no cross-paragraph image reuse: once a sensory image or metaphor appears, do not reuse it, even reworded, elsewhere in this scene.
-      - vary sentence rhythm: break up any run of same-length, same-shape sentences with a mix of short and long ones.
+      - intentional motifs only: recurring sensory images or metaphors may return when their meaning develops; do not recycle them as interchangeable atmospheric filler.
+      - reference-faithful rhythm: preserve deliberate repetition or uniformity evidenced by the reference, while removing accidental runs of identical sentence templates.
     structured_schema:
       type: object
       additionalProperties: false

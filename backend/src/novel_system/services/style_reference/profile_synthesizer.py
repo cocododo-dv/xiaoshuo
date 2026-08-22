@@ -4,7 +4,9 @@
 plans/style-reference-v1-1-fancy-shannon.md §"ProfileSynthesizer 流程"。
 
 profile_json 结构:
-  - narrative_summary(LLM 产出)
+  - reference_basis(当前参考语料的动态来源契约，不含固定作者枚举)
+  - narrative_summary(可复算精确统计，仅供内部审计/RAG)
+  - qualitative_summary(LLM 产出并经过原文重合过滤，供生成提示使用)
   - metrics_baseline(从 book.stats_json.metrics 直读)
   - scene_samples_index({paragraph_type: [quote_id, ...]} 按 quotes 分桶)
   - sub_dimensions({sub_dim_path: {confidence, observation_count, ...}})
@@ -31,6 +33,7 @@ from novel_system.services.prompt_builder import PromptTemplate, load_prompt_tem
 from novel_system.services.style_reference._llm_helper import LLMNodeError, call_llm_node
 from novel_system.services.style_reference.errors import LLMRequiredError, StyleReferenceError
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
+from novel_system.services.style_reference.profile_fields import REFERENCE_BASIS_VERSION
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import (
     ProfileStatus,
@@ -199,9 +202,22 @@ class ProfileSynthesizer:
 
         metric_summary = _deterministic_metric_summary(metrics_baseline)
         profile_json: dict[str, Any] = {
-            # 运行时把稳定、可复算的量化摘要放在首位。LLM 的定性概述单独保留
-            # 供审阅，但不再让同一语料两次合成出的“短句密集/长句舒展”等漂移
-            # 标签成为 system prompt 中权重最高的概述。
+            # 生产画像始终由当前用户导入的参考语料派生；作者名不是路由键，
+            # 也不存在任何固定作者 allow-list。内置作者样本仅属于隔离基准。
+            "reference_basis": {
+                "version": REFERENCE_BASIS_VERSION,
+                "mode": "reference_derived",
+                "scope": "work_or_collection",
+                "fixed_author_allowlist": False,
+                "book_id": str(book.book_id),
+                "source_kind": str(book.source_kind),
+                "text_checksum": str(book.text_checksum),
+                "source_char_count": int(book.total_chars or 0),
+                "paragraph_count": len(paragraphs),
+            },
+            # 稳定、可复算的量化摘要留作内部审计/RAG；LLM 的安全定性概述
+            # 单独保存给生成提示，并会在注入侧剔除频率/配额断言，避免同一
+            # 语料两次合成出的漂移标签覆盖软分布真源。
             "narrative_summary": metric_summary
             or safe_profile["narrative_summary"],
             "qualitative_summary": safe_profile["narrative_summary"],

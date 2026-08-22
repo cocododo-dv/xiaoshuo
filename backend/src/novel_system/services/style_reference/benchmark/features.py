@@ -25,7 +25,7 @@ from novel_system.services.style_reference.metrics import (
 from novel_system.services.style_reference.text_utils import split_sentences
 
 
-FEATURE_VERSION = "zh_explainable_stylometry_v1"
+FEATURE_VERSION = "zh_explainable_stylometry_v2"
 REFERENCE_CHUNK_TARGET_CHARS = 700
 REFERENCE_CHUNK_MIN_CHARS = 320
 _TYPE_RATIO_METRICS = frozenset(
@@ -122,8 +122,14 @@ class ReferenceChunk:
 
 
 class StyleFeatureExtractor:
-    def __init__(self, *, metrics_engine: MetricsEngine | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        metrics_engine: MetricsEngine | None = None,
+        include_shared_metrics: bool = True,
+    ) -> None:
         self._metrics = metrics_engine or MetricsEngine()
+        self.include_shared_metrics = bool(include_shared_metrics)
 
     def extract(self, text: str) -> dict[str, float]:
         normalized = str(text or "").strip()
@@ -145,13 +151,17 @@ class StyleFeatureExtractor:
         paragraph_lengths = [_visible_length(paragraph) for paragraph in paragraphs]
         visible_chars = max(1, _visible_length(normalized))
 
-        base = self._metrics.compute_all(
-            [
-                ParagraphRecord(text=paragraph, paragraph_type="narration")
-                for paragraph in paragraphs
-            ]
-        )
-        features = {f"metric.{name}": float(base[name]) for name in _TEXT_METRICS}
+        features: dict[str, float] = {}
+        if self.include_shared_metrics:
+            base = self._metrics.compute_all(
+                [
+                    ParagraphRecord(text=paragraph, paragraph_type="narration")
+                    for paragraph in paragraphs
+                ]
+            )
+            features.update(
+                {f"metric.{name}": float(base[name]) for name in _TEXT_METRICS}
+            )
         features.update(
             {
                 "shape.sentence_mean": statistics.fmean(sentence_lengths),
@@ -359,6 +369,9 @@ class HiddenStyleEvaluator:
         )
         return {
             "feature_version": FEATURE_VERSION,
+            "shared_metrics_engine_features": bool(
+                getattr(self.extractor, "include_shared_metrics", True)
+            ),
             "calibration_split_unit": "whole_work",
             "calibration_feature_fit": "per_fold_without_held_work",
             "active_feature_count": self.active_feature_count,

@@ -15,6 +15,7 @@ from typing import Any, Mapping
 
 from novel_system.services.style_reference.benchmark.features import (
     HiddenStyleEvaluator,
+    StyleFeatureExtractor,
 )
 from novel_system.services.style_reference.benchmark.manifest import (
     BenchmarkCase,
@@ -26,6 +27,11 @@ from novel_system.services.style_reference.benchmark.manifest import (
 from novel_system.services.style_reference.validation.plagiarism import (
     check_plagiarism,
     normalize_text_for_matching,
+)
+from novel_system.services.literary_quality import (
+    DIMENSION_WEIGHTS,
+    adversarial_rank_score,
+    analyze_literary_quality,
 )
 
 
@@ -44,8 +50,31 @@ DEFAULT_THRESHOLDS = {
     "plagiarism_pass_rate": 1.0,
     "prompt_leakage_pass_rate": 1.0,
     "identity_blinding_pass_rate": 1.0,
+    "metric_target_leakage_pass_rate": 1.0,
+    "hard_naturalness_pass_rate": 1.0,
+    "styled_naturalness_non_regression_rate": 0.75,
     "module_lineage_coverage": 1.0,
 }
+_HARD_NATURALNESS_DIMENSIONS = frozenset({"self_repetition"})
+_NATURALNESS_SCORE_DIMENSIONS = frozenset(
+    {
+        "model_voice",
+        "false_clarity",
+        "over_explained_motive",
+        "template_action_reuse",
+        "syntax_monotony",
+        "repetitive_action",
+        "image_homogeneity",
+        "image_field_reuse",
+        "expository_dialogue",
+        "dialogue_as_report",
+        "self_repetition",
+    }
+)
+_MODEL_RESPONSE_ARTIFACT_RE = re.compile(
+    r"```|(?:^|\n)\s*\{?\s*[\"']scene_text[\"']\s*:",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,11 +105,17 @@ def score_style_benchmark(
 
     samples = load_generation_results(bundle, results_source)
     evaluator = HiddenStyleEvaluator(
-        {hidden.author_id: hidden.holdout_works for hidden in bundle.hidden_authors}
+        {hidden.author_id: hidden.holdout_works for hidden in bundle.hidden_authors},
+        # The generator receives coarse reference-derived tendencies.  The hidden
+        # evaluator deliberately excludes the exact MetricsEngine feature family
+        # used by profile construction so an output cannot pass merely by
+        # reproducing the generator-visible controls.
+        extractor=StyleFeatureExtractor(include_shared_metrics=False),
     )
     calibration = evaluator.calibration_report()
     leak_guard = _PromptLeakGuard(bundle)
     identity_guard = _IdentityLeakGuard(bundle)
+    metric_target_guard = _MetricTargetLeakGuard()
     reference_texts = [
         work.text for author in bundle.public.authors for work in author.train_works
     ] + [work.text for author in bundle.hidden_authors for work in author.holdout_works]
@@ -93,10 +128,12 @@ def score_style_benchmark(
         predicted_author, similarities = evaluator.classify(sample.generated_text)
         prompt_leakage = leak_guard.inspect(sample.actual_prompt_text)
         identity_blinding = identity_guard.inspect(sample.actual_prompt_text)
+        metric_target_leakage = metric_target_guard.inspect(sample.actual_prompt_text)
         plagiarism = check_plagiarism(sample.generated_text, reference_texts)
         content = _content_preservation(case, sample.generated_text)
         length_score = _length_score(case, sample.generated_text)
         lineage = _lineage_check(bundle, sample, neutral_by_case)
+        naturalness = _naturalness_diagnostic(sample.generated_text)
         target_margin = None
         attributed_correctly = None
         if sample.target_author_id is not None:
@@ -137,6 +174,8 @@ def score_style_benchmark(
                 },
                 "prompt_leakage": prompt_leakage,
                 "identity_blinding": identity_blinding,
+                "metric_target_leakage": metric_target_leakage,
+                "naturalness_diagnostic": naturalness,
                 "module_lineage": lineage,
                 "generation_metadata": _safe_generation_metadata(
                     sample.generation_metadata
@@ -172,6 +211,14 @@ def score_style_benchmark(
         >= effective_thresholds["prompt_leakage_pass_rate"],
         "author_identity_blinded": summary["identity_blinding_pass_rate"]
         >= effective_thresholds["identity_blinding_pass_rate"],
+        "no_exact_metric_target_leakage": summary["metric_target_leakage_pass_rate"]
+        >= effective_thresholds["metric_target_leakage_pass_rate"],
+        "hard_naturalness_clean": summary["hard_naturalness_pass_rate"]
+        >= effective_thresholds["hard_naturalness_pass_rate"],
+        "naturalness_non_regressed": summary[
+            "styled_naturalness_non_regression_rate"
+        ]
+        >= effective_thresholds["styled_naturalness_non_regression_rate"],
         "module_lineage_verified": summary["module_lineage_coverage"]
         >= effective_thresholds["module_lineage_coverage"],
     }
@@ -183,6 +230,14 @@ def score_style_benchmark(
         "public_manifest_hash": bundle.public.public_manifest_hash,
         "benchmark_manifest_hash": bundle.benchmark_manifest_hash,
         "reference_calibration": calibration,
+        "evaluation_independence": {
+            "feature_policy": "hidden_holdout_stylometry_without_profile_metrics_engine_features",
+            "shared_metrics_engine_features": bool(
+                calibration.get("shared_metrics_engine_features")
+            ),
+            "exact_metric_target_prompt_guard": True,
+            "naturalness_evaluator_family": "deterministic_adversarial_prose_diagnostics",
+        },
         "thresholds": effective_thresholds,
         "gates": gates,
         "benchmark_passed": benchmark_passed,
@@ -199,6 +254,7 @@ def score_style_benchmark(
                 "两位作者的隐藏作品量不均衡；宏平均可减轻数量偏置，但不能消除语料差异。",
                 "生成侧已匿名化作者名与篇名，但模型预训练可能识别公版正文，无法完全消除先验污染。",
                 "自动文体距离只能证明可测风格信号；自然度与审美上限仍需盲评。",
+                "自然度自动门仅阻断可确定的重复与正文完整性失败；其余文学判断仍需盲评。",
             ],
         },
         "samples": scored,
@@ -432,6 +488,85 @@ class _IdentityLeakGuard:
         }
 
 
+class _MetricTargetLeakGuard:
+    """Reject exact style quotas inside the STYLE_REFERENCE prompt block."""
+
+    _MARKERS = (
+        re.compile(r"量化硬锚点"),
+        re.compile(r"与抽象描述冲突时以此为准"),
+        re.compile(r"与定性描述冲突时以此为准"),
+        re.compile(r"量化基线\s*[（(]"),
+        re.compile(r"全文约\s*\d+\s*(?:个|段)"),
+        re.compile(r"控制在\s*\d+\s*[–—-]\s*\d+\s*个"),
+        re.compile(r"当前约\s*\d+(?:\.\d+)?"),
+        re.compile(r"(?:句均|段均)约\s*\d+(?:\.\d+)?"),
+        re.compile(r"每千字(?:约|[^\n；。]*约)\s*\d+(?:\.\d+)?"),
+        re.compile(
+            r"(?:目标|参考(?:均值|目标))\s*(?:约|为|[:：])?\s*\d+(?:\.\d+)?"
+        ),
+    )
+
+    def inspect(self, prompt: str | None) -> dict[str, Any]:
+        if prompt is None:
+            return {"verified": False, "passed": False, "marker_hit_count": None}
+        blocks = re.findall(
+            r"\[STYLE_REFERENCE\](.*?)\[/STYLE_REFERENCE\]",
+            prompt,
+            flags=re.DOTALL,
+        )
+        style_text = "\n".join(blocks)
+        hit_count = sum(len(pattern.findall(style_text)) for pattern in self._MARKERS)
+        return {
+            "verified": True,
+            "passed": hit_count == 0,
+            "marker_hit_count": hit_count,
+            "scope": "style_reference_block_only",
+        }
+
+
+def _naturalness_diagnostic(text: str) -> dict[str, Any]:
+    signals, findings = analyze_literary_quality(text)
+    risk_dimensions = sorted(
+        {
+            str(finding.get("dimension") or "")
+            for finding in findings
+            if str(finding.get("dimension") or "")
+            in _NATURALNESS_SCORE_DIMENSIONS
+        }
+    )
+    hard_dimensions = sorted(
+        set(risk_dimensions).intersection(_HARD_NATURALNESS_DIMENSIONS)
+    )
+    integrity_markers: list[str] = []
+    if "\ufffd" in text:
+        integrity_markers.append("replacement_character")
+    if re.search(r"\\u[0-9a-fA-F]{4}", text):
+        integrity_markers.append("literal_unicode_escape")
+    if _MODEL_RESPONSE_ARTIFACT_RE.search(text):
+        integrity_markers.append("model_response_artifact")
+    if text.count("“") != text.count("”") or text.count("‘") != text.count("’"):
+        integrity_markers.append("unbalanced_curly_quotes")
+    return {
+        "score": round(
+            adversarial_rank_score(
+                text,
+                weights={
+                    dimension: DIMENSION_WEIGHTS[dimension]
+                    for dimension in _NATURALNESS_SCORE_DIMENSIONS
+                },
+            ),
+            4,
+        ),
+        "risk_count": len(risk_dimensions),
+        "risk_dimensions": risk_dimensions,
+        "hard_risk_dimensions": hard_dimensions,
+        "integrity_markers": integrity_markers,
+        "hard_passed": not hard_dimensions and not integrity_markers,
+        "human_judgment_required": True,
+        "signal_count": len(signals),
+    }
+
+
 def _ngram_hashes(texts) -> set[str]:  # noqa: ANN001
     hashes: set[str] = set()
     for text in texts:
@@ -564,6 +699,21 @@ def _aggregate(
     identity_pass_count = sum(
         1 for row in identity_rows if row["verified"] and row["passed"]
     )
+    metric_target_rows = [row["metric_target_leakage"] for row in scored]
+    metric_target_verified_count = sum(
+        1 for row in metric_target_rows if row["verified"]
+    )
+    metric_target_pass_count = sum(
+        1
+        for row in metric_target_rows
+        if row["verified"] and row["passed"]
+    )
+    naturalness_non_regression = [
+        float(row["naturalness_diagnostic"]["score"])
+        + 0.02
+        >= float(neutral[row["case_id"]]["naturalness_diagnostic"]["score"])
+        for row in styled
+    ]
     per_author: dict[str, dict[str, Any]] = {}
     for author_id in bundle.public.author_ids:
         author_rows = [row for row in styled if row["target_author_id"] == author_id]
@@ -659,6 +809,35 @@ def _aggregate(
         "prompt_leakage_verified_count": verified_prompt_count,
         "prompt_leakage_pass_rate": round(prompt_pass_count / len(scored), 4),
         "identity_blinding_pass_rate": round(identity_pass_count / len(scored), 4),
+        "metric_target_leakage_verified_count": metric_target_verified_count,
+        "metric_target_leakage_pass_rate": round(
+            metric_target_pass_count / len(scored), 4
+        ),
+        "neutral_naturalness_mean": round(
+            statistics.fmean(
+                float(row["naturalness_diagnostic"]["score"])
+                for row in neutral.values()
+            ),
+            4,
+        ),
+        "styled_naturalness_mean": round(
+            statistics.fmean(
+                float(row["naturalness_diagnostic"]["score"]) for row in styled
+            ),
+            4,
+        ),
+        "styled_naturalness_non_regression_rate": round(
+            sum(naturalness_non_regression) / len(naturalness_non_regression),
+            4,
+        ),
+        "hard_naturalness_pass_rate": round(
+            sum(
+                bool(row["naturalness_diagnostic"]["hard_passed"])
+                for row in styled
+            )
+            / len(styled),
+            4,
+        ),
         "module_lineage_coverage": round(
             sum(bool(row["module_lineage"]["passed"]) for row in scored) / len(scored),
             4,

@@ -136,7 +136,11 @@ def test_metric_baseline_suppresses_conflicting_legacy_surface_guidance() -> Non
         seed="legacy_metric_conflict",
         profile_json={
             "narrative_summary": "短句密集并高频设问，但动作随后释放信息。",
-            "style_features": ["大量使用短句和反问", "让动作承担解释"],
+            "style_features": [
+                "大量使用短句和反问",
+                "在转折处用短句切断长句",
+                "让动作承担解释",
+            ],
             "narrative_patterns": ["转折前先释放可见线索"],
             "calibration_guidance": ["若句号不够密集就继续断句", "若解释过多就改回动作"],
             "metrics_baseline": {
@@ -157,11 +161,46 @@ def test_metric_baseline_suppresses_conflicting_legacy_surface_guidance() -> Non
     assert "短句密集" not in fragments.positive_block
     assert "大量使用短句和反问" not in fragments.positive_block
     assert "句号不够密集" not in fragments.positive_block
+    assert "在转折处用短句切断长句" in fragments.positive_block
     assert "让动作承担解释" in fragments.positive_block
     assert "转折前先释放可见线索" in fragments.positive_block
     assert "若解释过多就改回动作" in fragments.positive_block
     assert "句均字数" in fragments.metric_anchor_block
-    assert "问号/千字" in fragments.metric_anchor_block
+    # 单一标点的精确密度不再暴露给生成器，避免为了命中统计而凑问号。
+    assert "问号/千字" not in fragments.metric_anchor_block
+
+
+def test_exact_internal_metric_summary_cannot_bypass_soft_guidance() -> None:
+    project_id = _seed(
+        seed="exact_summary_bypass",
+        profile_json={
+            "narrative_summary": (
+                "量化基线（与定性描述冲突时以此为准）：句均约18.0字、"
+                "短句约32%；段均约90.0字、每千字约10.0段。"
+            ),
+            "qualitative_summary": "信息经由人物动作逐步释放，判断适当后置。",
+            "style_features": ["让动作承担解释"],
+            "metrics_baseline": {
+                "avg_sentence_length": {"mean": 18.0, "std": 2.0},
+                "short_sentence_ratio": {"mean": 0.32, "std": 0.04},
+                "paragraph_mean_chars": {"mean": 90.0, "std": 12.0},
+                "paragraphs_per_1k": {"mean": 10.0, "std": 1.5},
+            },
+        },
+        strategy="A",
+    )
+
+    with SessionLocal() as session:
+        prefix = (
+            InjectionService(session)
+            .fragments_for(project_id, "scene_generation")
+            .to_system_prompt_prefix()
+        )
+
+    assert "信息经由人物动作逐步释放" in prefix
+    assert "量化基线" not in prefix
+    assert "句均约18.0字" not in prefix
+    assert "每千字约10.0段" not in prefix
 
 
 def test_mixed_positive_budget_keeps_expression_narrative_and_calibration() -> None:
@@ -268,7 +307,7 @@ def test_final_input_budget_trims_metric_tail_before_style_or_safety_blocks():
     assert prefix.endswith("[/STYLE_REFERENCE]\n\n")
 
 
-def test_metric_anchor_excludes_unobservable_type_ratios_and_uses_source_delta():
+def test_metric_guidance_uses_soft_reference_distributions_without_quotas():
     project_id = _seed(
         seed="metric_delta",
         profile_json={
@@ -308,20 +347,21 @@ def test_metric_anchor_excludes_unobservable_type_ratios_and_uses_source_delta()
     block = fragments.metric_anchor_block
     assert "dialogue_ratio" not in block
     assert "action_ratio" not in block
-    assert "段均字数" in block
-    assert "千字换段数" in block
-    assert "分号/千字" in block
+    assert "风格分布指导" in block
+    assert "段落组织" in block
     assert "句均字数" in block
-    assert block.index("段均字数") < block.index("分号/千字") < block.index("句均字数")
-    assert "当前约" in block
-    assert "目标约" in block
-    assert "勿机械凑数" in block
-    assert "按当前约" in block
-    assert "控制在" in block
-    assert "分散使用勿堆叠" in block
+    assert "标点/千字" in block
+    assert "分号/千字" not in block
+    assert "当前" in block
+    assert "不追求固定段数" in block
+    assert "不得为命中统计" in block
+    assert "当前约" not in block
+    assert "目标约" not in block
+    assert "全文约" not in block
+    assert "控制在" not in block
 
 
-def test_metric_direction_turns_shape_and_semicolon_rates_into_scene_counts():
+def test_metric_direction_returns_qualitative_actions_without_scene_quotas():
     paragraph = _metric_direction(
         "paragraph_mean_chars",
         current=40.0,
@@ -337,9 +377,10 @@ def test_metric_direction_turns_shape_and_semicolon_rates_into_scene_counts():
         context_chars=834,
     )
 
-    assert "全文约4段（3–5段）" in paragraph
+    assert "合并同一叙事单元" in paragraph
     assert "禁逐句分段" in paragraph
-    assert semicolon == "全文约4个，控制在3–5个，分散使用勿堆叠"
+    assert semicolon == "适量增加分号并列"
+    assert not any(char.isdigit() for char in paragraph + semicolon)
 
 
 def test_rejected_forbidden_finding_not_injected():
@@ -411,10 +452,10 @@ def test_strategy_b_truncates_by_budget():
     with SessionLocal() as session:
         fragments = InjectionService(session).fragments_for(project_id, "scene_generation")
     assert fragments.strategy == InjectionStrategy.B
-    # 默认 800 token；硬指标预算提升，保证段落形态与稳定标点不会只剩标题。
-    assert len(fragments.positive_block) <= 400 + 5
-    assert len(fragments.forbidden_block) <= 160 + 5
-    assert len(fragments.metric_anchor_block) <= 240 + 5
+    # 默认 800 token；主体风格、禁忌和软分布按 55%/25%/20% 分配。
+    assert len(fragments.positive_block) <= 440 + 5
+    assert len(fragments.forbidden_block) <= 200 + 5
+    assert len(fragments.metric_anchor_block) <= 160 + 5
 
 
 def test_strategy_c_drops_metric_and_summarizes_forbidden():
@@ -612,7 +653,7 @@ def test_mixed_sub_dimensions_filters_forbidden_findings():
 
 
 def test_to_system_prompt_prefix_ordering():
-    """硬指标先于可能冲突的抽象描述，其后 positive → forbidden。"""
+    """软分布先于抽象描述，其后 positive → forbidden。"""
     project_id = _seed(
         seed="order",
         profile_json={
@@ -626,7 +667,7 @@ def test_to_system_prompt_prefix_ordering():
         prefix = InjectionService(session).fragments_for(project_id, "scene_generation").to_system_prompt_prefix()
     pos_idx = prefix.index("正向风格特征")
     forbid_idx = prefix.index("禁忌模式")
-    metric_idx = prefix.index("量化硬锚点")
+    metric_idx = prefix.index("风格分布指导")
     assert metric_idx < pos_idx < forbid_idx
 
 

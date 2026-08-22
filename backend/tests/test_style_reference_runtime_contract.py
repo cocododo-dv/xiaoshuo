@@ -87,6 +87,7 @@ def _seed_reference(
         status="active",
         profile_json={
             "narrative_summary": "克制观察，动作先于解释。",
+            "qualitative_summary": "克制观察，动作先于解释。",
             "style_features": [feature],
             "banned_replication_rules": ["不要复刻专名与独特意象"],
             "scene_samples_index": {"narration": [quote_id]},
@@ -147,6 +148,9 @@ def test_contract_is_hashed_tamper_evident_and_contains_no_raw_quote(session) ->
     serialized = json.dumps(contract, ensure_ascii=False)
     assert seeded.quote_text not in serialized
     assert "这段未来原文字段绝不能进入运行契约" not in serialized
+    assert contract["layers"][0]["profile"]["profile_json"][
+        "qualitative_summary"
+    ] == "克制观察，动作先于解释。"
     assert contract["layers"][0]["sample_quote_refs"] == [
         {
             "quote_id": seeded.quote_id,

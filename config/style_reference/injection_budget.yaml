@@ -4,11 +4,15 @@
 #
 # 这是任务级常量;InjectionService 在 strategy=B 时按 ratio 切上限,超长截尾保头部。
 system_prompt_max_tokens: 800
-# 2026-08 校准：段落形态和稳定标点比长篇抽象概述更可执行，保证硬锚点有
-# 足够空间；三项仍严格合计 1.0。
-positive_block_ratio: 0.5
-forbidden_block_ratio: 0.2
-metric_anchor_block_ratio: 0.3
+# 2026-08 风格分布校准：量化画像只提供粗粒度倾向与相对调整方向，禁止把
+# 精确计数（例如“全文 6 个分号”）暴露给生成器。精确数字仅供隐藏评测、
+# 候选审计和验证使用，避免生成器/评分器共用同一把尺子。
+# 三项严格合计 1.0。
+positive_block_ratio: 0.55
+forbidden_block_ratio: 0.25
+metric_anchor_block_ratio: 0.2
+metric_guidance_mode: soft_distribution
+metric_guidance_max_items: 6
 
 # Strategy B few-shot 样例(2026-08:优先 quote 所在的代表性完整父段落)
 # few_shot_k:最多注入的样例段数(每种 paragraph_type 最多 1 条)

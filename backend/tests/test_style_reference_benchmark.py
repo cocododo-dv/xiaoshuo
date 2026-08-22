@@ -15,6 +15,7 @@ from novel_system.services.style_reference.benchmark import (
 )
 from novel_system.services.style_reference.benchmark.features import (
     HiddenStyleEvaluator,
+    StyleFeatureExtractor,
 )
 from novel_system.services.style_reference.benchmark.live import (
     PromptRecordingClient,
@@ -54,12 +55,21 @@ def _bundle():
 def _synthetic_text(case, *, arm: str, target: str | None) -> str:  # noqa: ANN001
     facts = "。".join(group[0] for group in case.required_term_groups) + "。"
     if arm == "neutral":
-        unit = "他检查眼前的物件，听完对方的话，停了一会，随后用一个动作作出决定。"
+        units = [
+            f"第{index}次查看时，他检查眼前的物件，听完对方的话，停了一会，随后用动作作出决定。"
+            for index in range(1, 19)
+        ]
     elif target == "luxun":
-        unit = "事情原是明白的么？众人不说，他便也不说；然而沉默并不等于没有答案。"
+        units = [
+            f"第{index}回，事情原是明白的么？众人不说，他便也不说；然而第{index}回的沉默并不等于没有答案。"
+            for index in range(1, 19)
+        ]
     else:
-        unit = "微暗的光缓缓移过窗沿，像一层薄水；人的话很轻，余意却在静处慢慢展开。"
-    return facts + unit * 18
+        units = [
+            f"第{index}刻，微暗的光缓缓移过窗沿，像一层薄水；人的话很轻，这一刻的余意却在静处慢慢展开。"
+            for index in range(1, 19)
+        ]
+    return facts + "".join(units)
 
 
 def _results_payload(bundle):  # noqa: ANN001
@@ -212,6 +222,20 @@ def test_hidden_reference_classifier_has_audited_signal() -> None:
     assert all(row["work_count"] >= 2 for row in calibration["per_author"].values())
 
 
+def test_hidden_classifier_stays_calibrated_without_profile_metrics_family() -> None:
+    bundle = _bundle()
+    evaluator = HiddenStyleEvaluator(
+        {author.author_id: author.holdout_works for author in bundle.hidden_authors},
+        extractor=StyleFeatureExtractor(include_shared_metrics=False),
+    )
+
+    calibration = evaluator.calibration_report()
+
+    assert calibration["shared_metrics_engine_features"] is False
+    assert calibration["active_feature_count"] >= 80
+    assert calibration["macro_accuracy"] >= 0.65
+
+
 def test_score_covers_style_content_copy_leakage_and_lineage() -> None:
     bundle = _bundle()
     report = score_style_benchmark(bundle, _results_payload(bundle))
@@ -239,8 +263,14 @@ def test_score_covers_style_content_copy_leakage_and_lineage() -> None:
         "no_reference_copy",
         "prompt_holdout_clean",
         "author_identity_blinded",
+        "no_exact_metric_target_leakage",
+        "hard_naturalness_clean",
+        "naturalness_non_regressed",
         "module_lineage_verified",
     }
+    assert report["summary"]["metric_target_leakage_pass_rate"] == 1.0
+    assert report["summary"]["hard_naturalness_pass_rate"] == 1.0
+    assert report["evaluation_independence"]["shared_metrics_engine_features"] is False
     assert report["evidence_governance"]["human_verified"] is False
     assert report["evidence_governance"]["policy_evidence_eligible"] is False
 
@@ -291,6 +321,55 @@ def test_generation_prompt_cannot_use_explicit_author_identity() -> None:
 
     assert report["summary"]["identity_blinding_pass_rate"] < 1.0
     assert report["gates"]["author_identity_blinded"] is False
+
+
+def test_generation_prompt_cannot_expose_exact_style_metric_quotas() -> None:
+    bundle = _bundle()
+    payload = _results_payload(bundle)
+    styled = next(row for row in payload["generations"] if row["arm"] == "styled")
+    styled["actual_prompt_text"] += (
+        "\n[STYLE_REFERENCE]\n[风格分布指导]\n句均字数：当前约12.0，目标约18.0。"
+        "\n[/STYLE_REFERENCE]"
+    )
+
+    report = score_style_benchmark(bundle, payload)
+    sample = next(
+        row
+        for row in report["samples"]
+        if row["case_id"] == styled["case_id"]
+        and row["arm"] == "styled"
+        and row["target_author_id"] == styled["target_author_id"]
+    )
+
+    assert sample["metric_target_leakage"]["verified"] is True
+    assert sample["metric_target_leakage"]["passed"] is False
+    assert report["gates"]["no_exact_metric_target_leakage"] is False
+
+
+def test_repeated_substantive_sentence_fails_hard_naturalness_gate() -> None:
+    bundle = _bundle()
+    payload = _results_payload(bundle)
+    styled = next(row for row in payload["generations"] if row["arm"] == "styled")
+    case = bundle.public.case_for(styled["case_id"])
+    facts = "。".join(group[0] for group in case.required_term_groups) + "。"
+    styled["generated_text"] = facts + (
+        "他把同一句话说完，又把目光移回门边。" * 18
+    )
+
+    report = score_style_benchmark(bundle, payload)
+    sample = next(
+        row
+        for row in report["samples"]
+        if row["case_id"] == styled["case_id"]
+        and row["arm"] == "styled"
+        and row["target_author_id"] == styled["target_author_id"]
+    )
+
+    assert "self_repetition" in sample["naturalness_diagnostic"][
+        "hard_risk_dimensions"
+    ]
+    assert sample["naturalness_diagnostic"]["hard_passed"] is False
+    assert report["gates"]["hard_naturalness_clean"] is False
 
 
 def test_every_sample_must_stay_inside_the_length_band() -> None:

@@ -38,6 +38,7 @@ from novel_system.services.style_reference.ingest import (
 from novel_system.services.style_reference.materialization import MaterializationService
 from novel_system.services.style_reference.preview import PreviewService
 from novel_system.services.style_reference.profile_synthesizer import ProfileSynthesizer
+from novel_system.services.style_reference.profile_fields import generation_safe_summary
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.run_orchestrator import (
     RunOrchestrator,
@@ -927,7 +928,7 @@ def synthesize_profile(
             from novel_system.services.review_cards import ReviewCardService
 
             profile_json = profile.profile_json or {}
-            summary = str(profile_json.get("narrative_summary") or "").strip()
+            summary = generation_safe_summary(profile_json)
             ReviewCardService(session).create_card(
                 {
                     "project_id": None,

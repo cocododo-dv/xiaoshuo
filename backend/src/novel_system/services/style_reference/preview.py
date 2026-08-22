@@ -34,6 +34,7 @@ from novel_system.services.style_reference.errors import (
     StyleReferenceError,
 )
 from novel_system.services.style_reference.policy import ensure_cloud_llm_allowed
+from novel_system.services.style_reference.profile_fields import generation_safe_summary
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 from novel_system.services.style_reference.schemas import (
     PreviewGeneratedSample,
@@ -93,7 +94,7 @@ class PreviewService:
 
         profile_json = profile.profile_json or {}
         samples_index: dict[str, list[str]] = profile_json.get("scene_samples_index") or {}
-        narrative_summary = profile_json.get("narrative_summary", "")
+        narrative_summary = generation_safe_summary(profile_json)
         style_features = (profile_json.get("style_features") or [])[:5]
 
         target_types = target_types or DEFAULT_TARGET_TYPES

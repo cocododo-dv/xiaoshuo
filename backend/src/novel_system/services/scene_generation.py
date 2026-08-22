@@ -24,7 +24,6 @@ from novel_system.services.author_instructions import render_author_note_instruc
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.literary_quality import (
     DIMENSION_WEIGHTS,
-    QUALITY_DIMENSIONS,
     analyze_literary_quality,
 )
 from novel_system.services.llm_audit import sanitize_audit_summary
@@ -139,17 +138,25 @@ _STYLE_SAFETY_REPAIR_TASK_PROMPT = (
 )
 _STYLE_DE_TEMPLATE_REPAIR_TASK_PROMPT = (
     "Edit the labeled style draft directly. Apply only the listed de-template corrections while preserving its "
-    "facts, chronology, paragraph architecture, quantitative style fit, distinctive wording, and ending function. "
+    "facts, chronology, functional paragraph architecture, broad style distribution, distinctive wording, and ending function. "
     "Do not restart the scene, recompose it from a blank page, or rewrite unaffected passages. Return one complete "
     "replacement scene_text and no commentary."
 )
 ANTI_TEMPLATE_GATE_DIMENSIONS = {
+    "model_voice",
+    "image_homogeneity",
+    "repetitive_action",
     "template_action_reuse",
     "image_field_reuse",
     "syntax_monotony",
     "false_clarity",
     "summary_ending",
     "expository_dialogue",
+    "decorative_imagery",
+    "dialogue_as_report",
+    "over_explained_motive",
+    "false_poetic_closure",
+    "self_repetition",
 }
 _STYLE_REWRITE_REGRESSION_TOLERANCE = 0.01
 
@@ -184,8 +191,8 @@ _STYLE_EMPHASIS_ROTATION: list[str] = [
         "绝对避开被标记为禁忌的表达方式,并让'不做什么'成为本次风格选择的首要约束。\n\n"
     ),
     (
-        "[风格强调·节奏指标优先] 本次生成请严格对齐风格参考中的硬指标锚点——"
-        "句长分布、感官词频率、对话比例等量化基线。让数字说话,节奏先行。\n\n"
+        "[风格强调·节奏分布优先] 本次生成关注风格参考中的整体节奏倾向——"
+        "句群长短、段落功能与停顿习惯应自然呈现；不要为任何统计数字机械增删标点或拆段。\n\n"
     ),
 ]
 
@@ -1917,7 +1924,7 @@ class SceneGenerationService:
                     {
                         "dimension": "style_structure",
                         "severity": "taste",
-                        "issue": "The safe style draft is outside one or more high-confidence frozen paragraph or punctuation anchors.",
+                        "issue": "The safe style draft is outside a high-confidence reference-derived prose-shape envelope.",
                         "evidence_excerpt": "",
                         "recommendation": " ".join(
                             str(item)
@@ -2414,8 +2421,8 @@ class SceneGenerationService:
                         else
                         "Apply exactly one controlled de-template repair. Preserve facts, names, chronology, "
                         "required objects, ending function, and the draft's reusable style. Fix only the listed "
-                        "quality violations; keep the injected quantitative style anchors at least as close as "
-                        "the source draft, and do not flatten the prose back to a neutral draft."
+                        "quality violations; preserve the reference-derived distribution tendencies without "
+                        "turning them into counts or punctuation quotas, and do not flatten the prose back to a neutral draft."
                     )
                     + repair_length_instruction
                 ),
@@ -3603,6 +3610,32 @@ def _assess_de_template_rewrite(
     rewritten_quality_score = float(rewritten_quality_gate.get("score") or 0.0)
     source_risk_count = len(source_quality_gate.get("findings") or [])
     rewritten_risk_count = len(rewritten_quality_gate.get("findings") or [])
+    source_target_counts = _quality_gate_dimension_counts(source_quality_gate)
+    rewritten_target_counts = _quality_gate_dimension_counts(rewritten_quality_gate)
+    source_target_evidence_available = any(
+        isinstance(finding, dict)
+        and str(finding.get("dimension") or "").strip()
+        in ANTI_TEMPLATE_GATE_DIMENSIONS
+        for finding in (source_quality_gate.get("findings") or [])
+    )
+    resolved_target_dimensions = sorted(
+        dimension
+        for dimension, count in source_target_counts.items()
+        if rewritten_target_counts.get(dimension, 0) < count
+    )
+    unresolved_target_dimensions = sorted(
+        dimension
+        for dimension, count in source_target_counts.items()
+        if rewritten_target_counts.get(dimension, 0) >= count
+    )
+    new_quality_risk_dimensions = sorted(
+        set(rewritten_target_counts) - set(source_target_counts)
+    )
+    worsened_target_dimensions = sorted(
+        dimension
+        for dimension, count in source_target_counts.items()
+        if rewritten_target_counts.get(dimension, 0) > count
+    )
 
     reasons: list[str] = []
     if rewritten_length < 20:
@@ -3634,6 +3667,20 @@ def _assess_de_template_rewrite(
             reasons.append("anti_template_quality_regressed")
         if rewritten_risk_count > source_risk_count:
             reasons.append("anti_template_risks_increased")
+        # A repair must demonstrably remove at least one of the exact dimensions
+        # that triggered it.  A flat total-risk count previously accepted edits
+        # that merely exchanged one defect for another or left every requested
+        # defect untouched.
+        # Only demand dimension-by-dimension proof when the source gate carries
+        # its actionable findings.  Older checkpoints persisted only a compact
+        # ``risk_dimensions`` list; treating that compatibility fallback as
+        # full evidence would reject a valid completed rewrite on resume even
+        # though the old record cannot support a before/after comparison.
+        if source_target_evidence_available:
+            if source_target_counts and not resolved_target_dimensions:
+                reasons.append("target_quality_defects_not_reduced")
+            if worsened_target_dimensions or new_quality_risk_dimensions:
+                reasons.append("target_quality_defects_worsened")
 
     # 普通去模板改写只是对已安全风格稿做局部修补，不能用通用质量收益交换
     # 对冻结风格画像的可观测偏离。仅在两稿均达到候选评分的最低文本量、指标
@@ -3663,6 +3710,13 @@ def _assess_de_template_rewrite(
         "rewritten_quality_score": round(rewritten_quality_score, 4),
         "source_risk_count": source_risk_count,
         "rewritten_risk_count": rewritten_risk_count,
+        "source_target_risk_counts": source_target_counts,
+        "rewritten_target_risk_counts": rewritten_target_counts,
+        "resolved_target_dimensions": resolved_target_dimensions,
+        "unresolved_target_dimensions": unresolved_target_dimensions,
+        "new_quality_risk_dimensions": new_quality_risk_dimensions,
+        "worsened_target_dimensions": worsened_target_dimensions,
+        "source_target_evidence_available": source_target_evidence_available,
         "quality_non_regression_enforced": enforce_quality_non_regression,
         "style_non_regression_enforced": enforce_style_non_regression,
         "style_conformance": conformance,
@@ -3670,6 +3724,25 @@ def _assess_de_template_rewrite(
         "rewritten_integrity_markers": rewritten_integrity,
         "authoritative_source_used": authoritative_content is not None,
     }
+
+
+def _quality_gate_dimension_counts(quality_gate: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    findings = quality_gate.get("findings") or []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        dimension = str(finding.get("dimension") or "").strip()
+        if dimension not in ANTI_TEMPLATE_GATE_DIMENSIONS:
+            continue
+        counts[dimension] = counts.get(dimension, 0) + 1
+    # Some recovery tests and old checkpoints persisted only risk_dimensions.
+    # Use them as a one-count fallback without double-counting full findings.
+    for raw_dimension in quality_gate.get("risk_dimensions") or []:
+        dimension = str(raw_dimension or "").strip()
+        if dimension in ANTI_TEMPLATE_GATE_DIMENSIONS and dimension not in counts:
+            counts[dimension] = 1
+    return dict(sorted(counts.items()))
 
 
 def _assess_style_rewrite_conformance(
@@ -3954,10 +4027,10 @@ def _assess_style_anchor_conformance(
     bundle: dict[str, Any] | None,
     text: str,
 ) -> dict[str, Any]:
-    """找出可直接修复的句段/标点硬锚点偏差，供唯一二改提示使用。"""
+    """用隐藏统计识别明显形态偏差，只向二改暴露定性修复方向。"""
 
     audit: dict[str, Any] = {
-        "version": "style_anchor_repair_v1",
+        "version": "style_distribution_repair_v2",
         "available": False,
         "requires_repair": False,
         "violations": [],
@@ -4005,33 +4078,18 @@ def _assess_style_anchor_conformance(
             lower_rate = max(0.0, paragraph_target.mean - paragraph_target.tolerance)
             upper_rate = paragraph_target.mean + paragraph_target.tolerance
             if current_rate < lower_rate or current_rate > upper_rate:
-                current_count = max(
-                    1,
-                    len(
-                        [
-                            part
-                            for part in re.split(r"\n\s*\n", text)
-                            if part.strip()
-                        ]
-                    ),
-                )
-                preferred_count = max(
-                    1, round(visible_chars * paragraph_target.mean / 1000.0)
-                )
-                minimum_count = max(
-                    1, math.floor(visible_chars * lower_rate / 1000.0)
-                )
-                maximum_count = max(
-                    minimum_count,
-                    math.ceil(visible_chars * upper_rate / 1000.0),
-                )
-                action = (
-                    "merge adjacent paragraphs"
-                    if current_rate > upper_rate
-                    else "split only at narrative-unit boundaries"
-                )
                 directions.append(
-                    f"Paragraph structure: {current_count} now; {action} toward {preferred_count}, keeping the final count within {minimum_count}-{maximum_count}."
+                    (
+                        "Paragraph structure is substantially more fragmented than the reference tendency. "
+                        "Merge adjacent fragments that perform the same narrative function; never merge across "
+                        "a POV, action, time, or information-release boundary."
+                    )
+                    if current_rate > upper_rate
+                    else (
+                        "Paragraph structure is substantially denser than the reference tendency. "
+                        "Split only where POV, action, time, or information function genuinely changes; "
+                        "do not chase a paragraph count."
+                    )
                 )
                 violations.append(
                     {
@@ -4045,22 +4103,14 @@ def _assess_style_anchor_conformance(
         semicolon_target = target.metrics.get("semicolon_density_per_1k")
         if semicolon_target is not None and "semicolon_density_per_1k" in actual:
             current_rate = float(actual["semicolon_density_per_1k"])
-            lower_rate = max(0.0, semicolon_target.mean - semicolon_target.tolerance)
             upper_rate = semicolon_target.mean + semicolon_target.tolerance
-            if current_rate < lower_rate or current_rate > upper_rate:
-                current_count = sum(text.count(char) for char in "；;")
-                preferred_count = max(
-                    0, round(visible_chars * semicolon_target.mean / 1000.0)
-                )
-                minimum_count = max(
-                    0, math.floor(visible_chars * lower_rate / 1000.0)
-                )
-                maximum_count = max(
-                    minimum_count,
-                    math.ceil(visible_chars * upper_rate / 1000.0),
-                )
+            # “分号不足”不是文学缺陷。主动补足标点最容易导致统计投机和机械腔；
+            # 仅在明显过量时要求删除无语义依据的分号。
+            if current_rate > upper_rate:
                 directions.append(
-                    f"Semicolon rhythm: {current_count} now; revise toward {preferred_count}, within {minimum_count}-{maximum_count}, using semicolons only between genuinely parallel or progressive clauses."
+                    "Semicolon rhythm is substantially denser than the reference tendency. "
+                    "Keep semicolons only between genuinely parallel or progressive clauses; "
+                    "do not replace them with another repeated punctuation pattern."
                 )
                 violations.append(
                     {
@@ -4586,11 +4636,16 @@ def _anti_template_quality_gate(
     text: str, *, scene_id: str, chapter_id: str
 ) -> dict[str, Any]:
     signals, findings = analyze_literary_quality(text)
+    gate_weight_total = sum(
+        DIMENSION_WEIGHTS[dimension]
+        for dimension in ANTI_TEMPLATE_GATE_DIMENSIONS
+    )
     score = round(
         sum(
             signals[dimension]["score"] * DIMENSION_WEIGHTS[dimension]
-            for dimension in QUALITY_DIMENSIONS
-        ),
+            for dimension in ANTI_TEMPLATE_GATE_DIMENSIONS
+        )
+        / gate_weight_total,
         4,
     )
     risky_findings = [
@@ -4620,7 +4675,7 @@ def _de_template_rewrite_brief(quality_gate: dict[str, Any]) -> list[str]:
     brief = [
         "Run no more than this one de-template pass; do not add another rewrite loop.",
         "Keep the same plot facts, speaker identities, core choice, cost, and final hook.",
-        "Treat the injected paragraph, sentence-rhythm, and punctuation targets as invariants: fix the listed local defects without worsening their overall fit.",
+        "Preserve the reference-derived broad rhythm and paragraph tendencies, but never keep or add an awkward sentence merely to match punctuation or length statistics.",
     ]
     for finding in quality_gate.get("findings", [])[:5]:
         signal_id = finding.get("quality_signal_id", "quality:unknown")

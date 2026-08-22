@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.style_reference._llm_helper import LLMNodeError, call_llm_node
+from novel_system.services.style_reference.profile_fields import generation_safe_summary
 from novel_system.services.style_reference.schemas import SemanticReportItem
 from novel_system.services.style_reference.untrusted_data import UntrustedPayload
 
@@ -46,7 +47,7 @@ def check_semantic(
 
     profile_json = profile.profile_json or {}
     style_features = list(profile_json.get("style_features") or [])[:5]
-    narrative_summary = str(profile_json.get("narrative_summary") or "")
+    narrative_summary = generation_safe_summary(profile_json)
 
     payload = {
         "generated_text": generated_text[:3000],

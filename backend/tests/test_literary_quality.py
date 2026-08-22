@@ -458,6 +458,25 @@ def test_self_repetition_dimension_defaults_to_no_risk() -> None:
     assert signals["self_repetition"]["score"] == 1.0
 
 
+def test_self_repetition_allows_deliberate_two_part_refrain() -> None:
+    signals, findings = analyze_literary_quality(
+        "那扇锈住的铁门还是没有打开。她走到楼下，听完雨里的脚步。"
+        "那扇锈住的铁门还是没有打开。"
+    )
+
+    assert signals["self_repetition"]["risk"] is False
+    assert not any(item["dimension"] == "self_repetition" for item in findings)
+
+
+def test_self_repetition_detects_high_confidence_mechanical_loop() -> None:
+    signals, findings = analyze_literary_quality(
+        "他把目光重新移回那扇紧闭的门边。" * 4
+    )
+
+    assert signals["self_repetition"]["risk"] is True
+    assert any(item["dimension"] == "self_repetition" for item in findings)
+
+
 def test_external_signals_override_defaults() -> None:
     signals, _ = analyze_literary_quality(
         "She opened the door.",

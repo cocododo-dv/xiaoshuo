@@ -268,7 +268,7 @@ function WsStyleRef({ go }) {
           </button>
           <p className="sr-safe-note">
             <I.ShieldCheck size={12} />
-            <span>只学习抽象风格画像，不复刻原文表达、人物或桥段。</span>
+            <span>不限内置作者；从每次导入的任意作品动态学习抽象风格，不复刻原文表达、人物或桥段。</span>
           </p>
         </aside>
 
@@ -471,7 +471,7 @@ function SrOverview({ book, go }) {
       <div className="sr-ov-grid">
         <div className="card sr-ov-metrics">
           <div className="card-head">
-            <div><div className="card-title">硬指标基线</div><div className="card-sub">全文计算 · {metrics.length} 项 · 用于抽取对齐与回测阈值</div></div>
+            <div><div className="card-title">内部统计基线</div><div className="card-sub">全文计算 · {metrics.length} 项 · 用于校准与回测，不作为生成配额</div></div>
             <span className={`pill ${isReal ? "pill-sage" : ""}`}><span className="pill-dot" />{isReal ? "实时" : "MetricsEngine"}</span>
           </div>
           <div className="sr-metric-grid">
@@ -952,7 +952,7 @@ function SrProfile({ book, go }) {
           </div>
           <p className="sr-profile-summary text-serif">
             {real
-              ? (pj.narrative_summary || "（该画像尚无叙述性概述。）")
+              ? (pj.qualitative_summary || pj.narrative_summary || "（该画像尚无叙述性概述。）")
               : "冷峻、克制、白描见长。短句为骨，逗号顿连推进节奏，少用关联词与抒情排比。比喻具象、取自乡土器物，喻体之后即收，不作解释。叙述者多为限知的「我」，与事件保持冷静距离；对话后接动作而非心理剖白。整体以白描叠加细节制造反讽与悲悯，不依赖形容词堆砌。"}
           </p>
           {real && features.length > 0 && (
@@ -1531,7 +1531,7 @@ function SrApply({ go, book }) {
           ) : (
             <>
               <div className="sr-bundle-frag">
-                <div className="sr-frag-label"><span className="sr-frag-ord">1</span> narrative_summary</div>
+                <div className="sr-frag-label"><span className="sr-frag-ord">1</span> 风格定性概述</div>
                 <p className="sr-frag-text">冷峻克制白描，短句为骨，逗号顿连…</p>
               </div>
               <div className="sr-bundle-frag">

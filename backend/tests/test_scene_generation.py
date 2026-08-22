@@ -1582,7 +1582,40 @@ def test_ordinary_de_template_rejects_measurable_frozen_style_regression(session
     assert assessment["style_non_regression_enforced"] is True
 
 
-def test_style_anchor_audit_turns_frozen_shape_gap_into_concrete_repair(
+def test_ordinary_de_template_requires_actionable_target_defect_reduction(
+    session,
+    monkeypatch,
+) -> None:
+    _seed_scene(
+        session,
+        must_include_text="红色信封",
+        target_length_band="30-100 Chinese characters",
+    )
+    scene = session.get(SceneCard, "CH100_SC01")
+    unchanged_gate = {
+        "triggered": True,
+        "score": 0.4,
+        "risk_dimensions": ["model_voice"],
+        "findings": [{"dimension": "model_voice"}],
+    }
+    monkeypatch.setattr(
+        "novel_system.services.scene_generation._anti_template_quality_gate",
+        lambda *args, **kwargs: unchanged_gate,
+    )
+
+    assessment = _assess_de_template_rewrite(
+        scene=scene,
+        source_content="她把红色信封压在桌角，没有拆。门外脚步停住，她抬头听着，随后关灯。",
+        rewritten_content="她把红色信封压在桌角，没有拆。门外脚步停住，她抬头听着，随后关了灯。",
+        source_quality_gate=unchanged_gate,
+    )
+
+    assert assessment["accepted"] is False
+    assert "target_quality_defects_not_reduced" in assessment["reasons"]
+    assert assessment["source_target_evidence_available"] is True
+
+
+def test_style_anchor_audit_exposes_soft_shape_repair_without_punctuation_quota(
     monkeypatch,
 ) -> None:
     profile = SimpleNamespace(
@@ -1613,12 +1646,13 @@ def test_style_anchor_audit_turns_frozen_shape_gap_into_concrete_repair(
 
     assert audit["available"] is True
     assert audit["requires_repair"] is True
+    # 段落明显碎裂需要修；分号少不是文学缺陷，不能为了拟合统计主动补分号。
     assert {item["metric"] for item in audit["violations"]} == {
         "paragraphs_per_1k",
-        "semicolon_density_per_1k",
     }
     assert any("Paragraph structure" in item for item in audit["repair_directions"])
-    assert any("Semicolon rhythm" in item for item in audit["repair_directions"])
+    assert not any("Semicolon rhythm" in item for item in audit["repair_directions"])
+    assert not any(char.isdigit() for item in audit["repair_directions"] for char in item)
 
 
 def test_style_paragraph_normalization_only_merges_and_preserves_text_sequence(

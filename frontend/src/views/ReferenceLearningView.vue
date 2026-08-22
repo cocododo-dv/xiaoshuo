@@ -270,6 +270,9 @@ function describeSubDim(dimPath) {
           <header class="card-head">
             <p class="card-title">导入参考书</p>
           </header>
+          <p class="reference-basis-hint">
+            不限内置作者或预设风格；每次都从你导入的任意作品或文本合集动态学习。
+          </p>
           <nav class="import-tabs">
             <button
               type="button"
@@ -293,14 +296,14 @@ function describeSubDim(dimPath) {
               <input
                 type="text"
                 :value="store.pathDraft.file_path"
-                placeholder="如 backend/tests/golden/style_reference/corpus/luxun_short_stories.txt"
+                placeholder="如 D:/writing/reference/my_style_samples.txt"
                 data-testid="reference-import-path"
                 @input="store.setPathFilePath($event.target.value)"
               />
             </label>
             <label class="field">
               <span class="field-label">书名</span>
-              <input type="text" v-model="store.pathDraft.title" placeholder="例:鲁迅短篇集" />
+              <input type="text" v-model="store.pathDraft.title" placeholder="例:夜雨样章合集" />
             </label>
             <label class="field">
               <span class="field-label">作者(可选)</span>
@@ -558,7 +561,7 @@ function describeSubDim(dimPath) {
                   </BaseBadge>
                 </header>
                 <p class="profile-summary">
-                  {{ store.currentProfile.profile_json?.narrative_summary || "(无简述)" }}
+                  {{ store.currentProfile.profile_json?.qualitative_summary || store.currentProfile.profile_json?.narrative_summary || "(无简述)" }}
                 </p>
                 <div class="profile-feature-block">
                   <p class="feature-title">style_features({{ (store.currentProfile.profile_json?.style_features || []).length }})</p>
@@ -659,6 +662,12 @@ function describeSubDim(dimPath) {
 
 .card-head { display: flex; justify-content: space-between; align-items: center; }
 .card-title { margin: 0; font-weight: 700; font-size: 0.95rem; }
+.reference-basis-hint {
+  margin: 0;
+  color: var(--text-muted, rgba(33, 26, 21, 0.62));
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
 
 .import-tabs { display: flex; gap: 0.4rem; }
 .tab {
