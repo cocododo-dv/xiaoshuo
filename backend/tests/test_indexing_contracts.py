@@ -135,10 +135,15 @@ def test_alias_scope_exposes_latest_alias_mismatch_fault_summary(client, session
     )
     session.commit()
 
-    response = client.get("/api/v1/index/alias-scopes/style_observation:global:global")
+    response = client.get(
+        "/api/v1/index/alias-scopes",
+        params={"object_type": "style_observation", "scope": "global", "scope_ref_id": "global"},
+    )
 
     assert response.status_code == 200
-    data = response.json()["data"]
+    items = response.json()["data"]["items"]
+    assert len(items) == 1
+    data = items[0]
     assert data["collection_family"] == "style_observation_global_global"
     assert data["sample_query_success"] is False
     assert data["recent_fault_summary"] == {
@@ -552,27 +557,6 @@ def test_human_review_event_detail_exposes_structured_targets(client, session) -
         "target_ref": "verify_job:verify_review_structured",
     }
 
-    detail = client.get("/api/v1/human-review-events/human_review_idempotency_recovery_structured")
-
-    assert detail.status_code == 200
-    assert detail.json()["data"]["linked_target"] == {
-        "target_type": "review_item",
-        "target_id": "review_structured",
-        "target_ref": "review_item:review_structured",
-    }
-    assert detail.json()["data"]["followup_target"] == {
-        "target_type": "verify_job",
-        "target_id": "verify_review_structured",
-        "target_ref": "verify_job:verify_review_structured",
-    }
-
-
-def test_human_review_event_detail_returns_404_when_missing(client) -> None:
-    response = client.get("/api/v1/human-review-events/human_review_missing")
-
-    assert response.status_code == 404
-    assert response.json()["error"]["code"] == "HUMAN_REVIEW_EVENT_NOT_FOUND"
-
 
 def test_recovery_sweep_exposes_reclaimed_and_failed_job_summaries(client, session) -> None:
     session.add(
@@ -781,26 +765,6 @@ def test_recovery_sweep_marks_stale_idempotency_keys_failed_and_creates_human_re
     assert runtime_logs[-1].payload_json["actor_ref"] == "system/recovery_sweep"
     assert runtime_logs[-1].payload_json["event_id"] == "human_review_idempotency_recovery_approve-review-stale"
     assert runtime_logs[-1].payload_json["idempotency_key"] == "approve-review-stale"
-
-    detail = client.get("/api/v1/human-review-events/human_review_idempotency_recovery_approve-review-stale")
-
-    assert detail.status_code == 200
-    assert detail.json()["data"]["object_ref"] == "approve-review-stale"
-    assert detail.json()["data"]["details_json"] == {
-        "idempotency_key": "approve-review-stale",
-        "request_hash": "request-hash-stale",
-        "request_method": "POST",
-        "request_path_template": "/api/v1/review-items/{review_id}/approve",
-        "request_payload": {"review_id": "review_stale"},
-        "created_by_ref": "system/recovery_sweep",
-        "created_reason": "stale_idempotency_key_recovered",
-        "linked_target_type": "review_item",
-        "linked_target_id": "review_stale",
-        "linked_target_ref": "review_item:review_stale",
-        "attempt_no": 2,
-        "previous_worker_id": "http",
-        "previous_lease_expires_at": "2000-01-01T00:00:00+00:00",
-    }
 
 
 def test_human_review_retry_request_replays_original_approve_action(client, session) -> None:

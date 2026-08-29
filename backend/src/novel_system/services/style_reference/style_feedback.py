@@ -14,9 +14,6 @@ import hashlib
 import math
 from typing import Any, Iterable, Mapping, Sequence
 
-from sqlalchemy import select
-
-from novel_system.db.models import HumanReviewEvent
 from novel_system.services.hash_engine import canonical_json
 
 
@@ -305,84 +302,6 @@ def validate_candidate_selection_feedback(payload: Mapping[str, Any]) -> dict[st
     return feedback
 
 
-def summarize_profile_candidate_feedback(
-    session: Any, profile_id: str
-) -> dict[str, Any]:
-    events = session.scalars(
-        select(HumanReviewEvent).where(
-            HumanReviewEvent.event_source == "candidate_selection"
-        )
-    ).all()
-    observations: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    invalid_observations = 0
-    for event in events:
-        details = event.details_json or {}
-        history = details.get("style_feedback_history")
-        if not isinstance(history, list):
-            current = details.get("style_feedback")
-            history = [current] if isinstance(current, Mapping) else []
-        for item in history:
-            if not isinstance(item, Mapping):
-                invalid_observations += 1
-                continue
-            try:
-                feedback = validate_candidate_selection_feedback(item)
-            except ValueError:
-                invalid_observations += 1
-                continue
-            if profile_id not in (feedback.get("profile_ids") or []):
-                continue
-            feedback_id = str(feedback.get("feedback_id") or "")
-            if feedback_id and feedback_id in seen_ids:
-                continue
-            if feedback_id:
-                seen_ids.add(feedback_id)
-            observations.append(feedback)
-
-    attributed = [item for item in observations if item.get("style_attributed") is True]
-    calibration = [
-        item
-        for item in attributed
-        if item.get("observational_calibration_eligible") is True
-    ]
-    agreements = [
-        item
-        for item in calibration
-        if item.get("agrees_with_machine_style_leader") is True
-    ]
-    disagreements = [
-        item
-        for item in calibration
-        if item.get("agrees_with_machine_style_leader") is False
-    ]
-    return {
-        "version": STYLE_FEEDBACK_VERSION,
-        "profile_id": str(profile_id),
-        "total_observations": len(observations),
-        "invalid_observations": invalid_observations,
-        "style_attributed_observations": len(attributed),
-        "calibration_observations": len(calibration),
-        "no_clear_difference_observations": sum(
-            item.get("no_clear_difference") is True for item in observations
-        ),
-        "machine_style_agreements": len(agreements),
-        "machine_style_disagreements": len(disagreements),
-        "machine_style_agreement_rate": (
-            len(agreements) / len(calibration) if calibration else None
-        ),
-        "scorer_versions": sorted(
-            {
-                str(item["scorer_version"])
-                for item in observations
-                if item.get("scorer_version")
-            }
-        ),
-        "policy_evidence_eligible": False,
-        "policy_evidence_reason": "observational_feedback_requires_separate_blind_evaluation",
-    }
-
-
 __all__ = [
     "ALLOWED_PREFERENCE_TAGS",
     "STYLE_ATTRIBUTION_TAGS",
@@ -391,7 +310,6 @@ __all__ = [
     "build_candidate_selection_feedback",
     "build_candidate_style_snapshot",
     "normalize_preference_tags",
-    "summarize_profile_candidate_feedback",
     "validate_candidate_style_snapshot",
     "validate_candidate_selection_feedback",
 ]

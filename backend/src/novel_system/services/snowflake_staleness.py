@@ -87,11 +87,6 @@ def semantic_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
     return {key: value for key, value in data.items() if not str(key).startswith("fe_")}
 
 
-def content_sig(payload: dict[str, Any] | None) -> str:
-    """故事内容签名（依赖边级判定用；忽略 ``fe_*`` 写穿缓存）。"""
-    return _sig(semantic_payload(payload))
-
-
 def field_sigs(payload: dict[str, Any] | None) -> dict[str, str]:
     """逐顶层故事字段的内容签名——支持字段级 diff，又不必存整份旧 payload。"""
     data = semantic_payload(payload)

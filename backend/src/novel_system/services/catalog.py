@@ -475,36 +475,6 @@ class CatalogService:
         self.session.flush()
         return {"scene": self._scene_payload_with_slug(scene), "changed": True}
 
-    def move_scene(self, project_id: str, scene_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-        scene = self._require_scene(project_id, scene_id)
-        chapter = self._require_chapter(project_id, scene.chapter_id)
-        body = payload or {}
-        if body.get("to") is None:
-            raise DomainError("CATALOG_MOVE_INVALID", "target position 'to' is required", status_code=400)
-        scenes = self.scene_rows(scene.chapter_id)
-        ids = [s.scene_id for s in scenes]
-        from_index = ids.index(scene.scene_id)
-        to_index = max(0, min(int(body["to"]), len(scenes) - 1))
-        changed = from_index != to_index
-        require_chapter_mutation_allowed(
-            self.session,
-            chapter,
-            changed_fields=["scenes.order"] if changed else [],
-            operation="catalog.move_scene",
-        )
-        ordered = list(scenes)
-        if changed:
-            ordered.insert(to_index, ordered.pop(from_index))
-            self._renumber(ordered)
-            self.session.flush()
-        project = self._projects.require_project(project_id)
-        chapters = self.chapter_rows(project_id)
-        index = next(i for i, c in enumerate(chapters) if c.chapter_id == chapter.chapter_id)
-        return {
-            "chapter": self.chapter_payload(project, chapter, index),
-            "changed": changed,
-        }
-
     def reorder_chapters(
         self,
         project_id: str,

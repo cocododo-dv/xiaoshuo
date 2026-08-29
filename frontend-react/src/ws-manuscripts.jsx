@@ -4,6 +4,7 @@ import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { WsWorks } from "./ws-works.jsx";
 import { rvPush } from "./ws-review.jsx";
 import { WsManuStore, manuscriptChapterEligible, manuscriptDisplayState } from "./ws-manuscripts-store.jsx";
+import { dayTimeLabel } from "./lib/ago.js";
 
 /* global React, I */
 const { useState: useSt9, useRef: useRef9, useEffect: useEf9 } = React;
@@ -1163,14 +1164,8 @@ function ManuStructure({ picked, body, catCh }) {
 }
 
 /* ---------- 对比：正文修订历史（FE-ALIGN F2 接真，数据源 WrDocVersions） ---------- */
-function manuRevTime(iso) {
-  try {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return "";
-    const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-    return d.toDateString() === new Date().toDateString() ? `今天 ${hm}` : `${d.getMonth() + 1} 月 ${d.getDate()} 日 ${hm}`;
-  } catch (e) { return ""; }
-}
+/* 委托 lib/ago.js dayTimeLabel（文案契约在那边：非法入参返回空串）。 */
+const manuRevTime = dayTimeLabel;
 
 function ManuDiff({ picked, catCh }) {
   const scenes = (catCh && catCh.scenes) || [];
@@ -1296,14 +1291,14 @@ function ManuReturnModal({ picked, catCh, busy, error, onClose, onConfirm }) {
   const ref = useRef9(null);
   useEf9(() => { if (ref.current) ref.current.focus(); }, []);
   useEf9(() => {
-    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    const onKey = (e) => { if (e.key === "Escape" && !busy) onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [busy, onClose]);
   const sceneTitle = (scenes.find(s => s.sid === sid) || {}).title || "";
   const can = reason.trim().length > 0;
   return (
-    <div className="mr-scrim" onClick={onClose}>
+    <div className="mr-scrim" onClick={() => !busy && onClose()}>
       <div className="mr-card" role="dialog" aria-modal="true" aria-label="退回小修" onClick={(e) => e.stopPropagation()}>
         <header className="mr-head">
           <div>

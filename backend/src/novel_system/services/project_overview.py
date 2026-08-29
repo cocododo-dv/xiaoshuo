@@ -1,4 +1,4 @@
-"""FE-ALIGN Phase 2: v2 作品域聚合（dashboard / flow-status / writing-stats）。
+"""FE-ALIGN Phase 2: v2 作品域聚合（dashboard / writing-stats）。
 
 原型主页（design/ws-works.jsx 的 home 形状）所需的聚合读端点，纯读不新增写路径。
 雪花步骤状态映射（简报改动 3）：approved→done、当前步→active、
@@ -19,9 +19,7 @@ from sqlalchemy.orm import Session
 from novel_system.db.models import (
     AuthorDraft,
     ChapterGoal,
-    ChapterState,
     ReviewItem,
-    SceneCard,
     SnowflakeStepRun,
     StoryProject,
 )
@@ -81,63 +79,7 @@ class ProjectOverviewService:
             "stats": self._stats.stats_payload(project_id),
         }
 
-    # ---- flow-status ----
-
-    def flow_status(self, project_id: str) -> dict[str, Any]:
-        project = self._projects.require_project(project_id)
-        steps = list_step_definitions()
-        latest = self._latest_by_step(project_id)
-        approved = sum(1 for step in steps if (run := latest.get(step["step_key"])) and run.status == "approved")
-        chapters = self._chapter_rows(project_id)
-        chapter_ids = [chapter.chapter_id for chapter in chapters]
-        scenes = self._scene_rows(project_id)
-        scene_ids = [scene.scene_id for scene in scenes]
-        drafts = self._current_scene_drafts(scene_ids)
-        draft_queue_len = sum(
-            1 for scene in scenes if not (drafts.get(scene.scene_id) and drafts[scene.scene_id].content.strip())
-        )
-        # FE-ALIGN P5/P7：统一收件箱口径（持久卡 ∪ 派生卡的 open 数；
-        # fe_card 行 status 恒 pending，不能再按 status 计数）
-        from novel_system.services.review_cards import ReviewCardService
-
-        open_review_count = len(ReviewCardService(self.session).list_cards(project_id, state="open")["items"])
-        qc_blocked_count = 0
-        if chapter_ids:
-            qc_blocked_count = len(
-                self.session.execute(
-                    select(ChapterState.chapter_id).where(
-                        ChapterState.chapter_id.in_(chapter_ids),
-                        ChapterState.aggregate_block_reason != "none",
-                    )
-                ).scalars().all()
-            )
-        return {
-            "snowflake_pct": round(approved * 100 / len(steps)) if steps else 0,
-            "open_review_count": open_review_count,
-            "draft_queue_len": draft_queue_len,
-            "qc_blocked_count": qc_blocked_count,
-            "last_manuscript": self._last_manuscript(project, chapter_views=self._chapter_views(project)),
-        }
-
     # ---- internals ----
-
-    def _chapter_rows(self, project_id: str) -> list[ChapterGoal]:
-        return list(
-            self.session.execute(
-                select(ChapterGoal)
-                .where(ChapterGoal.project_id == project_id, ChapterGoal.trashed_flag == 0)
-                .order_by(ChapterGoal.chapter_id.asc())
-            ).scalars().all()
-        )
-
-    def _scene_rows(self, project_id: str) -> list[SceneCard]:
-        return list(
-            self.session.execute(
-                select(SceneCard)
-                .where(SceneCard.project_id == project_id, SceneCard.trashed_flag == 0)
-                .order_by(SceneCard.chapter_id.asc(), SceneCard.scene_seq.asc())
-            ).scalars().all()
-        )
 
     def _current_scene_drafts(self, scene_ids: list[str]) -> dict[str, AuthorDraft]:
         if not scene_ids:

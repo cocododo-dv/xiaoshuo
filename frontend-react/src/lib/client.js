@@ -377,31 +377,48 @@ async function requestEnvelope(
   }
 }
 
-export async function apiGet(path, { signal, timeoutMs } = {}) {
+/* ---- 读取类请求共用骨架 ----
+   两个读侧导出（apiGet/apiAdminGet）共享同一套「生成请求 id → 带访问令牌头 →
+   读超时请求」流程，差异只有一点：adminToken 真值时附加 X-Admin-Token
+   （空令牌不加头，保持无令牌 loopback 后端契约）。错误规范化由
+   requestEnvelope 内部完成，这里不再包一层。 */
+async function readRequest(path, { adminToken = "", signal, timeoutMs } = {}) {
   const clientRequestId = buildClientRequestId();
+  const headers = withAccessToken({ "X-Client-Request-Id": clientRequestId });
+  if (adminToken) headers["X-Admin-Token"] = adminToken;
   return requestEnvelope(
     path,
-    { headers: withAccessToken({ "X-Client-Request-Id": clientRequestId }) },
+    { headers },
     { signal, timeoutMs },
     clientRequestId,
     DEFAULT_READ_TIMEOUT_MS,
   );
 }
 
-export async function apiPost(path, body = {}, { signal, timeoutMs } = {}) {
+export async function apiGet(path, { signal, timeoutMs } = {}) {
+  return readRequest(path, { signal, timeoutMs });
+}
+
+/* ---- 变更类请求共用骨架 ----
+   六个 mutation 导出（apiPost/apiPatch/apiPut/apiDelete + 管理面两个）共享同一套
+   「取幂等键 → 请求 → 成功释放 / 失败按可重试性释放」流程，差异只有三点：
+   method、body 有无（undefined 表示无 body：不带 Content-Type/请求体，且幂等
+   签名的载荷为空串）、adminToken 真值时附加 X-Admin-Token（空令牌不加头，
+   保持无令牌 loopback 后端契约）。 */
+async function mutationRequest(method, path, body, { adminToken = "", signal, timeoutMs } = {}) {
   const clientRequestId = buildClientRequestId();
-  const { key, signature } = acquireIdempotencyKey("POST", path, body);
+  const { key, signature } = acquireIdempotencyKey(method, path, body);
   try {
-    const data = await requestEnvelope(path, {
-      method: "POST",
-      headers: withAccessToken({
-        "Content-Type": "application/json",
-        "X-Idempotency-Key": key,
-        "X-Operator-Ref": getOperatorRef(),
-        "X-Client-Request-Id": clientRequestId,
-      }),
-      body: JSON.stringify(body),
-    }, { signal, timeoutMs }, clientRequestId, DEFAULT_MUTATION_TIMEOUT_MS);
+    const headers = withAccessToken({
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      "X-Idempotency-Key": key,
+      "X-Operator-Ref": getOperatorRef(),
+      "X-Client-Request-Id": clientRequestId,
+    });
+    if (adminToken) headers["X-Admin-Token"] = adminToken;
+    const init = { method, headers };
+    if (body !== undefined) init.body = JSON.stringify(body);
+    const data = await requestEnvelope(path, init, { signal, timeoutMs }, clientRequestId, DEFAULT_MUTATION_TIMEOUT_MS);
     releaseIdempotencyKey(signature);
     return data;
   } catch (error) {
@@ -414,6 +431,10 @@ export async function apiPost(path, body = {}, { signal, timeoutMs } = {}) {
   }
 }
 
+export async function apiPost(path, body = {}, options = {}) {
+  return mutationRequest("POST", path, body, options);
+}
+
 export function cancelRunJob(jobId, options) {
   return apiPost(`/api/v1/run-jobs/${encodeURIComponent(jobId)}/cancel`, {}, options);
 }
@@ -422,151 +443,30 @@ export function getLatestSceneRunJob(sceneId, options) {
   return apiGet(`/api/v1/scenes/${encodeURIComponent(sceneId)}/run/jobs/latest`, options);
 }
 
-export async function apiPatch(path, body = {}, { signal, timeoutMs } = {}) {
-  const clientRequestId = buildClientRequestId();
-  const { key, signature } = acquireIdempotencyKey("PATCH", path, body);
-  try {
-    const data = await requestEnvelope(path, {
-      method: "PATCH",
-      headers: withAccessToken({
-        "Content-Type": "application/json",
-        "X-Idempotency-Key": key,
-        "X-Operator-Ref": getOperatorRef(),
-        "X-Client-Request-Id": clientRequestId,
-      }),
-      body: JSON.stringify(body),
-    }, { signal, timeoutMs }, clientRequestId, DEFAULT_MUTATION_TIMEOUT_MS);
-    releaseIdempotencyKey(signature);
-    return data;
-  } catch (error) {
-    const normalized = normalizeRequestError(error, clientRequestId);
-    if (!normalized.retryable && normalized.code !== "IDEMPOTENCY_REQUEST_IN_PROGRESS") {
-      releaseIdempotencyKey(signature);
-    }
-    throw normalized;
-  }
+export async function apiPatch(path, body = {}, options = {}) {
+  return mutationRequest("PATCH", path, body, options);
 }
 
-export async function apiPut(path, body = {}, { signal, timeoutMs } = {}) {
-  const clientRequestId = buildClientRequestId();
-  const { key, signature } = acquireIdempotencyKey("PUT", path, body);
-  try {
-    const data = await requestEnvelope(path, {
-      method: "PUT",
-      headers: withAccessToken({
-        "Content-Type": "application/json",
-        "X-Idempotency-Key": key,
-        "X-Operator-Ref": getOperatorRef(),
-        "X-Client-Request-Id": clientRequestId,
-      }),
-      body: JSON.stringify(body),
-    }, { signal, timeoutMs }, clientRequestId, DEFAULT_MUTATION_TIMEOUT_MS);
-    releaseIdempotencyKey(signature);
-    return data;
-  } catch (error) {
-    const normalized = normalizeRequestError(error, clientRequestId);
-    if (!normalized.retryable && normalized.code !== "IDEMPOTENCY_REQUEST_IN_PROGRESS") {
-      releaseIdempotencyKey(signature);
-    }
-    throw normalized;
-  }
+export async function apiPut(path, body = {}, options = {}) {
+  return mutationRequest("PUT", path, body, options);
 }
 
 /* ---- 管理面(X-Admin-Token)变体 ----
    系统配置写接口需要管理令牌;无令牌配置的本地后端对 loopback 放行,
    此时 adminToken 传空即可。令牌存取由调用方(WsAiProviders)负责。 */
 
-export async function apiAdminGet(path, adminToken = "", { signal, timeoutMs } = {}) {
-  const clientRequestId = buildClientRequestId();
-  try {
-    const headers = withAccessToken({ "X-Client-Request-Id": clientRequestId });
-    if (adminToken) headers["X-Admin-Token"] = adminToken;
-    return await requestEnvelope(
-      path,
-      { headers },
-      { signal, timeoutMs },
-      clientRequestId,
-      DEFAULT_READ_TIMEOUT_MS,
-    );
-  } catch (error) {
-    throw normalizeRequestError(error, clientRequestId);
-  }
+export async function apiAdminGet(path, adminToken = "", options = {}) {
+  return readRequest(path, { ...options, adminToken });
 }
 
-export async function apiAdminPost(path, body = {}, adminToken = "", { signal, timeoutMs } = {}) {
-  const clientRequestId = buildClientRequestId();
-  const { key, signature } = acquireIdempotencyKey("POST", path, body);
-  try {
-    const headers = withAccessToken({
-      "Content-Type": "application/json",
-      "X-Idempotency-Key": key,
-      "X-Operator-Ref": getOperatorRef(),
-      "X-Client-Request-Id": clientRequestId,
-    });
-    if (adminToken) headers["X-Admin-Token"] = adminToken;
-    const data = await requestEnvelope(path, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    }, { signal, timeoutMs }, clientRequestId, DEFAULT_MUTATION_TIMEOUT_MS);
-    releaseIdempotencyKey(signature);
-    return data;
-  } catch (error) {
-    const normalized = normalizeRequestError(error, clientRequestId);
-    if (!normalized.retryable && normalized.code !== "IDEMPOTENCY_REQUEST_IN_PROGRESS") {
-      releaseIdempotencyKey(signature);
-    }
-    throw normalized;
-  }
+export async function apiAdminPost(path, body = {}, adminToken = "", options = {}) {
+  return mutationRequest("POST", path, body, { ...options, adminToken });
 }
 
-export async function apiAdminDelete(path, adminToken = "", { signal, timeoutMs } = {}) {
-  const clientRequestId = buildClientRequestId();
-  const { key, signature } = acquireIdempotencyKey("DELETE", path, undefined);
-  try {
-    const headers = withAccessToken({
-      "X-Idempotency-Key": key,
-      "X-Operator-Ref": getOperatorRef(),
-      "X-Client-Request-Id": clientRequestId,
-    });
-    if (adminToken) headers["X-Admin-Token"] = adminToken;
-    const data = await requestEnvelope(
-      path,
-      { method: "DELETE", headers },
-      { signal, timeoutMs },
-      clientRequestId,
-      DEFAULT_MUTATION_TIMEOUT_MS,
-    );
-    releaseIdempotencyKey(signature);
-    return data;
-  } catch (error) {
-    const normalized = normalizeRequestError(error, clientRequestId);
-    if (!normalized.retryable && normalized.code !== "IDEMPOTENCY_REQUEST_IN_PROGRESS") {
-      releaseIdempotencyKey(signature);
-    }
-    throw normalized;
-  }
+export async function apiAdminDelete(path, adminToken = "", options = {}) {
+  return mutationRequest("DELETE", path, undefined, { ...options, adminToken });
 }
 
-export async function apiDelete(path, { signal, timeoutMs } = {}) {
-  const clientRequestId = buildClientRequestId();
-  const { key, signature } = acquireIdempotencyKey("DELETE", path, undefined);
-  try {
-    const data = await requestEnvelope(path, {
-      method: "DELETE",
-      headers: withAccessToken({
-        "X-Idempotency-Key": key,
-        "X-Operator-Ref": getOperatorRef(),
-        "X-Client-Request-Id": clientRequestId,
-      }),
-    }, { signal, timeoutMs }, clientRequestId, DEFAULT_MUTATION_TIMEOUT_MS);
-    releaseIdempotencyKey(signature);
-    return data;
-  } catch (error) {
-    const normalized = normalizeRequestError(error, clientRequestId);
-    if (!normalized.retryable && normalized.code !== "IDEMPOTENCY_REQUEST_IN_PROGRESS") {
-      releaseIdempotencyKey(signature);
-    }
-    throw normalized;
-  }
+export async function apiDelete(path, options = {}) {
+  return mutationRequest("DELETE", path, undefined, options);
 }

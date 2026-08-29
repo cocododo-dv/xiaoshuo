@@ -11,7 +11,7 @@ but never be stated explicitly in the prose.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -125,52 +125,6 @@ def format_psychology_prompt(
     ])
 
     return "\n".join(lines)
-
-
-def validate_psychology_expression(
-    text: str,
-    psych: CharacterPsychology,
-) -> list[str]:
-    """Flag passages where deep-layer concepts leak into surface prose."""
-    warnings: list[str] = []
-    if not text:
-        return warnings
-
-    _OVER_EXPLAIN_PATTERNS = [
-        r"[他她它]知道自己的恐惧源于",
-        r"[他她它]意识到这和童年",
-        r"[他她它]明白.*内心深处",
-        r"从小.*创伤.*让[他她]",
-        r"[他她]清楚.*矛盾.*来自",
-        r"本能地.*因为.*过去",
-        r"潜意识.*告诉[他她]",
-        r"[他她]终于理解了自己为什么",
-    ]
-    for pat in _OVER_EXPLAIN_PATTERNS:
-        match = re.search(pat, text)
-        if match:
-            excerpt = text[max(0, match.start() - 10):match.end() + 20]
-            warnings.append(
-                f"Over-explanation of psychology detected: '...{excerpt}...' — "
-                "deep-layer motivation should be shown through action, not named."
-            )
-
-    deep_terms = []
-    for val in (psych.deep.childhood_wound, psych.deep.inner_contradiction):
-        if val and val != "not specified":
-            fragments = re.split(r"[,，;；、/]", val)
-            deep_terms.extend(f.strip() for f in fragments if len(f.strip()) >= 2)
-
-    for term in deep_terms:
-        if term in text:
-            idx = text.index(term)
-            excerpt = text[max(0, idx - 10):idx + len(term) + 20]
-            warnings.append(
-                f"Deep-layer concept '{term}' appears verbatim in text: '...{excerpt}...' — "
-                "this should emerge through behavior, not be stated."
-            )
-
-    return warnings
 
 
 def _first(d: dict[str, Any], *keys: str) -> str | None:

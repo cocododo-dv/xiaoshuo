@@ -8,13 +8,13 @@ Weights are stored in SnowflakeCharacterPlan.bible_json under the key
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import SceneCard, SnowflakeCharacterPlan
+from novel_system.db.models import SnowflakeCharacterPlan
 
 
 @dataclass(slots=True)
@@ -30,13 +30,6 @@ class DecisionWeight:
         if self.situation != other.situation:
             return False
         return self.dominant_option() != other.dominant_option()
-
-
-@dataclass(slots=True)
-class ArcSnapshot:
-    character_id: str
-    story_phase: str
-    weights: list[DecisionWeight] = field(default_factory=list)
 
 
 @dataclass(slots=True)

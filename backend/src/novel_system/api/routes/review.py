@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
-from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.request_types import BoundedJsonObject, EmptyRequest, StrictRequestModel
 from novel_system.api.response import ok
 from novel_system.db.models import (
@@ -28,7 +28,6 @@ from novel_system.services.human_review_support import (
     human_review_linked_target,
     structured_target_from_replay_result,
 )
-from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.knowledge_registry import descriptor_for_item_type
 from novel_system.services.pagination import paginate_select, resolve_pagination_request
 from novel_system.services.review_cards import ReviewCardService
@@ -195,17 +194,14 @@ def create_review_item(
         if is_card
         else (lambda: _upsert_review_item(session, body))
     )
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/review-items",
         payload=body,
         action=action,
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 # ---------------------------------------------------------------------------
@@ -222,9 +218,9 @@ def resolve_review_card(
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/review-items/{review_id}/resolve",
         payload={"review_id": review_id, **body},
@@ -234,10 +230,7 @@ def resolve_review_card(
             project_id=body.get("project_id"),
             actor_ref=actor_ref,
         ),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/review-items/{review_id}/unresolve")
@@ -302,18 +295,14 @@ def import_demo_review(
     if not get_settings(include_runtime_config=False).fixture_import_enabled:
         raise DomainError("FIXTURE_IMPORT_DISABLED", "fixture import is disabled", status_code=404)
     body = payload.model_dump(mode="json", exclude_unset=True)
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/review-items/import-demo",
         payload=body,
         action=lambda: _import_review(session, body),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 def _import_review(session: Session, payload: dict) -> dict:
@@ -355,17 +344,14 @@ def approve_review(
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     approval_payload = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     approval_payload["review_id"] = review_id
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/review-items/{review_id}/approve",
         payload=approval_payload,
         action=lambda: _approve_review_with_style_profile_gate(session, review_id, approval_payload),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 def _approve_review_with_style_profile_gate(session: Session, review_id: str, payload: dict[str, Any]) -> dict:
@@ -569,18 +555,14 @@ def release_review(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/review-items/{review_id}/release",
         payload={"review_id": review_id},
         action=lambda: PromotionService(session).release_review(review_id),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/review-items/{review_id}/reject")
@@ -593,17 +575,14 @@ def reject_review(
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     reject_payload = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     reject_payload["review_id"] = review_id
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/review-items/{review_id}/reject",
         payload=reject_payload,
         action=lambda: _reject_review(session, review_id, reject_payload),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 def _reject_review(session: Session, review_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -885,14 +864,6 @@ def list_human_review_events(
     )
 
 
-@router.get("/api/v1/human-review-events/{event_id}")
-def human_review_event_detail(event_id: str, request: Request, session: Session = Depends(get_session)):
-    item = session.get(HumanReviewEvent, event_id)
-    if item is None:
-        raise DomainError("HUMAN_REVIEW_EVENT_NOT_FOUND", f"human review event {event_id} not found", status_code=404)
-    return ok(_serialize_event(item), req_id=getattr(request.state, "request_id", None))
-
-
 @router.post("/api/v1/human-review-events/{event_id}/actions")
 def human_review_event_action(
     event_id: str,
@@ -905,9 +876,9 @@ def human_review_event_action(
     if not action_name:
         raise DomainError("HUMAN_REVIEW_ACTION_REQUIRED", "missing action", status_code=400)
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/human-review-events/{event_id}/actions",
         payload={"event_id": event_id, **body},
@@ -916,10 +887,7 @@ def human_review_event_action(
             session,
             error,
         ),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 def _serialize_event(item: HumanReviewEvent | None) -> dict:

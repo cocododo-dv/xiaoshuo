@@ -145,30 +145,6 @@ class TrashService:
         result = self._lifecycle.trash_scenes([scene_id], actor_ref)
         return self._lifecycle_result(f"scene:{scene_id}", result)
 
-    def restore_chapter_in_project(self, project_id: str, chapter_id: str) -> dict[str, Any]:
-        """Restore a chapter only through its authoritative project boundary."""
-
-        self._require_project(project_id)
-        chapter = self.session.get(ChapterGoal, chapter_id)
-        if chapter is None or chapter.project_id != project_id:
-            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found in project", status_code=404)
-        result = self._lifecycle.restore_chapters([chapter_id])
-        return self._lifecycle_result(f"chapter:{chapter_id}", result)
-
-    def restore_scene_in_project(self, project_id: str, scene_id: str) -> dict[str, Any]:
-        """Restore a scene only through its authoritative project boundary."""
-
-        self._require_project(project_id)
-        scene = self.session.get(SceneCard, scene_id)
-        owner = scene.project_id if scene else None
-        if scene is not None and not owner:
-            chapter = self.session.get(ChapterGoal, scene.chapter_id)
-            owner = chapter.project_id if chapter else None
-        if scene is None or owner != project_id:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found in project", status_code=404)
-        result = self._lifecycle.restore_scenes([scene_id])
-        return self._lifecycle_result(f"scene:{scene_id}", result)
-
     # ---- 恢复 / 永久清除（按条目 id 分发） ----
 
     def restore_entry(self, entry_id: str, *, actor_ref: str = "operator") -> dict[str, Any]:

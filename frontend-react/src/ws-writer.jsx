@@ -1,5 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { storeAlert } from "./lib/store-utils.js";
 import { WsCatalog, WsTrashStore } from "./ws-catalog.jsx";
 import { WrDocs } from "./wr-doc-store.jsx";
 import { WrCanonicalControl } from "./wr-canonical-control.jsx";
@@ -382,7 +383,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   const promoteCanonical = useWC(async () => {
     if (!activeScene) return;
     if (wrSceneIsApproved(activeScene)) {
-      try { window.alert("本场属于已批准终稿。请先到成稿中心重新打开章节，再修改正文。"); } catch (e) {}
+      storeAlert(null, "本场属于已批准终稿。请先到成稿中心重新打开章节，再修改正文。");
       return;
     }
     clearTimeout(saveTimer.current);
@@ -390,7 +391,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
       setSaved("正在保存草稿…");
       const savedOk = await persistDoc();
       if (!savedOk) {
-        try { window.alert("草稿尚未保存到服务端，不能提升为权威正文。请先重试保存。"); } catch (e) {}
+        storeAlert(null, "草稿尚未保存到服务端，不能提升为权威正文。请先重试保存。");
         return;
       }
     }
@@ -407,7 +408,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     try {
       await WrDocs.promote(activeScene, { narrativeEffect: "facts_unchanged" });
       setCanonicalStatus("current");
-      try { window.alert("草稿已提升为权威正文，场景记忆与章节汇总已同步重建。"); } catch (e) {}
+      storeAlert(null, "草稿已提升为权威正文，场景记忆与章节汇总已同步重建。");
     } catch (e) {
       const code = e && e.code;
       if (code === "CONTENT_SAFETY_REVIEW_REQUIRED") {
@@ -451,7 +452,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
       });
       setContentSafetyReview(null);
       setCanonicalStatus("current");
-      try { window.alert("已按你的逐项确认重新校验；草稿已提升为权威正文。"); } catch (ignored) {}
+      storeAlert(null, "已按你的逐项确认重新校验；草稿已提升为权威正文。");
     } catch (error) {
       if (error && error.code === "CONTENT_SAFETY_REVIEW_REQUIRED") {
         const nextReview = contentSafetyReviewFromError(error);

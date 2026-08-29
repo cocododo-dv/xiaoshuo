@@ -1,5 +1,7 @@
 import React from "react";
 import { apiGet } from "./lib/client.js";
+import { useStoreTick } from "./lib/store-utils.js";
+import { StatCard } from "./ws-quality-ui.jsx";
 
 /* global React, I */
 /* ==========================================================
@@ -102,9 +104,7 @@ function useCostState() {
 
 /* 当前作品（window.WsWorks 全局，惰性访问——不 ES import，避免拖动书架副作用） */
 function useCostActiveWork() {
-  const [, force] = React.useState(0);
-  React.useEffect(() => {
-    const bump = () => force((n) => n + 1);
+  useStoreTick((bump) => {
     window.addEventListener("ws:work-changed", bump);
     let un = null;
     try { un = window.WsWorks && window.WsWorks.subscribe && window.WsWorks.subscribe(bump); } catch (e) {}
@@ -112,7 +112,7 @@ function useCostActiveWork() {
       window.removeEventListener("ws:work-changed", bump);
       if (typeof un === "function") { try { un(); } catch (e) {} }
     };
-  }, []);
+  });
   try {
     const w = window.WsWorks && window.WsWorks.active && window.WsWorks.active();
     return w && w.id !== "__loading__" ? w : null;
@@ -147,18 +147,6 @@ function chapterLabel(chapterId) {
 function EstimatePill({ on }) {
   if (!on) return null;
   return <span className="pill pill-gold text-xs" title="价格来自 config/pricing.yaml 的占位估算单价，非权威计费"><span className="pill-dot" />估算价</span>;
-}
-
-function StatCard({ label, value, hint, children }) {
-  return (
-    <div className="card" style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid var(--line, #e5e2dc)" }}>
-      <div className="text-xs" style={{ color: "var(--ink-3)" }}>{label}</div>
-      <div className="text-serif" style={{ fontSize: 20, lineHeight: 1.3, display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
-        {value}{children}
-      </div>
-      {hint && <div className="text-xs" style={{ color: "var(--ink-3)", marginTop: 2 }}>{hint}</div>}
-    </div>
-  );
 }
 
 /* 逐日费用柱状图：后端稠密补零序列，纯 SVG，无第三方依赖 */

@@ -1,39 +1,4 @@
 templates:
-  # FE-ALIGN P2(D13): 章级违约裁定 — 只判定草稿是否违反交接契约条款，证据化、禁臆造
-  chapter_audit_adjudicate:
-    version: "2026-07-04.v2"
-    input_token_budget: 3600
-    system_prompt: |
-      You are a continuity audit editor for a Chinese web novel. You judge ONLY whether the
-      chapter draft VIOLATES the handoff-contract constraints (and pinned story anchors).
-      A violation means the prose contradicts a constraint, omits a mandated element, lets a
-      promised beat deflate/stall, or drifts from a pinned fact. Never invent facts that are
-      not present in chapter_prose. Every violation MUST include evidence_sentence copied
-      verbatim from chapter_prose. If nothing clearly violates a constraint, return an empty
-      violations list — never manufacture issues to seem useful.
-    task_prompt: |
-      Compare chapter_prose against each numbered constraint and the anchor_hits / anchor_misses.
-      Return violations only. For each violation provide:
-      clause_ref (which constraint index or anchor subject it breaks),
-      kind (one of: drift, stall, deflation, causal_break, unplanted_reveal, unfair_clue, overdue, arc),
-      severity (warn | block; use block only for a hard contradiction of a pinned fact or a mandated beat),
-      text (one concise Chinese sentence naming the violation),
-      evidence_sentence (a sentence copied verbatim from chapter_prose proving it),
-      at (scene title or location if identifiable, else empty),
-      suggested_fix (one concrete Chinese revision direction).
-      Be conservative and strictly evidence-bound.
-      Before listing violations, first build a private hit/miss pass over every numbered constraint and every anchor: for each one, silently note whether chapter_prose satisfies it or not. Do not skip straight to "no violations" without having checked each item individually. Only after that pass, emit the violations array for the misses that rise to a genuine, evidence-backed violation.
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - violations
-      properties:
-        violations:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
   # FE-ALIGN P6: 资料库半自动派生 — 从归档正文提取候选实体/时间线事件（不直接入库，进待办确认）
   library_derive:
     version: "2026-07-05.v2"
@@ -348,32 +313,6 @@ templates:
                 minLength: 20
                 maxLength: 600
 
-  long_form_continuation:
-    version: "2026-07-04.v2"
-    input_token_budget: 2600
-    system_prompt: |
-      You are continuing a long-form web-novel scene from an approved source draft and prior generated continuation.
-      Preserve continuity, factual safety, and reusable style pressure exactly.
-    task_prompt: |
-      Continue the scene from the supplied source draft and continuation-so-far.
-      Do not restart the scene, summarize earlier beats, or repeat the last paragraph with minor wording changes.
-      Preserve character identity, POV distance, scene pressure, and style-reference guidance across the continuation.
-      If Longform Structure Guidance is present, treat it as pressure for arc, promise, payoff, and information release timing.
-      End this continuation chunk on live forward motion rather than explanation.
-      Pick up specifically from the last unresolved action or emotional beat in the continuation-so-far — name what was mid-motion and continue it — rather than opening on a fresh establishing description. Do not re-introduce characters who already appear in the source draft or prior continuation as if for the first time.
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - scene_text
-      properties:
-        scene_text:
-          type: string
-        continuation_notes:
-          type: array
-          items:
-            type: string
-
   soft_qc:
     version: "2026-07-04.v2"
     input_token_budget: 1800
@@ -523,117 +462,6 @@ templates:
             type: string
         split_scene_recommended:
           type: boolean
-
-  reference_sample_ranker:
-    version: "2026-04-19.v1"
-    input_token_budget: 2200
-    system_prompt: |
-      You select representative samples from a reference book for craft-level analysis.
-      Cover prose rhythm, dialogue density, action or conflict, imagery, emotional turns, chapter movement, openings, and endings.
-      Do not request or preserve long verbatim passages.
-    task_prompt: |
-      Rank the supplied segment metadata and short previews.
-      Return 5 to 8 segment ids with a reason, target dimension, and risk note for each.
-      If locale_hint is zh, write all returned string fields in Chinese (中文) while preserving the JSON schema keys.
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - selections
-      properties:
-        selections:
-          type: array
-          minItems: 5
-          maxItems: 8
-          items:
-            type: object
-            additionalProperties: false
-            required:
-              - segment_id
-              - dimension
-              - reason
-              - risk_note
-            properties:
-              segment_id:
-                type: string
-              dimension:
-                type: string
-              reason:
-                type: string
-              risk_note:
-                type: string
-
-  reference_style_structure_extract:
-    version: "2026-04-19.v1"
-    input_token_budget: 2400
-    system_prompt: |
-      You extract reusable prose and narrative-structure techniques from approved reference snippets.
-      Keep only abstract craft guidance: rhythm, syntax, imagery, narrative distance, emotion curve, chapter pacing, suspense movement, conflict structure, and ending hooks.
-      Never copy protected expression, characters, settings, names, long sentences, or identifiable plot bridges.
-    task_prompt: |
-      Analyze the supplied segment and return one review-ready finding.
-      The finding must be suitable for style_rule_set, style_observation, narrative_pattern, banned_rule_cluster, or calibration_candidate.
-      If locale_hint is zh, write all returned string fields in Chinese (中文) while preserving the JSON schema keys.
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - item_type
-        - dimension
-        - summary
-        - transferable_rule
-        - banned_replication_rule
-      properties:
-        item_type:
-          type: string
-        dimension:
-          type: string
-        summary:
-          type: string
-        transferable_rule:
-          type: string
-        banned_replication_rule:
-          type: string
-        confidence:
-          type: number
-
-  reference_profile_synthesize:
-    version: "2026-04-19.v1"
-    input_token_budget: 2600
-    system_prompt: |
-      You synthesize an independent reference-book profile from approved abstract findings.
-      The profile is not a writing sample cache. It must contain only transferable style features, narrative patterns, calibration guidance, and anti-copy rules.
-    task_prompt: |
-      Combine the approved findings into a compact reference profile.
-      Separate prose features from narrative patterns and include clear forbidden replication rules.
-      If locale_hint is zh, write all returned string fields in Chinese (中文) while preserving the JSON schema keys.
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - profile_title
-        - style_features
-        - narrative_patterns
-        - banned_replication_rules
-      properties:
-        profile_title:
-          type: string
-        style_features:
-          type: array
-          items:
-            type: string
-        narrative_patterns:
-          type: array
-          items:
-            type: string
-        calibration_guidance:
-          type: array
-          items:
-            type: string
-        banned_replication_rules:
-          type: array
-          items:
-            type: string
 
   style_ref_paragraph_classify_anchor:
     version: "2026-07-04.v2"
@@ -1802,39 +1630,6 @@ templates:
           type: array
           items:
             type: object
-
-  writer_reference_application_review:
-    version: "2026-04-24.v1"
-    input_token_budget: 2200
-    system_prompt: |
-      You review whether learned reference techniques are applied as transferable craft rather than copied expression.
-      Separate usable technique, forbidden replication, and suitable application scene.
-    task_prompt: |
-      Review the reference profile and current target scene/chapter.
-      Return concise Chinese guidance using stable English schema keys.
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - transferable_techniques
-        - forbidden_replication
-        - suitable_scenes
-        - requires_human_review
-      properties:
-        transferable_techniques:
-          type: array
-          items:
-            type: string
-        forbidden_replication:
-          type: array
-          items:
-            type: string
-        suitable_scenes:
-          type: array
-          items:
-            type: string
-        requires_human_review:
-          type: boolean
 
   # ── 雪花工作台模板族（下面 14 个）的 input_token_budget 统一为 24000 ──
   # 这个数字是量出来的，不是猜的。这一族共用同一条渲染路径，载荷成分也相同

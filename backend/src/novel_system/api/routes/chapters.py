@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -8,13 +8,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import idempotent_response
 from novel_system.api.request_types import (
     BoundedJsonObject,
     EmptyRequest,
     WriterBriefJsonInput,
 )
 from novel_system.api.response import ok
-from novel_system.db.models import ChapterGoal, ChapterState, SceneCard, SceneRunState
+from novel_system.db.models import ChapterGoal, ChapterState, SceneCard
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.chapter_approval import (
     is_chapter_approved,
@@ -23,7 +24,6 @@ from novel_system.services.chapter_approval import (
 from novel_system.services.chapter_runner import ChapterRunnerService
 from novel_system.services.chapter_runtime import ChapterRuntimeService
 from novel_system.services.errors import DomainError
-from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.text_validation import validate_user_text_payload
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief
 
@@ -113,69 +113,54 @@ def create_chapter(
     body["writer_brief_json"] = normalize_chapter_writer_brief(
         body.get("writer_brief_json")
     )
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters",
         payload=body,
         action=lambda: _create_chapter(session, body),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/chapters/trash")
 def trash_chapters(payload: ChapterIdsRequest, request: Request, session: Session = Depends(get_session)):
     body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/trash",
         payload=body,
         action=lambda: AuthorLifecycleService(session).trash_chapters(body["chapter_ids"], actor_ref),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/chapters/restore")
 def restore_chapters(payload: ChapterIdsRequest, request: Request, session: Session = Depends(get_session)):
     body = payload.model_dump(mode="json")
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/restore",
         payload=body,
         action=lambda: AuthorLifecycleService(session).restore_chapters(body["chapter_ids"]),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/chapters/purge")
 def purge_chapters(payload: ChapterIdsRequest, request: Request, session: Session = Depends(get_session)):
     body = payload.model_dump(mode="json")
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/purge",
         payload=body,
         action=lambda: AuthorLifecycleService(session).purge_chapters(body["chapter_ids"]),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 def _create_chapter(session: Session, payload: dict) -> dict:
@@ -295,13 +280,6 @@ def _assert_chapter_display_order_available(
         )
 
 
-@router.get("/api/v1/chapters/{chapter_id}/status")
-def chapter_status(chapter_id: str, request: Request, session: Session = Depends(get_session)):
-    AuthorLifecycleService(session).require_active_chapter(chapter_id)
-    payload = ChapterRuntimeService(session).chapter_state_snapshot(chapter_id)
-    return ok(payload, req_id=getattr(request.state, "request_id", None))
-
-
 @router.get("/api/v1/chapters/{chapter_id}/author-workspace")
 def author_workspace(chapter_id: str, request: Request, session: Session = Depends(get_session)):
     return ok(
@@ -327,17 +305,14 @@ def run_chapter_full(
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/{chapter_id}/run/full",
         payload={"chapter_id": chapter_id},
         action=lambda lease: ChapterRunnerService(session).run_full(chapter_id, request_lease=lease),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.get("/api/v1/chapters/{chapter_id}/run-status")
@@ -358,17 +333,14 @@ def chapter_runtime_backfill(
     body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/{chapter_id}/runtime/backfill/{stage_id}",
         payload={"chapter_id": chapter_id, "stage_id": stage_id, **body},
         action=lambda: ChapterRuntimeService(session).run_backfill(chapter_id, stage_id, body["strategy"]),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/chapters/{chapter_id}/runtime/aggregate/final")
@@ -380,17 +352,14 @@ def chapter_runtime_final_aggregate(
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/{chapter_id}/runtime/aggregate/final",
         payload={"chapter_id": chapter_id},
         action=lambda: ChapterRuntimeService(session).run_final_aggregate(chapter_id),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/chapters/{chapter_id}/runtime/manual-hold")
@@ -403,17 +372,14 @@ def chapter_runtime_manual_hold(
     body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/{chapter_id}/runtime/manual-hold",
         payload={"chapter_id": chapter_id, **body},
         action=lambda: ChapterRuntimeService(session).set_manual_hold(chapter_id, body["reason"]),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/chapters/{chapter_id}/runtime/manual-hold/clear")
@@ -425,17 +391,14 @@ def chapter_runtime_manual_hold_clear(
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/{chapter_id}/runtime/manual-hold/clear",
         payload={"chapter_id": chapter_id},
         action=lambda: ChapterRuntimeService(session).clear_manual_hold(chapter_id),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/chapters/{chapter_id}/scene-order")
@@ -446,34 +409,14 @@ def reorder_chapter_scenes(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json")
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/chapters/{chapter_id}/scene-order",
         payload={"chapter_id": chapter_id, **body},
         action=lambda: _reorder_chapter_scenes(session, chapter_id, body),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
-
-
-def _serialize_chapter_summary(session: Session, chapter: ChapterGoal) -> dict:
-    return AuthorLifecycleService(session).serialize_chapter_summary(chapter)
-
-
-def _serialize_chapter(chapter: ChapterGoal) -> dict:
-    return AuthorLifecycleService(None).serialize_chapter(chapter)  # type: ignore[arg-type]
-
-
-def _serialize_chapter_state(chapter_state: ChapterState | None, chapter_id: str) -> dict:
-    return AuthorLifecycleService(None).serialize_chapter_state(chapter_state, chapter_id)  # type: ignore[arg-type]
-
-
-def _serialize_author_scene(scene: SceneCard, scene_state: SceneRunState | None) -> dict:
-    return AuthorLifecycleService(None).serialize_author_scene(scene, scene_state)  # type: ignore[arg-type]
 
 
 def _reorder_chapter_scenes(session: Session, chapter_id: str, payload: dict) -> dict:

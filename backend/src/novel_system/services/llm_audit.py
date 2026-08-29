@@ -257,6 +257,35 @@ def sanitize_audit_summary(payload: Any) -> dict[str, Any]:
     }
 
 
+def error_audit_summary(exc: Exception, *, promote_attempt_fields: bool = False) -> dict[str, Any]:
+    """Summarize an exception for durable audit rows without retaining prose.
+
+    The shared shape for ``response_payload_summary`` on failed calls: the
+    message survives only as a fingerprint, ``details`` is sanitized
+    field-by-field, and the result is already passed through
+    :func:`sanitize_audit_summary` (reapplying the sanitizer stays idempotent).
+    ``promote_attempt_fields`` additionally lifts ``attempt_count`` /
+    ``max_retries`` out of ``details`` for consumers that must not depend on
+    the nested payload shape.
+    """
+
+    details = getattr(exc, "details", None)
+    details = details if isinstance(details, dict) else {}
+    summary: dict[str, Any] = {
+        "error_type": exc.__class__.__name__,
+        "error_code": getattr(exc, "code", exc.__class__.__name__),
+        "message": text_fingerprint(str(exc)),
+        "details": details,
+        "retryable": bool(getattr(exc, "retryable", False)),
+    }
+    if promote_attempt_fields:
+        if "attempt_count" in details:
+            summary["attempt_count"] = details["attempt_count"]
+        if "max_retries" in details:
+            summary["max_retries"] = details["max_retries"]
+    return sanitize_audit_summary(summary)
+
+
 def _sanitize_dict(payload: dict[Any, Any], *, depth: int) -> dict[str, Any]:
     if _looks_like_fingerprint(payload):
         return _validated_fingerprint(payload)

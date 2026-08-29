@@ -55,9 +55,14 @@ DEFAULT_STRATEGY_BY_TASK: dict[TaskType, InjectionStrategy] = {
     TaskType.PROJECT_INIT: InjectionStrategy.A,
     TaskType.SCENE_GENERATION: InjectionStrategy.MIXED,
     TaskType.FINE_TUNING: InjectionStrategy.B,
+    # deprecated——长文续写生产路径已下线(2026-08)；条目保留是为了存量
+    # task_type='long_form_continuation' 绑定行仍能解析默认策略,不再对 UI 列出。
     TaskType.LONG_FORM_CONTINUATION: InjectionStrategy.MIXED,
     TaskType.KEY_CHAPTER: InjectionStrategy.C,
 }
+
+# 已下线任务:持久层继续接受(见 TaskType 注释),但不进入前端任务卡片列表。
+_RETIRED_TASK_TYPES = frozenset({TaskType.LONG_FORM_CONTINUATION})
 
 
 def default_injection_strategy(
@@ -75,23 +80,17 @@ def default_injection_strategy(
 def injection_task_defaults() -> list[dict[str, Any]]:
     """TaskType → 默认策略 + 运行时刷新周期(只读,前端任务卡片数据源)。
 
-    refresh_every_chars 的唯一运行时真源是 llm_node_registry 的
-    long_form_continuation 节点(scene_generation 按它分段重注入防漂移);
-    其余任务是一次性注入(0)。
+    现存任务都是一次性注入(refresh_every_chars=0)；分段刷新曾属
+    long_form_continuation 生产路径,该路径已下线,任务不再对 UI 列出。
     """
-    from novel_system.services.llm_node_registry import get_llm_node_spec
-
-    spec = get_llm_node_spec("long_form_continuation")
-    refresh = int(getattr(spec, "refresh_every_chars", 0) or 0) if spec else 0
     return [
         {
             "task_type": task.value,
             "default_strategy": strategy.value,
-            "refresh_every_chars": (
-                refresh if task is TaskType.LONG_FORM_CONTINUATION else 0
-            ),
+            "refresh_every_chars": 0,
         }
         for task, strategy in DEFAULT_STRATEGY_BY_TASK.items()
+        if task not in _RETIRED_TASK_TYPES
     ]
 
 

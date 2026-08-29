@@ -56,6 +56,18 @@ def approve_review(client, review_id: str, *, idempotency_key: str) -> str:
     return approved.json()["data"]["approved_item_row_id"]
 
 
+def get_alias_scope(client, alias_scope: str) -> dict:
+    object_type, scope, scope_ref_id = alias_scope.split(":", 2)
+    response = client.get(
+        "/api/v1/index/alias-scopes",
+        params={"object_type": object_type, "scope": scope, "scope_ref_id": scope_ref_id},
+    )
+    assert response.status_code == 200
+    items = response.json()["data"]["items"]
+    assert len(items) == 1, f"expected exactly one alias scope for {alias_scope}, got {len(items)}"
+    return items[0]
+
+
 def verify_review(client, review_id: str, *, idempotency_key: str) -> None:
     jobs = client.get("/api/v1/index/jobs").json()["data"]["items"]
     verify_job_id = next(job["job_id"] for job in jobs if job["review_id"] == review_id and job["job_type"] == "verify")
@@ -76,7 +88,7 @@ def promote_active_alias(client) -> str:
     )
     approve_review(client, review_id, idempotency_key="approve-review-style-active-alias")
     verify_review(client, review_id, idempotency_key="verify-review-style-active-alias")
-    alias = client.get("/api/v1/index/alias-scopes/style_observation:global:global").json()["data"]
+    alias = get_alias_scope(client, "style_observation:global:global")
     return alias["active_alias"]
 
 
@@ -117,8 +129,7 @@ def test_release_promotes_verified_candidate(client) -> None:
     )
     assert released.status_code == 200
 
-    detail = client.get("/api/v1/index/alias-scopes/style_observation:global:global")
-    data = detail.json()["data"]
+    data = get_alias_scope(client, "style_observation:global:global")
     assert data["active_alias"] == expected_global_collection_alias(approved_row_id)
     assert data["candidate_alias"] is None
     assert data["active_snapshot_version"] == expected_snapshot_version(approved_row_id)
@@ -141,7 +152,7 @@ def test_release_rejects_already_promoted_candidate(client) -> None:
         headers={"X-Idempotency-Key": "release-review-style-release-twice-1"},
     )
     assert first_release.status_code == 200
-    alias_before = client.get("/api/v1/index/alias-scopes/style_observation:global:global").json()["data"]
+    alias_before = get_alias_scope(client, "style_observation:global:global")
 
     second_release = client.post(
         f"/api/v1/review-items/{review_id}/release",
@@ -150,7 +161,7 @@ def test_release_rejects_already_promoted_candidate(client) -> None:
     assert second_release.status_code == 409
     assert second_release.json()["error"]["code"] == "RELEASE_PRECONDITION_FAILED"
 
-    alias_after = client.get("/api/v1/index/alias-scopes/style_observation:global:global").json()["data"]
+    alias_after = get_alias_scope(client, "style_observation:global:global")
     assert alias_after["active_alias"] == alias_before["active_alias"]
     assert alias_after["candidate_alias"] is None
     assert alias_after["active_snapshot_version"] == alias_before["active_snapshot_version"]
@@ -187,7 +198,7 @@ def test_reindex_only_includes_runtime_rows_for_same_alias_scope(client, session
         idempotency_key="approve-review-style-scene-scope",
     )
 
-    alias = client.get("/api/v1/index/alias-scopes/style_observation:scene:CH001_SC01").json()["data"]
+    alias = get_alias_scope(client, "style_observation:scene:CH001_SC01")
     documents = get_vector_store().load_collection(alias["candidate_alias"])
     indexed_ids = {item["id"] for item in documents}
 
@@ -212,7 +223,7 @@ def test_verify_future_effective_candidate_keeps_old_alias_until_due_promotion(c
     )
     verify_review(client, review_id, idempotency_key="verify-review-style-future-effective")
 
-    alias = client.get("/api/v1/index/alias-scopes/style_observation:global:global").json()["data"]
+    alias = get_alias_scope(client, "style_observation:global:global")
     session.expire_all()
     approved_row = session.get(StyleObservation, approved_row_id)
 
@@ -286,7 +297,7 @@ def test_run_due_promotions_flips_verified_future_effective_candidate_when_due(c
     assert runtime_logs[-1].payload_json["actor_ref"] == "system/due_promotion"
     assert runtime_logs[-1].payload_json["review_id"] == review_id
 
-    alias = client.get("/api/v1/index/alias-scopes/style_observation:global:global").json()["data"]
+    alias = get_alias_scope(client, "style_observation:global:global")
     session.expire_all()
     approved_row = session.get(StyleObservation, approved_row_id)
 
@@ -324,7 +335,7 @@ def test_verify_rejects_stale_job_target_after_new_candidate_claim(client) -> No
     )
     new_row_id = approve_review(client, review_id_new, idempotency_key="approve-review-style-new-candidate")
 
-    alias_before = client.get("/api/v1/index/alias-scopes/style_observation:global:global").json()["data"]
+    alias_before = get_alias_scope(client, "style_observation:global:global")
     assert alias_before["candidate_alias"] == expected_global_collection_alias(new_row_id)
     assert alias_before["candidate_snapshot_version"] == expected_snapshot_version(new_row_id)
     assert alias_before["candidate_embedding_version"] == expected_embedding_version(new_row_id)
@@ -337,7 +348,7 @@ def test_verify_rejects_stale_job_target_after_new_candidate_claim(client) -> No
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "INDEX_JOB_TARGET_STALE"
 
-    alias_after = client.get("/api/v1/index/alias-scopes/style_observation:global:global").json()["data"]
+    alias_after = get_alias_scope(client, "style_observation:global:global")
     assert alias_after == alias_before
 
 

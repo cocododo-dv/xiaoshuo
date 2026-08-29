@@ -392,7 +392,6 @@ class ScenePipelineOnlineFake(AccountedGenerateMixin):
             "neutral_draft",
             "style_draft",
             "style_patch",
-            "long_form_continuation",
             "scene_auto_rewrite",
             "scene_literary_rewrite",
         }:

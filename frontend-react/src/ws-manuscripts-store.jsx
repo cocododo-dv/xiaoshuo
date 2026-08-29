@@ -223,11 +223,6 @@ const WsManuStore = {
     };
   },
 
-  /** 兼容旧调用：只有 ready/error 才算一次加载已终止。 */
-  loaded(chapterId) {
-    return ["ready", "error"].includes((manuCache[chapterId] || {}).status);
-  },
-
   /** 作品切换/归档后失效重拉 */
   invalidate(chapterId) {
     if (chapterId) { delete manuCache[chapterId]; }

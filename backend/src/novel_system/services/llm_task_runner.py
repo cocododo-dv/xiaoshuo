@@ -26,12 +26,14 @@ from novel_system.services.llm_client import (
     LLMRequest,
     LLMResponse,
     OnlineAccountedExecution,
+    build_llm_request,
     load_model_routing_config,
+    resolve_node_route,
 )
 from novel_system.services.llm_audit import (
+    error_audit_summary,
     json_fingerprint,
     sanitize_audit_summary,
-    text_fingerprint,
 )
 from novel_system.services.system_config import load_llm_provider_runtime_configs
 from novel_system.settings import get_settings
@@ -337,7 +339,7 @@ class LLMNodeRunner:
                     "bundle_hash": bundle_hash,
                     "recommended_action": "Enable and configure an LLM provider in System Config, then retry.",
                 }
-                response_summary = _error_summary(rejection)
+                response_summary = error_audit_summary(rejection, promote_attempt_fields=True)
                 record_rejected_call(
                     self.session,
                     None,
@@ -481,7 +483,7 @@ class LLMNodeRunner:
             raise
         except Exception as exc:
             error_code = getattr(exc, "code", exc.__class__.__name__)
-            response_summary = _error_summary(exc)
+            response_summary = error_audit_summary(exc, promote_attempt_fields=True)
             details = getattr(exc, "details", None)
             if isinstance(details, dict) and details.get("llm_call_id"):
                 llm_call_id = str(details["llm_call_id"])
@@ -569,7 +571,7 @@ class LLMNodeRunner:
                 error_code=rejection.code,
                 message=str(rejection),
                 request_summary={"task_name": task_name, "route_node": route_node},
-                response_summary=_error_summary(rejection),
+                response_summary=error_audit_summary(rejection, promote_attempt_fields=True),
                 original_error=exc,
                 retryable=False,
             ) from exc
@@ -614,7 +616,7 @@ class LLMNodeRunner:
                     error_code=getattr(exc, "code", exc.__class__.__name__),
                     message=str(exc),
                     request_summary={"task_name": task_name, "route_node": route_node},
-                    response_summary=_error_summary(exc),
+                    response_summary=error_audit_summary(exc, promote_attempt_fields=True),
                     original_error=exc,
                     retryable=bool(getattr(exc, "retryable", False)),
                 ) from exc
@@ -623,17 +625,12 @@ class LLMNodeRunner:
             self.session.commit()
 
     def task_config(self, node_id: str) -> Any:
-        routing = self._routing()
-        node_routing = getattr(routing, "node_routing", None)
-        if isinstance(node_routing, dict) and node_id in node_routing:
-            return node_routing[node_id]
-        task_routing = getattr(routing, "task_routing", {})
-        if node_id in task_routing:
-            return task_routing[node_id]
-        # 每个运行时节点必须在自己的 node id 下绑定路由。离线模式退役后不再
-        # 允许"借用"别的节点的 provider/model——那会掩盖代码与路由快照的漂移。
-        # run_task 的 ad-hoc 别名在进入该边界之前已由 _AD_HOC_ROUTE_ALIASES 解析。
-        raise KeyError(node_id)
+        # 每个运行时节点必须在自己的 node id 下绑定路由(node_routing 优先,
+        # task_routing 兜底,缺失 KeyError——顺序与教训见 resolve_node_route)。
+        # 离线模式退役后不再允许"借用"别的节点的 provider/model——那会掩盖
+        # 代码与路由快照的漂移。run_task 的 ad-hoc 别名在进入该边界之前已由
+        # _AD_HOC_ROUTE_ALIASES 解析。
+        return resolve_node_route(self._routing(), node_id)
 
     def _routing(self) -> Any:
         if self._routing_config is None:
@@ -649,29 +646,15 @@ class LLMNodeRunner:
         task_config: Any,
         temperature_override: float | None = None,
     ) -> LLMRequest:
-        return LLMRequest(
-            model=task_config.model,
+        return build_llm_request(
+            task_config,
+            node_id=node_id,
             messages=[
                 {"role": "system", "content": prompt["system_prompt"]},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=temperature_override if temperature_override is not None else task_config.temperature,
-            max_output_tokens=task_config.max_output_tokens,
-            response_format=task_config.response_format,
-            provider=task_config.provider,
-            timeout_seconds=getattr(task_config, "timeout_seconds", None),
-            node_id=node_id,
-            provider_id=getattr(task_config, "provider_id", None),
-            account_id=getattr(task_config, "account_id", None),
-            reasoning_level=getattr(task_config, "reasoning_level", "medium"),
             response_schema=_response_schema(prompt, node_id=node_id),
-            api_mode=getattr(task_config, "api_mode", "responses"),
-            credential_mode=getattr(task_config, "credential_mode", None),
-            provider_options=getattr(task_config, "provider_options", {}),
-            # §7 anti-mean sampling — read decoding-level penalties from task routing config
-            frequency_penalty=getattr(task_config, "frequency_penalty", None),
-            presence_penalty=getattr(task_config, "presence_penalty", None),
-            top_p=getattr(task_config, "top_p", None),
+            temperature_override=temperature_override,
         )
 
     @staticmethod
@@ -1125,21 +1108,3 @@ def _template_version(prompt: dict[str, Any]) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return "unknown"
-
-
-def _error_summary(exc: Exception) -> dict[str, Any]:
-    details = getattr(exc, "details", None)
-    details = details if isinstance(details, dict) else {}
-    retryable = bool(getattr(exc, "retryable", False))
-    summary = {
-        "error_type": exc.__class__.__name__,
-        "error_code": getattr(exc, "code", exc.__class__.__name__),
-        "message": text_fingerprint(str(exc)),
-        "details": details,
-        "retryable": retryable,
-    }
-    if "attempt_count" in details:
-        summary["attempt_count"] = details["attempt_count"]
-    if "max_retries" in details:
-        summary["max_retries"] = details["max_retries"]
-    return sanitize_audit_summary(summary)

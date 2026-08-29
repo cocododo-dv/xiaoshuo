@@ -17,6 +17,26 @@ def constraint_alternatives(term: str) -> list[str]:
     ]
 
 
+def named_scene_card_sources(
+    scene: Any, fields: tuple[str, ...]
+) -> list[tuple[str, str]]:
+    """按给定字段顺序枚举场景卡的非空文本源，`beats_json` 恒附于末尾。
+
+    字段顺序即归因优先级（调用方取首个命中源），故各调用方自带字段元组，
+    不得在此固化某一侧的顺序。
+    """
+    sources: list[tuple[str, str]] = []
+    for field in fields:
+        value = getattr(scene, field, None)
+        if isinstance(value, str) and value.strip():
+            sources.append((f"scene_card.{field}", value))
+    beats = getattr(scene, "beats_json", None)
+    for index, beat in enumerate(beats if isinstance(beats, list) else []):
+        if isinstance(beat, str) and beat.strip():
+            sources.append((f"scene_card.beats_json[{index}]", beat))
+    return sources
+
+
 def contains_forbidden_term(forbidden_text: Any, content: str) -> bool:
     if not isinstance(forbidden_text, str) or not forbidden_text.strip():
         return False

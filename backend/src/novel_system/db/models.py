@@ -871,7 +871,8 @@ class SceneExecutionContract(Base):
     __table_args__ = (
         CheckConstraint(
             "status IN ('active','blocked','stale','superseded')",
-            name="ck_scene_execution_contracts_status",
+            # 约束名以迁移 0027 的冻结 DDL 为准（生产库带迁移名，改 ORM 侧对齐，不新开迁移）
+            name="ck_scene_execution_contract_status",
         ),
     )
 
@@ -1645,6 +1646,7 @@ class VolumeSummary(Base):
     # Atmosphere-only far-horizon context (tone, mood, thematic arc). NOT facts.
     atmosphere_summary: Mapped[str] = mapped_column(Text, default="")
     # Optional structured factual digest derived from event log (state milestones).
+    # 声明未实现：无生成路径，恒 NULL（蓝图 §2 的事实摘要尚未落地）。
     factual_digest: Mapped[str | None] = mapped_column(Text, nullable=True)
     active_flag: Mapped[int] = mapped_column(Integer, default=1)
     runtime_eligible: Mapped[int] = mapped_column(Integer, default=1)
@@ -1837,7 +1839,8 @@ class ProjectBacktrackItem(Base):
     __table_args__ = (
         CheckConstraint(
             "status IN ('pending','resolved','superseded')",
-            name="ck_project_backtrack_items_status",
+            # 约束名以迁移 0027 的冻结 DDL 为准（生产库带迁移名，改 ORM 侧对齐，不新开迁移）
+            name="ck_project_backtrack_status",
         ),
     )
 
@@ -2417,6 +2420,15 @@ class SystemSecret(Base):
 
 class EvaluationExperiment(Base):
     __tablename__ = "evaluation_experiments"
+    __table_args__ = (
+        # 迁移 20260717_0075 冻结的 human-only 契约：生产库删除了全部非人类实验行并
+        # 加了这条 CHECK（database_preflight 亦断言其存在）。名称与表达式必须与迁移
+        # 逐字一致——test_metadata_isolation 的 CHECK 漂移守卫按名称+归一化 SQL 比对。
+        CheckConstraint(
+            "evidence_provenance = 'human'",
+            name="ck_evaluation_experiments_human_provenance",
+        ),
+    )
 
     experiment_id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String)
@@ -2427,9 +2439,11 @@ class EvaluationExperiment(Base):
     # §6.2 项目隔离：实验快照须与作者近期生产终选场隔离（另建种子项目或时间隔离）。
     isolation_mode: Mapped[str | None] = mapped_column(String, nullable=True)
     snapshot_source_ref: Mapped[str | None] = mapped_column(String, nullable=True)
-    # synthetic 默认拒绝进入生产策略门；只有显式声明 human 且冻结题包完整时，
-    # 报告才允许给出可执行的默认策略决定。
-    evidence_provenance: Mapped[str] = mapped_column(String, default="synthetic")
+    # human-only 契约（迁移 0075）：实验证据只承认真人盲评；synthetic 通道已废除，
+    # 库侧 CHECK + server_default 与此默认保持一致。
+    evidence_provenance: Mapped[str] = mapped_column(
+        String, default="human", server_default="human"
+    )
     # Hidden benchmark contents stay outside the production database.  Only the
     # frozen manifest/rubric hashes are bound to a human blind-evaluation run.
     # Kept as an explicit reference rather than a physical FK because SQLite

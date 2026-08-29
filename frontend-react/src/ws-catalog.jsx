@@ -1,6 +1,7 @@
 import React from "react";
 import { WsWorks, wsKey } from "./ws-works.jsx";
 import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
+import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
 
 /* global window, React */
 /* ==========================================================
@@ -199,11 +200,11 @@ const CAT_EMPTY = Object.freeze([]);
 const catCache = {};       // workId → view chapters
 const catReadyMap = {};    // workId → API 已返回
 const catErrorMap = {};    // workId → 最近一次装载错误；区分“真空目录”和“请求失败”
-const catSubs = new Set();
+const catSubs = createSubscribers();
 const catPendingCreates = {}; // slug/sid → 创建中的 Promise（后端 id 待回填）
 
 function catNotify() {
-  catSubs.forEach(fn => { try { fn(); } catch (e) {} });
+  catSubs.notify();
   try { window.dispatchEvent(new CustomEvent("ws:catalog-changed")); } catch (e) {}
 }
 const catApiBase = (id) => `/api/v2/projects/${id}/catalog`;
@@ -270,7 +271,7 @@ async function catMigrateLegacy(workId) {
 
 /* 写失败统一恢复：以服务端为准整体重拉 + 提示 */
 function catRecover(error) {
-  try { window.alert((error && error.message) || "目录保存失败，已恢复为服务端版本。"); } catch (e) {}
+  storeAlert(error, "目录保存失败，已恢复为服务端版本。");
   catFetch(catActiveId(), { migrate: false });
 }
 
@@ -475,14 +476,13 @@ async function catDispatchDiff(workId, prev, next) {
 
 const WsCatalog = {
   get() { return catLoad(catActiveId()); },
-  isEmpty() { return this.get().length === 0; },
   /* 目录是否已从后端装载（短暂为空数组时视图可区分 loading / 真空目录） */
   ready() { return !!catReadyMap[catActiveId()]; },
   loadError() { return catErrorMap[catActiveId()] || null; },
   set(next) {
     const id = catActiveId();
     if (!catReadyMap[id]) {
-      try { window.alert("章节目录尚未从服务端加载完成，本次修改未提交。请先重试加载目录。"); } catch (e) {}
+      storeAlert(null, "章节目录尚未从服务端加载完成，本次修改未提交。请先重试加载目录。");
       if (!catFetching[id]) catFetch(id, { migrate: false });
       return false;
     }
@@ -564,18 +564,6 @@ const WsCatalog = {
       .filter(c => !dropCh.has(c.id))
       .map(c => (dropSc.size ? { ...c, scenes: (c.scenes || []).filter(s => !dropSc.has(s.sid)) } : c)));
   },
-  /* 从回收站恢复场景；原章节已删时退而插入当前章（P4 切换为后端 restore 端点） */
-  restoreScene(chId, scene, index) {
-    const chs = this.get();
-    let target = chs.find(c => c.id === chId);
-    if (!target) { target = this.currentChapter(); if (!target) return false; }
-    const at = Math.max(0, Math.min(typeof index === "number" ? index : target.scenes.length, target.scenes.length));
-    const restored = { ...scene, backendId: undefined }; // 重新建行（旧行已 trash，P4 接 restore）
-    this.set(chs.map(c => c.id !== target.id ? c : {
-      ...c, scenes: [...c.scenes.slice(0, at), restored, ...c.scenes.slice(at)],
-    }));
-    return true;
-  },
   addChapter(title) {
     const chs = this.get();
     const n = String(chs.length + 1).padStart(2, "0");
@@ -624,7 +612,7 @@ const WsCatalog = {
       today: (active && active.wordsToday) || 0,
     };
   },
-  subscribe(fn) { catSubs.add(fn); return () => catSubs.delete(fn); },
+  subscribe(fn) { return catSubs.subscribe(fn); },
   /* —— FE-ALIGN 内部接缝（非契约面）—— */
   __backendSceneId: catBackendSceneId,
   __applyWordsRollup(sid, rollup) {
@@ -646,13 +634,11 @@ const WsCatalog = {
 
 /* hook：订阅目录 + 作品切换 */
 function useCatalogChapters() {
-  const [, force] = React.useState(0);
-  React.useEffect(() => {
-    const bump = () => force(n => n + 1);
+  useStoreTick((bump) => {
     const un = WsCatalog.subscribe(bump);
     window.addEventListener("ws:work-changed", bump);
     return () => { un(); window.removeEventListener("ws:work-changed", bump); };
-  }, []);
+  });
   return WsCatalog.get();
 }
 
@@ -678,12 +664,12 @@ window.addEventListener("ws:work-changed", catOnWorkChanged);
    软删端点自动产生条目，push() 退化为「触发刷新」的兼容壳。
    restore/purge 走对应端点；失败由 store 自行提示并以服务端为准刷新。
    ========================================================== */
-const trashSubs = new Set();
+const trashSubs = createSubscribers();
 let trashCache = [];
 let trashFetching = null;
 const TRASH_KIND_LABEL = { work: "作品", chapter: "章节", scene: "场景" };
 
-function trashNotify() { trashSubs.forEach(fn => { try { fn(); } catch (e) {} }); }
+function trashNotify() { trashSubs.notify(); }
 
 function trashAdapt(item) {
   return {
@@ -725,7 +711,7 @@ const WsTrashStore = {
         catFetch(catActiveId(), { migrate: false });
       }
     }).catch((e) => {
-      try { window.alert((e && e.message) || "恢复失败。"); } catch (e2) {}
+      storeAlert(e, "恢复失败。");
       trashFetch();
     });
     return true; // 乐观返回；失败走上面的独立提示
@@ -734,7 +720,7 @@ const WsTrashStore = {
     apiDelete(`/api/v2/trash/${encodeURIComponent(id)}`).then(() => {
       trashFetch();
     }).catch((e) => {
-      try { window.alert((e && e.message) || "永久删除失败。"); } catch (e2) {}
+      storeAlert(e, "永久删除失败。");
       trashFetch();
     });
   },
@@ -761,7 +747,7 @@ const WsTrashStore = {
     }
     return true;
   },
-  subscribe(fn) { trashSubs.add(fn); return () => trashSubs.delete(fn); },
+  subscribe(fn) { return trashSubs.subscribe(fn); },
 };
 
 try { trashFetch(); } catch (e) {}

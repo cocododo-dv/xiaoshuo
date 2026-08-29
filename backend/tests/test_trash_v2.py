@@ -100,7 +100,7 @@ def test_unified_trash_lists_three_levels(client, session):
     chapter_del = client.delete(f"/api/v2/projects/{pid}/catalog/chapters/{chapter['chapter_id']}")
     # 既有规则：章下有已 trash 场景时阻止章删 —— 先恢复场景再删章
     if chapter_del.status_code == 409:
-        _post(client, f"/api/v2/projects/{pid}/catalog/scenes/{scene_id}/restore")
+        _post(client, f"/api/v2/trash/scene:{scene_id}/restore")
         chapter_del = client.delete(f"/api/v2/projects/{pid}/catalog/chapters/{chapter['chapter_id']}")
     assert chapter_del.status_code == 200, chapter_del.text
     # 作品级软删（demo 可删）

@@ -7,18 +7,8 @@ from novel_system.services.llm_accounting import (
     LLMAccountingError,
     LLMAccountingRejected,
 )
-from novel_system.services.longform_tower import LongformTowerService
 from novel_system.services.style_reference import _llm_helper
 from novel_system.services.style_reference._llm_helper import LLMNodeError
-
-
-def _receipt() -> dict:
-    return {
-        "chapter_no": 1,
-        "contract": {"constraints": []},
-        "anchor_hits": [],
-        "anchor_misses": [],
-    }
 
 
 @pytest.mark.parametrize(
@@ -39,7 +29,7 @@ def _receipt() -> dict:
     ],
     ids=("rejected", "budget", "call-exists"),
 )
-def test_library_and_longform_never_degrade_accounting_control_plane_failures(
+def test_library_derive_never_degrades_accounting_control_plane_failures(
     session,
     monkeypatch,
     error_factory,
@@ -59,18 +49,8 @@ def test_library_and_longform_never_degrade_accounting_control_plane_failures(
         )
     assert library_error.value is expected
 
-    expected = error_factory()
-    with pytest.raises(type(expected)) as longform_error:
-        LongformTowerService(session)._adjudicate_violations(
-            "project-control-plane",
-            "chapter-control-plane",
-            _receipt(),
-            object(),
-        )
-    assert longform_error.value is expected
 
-
-def test_library_and_longform_still_degrade_provider_business_failures(
+def test_library_derive_still_degrades_provider_business_failures(
     session,
     monkeypatch,
 ) -> None:
@@ -86,10 +66,4 @@ def test_library_and_longform_still_degrade_provider_business_failures(
         "project-provider-failure",
         "chapter-provider-failure",
         "chapter text",
-    ) == []
-    assert LongformTowerService(session)._adjudicate_violations(
-        "project-provider-failure",
-        "chapter-provider-failure",
-        _receipt(),
-        object(),
     ) == []

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 from uuid import uuid4
 
@@ -8,6 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import RelationProfile, SceneBlueprint, SceneCard, VoiceProfile
+from novel_system.services.qc_constraints import (
+    constraint_alternatives,
+    constraint_terms,
+    named_scene_card_sources,
+)
 from novel_system.services.resolver import Resolver
 from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.writer_briefs import normalize_scene_writer_brief
@@ -191,14 +195,20 @@ class SceneRunPreflightService:
         return (max(versions) + 1) if versions else 1
 
     def _constraint_conflicts(self, scene: SceneCard) -> list[dict[str, Any]]:
-        forbidden_terms = self._constraint_terms(scene.forbidden_text)
+        forbidden_text = scene.forbidden_text
+        if not isinstance(forbidden_text, str) or not forbidden_text.strip():
+            return []
+        forbidden_terms = constraint_terms(forbidden_text)
         if not forbidden_terms:
             return []
         positive_sources = self._positive_constraint_sources(scene)
         conflicts: list[dict[str, Any]] = []
         for term in forbidden_terms:
+            # 与运行期 QC 闸门链同一契约：'A|B' 表示任一备选命中即触禁，
+            # 预检据此判冲突（裸 term 匹配会漏掉带备选写法的约束）。
+            alternatives = constraint_alternatives(term) or [term]
             for source_name, source_text in positive_sources:
-                if term in source_text:
+                if any(alternative in source_text for alternative in alternatives):
                     conflicts.append(
                         {
                             "term": term,
@@ -263,28 +273,11 @@ class SceneRunPreflightService:
 
 
     @staticmethod
-    def _constraint_terms(text: Any) -> list[str]:
-        if not isinstance(text, str) or not text.strip():
-            return []
-        return [term.strip() for term in re.split(r"[,，、;；\n]+", text) if len(term.strip()) >= 2]
-
-
-    @staticmethod
     def _positive_constraint_sources(scene: SceneCard) -> list[tuple[str, str]]:
-        sources: list[tuple[str, str]] = []
-        for name, value in (
-            ("scene_card.must_include_text", scene.must_include_text),
-            ("scene_card.hook", scene.hook),
-            ("scene_card.exit_change", scene.exit_change),
-            ("scene_card.scene_goal", scene.scene_goal),
-        ):
-            if isinstance(value, str) and value.strip():
-                sources.append((name, value))
-        beats = scene.beats_json if isinstance(scene.beats_json, list) else []
-        for index, beat in enumerate(beats):
-            if isinstance(beat, str) and beat.strip():
-                sources.append((f"scene_card.beats_json[{index}]", beat))
-        return sources
+        # 字段顺序即归因优先级（与 QC 侧不同：不含 location 且 must_include 优先）。
+        return named_scene_card_sources(
+            scene, ("must_include_text", "hook", "exit_change", "scene_goal")
+        )
 
     def _warning_items(self, scene: SceneCard) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []

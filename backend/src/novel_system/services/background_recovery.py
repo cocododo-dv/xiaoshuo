@@ -407,23 +407,14 @@ def _dispatch_style_reference(
 def _build_style_reference_llm_client() -> tuple[Any | None, bool]:
     from novel_system.settings import get_settings
 
+    # get_settings 留在 try 外:settings 读取失败必须向上抛,只有构造失败才降级。
     settings = get_settings()
     if not settings.llm_enabled:
         return None, False
     try:
-        from novel_system.services.llm_client import LLMClient
-        from novel_system.services.system_config import load_llm_provider_runtime_configs
+        from novel_system.services.system_config import build_runtime_llm_client
 
-        return (
-            LLMClient(
-                provider=settings.llm_provider,
-                base_url=settings.llm_base_url,
-                api_key=settings.llm_api_key,
-                timeout_seconds=settings.llm_timeout_seconds,
-                provider_configs=load_llm_provider_runtime_configs(),
-            ),
-            True,
-        )
+        return build_runtime_llm_client(settings=settings)
     except Exception:  # pragma: no cover - invalid runtime configuration
         logger.exception("style-reference recovery could not build its LLM client")
         return None, False

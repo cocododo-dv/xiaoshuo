@@ -1,12 +1,12 @@
 import React from "react";
 import { apiGet, apiPost } from "./lib/client.js";
+import { StatCard } from "./ws-quality-ui.jsx";
 
 /* global React, I */
 /* ==========================================================
    WsEval — 质量实验室 · 匿名 A/B 人类盲评（结果闭环治理 §6.2/§9.4）
    对接后端实验通道：
      GET  /api/v1/evaluation-experiments                    实验清单 + 进度摘要
-     GET  /api/v1/evaluation-experiments/{id}/overview      单实验详情
      POST /api/v1/evaluation-experiments                    建实验
      POST /api/v1/evaluation-experiments/{id}/pairs         加对（服务端盲化落库）
      POST /api/v1/evaluation-experiments/{id}/freeze        冻结题包
@@ -77,49 +77,45 @@ async function evLoadExperiments() {
   }
 }
 
-async function evCreateExperiment(fields) {
+/* 建实验/加对/冻结共用的管理写骨架：busy 置起 → POST → 成功记 notice 后重拉清单；
+   失败仍按原样落 state.error（noticeOf(data) 出成功文案，errorFallback 兜无 message 的错）。 */
+async function evAdminPost(path, body, noticeOf, errorFallback) {
   evSet({ busy: true, error: null, notice: null });
   try {
-    const data = await apiPost("/api/v1/evaluation-experiments", fields);
-    evSet({ busy: false, notice: `实验「${(data && data.name) || fields.name}」已创建。` });
+    const data = await apiPost(path, body);
+    evSet({ busy: false, notice: noticeOf(data) });
     await evLoadExperiments();
     return data;
   } catch (e) {
-    evSet({ busy: false, error: (e && e.message) || "建实验失败。" });
+    evSet({ busy: false, error: (e && e.message) || errorFallback });
     return null;
   }
+}
+
+async function evCreateExperiment(fields) {
+  return evAdminPost(
+    "/api/v1/evaluation-experiments", fields,
+    (data) => `实验「${(data && data.name) || fields.name}」已创建。`,
+    "建实验失败。"
+  );
 }
 
 async function evAddPair(experimentId, fields) {
   if (!experimentId) return null;
-  evSet({ busy: true, error: null, notice: null });
-  try {
-    const data = await apiPost(
-      `/api/v1/evaluation-experiments/${encodeURIComponent(experimentId)}/pairs`, fields
-    );
-    evSet({ busy: false, notice: `已加入 1 对（快照 ${fields.scene_snapshot_hash}）。` });
-    await evLoadExperiments();
-    return data;
-  } catch (e) {
-    evSet({ busy: false, error: (e && e.message) || "加对失败。" });
-    return null;
-  }
+  return evAdminPost(
+    `/api/v1/evaluation-experiments/${encodeURIComponent(experimentId)}/pairs`, fields,
+    () => `已加入 1 对（快照 ${fields.scene_snapshot_hash}）。`,
+    "加对失败。"
+  );
 }
 
 async function evFreeze(experimentId) {
   if (!experimentId) return null;
-  evSet({ busy: true, error: null, notice: null });
-  try {
-    const data = await apiPost(
-      `/api/v1/evaluation-experiments/${encodeURIComponent(experimentId)}/freeze`, {}
-    );
-    evSet({ busy: false, notice: "题包已冻结——清单哈希封存，此后增删对即篡改。" });
-    await evLoadExperiments();
-    return data;
-  } catch (e) {
-    evSet({ busy: false, error: (e && e.message) || "冻结失败。" });
-    return null;
-  }
+  return evAdminPost(
+    `/api/v1/evaluation-experiments/${encodeURIComponent(experimentId)}/freeze`, {},
+    () => "题包已冻结——清单哈希封存，此后增删对即篡改。",
+    "冻结失败。"
+  );
 }
 
 /* ---- 盲评（竞技场） ---- */
@@ -246,7 +242,6 @@ const STATUS_META = {
 
 const PROVENANCE_META = {
   human: { tone: "sage", label: "真人票" },
-  synthetic: { tone: "slate", label: "合成票" },
 };
 
 const ISOLATION_LABEL = {
@@ -289,18 +284,6 @@ function EvMeter({ value, max, danger, label }) {
          style={{ height: 8, borderRadius: 5, background: "var(--line-1, #e7e4dc)", overflow: "hidden" }}>
       <div style={{ width: `${Math.round(ratio * 100)}%`, height: "100%", borderRadius: 5,
                     background: danger ? "var(--crimson, #a64b3c)" : "var(--acc, #667a64)" }} />
-    </div>
-  );
-}
-
-function EvStat({ label, value, hint, children }) {
-  return (
-    <div className="card" style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid var(--line, #e5e2dc)" }}>
-      <div className="text-xs" style={{ color: "var(--ink-3)" }}>{label}</div>
-      <div className="text-serif" style={{ fontSize: 20, lineHeight: 1.3, display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
-        {value}{children}
-      </div>
-      {hint && <div className="text-xs" style={{ color: "var(--ink-3)", marginTop: 2 }}>{hint}</div>}
     </div>
   );
 }
@@ -356,7 +339,7 @@ function EvExperimentCard({ exp, busy }) {
       <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
         <h3 className="text-serif" style={{ margin: 0, fontSize: 16, flex: 1, minWidth: 0 }}>{exp.name || exp.experiment_id}</h3>
         <EvPill tone={status.tone}>{status.label}</EvPill>
-        <EvPill tone={prov.tone} title="human=真人票（可进策略门）；synthetic=合成/演练票（仅诊断）">{prov.label}</EvPill>
+        <EvPill tone={prov.tone} title="human=真人票（human-only 契约；可进策略门，须冻结+隔离）">{prov.label}</EvPill>
         {exp.isolation_mode && <EvPill tone="slate" title={exp.snapshot_source_ref || ""}>{ISOLATION_LABEL[exp.isolation_mode] || exp.isolation_mode}</EvPill>}
       </div>
       {exp.hypothesis && (
@@ -410,14 +393,14 @@ function EvExperimentCard({ exp, busy }) {
 function EvCreateForm({ busy }) {
   const [name, setName] = React.useState("");
   const [hypothesis, setHypothesis] = React.useState("");
-  const [provenance, setProvenance] = React.useState("synthetic");
   const [isolation, setIsolation] = React.useState("");
   const [sourceRef, setSourceRef] = React.useState("");
   const submit = async () => {
     const body = {
       name: name.trim(),
       hypothesis: hypothesis.trim(),
-      evidence_provenance: provenance,
+      // 迁移 0075 起后端为 human-only 契约，synthetic 会被 422 拒绝
+      evidence_provenance: "human",
       isolation_mode: isolation || null,
       snapshot_source_ref: sourceRef.trim() || null,
     };
@@ -437,10 +420,7 @@ function EvCreateForm({ busy }) {
           <input style={input} value={hypothesis} onChange={(e) => setHypothesis(e.target.value)} placeholder="如：Best-of-N 终选在揭示场显著更好" />
         </label>
         <label className="text-xs" style={field}>证据来源
-          <select style={input} value={provenance} onChange={(e) => setProvenance(e.target.value)}>
-            <option value="synthetic">synthetic · 演练/合成票（仅诊断）</option>
-            <option value="human">human · 真人票（可进策略门，须冻结+隔离）</option>
-          </select>
+          <div style={{ ...input, color: "var(--ink-2)" }}>human · 真人票（human-only 契约；进策略门须冻结+隔离）</div>
         </label>
         <label className="text-xs" style={field}>快照隔离
           <select style={input} value={isolation} onChange={(e) => setIsolation(e.target.value)}>
@@ -796,20 +776,20 @@ function EvReport({ st }) {
           })()}
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
-            <EvStat label="treatment 偏好率" value={fmtPct(report.preference_rate, 1)}
+            <StatCard label="treatment 偏好率" value={fmtPct(report.preference_rate, 1)}
                     hint={`非平局 ${fmtNum(report.non_tie_n)} 票中胜 ${fmtNum(report.treatment_wins)}`} />
-            <EvStat label="双侧精确二项 p" value={report.p_value === null || report.p_value === undefined ? "—" : report.p_value}
+            <StatCard label="双侧精确二项 p" value={report.p_value === null || report.p_value === undefined ? "—" : report.p_value}
                     hint={`显著门 α=0.05 · 最小胜场 ${fmtNum(report.min_wins_threshold)}`} />
-            <EvStat label="统计判定" value={report.significant ? "显著" : "不显著"}
+            <StatCard label="统计判定" value={report.significant ? "显著" : "不显著"}
                     hint={report.statistical_decision} />
-            <EvStat label="平局 / 未投 / 无对比" value={`${fmtNum(report.ties)} / ${fmtNum(report.unvoted)} / ${fmtNum(report.no_contrast)}`}
+            <StatCard label="平局 / 未投 / 无对比" value={`${fmtNum(report.ties)} / ${fmtNum(report.unvoted)} / ${fmtNum(report.no_contrast)}`}
                     hint={`共 ${fmtNum(report.total_pairs)} 对 · 平局率 ${fmtPct(report.tie_rate)}`} />
-            <EvStat label="token 代价倍率"
+            <StatCard label="token 代价倍率"
                     value={report.token_cost && report.token_cost.token_multiplier !== null && report.token_cost.token_multiplier !== undefined
                       ? `${report.token_cost.token_multiplier}×` : "—"}
                     hint={report.token_cost && (report.token_cost.treatment_missing_n || report.token_cost.control_missing_n)
                       ? `成本记录不全（缺 ${fmtNum(report.token_cost.treatment_missing_n)}/${fmtNum(report.token_cost.control_missing_n)} 对）` : "treatment ÷ control"} />
-            <EvStat label="平均投票用时"
+            <StatCard label="平均投票用时"
                     value={report.vote_duration && report.vote_duration.avg_ms !== null && report.vote_duration.avg_ms !== undefined
                       ? `${Math.round(report.vote_duration.avg_ms / 100) / 10}s` : "—"}
                     hint={report.vote_duration ? `${fmtNum(report.vote_duration.count)} 票计时` : null} />

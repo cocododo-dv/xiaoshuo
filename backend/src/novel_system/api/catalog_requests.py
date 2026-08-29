@@ -70,10 +70,5 @@ class CatalogSceneUpdateRequest(_CatalogSceneFieldsRequest):
     pov_character_name: str | None = Field(default=None, max_length=500)
 
 
-class CatalogSceneMoveRequest(StrictRequestModel):
-    # Omission remains CATALOG_MOVE_INVALID in the domain service.
-    to: int | None = Field(default=None, ge=0, le=2_147_483_647)
-
-
 class CatalogImportRequest(StrictRequestModel):
     chapters: list[BoundedJsonObject] | None = Field(default=None, max_length=10_000)

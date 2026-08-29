@@ -70,13 +70,10 @@ Bundle 在 `source_version_refs` 中显式记录状态：
 会被视为“按风格选择”，`overall_quality` 和 `plot_fidelity` 只记录为总体选择。
 
 终选 Gate 在展示前冻结一个只含分数、置信度、ID 和哈希的反馈快照，不含任何候选或
-来源正文。选择后记录作者是否与机器风格首选一致。可通过：
-
-`GET /api/v2/style-reference/profiles/{profile_id}/candidate-feedback`
-
-读取聚合一致率。该数据始终为 `policy_evidence_eligible=false`：它可用于发现评分偏差，
-不能自训练、自动改 Profile 或直接开启主动重排。生产激活仍要求独立冻结、真人核验的
-盲评报告。聚合前会复核每条反馈的内容哈希，损坏记录单独计数且不进入一致率。
+来源正文。选择后记录作者是否与机器风格首选一致。该数据始终为
+`policy_evidence_eligible=false`：它可用于发现评分偏差，不能自训练、自动改 Profile
+或直接开启主动重排。生产激活仍要求独立冻结、真人核验的盲评报告。每条反馈落库前
+即校验内容哈希，篡改记录会被拒绝。
 
 ## 验证重点
 

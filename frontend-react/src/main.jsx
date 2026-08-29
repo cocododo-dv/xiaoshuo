@@ -9,6 +9,8 @@ import "./ws-library.css";
 import "./ws-author.css";
 import "./ws-review.css";
 import "./ws-deep.css";
+import "./ws-styleref.css";
+import "./ws-snow.css";
 
 import { App } from "./ws-app.jsx";
 import ReactDOMClient from "react-dom/client";

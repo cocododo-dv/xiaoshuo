@@ -33,6 +33,7 @@ from novel_system.services.llm_task_runner import (
     current_llm_execution_id,
 )
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.settings import get_settings
 
 
@@ -746,16 +747,10 @@ class WriterDeepReviewService:
         ).scalars().first()
 
     def _require_scene(self, scene_id: str) -> SceneCard:
-        scene = self.session.get(SceneCard, scene_id)
-        if scene is None or scene.trashed_flag == 1:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
-        return scene
+        return require_scene(self.session, scene_id)
 
     def _require_chapter(self, chapter_id: str) -> ChapterGoal:
-        chapter = self.session.get(ChapterGoal, chapter_id)
-        if chapter is None or chapter.trashed_flag == 1:
-            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
-        return chapter
+        return require_chapter(self.session, chapter_id)
 
     def _require_patch_candidate(self, patch_id: str) -> PassagePatchCandidate:
         row = self.session.get(PassagePatchCandidate, patch_id)

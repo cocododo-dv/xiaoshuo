@@ -1,7 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom";
 import { I } from "./icons.jsx";
+import { agoLabel } from "./lib/ago.js";
 import { apiGet, apiPost } from "./lib/client.js";
+import { storeAlert } from "./lib/store-utils.js";
 import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 
@@ -42,15 +44,6 @@ const RV_LEGACY_LS = "ws_review_v1";
 
 const rvActiveId = () => { try { return WsWorks ? WsWorks.activeId() : null; } catch (e) { return null; } };
 
-function rvAgo(t) {
-  const m = Math.floor((Date.now() - t) / 60000);
-  if (m < 1) return "刚刚";
-  if (m < 60) return m + " 分钟前";
-  const h = Math.floor(m / 60);
-  if (h < 24) return h + " 小时前";
-  return Math.floor(h / 24) + " 天前";
-}
-
 /* 后端卡片 → 视图条目（形状=契约附录卡片形状） */
 function rvAdapt(card) {
   const occurred = card.occurred_at ? Date.parse(card.occurred_at) : NaN;
@@ -64,7 +57,7 @@ function rvAdapt(card) {
     title: card.title,
     where: card.where || "",
     source: card.source || "",
-    time: card.live ? "实时" : (Number.isNaN(occurred) ? "" : rvAgo(occurred)),
+    time: card.live ? "实时" : (Number.isNaN(occurred) ? "" : agoLabel(occurred)),
     detail: card.detail || "",
     preview: card.preview || undefined,
     checklist: card.checklist || undefined,
@@ -238,7 +231,7 @@ function rvMarkResolved(ids) {
       if (rvPendingAction[id] != null) { body.action_index = rvPendingAction[id]; delete rvPendingAction[id]; }
       try { await apiPost(`/api/v1/review-items/${encodeURIComponent(id)}/resolve`, body); }
       catch (e) {
-        try { window.alert((e && e.message) || "处理失败。"); } catch (e2) {}
+        storeAlert(e, "处理失败。");
       }
     }
     rvFetch();
@@ -277,27 +270,6 @@ function rvUnsnooze(id) {
 }
 
 function rvIsResolved(id) { return rvResolvedSet.has(id); }
-function rvBadge() { const n = rvCache.open.filter(i => i.priority === 1).length; return n > 0 ? String(n) : null; }
-
-function useReviewBadge() {
-  const [, force] = React.useState(0);
-  React.useEffect(() => {
-    const bump = () => force(n => n + 1);
-    window.addEventListener("ws:review-changed", bump);
-    window.addEventListener("ws:work-changed", bump);
-    window.addEventListener("ws:snow-saved", bump);   // 派生项跟雪花存盘同步
-    window.addEventListener("lf:bridge-changed", bump); // 控制塔裁决同步
-    const un = WsCatalog ? WsCatalog.subscribe(bump) : null;  // 目录变动同步
-    return () => {
-      window.removeEventListener("ws:review-changed", bump);
-      window.removeEventListener("ws:work-changed", bump);
-      window.removeEventListener("ws:snow-saved", bump);
-      window.removeEventListener("lf:bridge-changed", bump);
-      if (un) un();
-    };
-  }, []);
-  return rvBadge();
-}
 
 /* 启动装载 + 真相变动时刷新（派生卡在后端现算，目录/作品切换都可能改变它们）。
    模块在 HMR/测试 resetModules 后可能重新执行，先撤销旧实例的全局订阅。 */
@@ -765,7 +737,7 @@ function RvEmpty({ hasSnoozed, go }) {
   );
 }
 
-Object.assign(window, { WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvCustomList, rvIsResolved, useReviewBadge });
+Object.assign(window, { WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvCustomList, rvIsResolved });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvCustomList, rvIsResolved, useReviewBadge, rvMigrateLegacy };
+export { WsReview, RV_KINDS, rvOpenItems, rvMarkResolved, rvPush, rvCustomList, rvIsResolved, rvMigrateLegacy };

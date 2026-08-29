@@ -66,19 +66,6 @@ class SceneCanonVerificationRequest(BaseModel):
         return clean
 
 
-@router.get("/api/v1/projects/{project_id}/canon/chapters/{chapter_id}")
-def chapter_canon_status(
-    project_id: str,
-    chapter_id: str,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    return ok(
-        CanonContinuityService(session).chapter_status(project_id, chapter_id),
-        req_id=getattr(request.state, "request_id", None),
-    )
-
-
 @router.get("/api/v1/projects/{project_id}/canon/scenes/{scene_id}")
 def scene_canon_status(
     project_id: str,

@@ -726,7 +726,8 @@ html[data-writer-zen="1"] .app-shell { grid-template-columns: 1fr !important; }
    Undo toast — 删除类动作的统一回执（见 ws-undo-toast.jsx）
    ========================================================== */
 .ws-toast {
-  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 90;
+  /* left 补偿 .ws-app 左侧 --rail 固定侧栏（ws-shell.css）的一半，使 toast 以内容区为中心；壳外无 --rail 时回退视口居中 */
+  position: fixed; left: calc(50% + var(--rail, 0px) / 2); bottom: 26px; transform: translateX(-50%); z-index: 90;
   display: flex; align-items: center; gap: 14px;
   max-width: min(560px, calc(100vw - 32px));
   padding: 11px 12px 11px 16px; border-radius: var(--r-lg);

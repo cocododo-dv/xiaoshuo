@@ -2497,30 +2497,6 @@ def _normalize_structure_payload(payload: Any, *, draft: AuthorDraft, target: di
     }
 
 
-def _line_after_prefix(lines: list[str], prefix: str) -> str:
-    prefix_lower = prefix.lower()
-    for line in lines:
-        if line.lower().startswith(prefix_lower):
-            return line.split(":", 1)[1].strip() if ":" in line else line
-    return ""
-
-
-def _numbered_lines(lines: list[str]) -> list[str]:
-    results: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if len(stripped) > 2 and stripped[0].isdigit() and stripped[1] in {".", ")"}:
-            results.append(stripped[2:].strip())
-    return results
-
-
-def _five_sentences(one_sentence: str, scenes: list[str]) -> list[str]:
-    values = [one_sentence, *scenes[:4]]
-    while len(values) < 5:
-        values.append(one_sentence)
-    return values[:5]
-
-
 def _merge_briefs(current: dict[str, str], candidate: dict[str, Any]) -> dict[str, str]:
     merged = dict(current)
     for key, value in candidate.items():
@@ -2531,19 +2507,3 @@ def _merge_briefs(current: dict[str, str], candidate: dict[str, Any]) -> dict[st
 
 def _nonempty_brief(brief: dict[str, str]) -> dict[str, str]:
     return {key: value for key, value in brief.items() if key != "schema_version" and isinstance(value, str) and value.strip()}
-
-
-def _candidate_image_tokens(text: str) -> list[str]:
-    tokens: list[str] = []
-    for raw in str(text or "").replace("\n", " ").split():
-        cleaned = raw.strip("，。！？；：、,.!?;:\"'()[]【】")
-        if 1 < len(cleaned) <= 8 and cleaned not in tokens:
-            tokens.append(cleaned)
-    return tokens[:8]
-
-
-def _image_anchor(text: str) -> str:
-    for token in _candidate_image_tokens(text):
-        if token in text:
-            return token
-    return "一个被人物反复触碰、能承载代价的物件"

@@ -15,7 +15,48 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from novel_system.api.response import ok
-from novel_system.services.idempotency import execute_with_optional_idempotency
+from novel_system.services.errors import DomainError
+from novel_system.services.idempotency import (
+    execute_with_idempotency,
+    execute_with_optional_idempotency,
+)
+
+
+def idempotent_response(
+    request: Request,
+    session: Session,
+    *,
+    method: str,
+    path_template: str,
+    payload: Any,
+    action: Callable[..., dict],
+    after_commit: Callable[[dict], None] | None = None,
+    owned_failure_callback: Callable[[DomainError], None] | None = None,
+) -> JSONResponse:
+    """Execute and commit one mutation that *requires* an idempotency key.
+
+    A missing ``X-Idempotency-Key`` still fails with the 400
+    ``IDEMPOTENCY_KEY_REQUIRED`` raised by ``execute_with_idempotency``.
+    """
+
+    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
+    result, status = execute_with_idempotency(
+        session,
+        idempotency_key=request.headers.get("X-Idempotency-Key"),
+        method=method,
+        path_template=path_template,
+        payload=payload,
+        action=action,
+        after_commit=after_commit,
+        owned_failure_callback=owned_failure_callback,
+        actor_ref=actor_ref,
+    )
+    headers = {"X-Idempotency-Status": status} if status else {}
+    return ok(
+        result,
+        req_id=getattr(request.state, "request_id", None),
+        headers=headers,
+    )
 
 
 def optional_idempotent_response(

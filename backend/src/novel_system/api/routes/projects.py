@@ -7,11 +7,10 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
-from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.project_requests import ProjectCreateRequest
 from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
-from novel_system.services.idempotency import execute_with_idempotency, execute_with_optional_idempotency
 from novel_system.services.project_backtracks import ProjectBacktrackService
 from novel_system.services.projects import (
     OutlinePlannerService,
@@ -98,18 +97,14 @@ class ProjectReferenceProfileAttachRequest(BaseModel):
 @router.post("/api/v1/projects")
 def create_project(payload: ProjectCreateRequest, request: Request, session: Session = Depends(get_session)):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/projects",
         payload=body,
         action=lambda: ProjectService(session).create(body),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.get("/api/v1/projects")
@@ -142,18 +137,14 @@ def resolve_project_backtrack_item(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/projects/{project_id}/backtrack-items/{item_id}/resolve",
         payload={"project_id": project_id, "item_id": item_id, **body},
         action=lambda: ProjectBacktrackService(session).resolve(project_id, item_id, body),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/projects/{project_id}/outline-plan")
@@ -164,18 +155,14 @@ def generate_outline_plan(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/projects/{project_id}/outline-plan",
         payload={"project_id": project_id, **body},
         action=lambda: OutlinePlannerService(session).generate(project_id, body),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/projects/{project_id}/outline-plan/{plan_id}/approve")
@@ -187,18 +174,14 @@ def approve_outline_plan(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json") if payload is not None else {}
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/projects/{project_id}/outline-plan/{plan_id}/approve",
         payload={"project_id": project_id, "plan_id": plan_id, **body},
         action=lambda: ProjectService(session).approve_outline_plan(project_id, plan_id),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/projects/{project_id}/chapters/{chapter_id}/run")
@@ -210,18 +193,14 @@ def run_project_chapter(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json") if payload is not None else {}
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/projects/{project_id}/chapters/{chapter_id}/run",
         payload={"project_id": project_id, "chapter_id": chapter_id, **body},
         action=lambda: ProjectChapterFlowService(session).run_chapter(project_id, chapter_id),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/projects/{project_id}/chapters/{chapter_id}/run-job")
@@ -246,21 +225,19 @@ def run_project_chapter_job(
             job_to_start = result["run"]["job_id"]
         return result
 
-    result, status = execute_with_optional_idempotency(
+    response = optional_idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/projects/{project_id}/chapters/{chapter_id}/run-job",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=prepare,
-        actor_ref=getattr(request.state, "operator_ref", None) or "operator",
     )
     # The closure is populated only when this request executed the action. A
     # durable replay returns the cached response without launching another worker.
     if job_to_start is not None:
         start_project_chapter_run_job_worker(project_id, chapter_id, job_to_start)
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
+    return response
 
 
 @router.post("/api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final")
@@ -273,17 +250,14 @@ def approve_project_chapter_final(
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/projects/{project_id}/chapters/{chapter_id}/approve-final",
         payload={"project_id": project_id, "chapter_id": chapter_id, **body},
         action=lambda: ProjectChapterFlowService(session).approve_final(project_id, chapter_id, body, actor_ref=actor_ref),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/projects/{project_id}/chapters/{chapter_id}/reopen-final")
@@ -296,9 +270,9 @@ def reopen_project_chapter_final(
 ):
     body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/projects/{project_id}/chapters/{chapter_id}/reopen-final",
         payload={"project_id": project_id, "chapter_id": chapter_id, **body},
@@ -308,10 +282,7 @@ def reopen_project_chapter_final(
             reason=body["reason"],
             actor_ref=actor_ref,
         ),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/projects/{project_id}/chapters/{chapter_id}/read-confirm")
@@ -346,17 +317,14 @@ def review_project_chapter_final(
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload is not None else {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/projects/{project_id}/chapters/{chapter_id}/final-review",
         payload={"project_id": project_id, "chapter_id": chapter_id, **body},
         action=lambda: ProjectChapterFlowService(session).final_review(project_id, chapter_id, body, actor_ref=actor_ref),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/projects/{project_id}/reference-profiles")
@@ -367,15 +335,11 @@ def attach_reference_profile(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json")
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/projects/{project_id}/reference-profiles",
         payload={"project_id": project_id, **body},
         action=lambda: ProjectService(session).attach_reference_profile(project_id, body["profile_id"]),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)

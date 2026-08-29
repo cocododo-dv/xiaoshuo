@@ -64,7 +64,12 @@ def test_l3_acceptance_smoke(client, session) -> None:
     ).status_code == 200
 
     worksheet = client.get(f"/api/v1/interop/export/bundle-worksheet/{bundle_id}")
-    alias = client.get("/api/v1/index/alias-scopes/style_observation:global:global")
+    alias = client.get(
+        "/api/v1/index/alias-scopes",
+        params={"object_type": "style_observation", "scope": "global", "scope_ref_id": "global"},
+    )
     assert worksheet.status_code == 200
     assert alias.status_code == 200
-    assert alias.json()["data"]["verify_status"] == "succeeded"
+    alias_items = alias.json()["data"]["items"]
+    assert len(alias_items) == 1
+    assert alias_items[0]["verify_status"] == "succeeded"

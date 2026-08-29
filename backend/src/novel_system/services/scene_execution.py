@@ -23,6 +23,7 @@ from novel_system.db.models import (
     StyleReferenceProfile,
 )
 from novel_system.services.errors import DomainError
+from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.story_slots import (
     normalize_story_slot,
     normalize_story_slot_mapping,
@@ -56,42 +57,21 @@ class SceneExecutionContractService:
         ).scalars().first()
 
     def get_or_create(self, scene_id: str, *, actor_ref: str = "operator") -> SceneExecutionContract:
-        scene = self._require_scene(scene_id)
-        chapter = self._require_chapter(scene.chapter_id)
-        project = self.session.get(StoryProject, scene.project_id) if scene.project_id else None
-        blueprint = self._latest_blueprint(scene_id)
-        reference_rules = self._reference_rules(project)
-        snapshot = self._source_snapshot(scene, chapter, project, blueprint, reference_rules)
-        snapshot_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
-        latest = self.latest(scene_id)
-        if latest is not None and latest.source_snapshot_hash == snapshot_hash and latest.status != "stale":
-            return latest
+        *_, cached = self._resolve_context(scene_id)
+        if cached is not None:
+            return cached
         return self.generate(scene_id, actor_ref=actor_ref)
 
     def preview(self, scene_id: str, *, actor_ref: str = "preview") -> SceneExecutionContract:
         """Project the current contract without inserting or superseding any row."""
 
-        scene = self._require_scene(scene_id)
-        chapter = self._require_chapter(scene.chapter_id)
-        project = self.session.get(StoryProject, scene.project_id) if scene.project_id else None
-        blueprint = self._latest_blueprint(scene_id)
-        reference_rules = self._reference_rules(project)
-        snapshot = self._source_snapshot(scene, chapter, project, blueprint, reference_rules)
-        snapshot_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
-        latest = self.latest(scene_id)
-        if latest is not None and latest.source_snapshot_hash == snapshot_hash and latest.status != "stale":
-            return latest
+        scene, chapter, project, blueprint, reference_rules, snapshot_hash, cached = self._resolve_context(scene_id)
+        if cached is not None:
+            return cached
 
-        payload, missing_fields = self._payload(scene, chapter, blueprint, reference_rules)
-        causal_assessment = self._check_causal_readiness(scene, project)
-        if causal_assessment is not None and causal_assessment.warning:
-            payload["causal_readiness_warning"] = causal_assessment.warning
-            missing_fields.append("causal_prerequisite(advisory)")
-        if causal_assessment is not None and causal_assessment.diagnostics:
-            payload["causal_readiness_diagnostics"] = causal_assessment.diagnostics
-            missing_fields.append("causal_readiness_diagnostic(advisory)")
-
-        blocking_fields = [field for field in missing_fields if not field.endswith("(advisory)")]
+        payload, missing_fields, blocking_fields = self._assemble_payload(
+            scene, chapter, project, blueprint, reference_rules
+        )
         return SceneExecutionContract(
             contract_id=None,
             scene_id=scene.scene_id,
@@ -106,29 +86,13 @@ class SceneExecutionContractService:
         )
 
     def generate(self, scene_id: str, *, actor_ref: str = "operator") -> SceneExecutionContract:
-        scene = self._require_scene(scene_id)
-        chapter = self._require_chapter(scene.chapter_id)
-        project = self.session.get(StoryProject, scene.project_id) if scene.project_id else None
-        blueprint = self._latest_blueprint(scene_id)
-        reference_rules = self._reference_rules(project)
-        snapshot = self._source_snapshot(scene, chapter, project, blueprint, reference_rules)
-        snapshot_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
-        latest = self.latest(scene_id)
-        if latest is not None and latest.source_snapshot_hash == snapshot_hash and latest.status != "stale":
-            return latest
+        scene, chapter, project, blueprint, reference_rules, snapshot_hash, cached = self._resolve_context(scene_id)
+        if cached is not None:
+            return cached
 
-        payload, missing_fields = self._payload(scene, chapter, blueprint, reference_rules)
-
-        # §4 Causal readiness — check reverse causal skeleton prerequisites.
-        causal_assessment = self._check_causal_readiness(scene, project)
-        if causal_assessment is not None and causal_assessment.warning:
-            payload["causal_readiness_warning"] = causal_assessment.warning
-            missing_fields.append("causal_prerequisite(advisory)")
-        if causal_assessment is not None and causal_assessment.diagnostics:
-            payload["causal_readiness_diagnostics"] = causal_assessment.diagnostics
-            missing_fields.append("causal_readiness_diagnostic(advisory)")
-
-        blocking_fields = [f for f in missing_fields if not f.endswith("(advisory)")]
+        payload, missing_fields, blocking_fields = self._assemble_payload(
+            scene, chapter, project, blueprint, reference_rules
+        )
         status = "active" if not blocking_fields else "blocked"
 
         rows = self.session.execute(
@@ -155,6 +119,57 @@ class SceneExecutionContractService:
         self.session.add(contract)
         self.session.flush()
         return contract
+
+    def _resolve_context(
+        self,
+        scene_id: str,
+    ) -> tuple[
+        SceneCard,
+        ChapterGoal,
+        StoryProject | None,
+        SceneBlueprint | None,
+        dict[str, list[str]],
+        str,
+        SceneExecutionContract | None,
+    ]:
+        """解析场景快照上下文；末位返回可直接复用的最新契约（快照未变且非 stale），否则为 None。"""
+        scene = self._require_scene(scene_id)
+        chapter = self._require_chapter(scene.chapter_id)
+        project = self.session.get(StoryProject, scene.project_id) if scene.project_id else None
+        blueprint = self._latest_blueprint(scene_id)
+        reference_rules = self._reference_rules(project)
+        snapshot = self._source_snapshot(scene, chapter, project, blueprint, reference_rules)
+        snapshot_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
+        latest = self.latest(scene_id)
+        cached = (
+            latest
+            if latest is not None and latest.source_snapshot_hash == snapshot_hash and latest.status != "stale"
+            else None
+        )
+        return scene, chapter, project, blueprint, reference_rules, snapshot_hash, cached
+
+    def _assemble_payload(
+        self,
+        scene: SceneCard,
+        chapter: ChapterGoal,
+        project: StoryProject | None,
+        blueprint: SceneBlueprint | None,
+        reference_rules: dict[str, list[str]],
+    ) -> tuple[dict[str, Any], list[str], list[str]]:
+        """组装契约 payload 并追加因果就绪 advisory，返回 (payload, missing_fields, blocking_fields)。"""
+        payload, missing_fields = self._payload(scene, chapter, blueprint, reference_rules)
+
+        # §4 Causal readiness — check reverse causal skeleton prerequisites.
+        causal_assessment = self._check_causal_readiness(scene, project)
+        if causal_assessment is not None and causal_assessment.warning:
+            payload["causal_readiness_warning"] = causal_assessment.warning
+            missing_fields.append("causal_prerequisite(advisory)")
+        if causal_assessment is not None and causal_assessment.diagnostics:
+            payload["causal_readiness_diagnostics"] = causal_assessment.diagnostics
+            missing_fields.append("causal_readiness_diagnostic(advisory)")
+
+        blocking_fields = [f for f in missing_fields if not f.endswith("(advisory)")]
+        return payload, missing_fields, blocking_fields
 
     @staticmethod
     def serialize(row: SceneExecutionContract | None) -> dict[str, Any] | None:
@@ -605,16 +620,10 @@ class SceneExecutionContractService:
         }
 
     def _require_scene(self, scene_id: str) -> SceneCard:
-        scene = self.session.get(SceneCard, scene_id)
-        if scene is None or scene.trashed_flag == 1:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
-        return scene
+        return require_scene(self.session, scene_id)
 
     def _require_chapter(self, chapter_id: str) -> ChapterGoal:
-        chapter = self.session.get(ChapterGoal, chapter_id)
-        if chapter is None or chapter.trashed_flag == 1:
-            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
-        return chapter
+        return require_chapter(self.session, chapter_id)
 
 
 class SceneTriageService:

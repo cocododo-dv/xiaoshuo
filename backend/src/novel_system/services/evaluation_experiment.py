@@ -41,7 +41,9 @@ from novel_system.services.best_of_n_blind_eval import (
 from novel_system.services.errors import DomainError
 
 _VALID_CHOICES = ("left", "right", "tie")
-_VALID_PROVENANCE = ("synthetic", "human")
+# human-only 契约（迁移 20260717_0075 冻结）：synthetic 证据通道已废除，
+# 库侧 CHECK ck_evaluation_experiments_human_provenance 只放行 'human'。
+_VALID_PROVENANCE = ("human",)
 _VALID_ISOLATION_MODES = ("seed_project", "time_isolated", "external_holdout")
 _AUTOMATED_REVIEWER_PREFIXES = ("model:", "llm:", "ai:", "bot:", "auto:", "synthetic:")
 
@@ -66,15 +68,16 @@ class EvaluationExperimentService:
         control_policy: dict[str, Any] | None = None,
         isolation_mode: str | None = None,
         snapshot_source_ref: str | None = None,
-        evidence_provenance: str = "synthetic",
+        evidence_provenance: str = "human",
         benchmark_manifest_id: str | None = None,
         experiment_id: str | None = None,
     ) -> EvaluationExperiment:
-        evidence_provenance = str(evidence_provenance or "synthetic").strip().lower()
+        evidence_provenance = str(evidence_provenance or "human").strip().lower()
         if evidence_provenance not in _VALID_PROVENANCE:
             raise DomainError(
                 "INVALID_EVIDENCE_PROVENANCE",
-                f"evidence_provenance must be one of {_VALID_PROVENANCE}",
+                "evidence_provenance must be 'human': the human-only evidence "
+                "contract (migration 20260717_0075) retired synthetic experiments",
                 status_code=422,
             )
         benchmark_manifest = None

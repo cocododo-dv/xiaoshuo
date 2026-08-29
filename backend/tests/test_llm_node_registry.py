@@ -35,7 +35,6 @@ _NON_PROMPTBUILDER_TEMPLATE_NAMES = {
     "stylize",
     # 内联构造 prompt（scene_quality.py），不经 PromptBuilder。
     "scene_auto_rewrite",
-    "scene_quality_contract",
     # run_task + _AD_HOC_ROUTE_ALIASES（narrative_event_extract→extraction）路径。
     "extraction",
     # 当前无 PromptBuilder 调用方（保留 / 旧元数据）。

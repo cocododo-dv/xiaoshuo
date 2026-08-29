@@ -38,14 +38,9 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 DOC_PATH = REPO_ROOT / "docs" / "prompt-optimization-handoff.md"
 
 # 审计结论的固定期望值（漂移时提醒重新盘点，而不是静默出错文档）
-EXPECTED_TEMPLATE_COUNT = 57
-EXPECTED_NODE_COUNT = 63
+EXPECTED_TEMPLATE_COUNT = 54
+EXPECTED_NODE_COUNT = 57
 EXPECTED_ORPHAN_ACTIVE_NODES = {
-    "reference_sample_ranker",
-    "reference_style_structure_extract",
-    "reference_profile_synthesize",
-    "scene_quality_contract",
-    "writer_reference_application_review",
     "writer_scene_diagnosis",
     "writer_chapter_diagnosis",
 }
@@ -481,7 +476,7 @@ def render_inventory(
     lines = [
         "## §2 全量 LLM 调用清单（零遗漏）",
         "",
-        "注册表 60 节点 + 2 个未注册的休眠 ad-hoc 任务 + 连通性探针。状态口径：**活跃**=有真实调用点；"
+        f"注册表 {len(specs)} 节点 + 2 个未注册的休眠 ad-hoc 任务 + 连通性探针。状态口径：**活跃**=有真实调用点；"
         "**孤儿**=active 且 requires_llm 但无调用点；**模板载体**=仅为镜头节点提供模板名；"
         "**保留/本地**=设计上不调 LLM；**休眠**=代码在但无路由无注册，生产不可达。",
         "",
@@ -544,8 +539,8 @@ def render_inventory(
     )
     lines += [
         "",
-        f"**调用点合计 {len(ann.CALL_SITES)} 处**：21× `LLMNodeRunner.run` + 4× `run_task`（2 休眠）+ "
-        "7× `call_llm_node` + 3× 专用 accounted 调用 + 1× accounted 探针 POST + 2× 无 token 的管理 GET。",
+        f"**调用点合计 {len(ann.CALL_SITES)} 处**：20× `LLMNodeRunner.run` + 4× `run_task`（2 休眠）+ "
+        "6× `call_llm_node` + 4× 专用 accounted 调用 + 1× accounted 探针 POST + 2× 无 token 的管理 GET。",
         "",
         "### 查证过不存在的调用形态（负面证据）",
         "",
@@ -696,9 +691,9 @@ def render_legacy(audit: dict[str, Any], task_routing_count: int) -> list[str]:
     lines = [
         "## §11 遗留与待清理（供系统作者决策；Sonnet 5 默认跳过）",
         "",
-        f"1. **活跃孤儿节点（7 个）**：{'、'.join(f'`{n}`' for n in audit['orphan_active'])} —— 有模板/路由/注册但无调用点"
-        "（其中两个 diagnosis 基节点是镜头模板载体属正常设计；三个 reference_* 是被 style_reference 子系统取代的遗留；"
-        "`scene_quality_contract` 无模板、服务实际走 scene_auto_rewrite；`writer_reference_application_review` 是未接线的预留功能）。",
+        f"1. **活跃孤儿节点（{len(audit['orphan_active'])} 个）**：{'、'.join(f'`{n}`' for n in audit['orphan_active'])} —— "
+        "有模板/路由/注册但无直接调用点（两个 diagnosis 基节点是四镜头模板载体，属正常设计，保留；"
+        "旧 reference_* 三件套、`scene_quality_contract` 与 `writer_reference_application_review` 五个真孤儿已于 2026-08 整簇删除）。",
         "2. **休眠 ad-hoc 任务（2 个）**：`consistency_extract`、`causal_skeleton_refine` —— 提示词写好、无路由无注册，"
         "生产不可达；接线需在 models.yaml/节点注册或别名表补路由。",
         "3. **`DRAFTING_TEMPLATE_NAMES` 里的陈旧名（无对应模板，仅分类集合残留）**："

@@ -9,7 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
-from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.request_types import EmptyRequest, WriterBriefJsonInput
 from novel_system.api.response import ok
 from novel_system.db.models import (
@@ -43,10 +43,6 @@ from novel_system.services.chapter_runtime import (
 )
 from novel_system.services.canonical_manuscripts import CanonicalSceneService
 from novel_system.services.errors import DomainError
-from novel_system.services.idempotency import (
-    execute_with_idempotency,
-    execute_with_optional_idempotency,
-)
 from novel_system.services.literary_quality import LiteraryQualityService
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.near_final import (
@@ -261,20 +257,15 @@ def trash_scenes(
 ):
     body = payload.model_dump(mode="json")
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/trash",
         payload=body,
         action=lambda: AuthorLifecycleService(session).trash_scenes(
             body["scene_ids"], actor_ref
         ),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -283,21 +274,15 @@ def restore_scenes(
     payload: SceneIdsRequest, request: Request, session: Session = Depends(get_session)
 ):
     body = payload.model_dump(mode="json")
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/restore",
         payload=body,
         action=lambda: AuthorLifecycleService(session).restore_scenes(
             body["scene_ids"]
         ),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -306,19 +291,13 @@ def purge_scenes(
     payload: SceneIdsRequest, request: Request, session: Session = Depends(get_session)
 ):
     body = payload.model_dump(mode="json")
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/purge",
         payload=body,
         action=lambda: AuthorLifecycleService(session).purge_scenes(body["scene_ids"]),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -334,19 +313,13 @@ def create_scene(
     body["writer_brief_json"] = normalize_scene_writer_brief(
         body.get("writer_brief_json")
     )
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes",
         payload=body,
         action=lambda: _create_scene(session, body),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -536,9 +509,9 @@ def run_scene(
     author_note = normalize_author_note(body.get("author_note"))
     # Wave 2（治理 §6.3）：run_policy 请求级参数（reliable|strict|auto；列属 Wave 3）
     run_policy = _parse_run_policy(body)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/run/full",
         payload={
@@ -553,11 +526,6 @@ def run_scene(
             execution_id=lease.execution_id,
             lease_renewer=lease.renew,
         ),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -609,9 +577,9 @@ def generate_scene_execution_contract(
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/execution-contract",
         payload={"scene_id": scene_id},
@@ -622,11 +590,6 @@ def generate_scene_execution_contract(
                 )
             )
         },
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -639,9 +602,9 @@ def triage_scene(
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/triage",
         payload={"scene_id": scene_id},
@@ -650,11 +613,6 @@ def triage_scene(
                 scene_id, actor_ref=actor_ref, mutate=True
             )
         },
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -667,20 +625,15 @@ def generate_scene_literary_blueprint(
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/literary-blueprint",
         payload={"scene_id": scene_id},
         action=lambda: SceneBlueprintService(session).serialize(
             SceneBlueprintService(session).generate(scene_id, actor_ref=actor_ref)
         ),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -693,20 +646,15 @@ def generate_scene_quality_contract(
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/quality-contract",
         payload={"scene_id": scene_id},
         action=lambda: SceneQualityService(session).generate_contract(
             scene_id, actor_ref=actor_ref
         ),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -733,9 +681,9 @@ def run_scene_auto_rewrite(
         payload.model_dump(mode="json", exclude_unset=True) if payload else {}
     )
     AuthorLifecycleService(session).require_active_scene(scene_id)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/auto-rewrite",
         payload={"scene_id": scene_id, **request_payload},
@@ -744,11 +692,6 @@ def run_scene_auto_rewrite(
             mode=str(request_payload.get("mode") or "auto"),
             actor_ref=actor_ref,
         ),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -760,20 +703,15 @@ def promote_auto_rewrite_run(
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/auto-rewrite-runs/{run_id}/promote",
         payload={"run_id": run_id},
         action=lambda: SceneAutoRewriteService(session).promote(
             run_id, actor_ref=actor_ref
         ),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -785,20 +723,15 @@ def rollback_auto_rewrite_run(
     session: Session = Depends(get_session),
 ):
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/auto-rewrite-runs/{run_id}/rollback",
         payload={"run_id": run_id},
         action=lambda: SceneAutoRewriteService(session).rollback(
             run_id, actor_ref=actor_ref
         ),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -834,21 +767,18 @@ def create_scene_run_job(
             job_to_start = job.job_id
         return service.serialize_job(job)
 
-    result, status = execute_with_optional_idempotency(
+    response = optional_idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/run/jobs",
         payload={"scene_id": scene_id, "start": start, "body": body},
         action=create_job,
-        actor_ref=actor_ref,
     )
+    # 闭包只在本请求真正执行动作时填充;持久重放直接返回缓存响应,不再拉起 worker。
     if job_to_start is not None:
         start_scene_run_job_worker(job_to_start)
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
-    )
+    return response
 
 
 @router.get("/api/v1/run-jobs/{job_id}")
@@ -1581,18 +1511,13 @@ def select_style_candidate(
             "message": "Candidate selected for human terminal review",
         }
 
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/style-candidates/{row_id}/select",
         payload={"scene_id": scene_id, "row_id": row_id, **body},
         action=lambda: _select(session),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -1651,18 +1576,13 @@ def reopen_style_candidate_selection(
             "event_id": gate.event_id,
         }
 
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/style-candidates/reopen",
         payload={"scene_id": scene_id, "reason": reason},
         action=lambda: _reopen(session),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -1676,9 +1596,9 @@ def resume_after_selection(
     """Wave 3（§5.5/§6.3）：作者终选后从批判修订/QC 续跑到归档。"""
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
     AuthorLifecycleService(session).require_active_scene(scene_id)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/resume-after-selection",
         payload={"scene_id": scene_id},
@@ -1687,11 +1607,6 @@ def resume_after_selection(
             execution_id=lease.execution_id,
             lease_renewer=lease.renew,
         ),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -1827,9 +1742,9 @@ def topup_scene_budget(
             "provider_attempts_used": int(state.provider_attempts_used or 0),
         }
 
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/budget/topup",
         payload={
@@ -1840,11 +1755,6 @@ def topup_scene_budget(
             "reason": reason,
         },
         action=lambda: _topup(session),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 
@@ -2219,18 +2129,13 @@ def adopt_current_scene(
             "author_state": compute_author_state(session, scene_id, state),
         }
 
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/scenes/{scene_id}/adopt-current",
         payload={"scene_id": scene_id, **body},
         action=lambda: _adopt(session),
-        actor_ref=actor_ref,
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result, req_id=getattr(request.state, "request_id", None), headers=headers
     )
 
 

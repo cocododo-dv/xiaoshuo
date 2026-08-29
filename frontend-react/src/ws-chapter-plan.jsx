@@ -1,4 +1,5 @@
 import { apiGet, apiPost, apiPut } from "./lib/client.js";
+import { createSubscribers } from "./lib/store-utils.js";
 import { WsWorks } from "./ws-works.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 
@@ -18,7 +19,7 @@ import { WsCatalog } from "./ws-catalog.jsx";
    ========================================================== */
 
 const cpState = {};          // backendChapterId → bucket
-const cpSubs = new Set();
+const cpSubs = createSubscribers();
 let cpVersionCounter = 0;    // useSyncExternalStore 的快照信号（bucket 引用稳定，靠版本号触发重渲）
 
 const CP_EMPTY = Object.freeze({
@@ -31,7 +32,7 @@ const CP_EMPTY = Object.freeze({
   applied: null,             // 最近一次 apply 的 {scenes, appended, skipped}
 });
 
-function cpNotify() { cpVersionCounter += 1; cpSubs.forEach((fn) => { try { fn(); } catch (e) {} }); }
+function cpNotify() { cpVersionCounter += 1; cpSubs.notify(); }
 
 function cpBucket(chapterId) {
   if (!cpState[chapterId]) {
@@ -108,7 +109,7 @@ async function cpRun(chapterId, kind, fn) {
 }
 
 export const WsChapterPlan = {
-  subscribe(fn) { cpSubs.add(fn); return () => cpSubs.delete(fn); },
+  subscribe(fn) { return cpSubs.subscribe(fn); },
   version() { return cpVersionCounter; },
   snapshot(chapterId) { return chapterId && cpState[chapterId] ? cpState[chapterId] : CP_EMPTY; },
   reset(chapterId) { delete cpState[chapterId]; cpNotify(); },

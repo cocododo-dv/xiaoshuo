@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import SceneCard, utcnow
 from novel_system.services.errors import DomainError
+from novel_system.services.scene_lookup import require_scene
 
 
 class SceneNotesService:
@@ -54,12 +55,7 @@ class SceneNotesService:
         return self._payload(self._require_scene(scene_id))
 
     def _require_scene(self, scene_id: str) -> SceneCard:
-        scene = self.session.get(SceneCard, scene_id)
-        if scene is None:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
-        if scene.trashed_flag == 1:
-            raise DomainError("SCENE_TRASHED", "scene is currently in author trash", status_code=409)
-        return scene
+        return require_scene(self.session, scene_id, trashed_as_conflict=True)
 
     @staticmethod
     def _payload(scene: SceneCard) -> dict[str, Any]:

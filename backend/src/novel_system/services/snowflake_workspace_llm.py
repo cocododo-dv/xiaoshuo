@@ -13,9 +13,10 @@ from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json, normalize
 from novel_system.services.llm_client import (
     LLMClient,
-    LLMRequest,
     LLMConfigurationError,
+    build_llm_request,
     load_model_routing_config,
+    resolve_node_route,
 )
 from novel_system.services.llm_accounting import (
     LLMCallContext,
@@ -23,7 +24,7 @@ from novel_system.services.llm_accounting import (
     mark_postprocess_failure,
 )
 from novel_system.services.author_actions import llm_setup_action
-from novel_system.services.llm_audit import sanitize_audit_summary, text_fingerprint
+from novel_system.services.llm_audit import error_audit_summary, sanitize_audit_summary
 from novel_system.services.prompt_builder import PromptConfigurationError, load_prompt_templates
 from novel_system.services.snowflake_prompt_budget import (
     apply_snowflake_prompt_budget,
@@ -721,23 +722,13 @@ class SnowflakeWorkspaceLLMService:
         user_prompt = _render_user_prompt(template, prompt_payload)
         prompt_hash = _prompt_hash(template_name, template.version, template.system_prompt, user_prompt, template.structured_schema)
         llm_call_id = f"llm_call_project_{task_key}_{uuid.uuid4().hex[:12]}"
-        request = LLMRequest(
-            model=task_config.model,
+        request = build_llm_request(
+            task_config,
+            node_id=task_key,
             messages=[
                 {"role": "system", "content": template.system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=task_config.temperature,
-            max_output_tokens=task_config.max_output_tokens,
-            response_format=task_config.response_format,
-            provider=task_config.provider,
-            node_id=task_key,
-            provider_id=getattr(task_config, "provider_id", None),
-            account_id=getattr(task_config, "account_id", None),
-            reasoning_level=getattr(task_config, "reasoning_level", "medium"),
-            api_mode=getattr(task_config, "api_mode", "responses"),
-            credential_mode=getattr(task_config, "credential_mode", None),
-            provider_options=getattr(task_config, "provider_options", {}),
             response_schema={"name": template.name, "schema": template.structured_schema},
         )
         request_summary = sanitize_audit_summary(
@@ -771,7 +762,7 @@ class SnowflakeWorkspaceLLMService:
                 llm_call_id=llm_call_id,
                 request_summary=request_summary,
                 prompt_hash=prompt_hash,
-                response_summary=_error_summary(exc),
+                response_summary=error_audit_summary(exc),
             )
             raise DomainError(
                 "SNOWFLAKE_LLM_CALL_FAILED",
@@ -782,7 +773,7 @@ class SnowflakeWorkspaceLLMService:
                     "node_id": task_key,
                     "error_code": getattr(exc, "code", exc.__class__.__name__),
                     "next_action": "check_provider_route_model_and_retry",
-                    "response_summary": _error_summary(exc),
+                    "response_summary": error_audit_summary(exc),
                 },
             ) from exc
 
@@ -881,14 +872,7 @@ class SnowflakeWorkspaceLLMService:
         return self._routing_config
 
     def _task_config(self, task_key: str) -> Any:
-        routing = self._routing()
-        node_routing = getattr(routing, "node_routing", {})
-        if isinstance(node_routing, dict) and task_key in node_routing:
-            return node_routing[task_key]
-        task_routing = getattr(routing, "task_routing", {})
-        if task_key in task_routing:
-            return task_routing[task_key]
-        raise KeyError(task_key)
+        return resolve_node_route(self._routing(), task_key)
 
     def _template(self, template_name: str) -> Any:
         if self._prompt_templates is None:
@@ -2093,19 +2077,6 @@ def _project_id_from_steps(latest_by_step: Mapping[str, Any]) -> str:
         if project_id:
             return project_id
     return ""
-
-
-def _error_summary(exc: Exception) -> dict[str, Any]:
-    details = getattr(exc, "details", None)
-    details = details if isinstance(details, dict) else {}
-    retryable = bool(getattr(exc, "retryable", False))
-    return sanitize_audit_summary({
-        "error_type": exc.__class__.__name__,
-        "error_code": getattr(exc, "code", exc.__class__.__name__),
-        "message": text_fingerprint(str(exc)),
-        "details": details,
-        "retryable": retryable,
-    })
 
 
 def _llm_failure_message(exc: Exception, task_key: str) -> str:

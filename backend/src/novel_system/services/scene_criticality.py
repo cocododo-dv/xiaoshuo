@@ -9,7 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from novel_system.db.models import SceneCard
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from novel_system.db.models import ChapterGoal, SceneCard
 
 
 CRITICAL_FUNCTION_TAGS = frozenset({"turn", "reveal"})
@@ -161,3 +164,53 @@ def classify_scene(
             human_gate=False,
             initial_best_of_n=1,
         )
+
+
+def _consecutive_transition_count(session: Session, scene: SceneCard) -> int:
+    """Count how many consecutive transition-level scenes precede *scene* in this chapter.
+
+    Used by §6.4 probabilistic promotion: after 3+ consecutive transitions,
+    the next transition is elevated to standard to break the "温吞" rhythm.
+    """
+    preceding = list(
+        session.execute(
+            select(SceneCard)
+            .where(
+                SceneCard.chapter_id == scene.chapter_id,
+                SceneCard.scene_seq < scene.scene_seq,
+                SceneCard.trashed_flag == 0,
+            )
+            .order_by(SceneCard.scene_seq.desc())
+        )
+        .scalars()
+        .all()
+    )
+    count = 0
+    for prev in preceding:
+        crit = classify_scene(prev)  # quick: no DB queries, pure field inspection
+        if crit.level == "transition":
+            count += 1
+        else:
+            break
+    return count
+
+
+def classify_scene_with_context(session: Session, scene: SceneCard) -> SceneCriticality:
+    """带 DB 上下文的统一判定入口——主管线与崩溃续跑必须走同一条路。
+
+    自行推导 chapter_seq（§10 黄金三章）、连续过渡计数（§6.4 提升）与
+    constraint_intensity（§16 呼吸阀），再委托纯函数 classify_scene；
+    调用方不得各自拼装这些上下文参数，否则续跑判定会与首跑分叉。
+    """
+    chapter = session.get(ChapterGoal, scene.chapter_id)
+    chapter_seq = (
+        chapter.display_order
+        if chapter is not None and chapter.display_order is not None
+        else None
+    )
+    return classify_scene(
+        scene,
+        chapter_seq=chapter_seq,
+        consecutive_transition_count=_consecutive_transition_count(session, scene),
+        constraint_intensity=getattr(scene, "constraint_intensity", None),
+    )

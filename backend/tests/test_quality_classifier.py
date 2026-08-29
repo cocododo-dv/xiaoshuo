@@ -17,7 +17,6 @@ from novel_system.services.quality_classifier import (
     classify_issue,
     classify_issues,
     has_blocking,
-    warning_issues,
 )
 
 
@@ -241,4 +240,3 @@ def test_helpers_split_blocking_and_warning_sets() -> None:
     )
     assert has_blocking(classified) is True
     assert [i["issue_key"] for i in blocking_issues(classified)] == ["character_pronoun_drift"]
-    assert {i["issue_key"] for i in warning_issues(classified)} == {"scene_conflict_missing", "style_compliance"}

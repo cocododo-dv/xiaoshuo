@@ -6,12 +6,15 @@ from pathlib import Path
 
 ROUTES_DIR = Path(__file__).resolve().parents[1] / "src" / "novel_system" / "api" / "routes"
 MUTATION_METHODS = {"post", "put", "patch", "delete"}
+# Route handlers must go through the two shared wrappers in api/mutations.py:
+# - idempotent_response: X-Idempotency-Key required (400 IDEMPOTENCY_KEY_REQUIRED when missing)
+# - optional_idempotent_response: keyed calls replay durably, unkeyed legacy calls execute once
+# Raw execute_with_idempotency / execute_with_optional_idempotency calls and
+# per-file copies (_with_idem, _mutation_response aliases) were migrated away
+# and must not reappear in route files.
 IDEMPOTENCY_BOUNDARIES = {
-    "execute_with_idempotency",
-    "execute_with_optional_idempotency",
+    "idempotent_response",
     "optional_idempotent_response",
-    "_mutation_response",
-    "_with_idem",
 }
 READ_ONLY_POST_EXEMPTIONS = {
     ("interop.py", "preview_bundle_worksheet"),

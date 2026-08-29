@@ -137,10 +137,11 @@ test("launches a chapter batch run, shows where it stopped, and resumes from per
   await expect(page.getByTestId("author-scene-batch-state-CH910_SC02")).toContainText("pending");
   await expect(page.getByTestId("author-scene-batch-state-CH910_SC03")).toContainText("pending");
 
-  const chapterStateResponse = await request.get(`${API_BASE}/api/v1/chapters/CH910/status`);
-  expect(chapterStateResponse.ok()).toBeTruthy();
-  const chapterStatePayload = await chapterStateResponse.json();
-  const stageId = chapterStatePayload.data.staged_backfill_items[0].stage_id;
+  // GET /api/v1/chapters/{id}/status 已下线，章状态经场景 workbench 的 chapter_state 读取
+  const workbenchResponse = await request.get(`${API_BASE}/api/v1/scenes/CH910_SC01/workbench`);
+  expect(workbenchResponse.ok()).toBeTruthy();
+  const workbenchPayload = await workbenchResponse.json();
+  const stageId = workbenchPayload.data.chapter_state.staged_backfill_items[0].stage_id;
 
   const backfillResponse = await request.post(`${API_BASE}/api/v1/chapters/CH910/runtime/backfill/${stageId}`, {
     data: { strategy: "create_tracker_now" },

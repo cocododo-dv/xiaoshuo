@@ -1,4 +1,4 @@
-"""FE-ALIGN Phase 2: 作品档案 / 写作统计 / dashboard v2 / flow-status。"""
+"""FE-ALIGN Phase 2: 作品档案 / 写作统计 / dashboard v2。"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -207,18 +207,6 @@ def test_dashboard_v2_blank_project(client):
     assert data["brief"] is None
     assert all(row["status"] in {"todo", "active"} for row in data["snowflake"])
     assert data["chapters_recent"] == []
-
-
-def test_flow_status_shape(client, session):
-    seed_fixture_works(session)
-    session.commit()
-    data = client.get("/api/v2/projects/work-a/flow-status").json()["data"]
-    assert data["snowflake_pct"] == 80  # 10 步中 8 步 approved
-    assert data["open_review_count"] >= 8  # 统一收件箱口径：5 demo 卡 + 3 canon 卡 + 派生
-    assert data["draft_queue_len"] >= 1  # ch08 sc01/sc02 无正文
-    assert data["qc_blocked_count"] == 0
-    # 受控 demo 导入会把显式 current 章之前的章节规范为线性批准前缀。
-    assert data["last_manuscript"]["no"] == "07"
 
 
 def test_demo_seed_idempotent(client, session):

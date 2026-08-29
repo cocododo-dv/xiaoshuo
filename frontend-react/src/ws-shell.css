@@ -426,18 +426,8 @@
 .snow2-char-note { font-size: 11.5px; color: var(--ink-3); }
 .snow2-char-tag { font-size: 11px; color: var(--ink-4); }
 
-/* toast */
-.ws-toast {
-  position: fixed; left: calc(50% + var(--rail) / 2); bottom: 28px; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 10px; z-index: 1800;
-  background: var(--ink-1); color: var(--paper-0); padding: 11px 17px; border-radius: 12px;
-  box-shadow: var(--shadow-lg); font-size: 13px; font-weight: 500; animation: wsToastIn 320ms var(--ease);
-}
-@keyframes wsToastIn { from { transform: translateX(-50%) translateY(12px); opacity: 0; } to { transform: translateX(-50%) translateY(0); opacity: 1; } }
-.ws-toast-dot { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--sage); color: #fff; }
-.ws-toast.gold .ws-toast-dot { background: var(--gold); }
-.ws-toast.slate .ws-toast-dot { background: var(--slate); }
-[data-theme="dark"] .ws-toast { background: var(--paper-2); color: var(--ink-1); border: 1px solid var(--line-2); }
+/* toast：权威定义在 styles.css（UndoToast，ws-undo-toast.jsx）。此处不得重复定义
+   .ws-toast / @keyframes wsToastIn——本文件后加载，同名会覆盖权威版。 */
 
 /* responsive */
 @media (max-width: 920px) {

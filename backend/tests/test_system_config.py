@@ -340,6 +340,60 @@ def test_llm_sync_missing_routes_populates_all_active_nodes(client, monkeypatch)
     assert overview["node_routes"]["scene_auto_rewrite"]["model"] == "Qwen3-14B-Q8_0.gguf"
 
 
+def test_llm_overview_quarantines_stale_routes_for_retired_nodes(client, monkeypatch) -> None:
+    """存量快照里已退役节点的残留路由必须进 stale_routes，不得混入 node_routes/就绪统计。"""
+    monkeypatch.setenv("NOVEL_SYSTEM_ADMIN_TOKEN", "admin-token")
+    monkeypatch.setenv("NOVEL_SYSTEM_CONFIG_SECRET", "config-secret")
+
+    provider_response = client.post(
+        "/api/v1/system-config/llm/providers",
+        headers=ADMIN_HEADERS,
+        json={
+            "provider_id": "local_qwen",
+            "provider_type": "openai_compatible",
+            "base_url": "http://127.0.0.1:8080/v1",
+            "enabled": True,
+            "credential_mode": "none",
+            "api_mode": "chat",
+            "models": ["Qwen3-14B-Q8_0.gguf"],
+        },
+    )
+    assert provider_response.status_code == 200
+
+    route_config = {
+        "provider": "openai_compatible",
+        "provider_id": "local_qwen",
+        "model": "Qwen3-14B-Q8_0.gguf",
+        "temperature": 0.25,
+        "max_output_tokens": 3200,
+        "response_format": "json_object",
+        "reasoning_level": "medium",
+        "api_mode": "chat",
+    }
+    route_response = client.post(
+        "/api/v1/system-config/llm/node-routes",
+        headers=ADMIN_HEADERS,
+        json={
+            "node_routing": {
+                "project_outline_plan": dict(route_config),
+                # 模拟老安装：节点已从注册表退役，但活动快照仍带着它的路由
+                "reference_profile_synthesize": dict(route_config),
+            },
+            "activate": True,
+        },
+    )
+    assert route_response.status_code == 200
+
+    overview = client.get("/api/v1/system-config/llm").json()["data"]
+    assert overview["stale_routes"] == ["reference_profile_synthesize"]
+    assert "reference_profile_synthesize" not in overview["node_routes"]
+    assert overview["node_routes"]["project_outline_plan"]["configured"] is True
+    blocked_ids = {route["node_id"] for route in overview["blocked_routes"]}
+    assert "reference_profile_synthesize" not in blocked_ids
+    readiness_blocked = {route["node_id"] for route in overview["readiness"]["blocked_routes"]}
+    assert "reference_profile_synthesize" not in readiness_blocked
+
+
 def test_llm_call_audit_flags_offline_required_nodes(client, session) -> None:
     session.add(
         LlmCall(

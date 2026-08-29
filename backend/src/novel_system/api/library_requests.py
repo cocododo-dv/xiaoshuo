@@ -55,6 +55,3 @@ class LibraryCharacterRequest(StrictRequestModel):
     details: BoundedJsonObject | None = None
 
 
-class LibraryDeriveRequest(StrictRequestModel):
-    # Missing IDs keep the stable LIBRARY_DERIVE_CHAPTER_REQUIRED domain error.
-    chapter_id: str | None = Field(default=None, max_length=255)

@@ -1,7 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
 import { wsKey, WsWorks } from "./ws-works.jsx";
-import { s2ExportState } from "./ws-snow.jsx";
 import { WsCatalog } from "./ws-catalog.jsx";
 import { WrDocVersions, WrRecovery } from "./wr-doc-store.jsx";
 import { apiGet, apiPost, cancelRunJob, getLatestSceneRunJob } from "./lib/client.js";
@@ -354,92 +353,6 @@ function scnQueueDismissClear(sids) {
   return scnQueueDismissSave(next);
 }
 
-/* ---- 上游上下文：雪花构思折叠成提示词材料 ---- */
-function scnSnowContext() {
-  try {
-    const st = s2ExportState ? s2ExportState() : null;
-    if (!st) return "";
-    const d = st.drafts || {}, sc = st.scaffolds || {};
-    const lines = [];
-    const logline = (d.logline || "").trim();
-    if (logline) lines.push("一句话概括：" + logline);
-    const para = sc.paragraph || {};
-    if ((para.premiseF || "").trim() || (para.premiseT || "").trim()) lines.push(`道德前提：「${para.premiseF || "—"}」→ 中点翻转为 →「${para.premiseT || "—"}」`);
-    const aud = sc.audience || {};
-    if ((aud.pleasure || "").trim()) lines.push("读者核心快感：" + aud.pleasure.trim());
-    if ((aud.exclude || "").trim()) lines.push("明确不写：" + aud.exclude.trim());
-    const chars = ((sc.characters || {}).chars) || {};
-    const cl = Object.values(chars).filter(c => (c.name || "").trim()).slice(0, 5)
-      .map(c => `${c.name}（${c.role}）：目标「${c.goal || "—"}」· 没有什么比「${c.values || "—"}」更重要`);
-    if (cl.length) lines.push("角色表：\n" + cl.join("\n"));
-    return lines.join("\n");
-  } catch (e) { return ""; }
-}
-
-function scnBuildPrompt(item, note, prevText) {
-  const hit = item.sid && WsCatalog ? WsCatalog.sceneById(item.sid) : null;
-  const c = hit ? hit.chapter : null;
-  const s = hit ? hit.scene : {};
-  const reactive = (s.kind || item.kind || "").includes("反应");
-  const ctx = scnSnowContext();
-  const trio = reactive
-    ? `这是「反应场景（RDD）」：\n· 反应（情绪先于理性）：${s.goal || "—"}\n· 两难（没有好选项）：${s.obstacle || "—"}\n· 决定（选一个坏选项，成为下一场目标）：${s.turn || "—"}`
-    : `这是「主动场景（GCS）」：\n· 目标（具体可拍摄）：${s.goal || "—"}\n· 冲突（逐级受阻）：${s.obstacle || "—"}\n· 挫败（结尾比开场更糟）：${s.turn || "—"}`;
-  return [
-    "你是长篇小说的场景起草助手。为下面这一场写正文初稿。",
-    ctx ? "【作品上下文 · 与之严格一致】\n" + ctx : "",
-    c ? `【本章】第 ${c.n} 章《${c.title}》${(c.promise || "").trim() ? " · 章承诺：" + c.promise.trim() : ""}` : "",
-    `【本场】《${s.title || item.title}》${c && (c.pov || "").trim() ? " · POV：" + c.pov : ""}`,
-    trio,
-    prevText ? "【上一版草稿 · 按指令改写而非重来】\n" + prevText.slice(0, 1200) : "",
-    note ? "【作者改写指令 · 最高优先级】\n" + note : "",
-    "",
-    "要求：限知视角；短句克制、动词驱动、少形容词；700–1100 字，分 5–8 段；",
-    "结尾的拍（挫败/决定）必须落在最后一两段，为下一场留钩。",
-    "只输出一个 JSON 对象，不要任何其它文字、不要代码围栏：",
-    '{"paras":[{"beat":"goal|conflict|setback|exit 或 null","text":"段落正文"}]}',
-    reactive ? "（反应场用 beat 标注：reaction→goal、dilemma→conflict、decision→exit 的对应拍）" : "（goal/conflict/setback 各标在落点段，最后一段可标 exit）",
-  ].filter(Boolean).join("\n");
-}
-
-const SCN_BEAT_MAP = { goal: "goal", conflict: "conflict", setback: "setback", exit: "exit", reaction: "goal", dilemma: "conflict", decision: "exit" };
-function scnParseDraft(raw) {
-  if (!raw) throw new Error("空响应");
-  let t = String(raw).trim().replace(/```json/gi, "").replace(/```/g, "").trim();
-  const a = t.indexOf("{"), b = t.lastIndexOf("}");
-  let paras = null;
-  if (a >= 0 && b > a) {
-    const body = t.slice(a, b + 1);
-    try { const obj = JSON.parse(body); if (Array.isArray(obj.paras)) paras = obj.paras; } catch (e) {
-      // 模型常在字符串里直接换行 → 控制字符让 JSON.parse 报错；拍平后重试
-      try { const obj = JSON.parse(body.replace(/[\u0000-\u001f]+/g, " ")); if (Array.isArray(obj.paras)) paras = obj.paras; } catch (e2) {}
-    }
-  }
-  if (!paras) {
-    // 宽松抽取：逐对 "beat"/"text" 字段，容忍外层结构坏掉
-    const found = [];
-    let m;
-    const re = /"beat"\s*:\s*(?:null|"([a-z]*)")\s*,\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
-    while ((m = re.exec(t))) found.push({ beat: m[1] || null, text: m[2] });
-    if (!found.length) {
-      const re2 = /"text"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
-      while ((m = re2.exec(t))) found.push({ beat: null, text: m[1] });
-    }
-    if (found.length) paras = found;
-  }
-  if (!paras) {
-    if (t.includes('"paras"')) throw new Error("模型输出无法解析，请重试一次");
-    paras = t.split(/\n{2,}/).map(x => ({ beat: null, text: x.replace(/\n/g, "") })).filter(p => p.text.trim());
-  }
-  const unesc = (s) => s.replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-  const tidy = (s) => s.replace(/\s*\n\s*/g, "").replace(/([\u4e00-\u9fff\u3000-\u303f\uff00-\uffef])\s+(?=[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef])/g, "$1").trim();
-  const out = paras
-    .map((p, i) => ({ id: "p" + (i + 1), beat: SCN_BEAT_MAP[p.beat] || null, text: tidy(unesc((p.text || "").toString())) }))
-    .filter(p => p.text);
-  if (!out.length) throw new Error("未能解析出正文段落");
-  return out;
-}
-
 /* ---- 确定性质检：可解释、可复算 ---- */
 function scnSentencesOf(text) {
   return text.split(/(?<=[。！？；…])/).map(s => s.trim()).filter(s => s.length > 1);
@@ -550,8 +463,7 @@ function scnGateLog(gate, tm) {
 /* ---- 完整一跑：后端 scenes run 管线（FE-ALIGN F6）----
    投递 run job（POST run/jobs）→ 轮询 run-jobs/{id} → workbench 取产出
    → 本地确定性复检。失败/阻塞给明确引导（执行契约缺字段 / LLM 未启用 /
-   预检不过），不装假进度。scnBuildPrompt 保留作提示词参考（管线内由
-   后端 config/prompts.yaml 组装）。 */
+   预检不过），不装假进度。提示词由后端 config/prompts.yaml 组装。 */
 function scnFriendly(e) {
   const code = (e && e.code) || "";
   const msg = (e && e.message) || String(e || "");
@@ -1104,4 +1016,4 @@ function scnPickList(queuedSids) {
 }
 
 /* 场景工作台只通过显式 ESM 导出连接，不再写入 window 全局命名空间。 */
-export { SceneRunJobControl, scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnQC, scnReQC, scnSetQcThresholds, scnBuildPrompt, scnParseDraft, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };
+export { SceneRunJobControl, scnRun, scnCreateCards, scnTopupBudget, scnAdoptToDoc, scnAdoptionPreview, scnPrepareAdoption, scnPickList, scnRunLoad, scnRunSave, scnQueueLoad, scnQueueSave, scnQueueDismissLoad, scnQueueDismissAdd, scnQueueDismissClear, scnQC, scnReQC, scnSetQcThresholds, scnHydrateFromBackend, scnBackendQueueSids, scnGateFrom, scnRewriteBriefFrom, scnCandidates, scnSelectCandidate, scnResumeAfterSelection };

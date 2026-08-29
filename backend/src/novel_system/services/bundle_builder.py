@@ -158,18 +158,6 @@ class BundleBuilder:
             reference_layers = []
             reference_resolution_degraded = True
             self._slot_degraded("style_reference_binding_resolution", scene)
-        long_form_resolution_degraded = False
-        try:
-            long_form_reference_layers = style_injection.resolve_binding_layers(
-                scene.project_id,
-                "long_form_continuation",
-                character_ids=style_character_ids,
-                scene_id=scene.scene_id,
-            )
-        except Exception:  # noqa: BLE001 — optional style layer degrades visibly
-            long_form_reference_layers = []
-            long_form_resolution_degraded = True
-            self._slot_degraded("long_form_style_binding_resolution", scene)
         reference_profile_ids = list(
             dict.fromkeys(layer.profile_id for layer in reference_layers)
         )
@@ -226,52 +214,6 @@ class BundleBuilder:
                     "degraded"
                 )
                 self._slot_degraded("style_reference_runtime_contract", scene)
-        source_version_refs[
-            "long_form_continuation_style_reference_runtime_contract_version"
-        ] = STYLE_RUNTIME_CONTRACT_VERSION
-        source_version_refs[
-            "long_form_continuation_style_reference_runtime_contract_status"
-        ] = (
-            "degraded"
-            if long_form_resolution_degraded
-            else ("frozen" if long_form_reference_layers else "absent")
-        )
-        if long_form_reference_layers:
-            try:
-                long_form_style_contract = build_style_runtime_contract(
-                    style_injection.repo,
-                    long_form_reference_layers,
-                    task_type="long_form_continuation",
-                )
-                if long_form_style_contract is not None:
-                    source_version_refs[
-                        "long_form_style_reference_runtime_contract_hash"
-                    ] = long_form_style_contract["contract_hash"]
-                    source_version_refs[
-                        "long_form_continuation_style_reference_runtime_contract_hash"
-                    ] = long_form_style_contract["contract_hash"]
-                    source_version_refs["long_form_reference_profile_ids"] = (
-                        long_form_style_contract["profile_ids"]
-                    )
-                    source_version_refs["long_form_reference_binding_ids"] = (
-                        long_form_style_contract["binding_ids"]
-                    )
-                    inline_digests[
-                        "_style_reference_runtime_contract_long_form_continuation"
-                    ] = json.dumps(
-                        long_form_style_contract,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-            except Exception:  # noqa: BLE001 — optional style layer degrades visibly
-                source_version_refs[
-                    "long_form_continuation_style_reference_runtime_contract_status"
-                ] = "degraded"
-                self._slot_degraded(
-                    "long_form_style_reference_runtime_contract",
-                    scene,
-                )
         normalized_author_note = normalize_author_note(author_note)
         if normalized_author_note:
             instruction_hash = hashlib.sha256(

@@ -176,18 +176,23 @@ def _classified_findings(
     for issue in report.issues_json or []:
         if not isinstance(issue, dict) or not issue.get("quality_level"):
             continue
-        slim = {
-            "issue_key": issue.get("issue_key"),
-            "quality_level": issue.get("quality_level"),
-            "message": issue.get("message") or issue.get("human_readable_reason") or "",
-            "recommended_action": issue.get("recommended_action"),
-            "verified_by": issue.get("verified_by"),
-        }
+        slim = _slim_quality_issue(issue)
         if issue.get("blocking"):
             blocking.append(slim)
         else:
             warnings.append(slim)
     return blocking, warnings
+
+
+def _slim_quality_issue(issue: dict[str, Any]) -> dict[str, Any]:
+    """作者态五键瘦身投影（issue_key/quality_level/message/recommended_action/verified_by）。"""
+    return {
+        "issue_key": issue.get("issue_key"),
+        "quality_level": issue.get("quality_level"),
+        "message": issue.get("message") or issue.get("human_readable_reason") or "",
+        "recommended_action": issue.get("recommended_action"),
+        "verified_by": issue.get("verified_by"),
+    }
 
 
 def _recovery_action_for(job: ChapterRunJob | None) -> str:

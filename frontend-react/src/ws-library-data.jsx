@@ -1,4 +1,5 @@
 import { apiGet } from "./lib/client.js";
+import { createSubscribers } from "./lib/store-utils.js";
 import { WsWorks } from "./ws-works.jsx";
 
 /* global window */
@@ -39,20 +40,17 @@ const libActiveId = () => { try { return WsWorks ? WsWorks.activeId() : null; } 
 /* 关系 id 缓存（编辑层 diff 删边用）：refPair "a|b" → relation_id */
 let LIB_RELATIONS = [];
 let LIB_REVISION = 0;
-const libSubscribers = new Set();
+const libSubscribers = createSubscribers();
 
 function libNotify() {
   LIB_REVISION += 1;
-  libSubscribers.forEach((listener) => {
-    try { listener(); } catch (e) {}
-  });
+  libSubscribers.notify();
   /* 兼容仍通过 window 事件读取资料库的过渡期模块。 */
   try { window.dispatchEvent(new CustomEvent("ws:library-changed")); } catch (e) {}
 }
 
 function libSubscribe(listener) {
-  libSubscribers.add(listener);
-  return () => libSubscribers.delete(listener);
+  return libSubscribers.subscribe(listener);
 }
 
 function libSnapshot() { return LIB_REVISION; }

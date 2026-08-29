@@ -1,5 +1,6 @@
 import React from "react";
 import { apiGet, apiPost } from "./lib/client.js";
+import { useStoreTick } from "./lib/store-utils.js";
 
 /* global React, I */
 /* ==========================================================
@@ -142,12 +143,10 @@ async function qChapterSetReview({ chapter_ids, protected_terms, text_layer } = 
 }
 
 function useQualityState() {
-  const [, force] = React.useState(0);
-  React.useEffect(() => {
-    const bump = () => force((n) => n + 1);
+  useStoreTick((bump) => {
     window.addEventListener("ws:quality-changed", bump);
     return () => window.removeEventListener("ws:quality-changed", bump);
-  }, []);
+  });
   return qSnapshot();
 }
 

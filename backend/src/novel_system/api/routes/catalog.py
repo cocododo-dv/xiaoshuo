@@ -1,9 +1,9 @@
 """FE-ALIGN Phase 3: 目录 API（v2）—— 章节/场景树的唯一真相源。
 
 对应原型 WsCatalog（design/ws-catalog.jsx）；创建类端点（建章/建场景）经
-execute_with_idempotency 兑现幂等键（必填 + 同键重放同响应）；PATCH/move/软删/恢复
+idempotent_response 兑现幂等键（必填 + 同键重放同响应）；PATCH/软删
 对旧调用方不强制键，但客户端给键时同样执行持久重放。import 端点仅供 localStorage 一次性迁移使用，admin token 保护
-（loopback 免 token）。
+（loopback 免 token）。恢复走 /api/v2/trash 统一回收站端点。
 """
 from __future__ import annotations
 
@@ -18,15 +18,13 @@ from novel_system.api.catalog_requests import (
     CatalogChapterUpdateRequest,
     CatalogImportRequest,
     CatalogSceneCreateRequest,
-    CatalogSceneMoveRequest,
     CatalogSceneUpdateRequest,
 )
 from novel_system.api.deps import get_session
-from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.request_types import EmptyRequest, StrictRequestModel
 from novel_system.api.response import ok
 from novel_system.services.catalog import CatalogService
-from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.system_config import require_admin_token
 
 router = APIRouter(tags=["catalog"])
@@ -59,17 +57,14 @@ def create_catalog_chapter(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/catalog/chapters",
         payload={"project_id": project_id, "body": body},
         action=lambda: CatalogService(session).create_chapter(project_id, body),
-        actor_ref=_operator(request),
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=_req_id(request), headers=headers)
 
 
 @router.patch("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}")
@@ -99,9 +94,9 @@ def reorder_catalog_chapters(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json")
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/catalog/chapter-order",
         payload={"project_id": project_id, **body},
@@ -109,10 +104,7 @@ def reorder_catalog_chapters(
             project_id,
             body["chapter_ids"],
         ),
-        actor_ref=_operator(request),
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=_req_id(request), headers=headers)
 
 
 @router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/scenes")
@@ -124,17 +116,14 @@ def create_catalog_scene(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/scenes",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=lambda: CatalogService(session).create_scene(project_id, chapter_id, body),
-        actor_ref=_operator(request),
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=_req_id(request), headers=headers)
 
 
 @router.patch("/api/v2/projects/{project_id}/catalog/scenes/{scene_id}")
@@ -153,25 +142,6 @@ def update_catalog_scene(
         path_template="/api/v2/projects/{project_id}/catalog/scenes/{scene_id}",
         payload={"project_id": project_id, "scene_id": scene_id, "body": body},
         action=lambda: CatalogService(session).update_scene(project_id, scene_id, body),
-    )
-
-
-@router.post("/api/v2/projects/{project_id}/catalog/scenes/{scene_id}/move")
-def move_catalog_scene(
-    project_id: str,
-    scene_id: str,
-    payload: CatalogSceneMoveRequest,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    body = payload.model_dump(mode="json", exclude_unset=True)
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/catalog/scenes/{scene_id}/move",
-        payload={"project_id": project_id, "scene_id": scene_id, "body": body},
-        action=lambda: CatalogService(session).move_scene(project_id, scene_id, body),
     )
 
 
@@ -202,30 +172,6 @@ def trash_catalog_chapter(
     )
 
 
-@router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/restore")
-def restore_catalog_chapter(
-    project_id: str,
-    chapter_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    from novel_system.services.trash import TrashService
-
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/restore",
-        payload={
-            "project_id": project_id,
-            "chapter_id": chapter_id,
-            "body": payload.model_dump(mode="json") if payload else {},
-        },
-        action=lambda: TrashService(session).restore_chapter_in_project(project_id, chapter_id),
-    )
-
-
 @router.delete("/api/v2/projects/{project_id}/catalog/scenes/{scene_id}")
 def trash_catalog_scene(
     project_id: str,
@@ -250,30 +196,6 @@ def trash_catalog_scene(
         action=lambda: TrashService(session).trash_scene_in_project(
             project_id, scene_id, actor_ref=_operator(request)
         ),
-    )
-
-
-@router.post("/api/v2/projects/{project_id}/catalog/scenes/{scene_id}/restore")
-def restore_catalog_scene(
-    project_id: str,
-    scene_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    from novel_system.services.trash import TrashService
-
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/catalog/scenes/{scene_id}/restore",
-        payload={
-            "project_id": project_id,
-            "scene_id": scene_id,
-            "body": payload.model_dump(mode="json") if payload else {},
-        },
-        action=lambda: TrashService(session).restore_scene_in_project(project_id, scene_id),
     )
 
 

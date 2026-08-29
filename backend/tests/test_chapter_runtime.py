@@ -131,21 +131,29 @@ def _latest_tracker(session) -> ForeshadowTracker:
     return tracker
 
 
-def test_status_and_workbench_project_template_markers_without_writing_on_get(client, session) -> None:
+def _chapter_state_via_workbench(client) -> dict:
+    workbench_response = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench")
+    assert workbench_response.status_code == 200
+    return workbench_response.json()["data"]["chapter_state"]
+
+
+def test_workbench_projects_template_markers_without_writing_on_get(client, session) -> None:
     _create_chapter_and_scene(client)
 
-    status_response = client.get(f"/api/v1/chapters/{CHAPTER_ID}/status")
+    workbench_response = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench")
 
-    assert status_response.status_code == 200
-    status_data = status_response.json()["data"]
-    assert status_data["chapter_backfill_pending_count"] == 1
-    assert status_data["aggregate_block_reason"] == "blocked_waiting_backfill"
-    assert status_data["manual_hold_reason"] is None
-    assert status_data["last_interim_memory_row_id"] is None
-    assert status_data["last_final_memory_row_id"] is None
-    assert status_data["staged_backfill_items"] == [
+    assert workbench_response.status_code == 200
+    workbench_data = workbench_response.json()["data"]
+    assert workbench_data["scene_card"]["must_include_text"] == MARKER_TEXT
+    chapter_state = workbench_data["chapter_state"]
+    assert chapter_state["chapter_backfill_pending_count"] == 1
+    assert chapter_state["aggregate_block_reason"] == "blocked_waiting_backfill"
+    assert chapter_state["manual_hold_reason"] is None
+    assert chapter_state["last_interim_memory_row_id"] is None
+    assert chapter_state["last_final_memory_row_id"] is None
+    assert chapter_state["staged_backfill_items"] == [
         {
-            "stage_id": status_data["staged_backfill_items"][0]["stage_id"],
+            "stage_id": chapter_state["staged_backfill_items"][0]["stage_id"],
             "chapter_id": CHAPTER_ID,
             "scene_id": SCENE_ID,
             "marker_id": MARKER_ID,
@@ -158,22 +166,10 @@ def test_status_and_workbench_project_template_markers_without_writing_on_get(cl
     ]
     assert _stage_rows(session) == []
 
-    workbench_response = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench")
-
-    assert workbench_response.status_code == 200
-    workbench_data = workbench_response.json()["data"]
-    assert workbench_data["scene_card"]["must_include_text"] == MARKER_TEXT
-    assert workbench_data["chapter_state"]["chapter_backfill_pending_count"] == 1
-    assert workbench_data["chapter_state"]["aggregate_block_reason"] == "blocked_waiting_backfill"
-    assert workbench_data["chapter_state"]["manual_hold_reason"] is None
-    assert workbench_data["chapter_state"]["staged_backfill_items"][0]["marker_token"] == MARKER_TOKEN
-    assert _stage_rows(session) == []
-
 
 def test_run_backfill_again_requires_existing_tracker_and_reopens_it(client, session) -> None:
     _create_chapter_and_scene(client, idempotency_suffix="-defer")
-    status_response = client.get(f"/api/v1/chapters/{CHAPTER_ID}/status")
-    stage_id = status_response.json()["data"]["staged_backfill_items"][0]["stage_id"]
+    stage_id = _chapter_state_via_workbench(client)["staged_backfill_items"][0]["stage_id"]
 
     missing_tracker = client.post(
         f"/api/v1/chapters/{CHAPTER_ID}/runtime/backfill/{stage_id}",
@@ -218,8 +214,7 @@ def test_run_backfill_again_requires_existing_tracker_and_reopens_it(client, ses
 def test_backfill_strategies_update_tracker_remove_marker_and_rewrite_runtime_texts(client, session) -> None:
     _create_chapter_and_scene(client)
     _seed_runtime_rows(session)
-    status_response = client.get(f"/api/v1/chapters/{CHAPTER_ID}/status")
-    stage_id = status_response.json()["data"]["staged_backfill_items"][0]["stage_id"]
+    stage_id = _chapter_state_via_workbench(client)["staged_backfill_items"][0]["stage_id"]
 
     create_now = client.post(
         f"/api/v1/chapters/{CHAPTER_ID}/runtime/backfill/{stage_id}",
@@ -250,8 +245,7 @@ def test_backfill_strategies_update_tracker_remove_marker_and_rewrite_runtime_te
     assert _latest_tracker(session).tracker_status == "open"
 
     _create_chapter_and_scene(client, idempotency_suffix="-defer")
-    status_response = client.get(f"/api/v1/chapters/{CHAPTER_ID}/status")
-    stage_id = status_response.json()["data"]["staged_backfill_items"][0]["stage_id"]
+    stage_id = _chapter_state_via_workbench(client)["staged_backfill_items"][0]["stage_id"]
 
     defer_result = client.post(
         f"/api/v1/chapters/{CHAPTER_ID}/runtime/backfill/{stage_id}",
@@ -264,8 +258,7 @@ def test_backfill_strategies_update_tracker_remove_marker_and_rewrite_runtime_te
     assert _latest_tracker(session).tracker_status == "deferred"
 
     _create_chapter_and_scene(client, idempotency_suffix="-abandon")
-    status_response = client.get(f"/api/v1/chapters/{CHAPTER_ID}/status")
-    stage_id = status_response.json()["data"]["staged_backfill_items"][0]["stage_id"]
+    stage_id = _chapter_state_via_workbench(client)["staged_backfill_items"][0]["stage_id"]
 
     abandon_result = client.post(
         f"/api/v1/chapters/{CHAPTER_ID}/runtime/backfill/{stage_id}",
@@ -281,8 +274,7 @@ def test_backfill_strategies_update_tracker_remove_marker_and_rewrite_runtime_te
 def test_final_aggregate_is_blocked_by_pending_and_manual_hold_then_versions_final_memory(client, session) -> None:
     _create_chapter_and_scene(client)
     _seed_runtime_rows(session, include_old_final=True)
-    status_response = client.get(f"/api/v1/chapters/{CHAPTER_ID}/status")
-    stage_id = status_response.json()["data"]["staged_backfill_items"][0]["stage_id"]
+    stage_id = _chapter_state_via_workbench(client)["staged_backfill_items"][0]["stage_id"]
 
     blocked_pending = client.post(
         f"/api/v1/chapters/{CHAPTER_ID}/runtime/aggregate/final",

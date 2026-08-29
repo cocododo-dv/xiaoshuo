@@ -10,8 +10,10 @@ from fastapi.testclient import TestClient
 
 from novel_system.api.app import create_app
 from novel_system.db.session import SessionLocal
-from novel_system.services.llm_node_registry import get_llm_node_spec
-from novel_system.services.style_reference.injection import InjectionService
+from novel_system.services.style_reference.injection import (
+    InjectionService,
+    default_injection_strategy,
+)
 from novel_system.services.style_reference.repository import StyleReferenceRepository
 
 PREFIX = "/api/v2/style-reference"
@@ -79,17 +81,16 @@ def test_task_defaults_endpoint_matches_node_registry() -> None:
         resp = client.get(f"{PREFIX}/injection/task-defaults")
         assert resp.status_code == 200
         tasks = {t["task_type"]: t for t in resp.json()["data"]["tasks"]}
+    # long_form_continuation 生产路径已下线:不再对 UI 列出
     assert set(tasks) == {
-        "project_init", "scene_generation", "fine_tuning",
-        "long_form_continuation", "key_chapter",
+        "project_init", "scene_generation", "fine_tuning", "key_chapter",
     }
     assert tasks["scene_generation"]["default_strategy"] == "mixed"
     assert tasks["key_chapter"]["default_strategy"] == "C"
-    # refresh 真源:llm_node_registry 的 long_form_continuation 节点
-    spec = get_llm_node_spec("long_form_continuation")
-    assert tasks["long_form_continuation"]["refresh_every_chars"] == spec.refresh_every_chars
-    assert tasks["long_form_continuation"]["refresh_every_chars"] > 0
-    assert tasks["scene_generation"]["refresh_every_chars"] == 0
+    assert all(t["refresh_every_chars"] == 0 for t in tasks.values())
+    # 持久层兼容:存量 binding 行的 task_type='long_form_continuation'
+    # 仍必须能解析默认策略(枚举值保留,仅 UI 下线)
+    assert default_injection_strategy("long_form_continuation") is not None
 
 
 # ---------------------------------------------------------------------------

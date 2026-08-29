@@ -1,7 +1,7 @@
-"""FE-ALIGN Phase 2: v2 作品域端点 — profile / writing-stats / dashboard / flow-status。
+"""FE-ALIGN Phase 2: v2 作品域端点 — profile / writing-stats / dashboard。
 
 原型对应：profile = WsWorks 作品档案；dashboard = 主页（续写卡/GOS/雪花进度/近章）；
-flow-status = 流程视图聚合；writing-stats = 今日字数/streak（D2 服务端计算）。
+writing-stats = 今日字数/streak（D2 服务端计算）。
 """
 from __future__ import annotations
 
@@ -45,10 +45,4 @@ def project_writing_stats(project_id: str, request: Request, session: Session = 
 @router.get("/api/v2/projects/{project_id}/dashboard")
 def project_dashboard_v2(project_id: str, request: Request, session: Session = Depends(get_session)):
     result = ProjectOverviewService(session).dashboard(project_id)
-    return ok(result, req_id=getattr(request.state, "request_id", None))
-
-
-@router.get("/api/v2/projects/{project_id}/flow-status")
-def project_flow_status(project_id: str, request: Request, session: Session = Depends(get_session)):
-    result = ProjectOverviewService(session).flow_status(project_id)
     return ok(result, req_id=getattr(request.state, "request_id", None))

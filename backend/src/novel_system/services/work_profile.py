@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import uuid
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import WorkProfile
-from novel_system.services.errors import DomainError
 
 
 DEFAULT_WORK_PROFILES: dict[str, dict[str, Any]] = {
@@ -108,42 +106,6 @@ class WorkProfileService:
             ).scalars().first()
         return self.serialize(row) if row is not None else self.default_profile("strong_plot")
 
-    def upsert(self, payload: dict[str, Any], *, actor_ref: str = "operator") -> dict[str, Any]:
-        scope_type = _scope_type(payload.get("scope_type"))
-        scope_ref_id = str(payload.get("scope_ref_id") or ("global" if scope_type == "global" else "")).strip()
-        if scope_type == "global":
-            scope_ref_id = "global"
-        if not scope_ref_id:
-            raise DomainError("WORK_PROFILE_INVALID", "scope_ref_id is required", status_code=400)
-        profile_key = str(payload.get("profile_key") or "strong_plot").strip()
-        base = DEFAULT_WORK_PROFILES.get(profile_key, DEFAULT_WORK_PROFILES["strong_plot"])
-        row = self.session.execute(
-            select(WorkProfile)
-            .where(
-                WorkProfile.scope_type == scope_type,
-                WorkProfile.scope_ref_id == scope_ref_id,
-                WorkProfile.status == "active",
-            )
-            .order_by(WorkProfile.updated_at.desc(), WorkProfile.profile_id.desc())
-        ).scalars().first()
-        if row is None:
-            row = WorkProfile(
-                profile_id=f"work_profile_{scope_type}_{scope_ref_id}_{uuid.uuid4().hex[:8]}",
-                scope_type=scope_type,
-                scope_ref_id=scope_ref_id,
-                created_by=actor_ref or "work_profile",
-            )
-            self.session.add(row)
-        row.profile_key = profile_key
-        row.display_name = str(payload.get("display_name") or base["display_name"]).strip()
-        row.description = str(payload.get("description") or base["description"]).strip()
-        profile_json = payload.get("profile_json") if isinstance(payload.get("profile_json"), dict) else {}
-        row.profile_json = {**base["profile_json"], **profile_json}
-        row.status = "active"
-        row.created_by = actor_ref or row.created_by
-        self.session.flush()
-        return {"profile": self.serialize(row)}
-
     @staticmethod
     def default_profile(profile_key: str) -> dict[str, Any]:
         base = DEFAULT_WORK_PROFILES.get(profile_key, DEFAULT_WORK_PROFILES["strong_plot"])
@@ -177,10 +139,3 @@ class WorkProfileService:
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }
-
-
-def _scope_type(value: Any) -> str:
-    normalized = str(value or "global").strip()
-    if normalized not in {"global", "chapter"}:
-        raise DomainError("WORK_PROFILE_INVALID", "scope_type must be global or chapter", status_code=400)
-    return normalized

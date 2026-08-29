@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any, Callable
 
@@ -48,12 +49,13 @@ from novel_system.services.llm_accounting import (
     execute_accounted_call,
     mark_postprocess_failure,
 )
-from novel_system.services.llm_audit import sanitize_audit_summary
+from novel_system.services.llm_audit import error_audit_summary, sanitize_audit_summary
 from novel_system.services.llm_client import (
     LLMClient,
     LLMConfigurationError,
-    LLMRequest,
+    build_llm_request,
     load_model_routing_config,
+    resolve_node_route,
 )
 from novel_system.services.prompt_builder import (
     PromptConfigurationError,
@@ -482,14 +484,7 @@ class ChapterPlanService:
         return self._routing_config
 
     def _task_config(self, task_key: str) -> Any:
-        routing = self._routing()
-        node_routing = getattr(routing, "node_routing", {})
-        if isinstance(node_routing, dict) and task_key in node_routing:
-            return node_routing[task_key]
-        task_routing = getattr(routing, "task_routing", {})
-        if task_key in task_routing:
-            return task_routing[task_key]
-        raise KeyError(task_key)
+        return resolve_node_route(self._routing(), task_key)
 
     def _template(self, template_name: str) -> Any:
         if self._prompt_templates is None:
@@ -543,23 +538,13 @@ class ChapterPlanService:
             template.structured_schema,
         )
         llm_call_id = f"llm_call_project_{task_key}_{uuid.uuid4().hex[:12]}"
-        request = LLMRequest(
-            model=task_config.model,
+        request = build_llm_request(
+            task_config,
+            node_id=task_key,
             messages=[
                 {"role": "system", "content": template.system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=task_config.temperature,
-            max_output_tokens=task_config.max_output_tokens,
-            response_format=task_config.response_format,
-            provider=task_config.provider,
-            node_id=task_key,
-            provider_id=getattr(task_config, "provider_id", None),
-            account_id=getattr(task_config, "account_id", None),
-            reasoning_level=getattr(task_config, "reasoning_level", "medium"),
-            api_mode=getattr(task_config, "api_mode", "responses"),
-            credential_mode=getattr(task_config, "credential_mode", None),
-            provider_options=getattr(task_config, "provider_options", {}),
             response_schema={"name": template.name, "schema": template.structured_schema},
         )
         request_summary = sanitize_audit_summary(
@@ -590,7 +575,7 @@ class ChapterPlanService:
                 llm_call_id=llm_call_id,
                 request_summary=request_summary,
                 prompt_hash=prompt_hash,
-                response_summary=_error_summary(exc),
+                response_summary=error_audit_summary(exc),
             )
             raise DomainError(
                 "CHAPTER_PLAN_LLM_CALL_FAILED",
@@ -601,7 +586,7 @@ class ChapterPlanService:
                     "node_id": task_key,
                     "error_code": getattr(exc, "code", exc.__class__.__name__),
                     "next_action": "check_provider_route_model_and_retry",
-                    "response_summary": _error_summary(exc),
+                    "response_summary": error_audit_summary(exc),
                 },
             ) from exc
 
@@ -1028,11 +1013,10 @@ def _rule_based_findings(context: ChapterPlanningContext) -> list[dict[str, Any]
 
 
 def _render_user_prompt(template: Any, prompt_payload: dict[str, Any]) -> str:
-    import json as _json
-
     required = template.structured_schema.get("required") or []
     required_text = ", ".join(str(item) for item in required if isinstance(item, str))
-    prompt_json = _json.dumps(normalize(prompt_payload), ensure_ascii=False, indent=2)
+    # 紧凑 JSON：缩进对模型没有价值，却给嵌套载荷凭空加约六成体积（与雪花工作区同款）。
+    prompt_json = json.dumps(normalize(prompt_payload), ensure_ascii=False, separators=(",", ":"))
     return (
         f"{template.task_prompt.strip()}\n\n"
         f"Working payload:\n{prompt_json}\n\n"
@@ -1080,10 +1064,3 @@ def _coerce_notes(value: Any) -> list[dict[str, str]]:
         elif isinstance(item, str) and item.strip():
             notes.append({"scene_id": "", "field": "", "suggestion": _clean_text(item, 300), "reason": ""})
     return notes
-
-
-def _error_summary(exc: Exception) -> dict[str, Any]:
-    return {
-        "error_code": getattr(exc, "code", exc.__class__.__name__),
-        "message": str(exc),
-    }

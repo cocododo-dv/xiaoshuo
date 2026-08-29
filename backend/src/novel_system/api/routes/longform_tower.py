@@ -13,10 +13,8 @@ from novel_system.api.longform_tower_requests import (
     LongformContractTransitionRequest,
     LongformContractUpdateRequest,
 )
-from novel_system.api.mutations import optional_idempotent_response
-from novel_system.api.request_types import EmptyRequest
+from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.response import ok
-from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.longform_tower import LongformTowerService
 
 router = APIRouter(tags=["longform-tower"])
@@ -40,17 +38,14 @@ def create_tower_anchor(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/longform/anchors",
         payload={"project_id": project_id, "body": body},
         action=lambda: LongformTowerService(session).create_anchor(project_id, body),
-        actor_ref=_operator(request),
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.patch("/api/v2/projects/{project_id}/longform/anchors/{anchor_id}")
@@ -133,31 +128,6 @@ def get_chapter_audit_receipt(project_id: str, chapter_id: str, request: Request
     return ok(result, req_id=getattr(request.state, "request_id", None))
 
 
-@router.post("/api/v2/projects/{project_id}/longform/derive-structure")
-def derive_tower_structure(
-    project_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    """FE-ALIGN P3：从雪花场景规划确定性派生故事线/悬念债锚点（0 LLM、幂等），
-    让非演示作品的控制塔也能显示真实结构。"""
-    result, status = execute_with_idempotency(
-        session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/longform/derive-structure",
-        payload={
-            "project_id": project_id,
-            "body": payload.model_dump(mode="json") if payload else {},
-        },
-        action=lambda: LongformTowerService(session).derive_structure(project_id),
-        actor_ref=_operator(request),
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
-
-
 @router.get("/api/v2/projects/{project_id}/longform/audit")
 def list_project_audit(
     project_id: str,
@@ -189,17 +159,14 @@ def create_chapter_audit_finding(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/longform/chapters/{chapter_id}/audit",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
         action=lambda: LongformTowerService(session).create_finding(project_id, chapter_id, body),
-        actor_ref=_operator(request),
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v2/projects/{project_id}/longform/audit/{finding_id}/adjudicate")
@@ -219,30 +186,3 @@ def adjudicate_chapter_audit_finding(
         payload={"project_id": project_id, "finding_id": finding_id, "body": body},
         action=lambda: LongformTowerService(session).adjudicate_finding(project_id, finding_id, body),
     )
-
-
-@router.post("/api/v2/projects/{project_id}/longform/chapters/{chapter_id}/audit/adjudicate-draft")
-def adjudicate_chapter_draft(
-    project_id: str,
-    chapter_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    """FE-ALIGN P2(D13)：章级「违约级判定」——草稿 vs 交接契约 LLM 比对，产 drift findings；
-    LLM 关闭时诚实降级（只声明检出/未检出，不机器判违约）。"""
-    result, status = execute_with_idempotency(
-        session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/longform/chapters/{chapter_id}/audit/adjudicate-draft",
-        payload={
-            "project_id": project_id,
-            "chapter_id": chapter_id,
-            "body": payload.model_dump(mode="json") if payload else {},
-        },
-        action=lambda: LongformTowerService(session).adjudicate_draft(project_id, chapter_id),
-        actor_ref=_operator(request),
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)

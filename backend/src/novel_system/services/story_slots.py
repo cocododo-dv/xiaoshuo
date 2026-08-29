@@ -28,10 +28,6 @@ def normalize_story_slot(value: Any) -> str:
     return "" if text in EMPTY_STORY_SLOT_VALUES else text
 
 
-def story_slot_is_empty(value: Any) -> bool:
-    return normalize_story_slot(value) == ""
-
-
 def normalize_story_slot_mapping(
     value: Mapping[str, Any] | None,
     *,

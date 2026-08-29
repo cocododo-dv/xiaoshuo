@@ -12,9 +12,9 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import optional_idempotent_response
 from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
-from novel_system.services.idempotency import execute_with_optional_idempotency
 from novel_system.services.trash import TrashService
 
 router = APIRouter(tags=["trash"])
@@ -28,28 +28,6 @@ def _actor(request: Request) -> str:
     return getattr(request.state, "operator_ref", None) or "operator"
 
 
-def _mutation_response(
-    request: Request,
-    session: Session,
-    *,
-    method: str,
-    path_template: str,
-    payload: dict,
-    action,
-):
-    result, status = execute_with_optional_idempotency(
-        session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
-        method=method,
-        path_template=path_template,
-        payload=payload,
-        action=action,
-        actor_ref=_actor(request),
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=_req_id(request), headers=headers)
-
-
 @router.delete("/api/v2/projects/{project_id}")
 def trash_project(
     project_id: str,
@@ -57,7 +35,7 @@ def trash_project(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="DELETE",
@@ -74,7 +52,7 @@ def restore_project(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -96,7 +74,7 @@ def restore_trash_entry(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -113,7 +91,7 @@ def purge_trash_entry(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="DELETE",

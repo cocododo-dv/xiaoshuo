@@ -197,10 +197,8 @@ function submit() {
             <option value="scene_generation">scene_generation</option>
             <option value="project_init">project_init</option>
             <option value="fine_tuning">fine_tuning</option>
-            <option value="long_form_continuation">long_form_continuation</option>
             <option value="key_chapter">key_chapter</option>
           </select>
-          <small class="field-hint">`long_form_continuation` 用于长文续写链路，后端会按 `refresh_every_chars` 计划窗口重新注入风格片段。</small>
         </label>
 
         <div class="field">

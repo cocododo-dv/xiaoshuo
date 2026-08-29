@@ -49,24 +49,6 @@ def list_knowledge_entries(
     )
 
 
-def list_knowledge(
-    session: Session,
-    *,
-    object_type: str | None = None,
-    scope: str | None = None,
-    scope_ref_id: str | None = None,
-    status: str | None = None,
-) -> list[dict[str, Any]]:
-    return _list_knowledge_items(
-        session,
-        object_type=object_type,
-        scope=scope,
-        scope_ref_id=scope_ref_id,
-        status=status,
-        include_pending=False,
-    )
-
-
 def get_knowledge_entry(session: Session, *, object_type: str, lineage_key: str) -> dict[str, Any]:
     payload, _, _ = _resolve_knowledge_entry(session, object_type=object_type, lineage_key=lineage_key)
     return payload
@@ -108,13 +90,6 @@ def list_vector_alias_scopes(
         query = query.where(VectorAliasRegistry.verify_status == verify_status)
     items = session.execute(query.order_by(VectorAliasRegistry.alias_scope.asc())).scalars().all()
     return [_serialize_alias_scope(item, session=session) for item in items]
-
-
-def get_vector_alias_scope(session: Session, alias_scope: str) -> dict[str, Any] | None:
-    item = session.get(VectorAliasRegistry, alias_scope)
-    if item is None:
-        return None
-    return _serialize_alias_scope(item, session=session)
 
 
 def list_jobs(
@@ -162,16 +137,6 @@ def list_jobs(
         cursor_values=lambda item: [item["job_type"], item["job_id"]],
     )
     return {"items": page_items, "pagination": pagination}
-
-
-def get_job(session: Session, job_id: str) -> dict[str, Any] | None:
-    job = session.get(ReindexJob, job_id)
-    if job is not None:
-        return _serialize_reindex_job(job)
-    job = session.get(VerifyJob, job_id)
-    if job is not None:
-        return _serialize_verify_job(job)
-    return None
 
 
 def list_activity_events(

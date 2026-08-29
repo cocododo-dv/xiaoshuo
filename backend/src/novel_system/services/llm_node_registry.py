@@ -24,8 +24,9 @@ class LLMNodeSpec:
     api_mode: str = "responses"
     model_profile: str | None = None
     fallback_route_ids: tuple[str, ...] = ()
-    # PR-8 §5.1 — 长文续写专用:每 N 字符重新拉取 [STYLE_REFERENCE] 注入,
-    # 防止风格漂移。0 = 不刷新(默认),仅 long_form_continuation 节点启用。
+    # PR-8 §5.1 — 分段续写场景专用:每 N 字符重新拉取 [STYLE_REFERENCE] 注入,
+    # 防止风格漂移。0 = 不刷新(默认)。曾仅由已下线的 long_form_continuation
+    # 节点启用;字段保留在 spec 契约里(catalog/route payload 消费方兼容)。
     refresh_every_chars: int = 0
     # §7 anti-mean sampling — decoding-level penalties carried into DB node routing so the
     # System-Config UI route keeps them instead of silently dropping to None on the DB path.
@@ -131,16 +132,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         temperature=0.7,
         max_output_tokens=1800,
     ),
-    # FE-ALIGN P2(D13): 章级「违约级判定」—— 草稿 vs 交接契约比对，产 drift findings
-    LLMNodeSpec(
-        "chapter_audit_adjudicate",
-        "Chapter audit adjudicate (违约级判定)",
-        "quality",
-        template_name="chapter_audit_adjudicate",
-        temperature=0.1,
-        max_output_tokens=2400,
-        model_profile="quality_strong",
-    ),
     LLMNodeSpec(
         "style_profile_extract",
         "Style profile extract",
@@ -149,32 +140,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         model="gpt-5-mini",
         temperature=0.15,
         max_output_tokens=2200,
-    ),
-    LLMNodeSpec(
-        "reference_sample_ranker",
-        "Reference sample ranker",
-        "reference",
-        template_name="reference_sample_ranker",
-        model="gpt-5-mini",
-        temperature=0.1,
-        max_output_tokens=1400,
-    ),
-    LLMNodeSpec(
-        "reference_style_structure_extract",
-        "Reference style and structure extract",
-        "reference",
-        template_name="reference_style_structure_extract",
-        model="gpt-5-mini",
-        temperature=0.15,
-        max_output_tokens=2200,
-    ),
-    LLMNodeSpec(
-        "reference_profile_synthesize",
-        "Reference profile synthesize",
-        "reference",
-        template_name="reference_profile_synthesize",
-        temperature=0.2,
-        max_output_tokens=3200,
     ),
     LLMNodeSpec(
         "style_ref_paragraph_classify_anchor",
@@ -428,19 +393,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         fallback_route_ids=("style_patch", "style_draft", "stylize", "neutral_draft"),
     ),
     LLMNodeSpec(
-        "long_form_continuation",
-        "Long-form continuation",
-        "scene_generation",
-        template_name="long_form_continuation",
-        temperature=0.7,
-        max_output_tokens=4000,
-        model_profile="quality_strong",
-        refresh_every_chars=8000,
-        fallback_route_ids=("neutral_draft", "style_draft", "stylize"),
-        frequency_penalty=0.3,
-        presence_penalty=0.15,
-    ),
-    LLMNodeSpec(
         "hard_qc",
         "Hard QC",
         "quality",
@@ -456,16 +408,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         model="gpt-5-mini",
         temperature=0.2,
         max_output_tokens=1800,
-    ),
-    LLMNodeSpec(
-        "scene_quality_contract",
-        "Scene quality contract",
-        "quality",
-        template_name="scene_quality_contract",
-        temperature=0.2,
-        max_output_tokens=1800,
-        model_profile="quality_strong",
-        fallback_route_ids=("soft_qc", "hard_qc", "style_draft", "neutral_draft"),
     ),
     LLMNodeSpec(
         "near_final_acceptance_review",
@@ -623,15 +565,6 @@ _NODE_SPECS: tuple[LLMNodeSpec, ...] = (
         max_output_tokens=2600,
     ),
     LLMNodeSpec(
-        "writer_reference_application_review",
-        "Writer reference application review",
-        "evaluation",
-        template_name="writer_reference_application_review",
-        model="gpt-5-mini",
-        temperature=0.1,
-        max_output_tokens=1800,
-    ),
-    LLMNodeSpec(
         "chapter_summary",
         "Chapter summary",
         "local",
@@ -708,14 +641,6 @@ def reserved_llm_node_ids() -> set[str]:
     }
 
 
-def llm_node_route_fallbacks() -> dict[str, tuple[str, ...]]:
-    return {
-        spec.node_id: spec.fallback_route_ids
-        for spec in _NODE_SPECS
-        if spec.fallback_route_ids
-    }
-
-
 def get_llm_node_spec(node_id: str) -> LLMNodeSpec | None:
     for spec in _NODE_SPECS:
         if spec.node_id == node_id:
@@ -788,10 +713,6 @@ ROLE_SLOTS: tuple[RoleSlotSpec, ...] = (
         ("reference", "style_reference", "project"),
     ),
 )
-
-
-def role_slot_specs() -> tuple[RoleSlotSpec, ...]:
-    return ROLE_SLOTS
 
 
 def get_role_slot_spec(slot_id: str) -> RoleSlotSpec | None:

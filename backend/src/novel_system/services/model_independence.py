@@ -71,7 +71,6 @@ _OBSERVED_WRITER_NODES = frozenset(
         "style_patch",
         "scene_literary_rewrite",
         "neutral_draft",
-        "long_form_continuation",
         "de_template",
     }
 )
@@ -82,7 +81,6 @@ _OBSERVED_REVIEW_NODES = frozenset(
         "chapter_near_final_review",
         "writer_deep_review",
         "auto_critique_llm",
-        "chapter_audit_adjudicate",
         "literary_eval_live",
     }
 )
@@ -92,9 +90,7 @@ _OBSERVED_REVIEW_ROLE_NODES: dict[str, frozenset[str]] = {
         {"soft_qc", "writer_deep_review", "auto_critique_llm", "literary_eval_live"}
     ),
     "judge_advisory": frozenset({"near_final_acceptance_review"}),
-    "chapter_judge_advisory": frozenset(
-        {"chapter_near_final_review", "chapter_audit_adjudicate"}
-    ),
+    "chapter_judge_advisory": frozenset({"chapter_near_final_review"}),
 }
 
 

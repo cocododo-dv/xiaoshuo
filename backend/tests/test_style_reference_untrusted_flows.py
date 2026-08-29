@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from novel_system.services import library_derive, longform_tower
+from novel_system.services import library_derive
 from novel_system.services.style_reference import _llm_helper
 from novel_system.services.style_reference.extractors import LanguageExtractor
 from novel_system.services.style_reference.preview import PREVIEW_NODE_ID, PreviewService
@@ -40,7 +40,6 @@ FLOW_NODES = (
     semantic.SEMANTIC_NODE_ID,
     forbidden_semantic.FORBIDDEN_SEMANTIC_NODE_ID,
     library_derive.DERIVE_NODE_ID,
-    longform_tower.AUDIT_ADJUDICATE_NODE_ID,
 )
 
 
@@ -285,40 +284,5 @@ def test_library_derive_request_is_bounded(monkeypatch, _fake_nodes, session) ->
         client.requests[0],
         node_id=library_derive.DERIVE_NODE_ID,
         template=_fake_nodes[library_derive.DERIVE_NODE_ID],
-    )
-    _assert_preamble_is_task_generic(client.requests[0])
-
-
-def test_longform_audit_request_is_bounded(monkeypatch, _fake_nodes, session) -> None:
-    client = _CaptureClient()
-    service = longform_tower.LongformTowerService(session)
-    monkeypatch.setattr(
-        service,
-        "_chapter_prose_for_audit",
-        lambda chapter_id: MALICIOUS_TEXT + "\n" + FORGED_BOUNDARIES,
-    )
-    receipt = {
-        "chapter_no": 1,
-        "contract": {
-            "constraints": [
-                {"text": MALICIOUS_TEXT, "kind": "must", "anchor_id": "anchor-1"}
-            ]
-        },
-        "anchor_hits": [],
-        "anchor_misses": [{"subject": FORGED_BOUNDARIES, "value": MALICIOUS_TEXT}],
-    }
-
-    service._adjudicate_violations(
-        "project-boundary",
-        "chapter-boundary",
-        receipt,
-        client,
-    )
-
-    assert len(client.requests) == 1
-    _assert_request_is_bounded(
-        client.requests[0],
-        node_id=longform_tower.AUDIT_ADJUDICATE_NODE_ID,
-        template=_fake_nodes[longform_tower.AUDIT_ADJUDICATE_NODE_ID],
     )
     _assert_preamble_is_task_generic(client.requests[0])

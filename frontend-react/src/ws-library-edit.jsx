@@ -3,6 +3,7 @@ import { I } from "./icons.jsx";
 import { LIB_BY_ID, LIB_CATS, LIB_ENTRIES } from "./ws-library-data.jsx";
 import { LIB_REL_TYPES, LIB_relType } from "./ws-library-derive.jsx";
 import { apiDelete, apiPatch, apiPost } from "./lib/client.js";
+import { storeAlert } from "./lib/store-utils.js";
 import { wsKey, WsWorks } from "./ws-works.jsx";
 
 /* global React, I, LIB_CATS, LIB_REL_TYPES, LIB_relType */
@@ -22,7 +23,7 @@ const LIB_MIGRATED_KEY = "ws-lib-migrated-v1";
 const libProjectId = () => { try { return WsWorks ? WsWorks.activeId() : null; } catch (e) { return null; } };
 const libApiBase = () => `/api/v2/projects/${libProjectId()}/library`;
 const libRefetch = () => { try { if (window.LIB_refetch) window.LIB_refetch(); } catch (e) {} };
-const libToast = (e, fallback) => { try { window.alert((e && e.message) || fallback); } catch (e2) {} };
+const libToast = (e, fallback) => storeAlert(e, fallback);
 
 /* —— FE-ALIGN P6：编辑/新建直接落后端（base 已来自 API），
    localStorage 覆盖层退化为「读空」；旧键一次性上行后保留（P8 清理）。 —— */

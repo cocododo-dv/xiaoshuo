@@ -46,6 +46,18 @@ def approve_review(client, review_id: str, *, idempotency_key: str) -> str:
     return next(job["job_id"] for job in jobs if job["review_id"] == review_id and job["job_type"] == "verify")
 
 
+def get_alias_scope(client, alias_scope: str) -> dict:
+    object_type, scope, scope_ref_id = alias_scope.split(":", 2)
+    response = client.get(
+        "/api/v1/index/alias-scopes",
+        params={"object_type": object_type, "scope": scope, "scope_ref_id": scope_ref_id},
+    )
+    assert response.status_code == 200
+    items = response.json()["data"]["items"]
+    assert len(items) == 1, f"expected exactly one alias scope for {alias_scope}, got {len(items)}"
+    return items[0]
+
+
 def promote_active_alias(client) -> str:
     import_style_review(
         client,
@@ -60,7 +72,7 @@ def promote_active_alias(client) -> str:
         headers={"X-Idempotency-Key": "verify-review-style-good"},
     )
     assert verified.status_code == 200
-    alias = client.get("/api/v1/index/alias-scopes/style_observation:global:global").json()["data"]
+    alias = get_alias_scope(client, "style_observation:global:global")
     return alias["active_alias"]
 
 
@@ -86,9 +98,7 @@ def test_verify_failure_keeps_old_alias_serving(client) -> None:
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "VECTOR_VERIFY_FAILED"
-    alias = client.get("/api/v1/index/alias-scopes/style_observation:global:global")
-    assert alias.status_code == 200
-    data = alias.json()["data"]
+    data = get_alias_scope(client, "style_observation:global:global")
     assert data["active_alias"] == active_alias_before
     assert data["candidate_alias"]
     assert data["verify_status"] == "failed"
@@ -108,7 +118,7 @@ def test_verify_requires_approved_row_to_be_returned(client) -> None:
         "review_style_stale_candidate",
         idempotency_key="approve-review-style-stale-candidate",
     )
-    alias_before = client.get("/api/v1/index/alias-scopes/style_observation:global:global").json()["data"]
+    alias_before = get_alias_scope(client, "style_observation:global:global")
 
     get_vector_store().write_collection(
         alias_before["candidate_alias"],
@@ -129,7 +139,7 @@ def test_verify_requires_approved_row_to_be_returned(client) -> None:
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "VECTOR_VERIFY_FAILED"
-    alias_after = client.get("/api/v1/index/alias-scopes/style_observation:global:global").json()["data"]
+    alias_after = get_alias_scope(client, "style_observation:global:global")
     assert alias_after["active_alias"] == active_alias_before
     assert alias_after["candidate_alias"] == alias_before["candidate_alias"]
     assert alias_after["verify_status"] == "failed"

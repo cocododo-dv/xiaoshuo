@@ -81,7 +81,6 @@ $env:NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED = "true"
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
-| `GET` | `/api/v1/projects/{project_id}/canon/chapters/{chapter_id}` | 读取章节正史完成度 |
 | `GET` | `/api/v1/projects/{project_id}/canon/scenes/{scene_id}` | 读取场景候选、证据和快照 |
 | `POST` | `/api/v1/projects/{project_id}/canon/scenes/{scene_id}/extract` | 显式运行正文事实提取 |
 | `POST` | `/api/v1/projects/{project_id}/canon/scenes/{scene_id}/candidates` | 从当前终稿精确证据手工建候选 |

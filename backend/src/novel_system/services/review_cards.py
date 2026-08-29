@@ -157,7 +157,6 @@ class ReviewCardService:
                 )
             item.resolved_action_index = int(action_index)
         item.state = "resolved"
-        item.snooze_until = None
         self.session.flush()
         return {"card": self.card_payload(item), "effect_result": effect_result}
 

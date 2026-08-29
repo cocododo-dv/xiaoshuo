@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Callable, Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import optional_idempotent_response
 from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
-from novel_system.services.idempotency import execute_with_optional_idempotency
 from novel_system.services.system_config import SystemConfigService, require_admin_token
 
 router = APIRouter(tags=["system_config"])
@@ -21,32 +21,6 @@ def _client_host(request: Request) -> str | None:
 
 def _actor(request: Request) -> str:
     return getattr(request.state, "operator_ref", None) or "operator"
-
-
-def _mutation_response(
-    request: Request,
-    session: Session,
-    *,
-    method: str,
-    path_template: str,
-    payload: dict[str, Any],
-    action: Callable[[], dict],
-):
-    result, status = execute_with_optional_idempotency(
-        session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
-        method=method,
-        path_template=path_template,
-        payload=payload,
-        action=action,
-        actor_ref=_actor(request),
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(
-        result,
-        req_id=getattr(request.state, "request_id", None),
-        headers=headers,
-    )
 
 
 class SystemConfigDraftRequest(BaseModel):
@@ -136,7 +110,7 @@ def create_system_config_draft(
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json")
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -160,7 +134,7 @@ def activate_system_config_snapshot(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -182,7 +156,7 @@ def test_system_config_provider(
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True)
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -219,7 +193,7 @@ def save_system_config_llm_provider(
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True)
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -241,7 +215,7 @@ def delete_system_config_llm_provider(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="DELETE",
@@ -263,7 +237,7 @@ def set_default_system_config_llm_provider(
     x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -285,7 +259,7 @@ def save_system_config_llm_node_routes(
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True)
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -307,7 +281,7 @@ def sync_missing_system_config_llm_node_routes(
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True)
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -331,7 +305,7 @@ def probe_system_config_llm_provider(
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True) if payload else {}
     request_payload = {"provider_id": provider_id, **body}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -375,7 +349,7 @@ def save_system_config_llm_role_routes(
 ):
     require_admin_token(x_admin_token, client_host=_client_host(request))
     body = payload.model_dump(mode="json", exclude_none=True)
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -385,54 +359,4 @@ def save_system_config_llm_role_routes(
             payload=body,
             actor_ref=_actor(request),
         ),
-    )
-
-
-# ── §2 Event Sourcing Reconciliation ──────────────────────────────────
-
-
-class ReconciliationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    project_id: str = Field(min_length=1, max_length=255)
-    up_to_scene_seq: int | None = Field(default=None, ge=1, le=(1 << 63) - 1)
-    up_to_scene_id: str | None = Field(default=None, max_length=255)
-    create_review_items: bool = False
-
-
-@router.post("/api/v1/system-config/reconcile")
-def run_event_reconciliation(
-    payload: ReconciliationRequest,
-    request: Request,
-    session: Session = Depends(get_session),
-    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
-):
-    """§2 Event sourcing reconciliation: detect drift between NarrativeEvent
-    log projections and entity table state.  Returns all drift findings."""
-    require_admin_token(x_admin_token, client_host=_client_host(request))
-    from novel_system.services.event_reconciliation import EventReconciliationService
-
-    body = payload.model_dump(mode="json", exclude_none=True)
-
-    def reconcile() -> dict:
-        findings = EventReconciliationService(session).reconcile_project(
-            payload.project_id,
-            up_to_scene_seq=payload.up_to_scene_seq,
-            up_to_scene_id=payload.up_to_scene_id,
-            create_review_items=payload.create_review_items,
-        )
-        return {
-            "project_id": payload.project_id,
-            "drift_count": len(findings),
-            "blocking_count": sum(1 for finding in findings if finding.severity == "block"),
-            "findings": [finding.to_dict() for finding in findings],
-        }
-
-    return _mutation_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/system-config/reconcile",
-        payload=body,
-        action=reconcile,
     )

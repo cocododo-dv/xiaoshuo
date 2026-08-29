@@ -38,7 +38,6 @@ RUNTIME_MIN_INPUT_BUDGETS = {
     "hard_qc": 3600,
     "soft_qc": 3600,
     "style_draft": 4200,
-    "long_form_continuation": 4200,
 }
 CHARACTER_CONTINUITY_INSTRUCTION = (
     "Preserve character identity and pronoun continuity across the scene. "
@@ -49,7 +48,6 @@ CHARACTER_CONTINUITY_INSTRUCTION = (
 DRAFTING_TEMPLATE_NAMES = {
     "neutral_draft",
     "style_draft",
-    "long_form_continuation",
     "scene_literary_rewrite",
     "near_final_rewrite",
     "project_outline_plan",
@@ -76,7 +74,6 @@ CHAPTER_REVIEW_TEMPLATE_NAMES = {
     "writer_chapter_diagnosis",
     "writer_chapter_revision",
     "writer_deep_review",
-    "writer_reference_application_review",
 }
 
 
@@ -288,10 +285,6 @@ def _append_runtime_template_instruction(user_prompt: str, template_name: str) -
         ),
         "style_draft": (
             "Preserve the source draft language; do not translate the scene while styling it. "
-            "If the draft or scene card is Chinese, scene_text must remain Chinese prose."
-        ),
-        "long_form_continuation": (
-            "Preserve the source draft language; do not translate the scene while continuing it. "
             "If the draft or scene card is Chinese, scene_text must remain Chinese prose."
         ),
         "hard_qc": (

@@ -169,7 +169,7 @@ python -m novel_system.tools.reset_author_state --execute --yes
 
 ### Backend (`backend/src/novel_system/`)
 
-FastAPI application (`api/app.py`) with one router per domain area (`api/routes/`). Each route file maps to a service in `services/`. The `db/models.py` file contains all SQLAlchemy ORM models; `db/session.py` manages the engine. The authoritative list of mounted routers is the `include_router` calls in `api/app.py` — **not** `api/routes/__init__.py`'s `__all__`, which omits several (`catalog`, `trash`, `library`, `longform_tower`, `project_overview`, `chapter_manuscripts`, `work_profile`, …).
+FastAPI application (`api/app.py`) with one router per domain area (`api/routes/`). Each route file maps to a service in `services/`. The `db/models.py` file contains all SQLAlchemy ORM models; `db/session.py` manages the engine. The authoritative list of mounted routers is the `include_router` calls in `api/app.py`; `api/routes/__init__.py`'s `__all__` now mirrors it one-to-one, enforced by the drift guard `backend/tests/test_routes_all_manifest.py`.
 
 **Domain layers:**
 - `services/projects.py` + `services/snowflake_workspace.py` — Snowflake Method planning pipeline

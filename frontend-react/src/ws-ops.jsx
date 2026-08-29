@@ -1,5 +1,6 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { agoLabel } from "./lib/ago.js";
 import { apiGet, apiPost } from "./lib/client.js";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { rvCustomList, rvIsResolved } from "./ws-review.jsx";
@@ -124,7 +125,7 @@ function WsIndex({ go }) {
                       <div className="text-muted text-xs" style={{fontFamily:"var(--font-mono)"}}>{j.action}</div>
                     </td>
                     <td className="text-muted text-sm">{j.note || "—"}</td>
-                    <td className="text-muted text-sm">{j.at ? ioAgo(j.at) : "—"}</td>
+                    <td className="text-muted text-sm">{j.at ? agoLabel(j.at) : "—"}</td>
                     <td>
                       <button className={j.state === "pending" ? "btn btn-accent btn-sm" : "btn btn-quiet btn-sm"} onClick={() => go && go(j.nav)}>{j.cta}</button>
                     </td>
@@ -164,14 +165,6 @@ const IO_LOG_LS = "ws_io_log_v1";
 function ioLog() { try { return JSON.parse(localStorage.getItem(IO_LOG_LS)) || []; } catch (e) { return []; } }
 function ioLogPush(entry) {
   try { localStorage.setItem(IO_LOG_LS, JSON.stringify([{ at: Date.now(), ...entry }, ...ioLog()].slice(0, 12))); } catch (e) {}
-}
-function ioAgo(t) {
-  const m = Math.floor((Date.now() - t) / 60000);
-  if (m < 1) return "刚刚";
-  if (m < 60) return m + " 分钟前";
-  const h = Math.floor(m / 60);
-  if (h < 24) return h + " 小时前";
-  return Math.floor(h / 24) + " 天前";
 }
 function ioDownload(name, text, type) {
   const blob = new Blob([text], { type: type || "text/plain;charset=utf-8" });
@@ -510,7 +503,7 @@ function WsInterop({ go }) {
                     <tr key={i}>
                       <td><IoKind k={it.kind} /></td>
                       <td className="text-serif fw-600">{it.file}</td>
-                      <td className="text-muted text-sm">{ioAgo(it.at)}</td>
+                      <td className="text-muted text-sm">{it.at ? agoLabel(it.at) : "—"}</td>
                       <td className="text-muted text-sm tab-num">{ioFmtSize(it.size)}</td>
                     </tr>
                   ))}

@@ -1,4 +1,5 @@
 import { apiGet, apiPatch, apiPost } from "./lib/client.js";
+import { storeAlert } from "./lib/store-utils.js";
 import { manuscriptToDocHTML, sanitizeManuscriptHTML } from "./manuscript-html.js";
 
 /* global window */
@@ -313,7 +314,7 @@ async function hydrate(sid) {
             m.localDurable = false;
             m.cacheError = Object.assign(new Error("本地恢复空间不足，未覆盖你的本地稿"), { code: backup.storageError || "LOCAL_STORAGE_QUOTA" });
             m.lastSaveError = m.cacheError;
-            try { window.alert("发现未同步的本地正文，但浏览器存储空间不足。系统没有覆盖本地稿；请打开“同步与恢复”导出内容或清理旧记录后重试。"); } catch (e2) {}
+            storeAlert(null, "发现未同步的本地正文，但浏览器存储空间不足。系统没有覆盖本地稿；请打开“同步与恢复”导出内容或清理旧记录后重试。");
             notifyState(sid);
             return;
           }
@@ -402,7 +403,7 @@ async function pushSave(sid, html, saveVersion) {
         m.localDurable = false;
         m.cacheError = Object.assign(new Error("冲突稿无法持久备份，已停止覆盖"), { code: backup.storageError || "LOCAL_STORAGE_QUOTA" });
         pendingWrite(sid);
-        try { window.alert("正文发生版本冲突，同时浏览器存储空间不足。系统已停止覆盖，本地稿仍在当前编辑器；请先导出或清理恢复记录。"); } catch (e2) {}
+        storeAlert(null, "正文发生版本冲突，同时浏览器存储空间不足。系统已停止覆盖，本地稿仍在当前编辑器；请先导出或清理恢复记录。");
         notifyState(sid);
         throw e;
       }
@@ -530,11 +531,6 @@ const WrDocs = {
     hydrate(sid);
     return cacheRead(sid);
   },
-  /* 是否仍在等首次水合（视图可据此决定是否回填） */
-  pending(sid) {
-    const m = meta(sid);
-    return !m.hydrated;
-  },
   /* 显式等待服务端草稿水合；跨页面采用 AI 稿前用它确认作者正文是否已存在。 */
   async hydrate(sid) {
     if (!sid) return null;
@@ -649,7 +645,6 @@ const WrRecovery = {
     const items = recoveryList();
     return workId == null ? items : items.filter(item => item.workId === workId);
   },
-  count(options = {}) { return this.list(options).length; },
   create(options) { return recoveryCreate(options); },
   createBackup(sid, html, reason = "覆盖前自动备份") {
     return recoveryCreate({
@@ -714,12 +709,6 @@ const WrRecovery = {
     const result = await WrRecovery.restore(id);
     recoveryRemove(id);
     return result;
-  },
-  storageStatus() {
-    return {
-      volatileCount: [...volatileRecoveries.values()].filter(item => !item.durable).length,
-      allDurable: [...volatileRecoveries.values()].every(item => item.durable),
-    };
   },
 };
 

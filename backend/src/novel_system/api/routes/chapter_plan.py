@@ -9,7 +9,6 @@
 """
 from __future__ import annotations
 
-from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
@@ -20,11 +19,10 @@ from novel_system.api.chapter_plan_requests import (
     ChapterPlanFillRequest,
 )
 from novel_system.api.deps import get_session
-from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
 from novel_system.services.chapter_plan_llm import ChapterPlanService
-from novel_system.services.idempotency import execute_with_idempotency
 
 router = APIRouter(tags=["chapter-plan"])
 
@@ -81,9 +79,9 @@ def generate_chapter_architecture(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json") if payload else {}
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/architecture/generate",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
@@ -92,10 +90,7 @@ def generate_chapter_architecture(
             chapter_id,
             actor_ref=_operator(request),
         ),
-        actor_ref=_operator(request),
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=_req_id(request), headers=headers)
 
 
 @router.post("/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/candidates")
@@ -164,9 +159,9 @@ def chapter_plan_apply(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/catalog/chapters/{chapter_id}/plan/apply",
         payload={"project_id": project_id, "chapter_id": chapter_id, "body": body},
@@ -176,7 +171,4 @@ def chapter_plan_apply(
             body,
             actor_ref=_operator(request),
         ),
-        actor_ref=_operator(request),
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=_req_id(request), headers=headers)

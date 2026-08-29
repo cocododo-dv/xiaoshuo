@@ -81,15 +81,6 @@ def test_character_card_update_keeps_id(client, session):
     assert data["summary"] == "改写后的一行简介"
 
 
-def test_derive_skips_silently_without_llm(client):
-    pid = _create_project(client)
-    chapter = _post(client, f"/api/v2/projects/{pid}/catalog/chapters", {"title": "章"})["chapter"]
-    result = _post(client, f"/api/v2/projects/{pid}/library/derive", {"chapter_id": chapter["chapter_id"]})
-    assert result["skipped"] is True
-    assert result["reason"] == "llm_disabled"
-    assert result["author_action"]["target_view"] == "system-config"
-
-
 def test_derive_effects_create_entity_and_timeline_via_resolve(client):
     pid = _create_project(client)
     entity_card = _post(
@@ -213,25 +204,6 @@ def test_library_updates_and_deletes_are_safely_replayable(client):
     assert first_delete.status_code == replayed_delete.status_code == 200
     assert replayed_delete.headers["X-Idempotency-Status"] == "replayed"
     assert replayed_delete.json()["data"] == first_delete.json()["data"]
-
-
-def test_derive_rejects_chapter_from_another_project_even_when_llm_is_disabled(client):
-    owner_id = _create_project(client)
-    foreign_id = _create_project(client)
-    chapter = _post(
-        client,
-        f"/api/v2/projects/{owner_id}/catalog/chapters",
-        {"title": "Owner chapter"},
-    )["chapter"]
-
-    response = client.post(
-        f"/api/v2/projects/{foreign_id}/library/derive",
-        json={"chapter_id": chapter["chapter_id"]},
-        headers={"X-Idempotency-Key": "library-cross-project-derive"},
-    )
-
-    assert response.status_code == 404
-    assert response.json()["error"]["code"] == "CHAPTER_NOT_FOUND"
 
 
 def test_timeline_rejects_cross_project_entity_references(client):

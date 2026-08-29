@@ -33,6 +33,7 @@ from novel_system.services.hash_engine import canonical_json
 from novel_system.services.literary_quality import analyze_literary_quality
 from novel_system.services.llm_task_runner import LLMNodeExecutionError, LLMNodeRunner
 from novel_system.services.llm_fail_closed import raise_llm_domain_error
+from novel_system.services.scene_lookup import require_chapter, require_scene
 
 
 CONTRACT_VERSION = "scene_quality_contract_v1"
@@ -234,16 +235,10 @@ class SceneQualityService:
         }
 
     def _require_scene(self, scene_id: str) -> SceneCard:
-        scene = self.session.get(SceneCard, scene_id)
-        if scene is None or scene.trashed_flag:
-            raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
-        return scene
+        return require_scene(self.session, scene_id)
 
     def _require_chapter(self, chapter_id: str) -> ChapterGoal:
-        chapter = self.session.get(ChapterGoal, chapter_id)
-        if chapter is None or chapter.trashed_flag:
-            raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
-        return chapter
+        return require_chapter(self.session, chapter_id)
 
 
 class SceneAutoRewriteService:

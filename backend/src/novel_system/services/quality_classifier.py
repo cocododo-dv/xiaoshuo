@@ -236,18 +236,3 @@ def has_blocking(classified: list[dict[str, Any]]) -> bool:
 
 def blocking_issues(classified: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [issue for issue in classified if isinstance(issue, dict) and issue.get("blocking")]
-
-
-def warning_issues(classified: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [issue for issue in classified if isinstance(issue, dict) and not issue.get("blocking")]
-
-
-def slim_finding(issue: dict[str, Any]) -> dict[str, Any]:
-    """author_state 投影/早退契约用的瘦身形态。"""
-    return {
-        "issue_key": issue.get("issue_key"),
-        "quality_level": issue.get("quality_level"),
-        "message": issue.get("message") or issue.get("human_readable_reason") or "",
-        "recommended_action": issue.get("recommended_action"),
-        "verified_by": issue.get("verified_by"),
-    }

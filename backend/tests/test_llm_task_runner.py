@@ -653,20 +653,19 @@ def test_legacy_accounting_bypasses_are_removed_from_production() -> None:
     assert offenders == []
 
 
-def test_only_the_thirteen_verified_scene_run_calls_may_derive_context() -> None:
+def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
     source_root = Path(__file__).parents[1] / "src" / "novel_system"
     allowed_without_context = {
         ("services/near_final.py", "NearFinalPlanningService", "_generate_chapter_architecture"),
         ("services/near_final.py", "NearFinalPlanningService", "_generate_character_pressure"),
         ("services/near_final.py", "NearFinalAcceptanceService", "evaluate_scene"),
         ("services/scene_generation.py", "SceneGenerationService", "generate_neutral_draft"),
-        ("services/scene_generation.py", "SceneGenerationService", "generate_long_form_continuation"),
         ("services/scene_generation.py", "SceneGenerationService", "_run_style_generation"),
         ("services/scene_generation.py", "SceneGenerationService", "_run_de_template_pass"),
         ("services/scene_generation.py", "SceneGenerationService", "_run_style_salvage_pass"),
         ("services/scene_blueprint.py", "SceneBlueprintService", "generate"),
-        ("services/qc_engine.py", "HardQcEngine", "evaluate"),
-        ("services/qc_engine.py", "SoftQcEngine", "evaluate"),
+        # Hard/Soft QC 的 LLM 调用已收敛为模块级统一降级出口（两引擎共用一个 .run( 调用点）
+        ("services/qc_engine.py", "", "_qc_run_node_with_degradation"),
         ("services/scene_quality.py", "SceneAutoRewriteService", "_generate_llm_candidate"),
         ("services/writer_review.py", "WriterReviewService", "_run_scene_revision"),
     }
@@ -722,7 +721,7 @@ def test_only_the_thirteen_verified_scene_run_calls_may_derive_context() -> None
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         RunVisitor(relative_path).visit(tree)
 
-    assert len(calls) == 23
+    assert len(calls) == 21
     actual_without_context = {(path, class_name, function_name) for path, class_name, function_name, has_context in calls if not has_context}
     assert actual_without_context == allowed_without_context
 

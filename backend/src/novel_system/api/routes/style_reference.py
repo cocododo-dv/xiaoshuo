@@ -22,13 +22,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import idempotent_response
 from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
 from novel_system.db.models import ReviewItem, utcnow
 
 logger = logging.getLogger(__name__)
 from novel_system.services.errors import DomainError
-from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.style_reference.cleanup import purge_derived_data
 from novel_system.services.style_reference.dimensions import Layer
 from novel_system.services.style_reference.ingest import (
@@ -308,55 +308,12 @@ def _client_host(request: Request) -> str | None:
     return request.client.host if request.client is not None else None
 
 
-def _idempotency_key(request: Request) -> str | None:
-    return request.headers.get("X-Idempotency-Key")
-
-
-def _with_idem(
-    session: Session,
-    request: Request,
-    *,
-    method: str,
-    path_template: str,
-    payload: dict[str, Any],
-    action,
-    after_commit=None,
-):
-    result, status = execute_with_idempotency(
-        session,
-        idempotency_key=_idempotency_key(request),
-        method=method,
-        path_template=path_template,
-        payload=payload,
-        action=action,
-        after_commit=after_commit,
-        actor_ref=_actor(request),
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=_req_id(request), headers=headers)
-
-
 def _get_llm_client_and_enabled():
-    """从仓库 settings + LLMClient 构造 client(若 LLM_ENABLED=true)。
-
-    实际生产路由调用方应使用 PR-7 之后的统一 LLM client 工厂;PR-4 简化为
-    每路由根据 settings 构造。
-    """
-    from novel_system.services.llm_client import LLMClient
-    from novel_system.services.system_config import load_llm_provider_runtime_configs
+    """委托统一工厂 build_runtime_llm_client;保留模块级名字供路由测试打桩。"""
+    from novel_system.services.system_config import build_runtime_llm_client
     from novel_system.settings import get_settings
 
-    settings = get_settings()
-    if not settings.llm_enabled:
-        return None, False
-    client = LLMClient(
-        provider=settings.llm_provider,
-        base_url=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        timeout_seconds=settings.llm_timeout_seconds,
-        provider_configs=load_llm_provider_runtime_configs(),
-    )
-    return client, True
+    return build_runtime_llm_client(settings=get_settings())
 
 
 # ---------------------------------------------------------------------------
@@ -392,9 +349,9 @@ def import_book_path(
             "safety": result.safety_payload,
         }
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="POST",
         path_template=f"{PATH_PREFIX}/books/import-path",
         payload=body,
@@ -466,9 +423,9 @@ async def import_book_upload(
             "safety": result.safety_payload,
         }
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="POST",
         path_template=f"{PATH_PREFIX}/books/import-upload",
         payload=payload,
@@ -530,9 +487,9 @@ def delete_book(
         repo.delete_book(book_id)
         return {"book_id": book_id, "deleted": True}
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="DELETE",
         path_template=f"{PATH_PREFIX}/books/{{book_id}}",
         payload={"book_id": book_id},
@@ -563,9 +520,9 @@ def reclassify_book(
             "paragraphs_count": paragraphs_count,
         }
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="POST",
         path_template=f"{PATH_PREFIX}/books/{{book_id}}/reclassify",
         payload={"book_id": book_id},
@@ -639,9 +596,9 @@ def start_run(
             llm_client=client,
         )
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="POST",
         path_template=f"{PATH_PREFIX}/books/{{book_id}}/runs",
         payload={"book_id": book_id, **body},
@@ -710,9 +667,9 @@ def cancel_run(
             )
         return {"run_id": run_id, "status": updated.status}
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="POST",
         path_template=f"{PATH_PREFIX}/runs/{{run_id}}/cancel",
         payload={"run_id": run_id},
@@ -857,9 +814,9 @@ def review_finding(
             "invalidated_profile_ids": invalidated_profile_ids,
         }
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="POST",
         path_template=f"{PATH_PREFIX}/findings/{{finding_id}}/review",
         payload={"finding_id": finding_id, **body},
@@ -886,9 +843,9 @@ def user_feedback_finding(
             session, finding_id, operator_ref=_actor(request), vote=body["vote"]
         )
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="POST",
         path_template=f"{PATH_PREFIX}/findings/{{finding_id}}/user-feedback",
         # operator_ref 入幂等 payload:幂等记录按 (finding, operator) 分区,
@@ -965,9 +922,9 @@ def synthesize_profile(
             logger.exception("style profile decision card creation failed")
         return {"profile": _serialize_profile(profile)}
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="POST",
         path_template=f"{PATH_PREFIX}/runs/{{run_id}}/synthesize",
         payload={"run_id": run_id},
@@ -1012,39 +969,6 @@ def get_profile(
     return ok({"profile": _serialize_profile(profile)}, req_id=_req_id(request))
 
 
-@router.get(f"{PATH_PREFIX}/profiles/{{profile_id}}/candidate-feedback")
-def get_profile_candidate_feedback(
-    profile_id: str,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    """Return aggregate blind-choice calibration diagnostics for one profile.
-
-    The response never includes candidate prose or source excerpts, and it is
-    explicitly ineligible to self-activate production reranking.
-    """
-
-    repo = StyleReferenceRepository(session)
-    if repo.get_profile(profile_id) is None:
-        raise DomainError(
-            "STYLE_REFERENCE_PROFILE_NOT_FOUND",
-            f"profile {profile_id!r} not found",
-            status_code=404,
-        )
-    from novel_system.services.style_reference.style_feedback import (
-        summarize_profile_candidate_feedback,
-    )
-
-    return ok(
-        {
-            "candidate_feedback": summarize_profile_candidate_feedback(
-                session, profile_id
-            )
-        },
-        req_id=_req_id(request),
-    )
-
-
 @router.post(f"{PATH_PREFIX}/profiles/{{profile_id}}/preview")
 def preview_profile(
     profile_id: str,
@@ -1061,9 +985,9 @@ def preview_profile(
             "samples": [r.model_dump() for r in results],
         }
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="POST",
         path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/preview",
         payload={"profile_id": profile_id},
@@ -1109,9 +1033,9 @@ def apply_profile(
             "rag_index": result.rag_index,
         }
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="POST",
         path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/apply",
         payload={"profile_id": profile_id, **body},
@@ -1152,9 +1076,9 @@ def delete_binding(
             )
         return {"binding_id": binding_id, "deleted": True}
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="DELETE",
         path_template=f"{PATH_PREFIX}/bindings/{{binding_id}}",
         payload={"binding_id": binding_id},
@@ -1249,9 +1173,9 @@ def create_banned_term(
         )
         return {"term": _serialize_banned_term(row), "created": True}
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="POST",
         path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/banned-terms",
         payload={
@@ -1289,9 +1213,9 @@ def delete_banned_term(
         repo.delete_banned_term(term_id)
         return {"term_id": term_id, "deleted": True}
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="DELETE",
         path_template=f"{PATH_PREFIX}/banned-terms/{{term_id}}",
         payload={"term_id": term_id},
@@ -1421,9 +1345,9 @@ def validate_profile_generated(
             llm_enabled=enabled,
         )
 
-    return _with_idem(
-        session,
+    return idempotent_response(
         request,
+        session,
         method="POST",
         path_template=f"{PATH_PREFIX}/profiles/{{profile_id}}/validate",
         payload={"profile_id": profile_id, **body},

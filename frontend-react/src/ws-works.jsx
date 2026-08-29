@@ -1,5 +1,6 @@
 import React from "react";
 import { apiDelete, apiGet, apiPatch, apiPost } from "./lib/client.js";
+import { createSubscribers, storeAlert, useStoreTick } from "./lib/store-utils.js";
 
 /* global window */
 /* ==========================================================
@@ -175,8 +176,8 @@ let WS_ACTIVE_ID = (() => {
   return WS_WORKS[0].id;
 })();
 
-const wsSubs = new Set();
-const wsStatusSubs = new Set();
+const wsSubs = createSubscribers();
+const wsStatusSubs = createSubscribers();
 const wsRemoteState = {
   projects: { phase: "loading", error: null, updatedAt: null },
   dashboards: {},
@@ -191,7 +192,7 @@ function wsErrorShape(error, fallback) {
 }
 
 function wsStatusNotify() {
-  wsStatusSubs.forEach(fn => { try { fn(); } catch (e) {} });
+  wsStatusSubs.notify();
 }
 
 function wsSetProjectsStatus(phase, error = null) {
@@ -217,13 +218,12 @@ function wsSaveCache() {
 }
 
 function wsNotify() {
-  wsSubs.forEach(fn => { try { fn(); } catch (e) {} });
+  wsSubs.notify();
   try { window.dispatchEvent(new CustomEvent("ws:work-changed", { detail: WS_ACTIVE_ID })); } catch (e) {}
 }
 
 function wsToastError(error, fallback) {
-  const message = (error && error.message) || fallback;
-  try { window.alert(message); } catch (e) {}
+  storeAlert(error, fallback);
 }
 
 /* —— 一次性上行迁移：旧 localStorage 作品 → POST 后端 —— */
@@ -388,7 +388,7 @@ const WsWorks = {
        乐观下架 + 失败回滚；回收站条目由后端自动产生。 */
     if (WS_WORKS.length <= 1) {
       // 审计 P-19：静默 return 让用户不知道为何删不掉——给出明确提示
-      try { window.alert("至少需要保留一部作品，无法删除最后一部。"); } catch (e) {}
+      storeAlert(null, "至少需要保留一部作品，无法删除最后一部。");
       return;
     }
     const victim = WS_WORKS.find(w => w.id === id);
@@ -446,18 +446,8 @@ const WsWorks = {
   },
   /* FE-ALIGN P4：摘除「种子不可删」前端限制。视图以 isSeed 作为删除门闩，故恒为 false。 */
   isSeed: () => false,
-  /* 从回收站整体恢复（POST /api/v2/projects/{id}/restore）；
-     keys 参数随 localStorage 时代消亡（签名保留、忽略） */
-  restoreWork(w, keys) {
-    void keys;
-    if (!w || !w.id) return false;
-    apiPost(`/api/v2/projects/${w.id}/restore`, {}).then(() => wsRefresh()).catch((error) => {
-      wsToastError(error, "恢复作品失败。");
-    });
-    return true;
-  },
-  subscribe(fn) { wsSubs.add(fn); return () => wsSubs.delete(fn); },
-  subscribeStatus(fn) { wsStatusSubs.add(fn); return () => wsStatusSubs.delete(fn); },
+  subscribe(fn) { return wsSubs.subscribe(fn); },
+  subscribeStatus(fn) { return wsStatusSubs.subscribe(fn); },
   status(id) {
     const workId = id || WS_ACTIVE_ID;
     return {
@@ -493,18 +483,15 @@ function wsKey(base) { return base + "::" + WS_ACTIVE_ID; }
 
 /* ---- React hooks ---- */
 function useActiveWork() {
-  const [, force] = React.useState(0);
-  React.useEffect(() => WsWorks.subscribe(() => force(n => n + 1)), []);
+  useStoreTick((fn) => WsWorks.subscribe(fn));
   return WsWorks.active();
 }
 function useWorks() {
-  const [, force] = React.useState(0);
-  React.useEffect(() => WsWorks.subscribe(() => force(n => n + 1)), []);
+  useStoreTick((fn) => WsWorks.subscribe(fn));
   return WsWorks.list();
 }
 function useWorksStatus(id) {
-  const [, force] = React.useState(0);
-  React.useEffect(() => WsWorks.subscribeStatus(() => force(n => n + 1)), []);
+  useStoreTick((fn) => WsWorks.subscribeStatus(fn));
   return WsWorks.status(id);
 }
 

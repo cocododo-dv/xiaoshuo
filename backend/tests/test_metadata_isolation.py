@@ -75,18 +75,35 @@ def test_create_all_only_builds_main_schema(tmp_path, monkeypatch) -> None:
     assert "reference_profiles" not in tables
 
 
+def _normalize_sql(text: str) -> str:
+    # 大小写折叠 + 空白折叠：迁移侧冻结 DDL 与 ORM 侧的 IN/in 大小写、换行缩进差异是已知噪音，
+    # 不构成真实漂移。
+    return " ".join((text or "").split()).casefold()
+
+
+# 已知 CHECK 漂移豁免（勿扩充；每一项必须写明冲突与出路）。当前为空：
+# evaluation_experiments 的 human-only CHECK 已随产品拍板在 ORM 侧声明对齐
+# （迁移 0075 契约），机制本身保留给未来真实待决冲突。
+_KNOWN_CHECK_DRIFT_ALLOWANCE: set[tuple[str, str]] = set()
+
+
 def _schema_snapshot(engine) -> dict:
-    """Reflect tables, per-table column names, and per-table named indexes.
+    """Reflect tables, per-table column names, named indexes, CHECK constraints,
+    and computed (generated) column expressions.
 
     Both compared databases are reflected through the same SQLite inspector, so
     SQLite-specific reflection quirks (FK/nullable under-reporting) appear identically
     on both sides and cancel out. Auto-generated ``sqlite_autoindex_*`` entries are
     dropped (they track inline UNIQUE/PK constraints, not user-declared indexes).
+    CHECK/computed SQL text is compared casefolded with whitespace collapsed (see
+    ``_normalize_sql``).
     """
     inspector = sa.inspect(engine)
     tables = {t for t in inspector.get_table_names() if t != "alembic_version"}
     columns = {t: frozenset(c["name"] for c in inspector.get_columns(t)) for t in tables}
     indexes = {}
+    check_constraints = {}
+    computed_columns = {}
     for table_name in tables:
         rows = set()
         for index in inspector.get_indexes(table_name):
@@ -95,7 +112,23 @@ def _schema_snapshot(engine) -> dict:
                 continue
             rows.add((name, tuple(index.get("column_names") or ()), bool(index.get("unique"))))
         indexes[table_name] = frozenset(rows)
-    return {"tables": tables, "columns": columns, "indexes": indexes}
+        check_constraints[table_name] = frozenset(
+            (check.get("name") or "", _normalize_sql(check.get("sqltext") or ""))
+            for check in inspector.get_check_constraints(table_name)
+            if (table_name, check.get("name") or "") not in _KNOWN_CHECK_DRIFT_ALLOWANCE
+        )
+        computed_columns[table_name] = frozenset(
+            (column["name"], _normalize_sql(column["computed"].get("sqltext") or ""))
+            for column in inspector.get_columns(table_name)
+            if column.get("computed")
+        )
+    return {
+        "tables": tables,
+        "columns": columns,
+        "indexes": indexes,
+        "check_constraints": check_constraints,
+        "computed_columns": computed_columns,
+    }
 
 
 def test_migration_built_schema_matches_orm_models(tmp_path, monkeypatch) -> None:
@@ -110,9 +143,10 @@ def test_migration_built_schema_matches_orm_models(tmp_path, monkeypatch) -> Non
     direction of drift fails loudly: write the missing migration, or declare the
     missing index on the model.
 
-    Compared dimensions: tables, columns, and named indexes (incl. uniqueness). NOT
-    NULL / FK reflection is intentionally not asserted — SQLite under-reports it, and
-    it does not cause runtime breaks.
+    Compared dimensions: tables, columns, named indexes (incl. uniqueness), CHECK
+    constraints (name + normalized sqltext), and computed-column expressions
+    (normalized). NOT NULL / FK reflection is intentionally not asserted — SQLite
+    under-reports it, and it does not cause runtime breaks.
     """
     from alembic import command
     from alembic.config import Config
@@ -186,4 +220,38 @@ def test_migration_built_schema_matches_orm_models(tmp_path, monkeypatch) -> Non
     assert not index_drift, (
         "Index drift between migrations and ORM models — declare the index on the model "
         f"(__table_args__) or add a migration. Drift: {index_drift}"
+    )
+
+    check_drift = {
+        t: {
+            "only-in-migrations": sorted(
+                from_migrations["check_constraints"][t] - from_models["check_constraints"][t]
+            ),
+            "only-in-models": sorted(
+                from_models["check_constraints"][t] - from_migrations["check_constraints"][t]
+            ),
+        }
+        for t in from_migrations["tables"]
+        if from_migrations["check_constraints"][t] != from_models["check_constraints"][t]
+    }
+    assert not check_drift, (
+        "CHECK-constraint drift between migrations and ORM models — align the constraint "
+        f"name/expression on the model (__table_args__) or add a migration. Drift: {check_drift}"
+    )
+
+    computed_drift = {
+        t: {
+            "only-in-migrations": sorted(
+                from_migrations["computed_columns"][t] - from_models["computed_columns"][t]
+            ),
+            "only-in-models": sorted(
+                from_models["computed_columns"][t] - from_migrations["computed_columns"][t]
+            ),
+        }
+        for t in from_migrations["tables"]
+        if from_migrations["computed_columns"][t] != from_models["computed_columns"][t]
+    }
+    assert not computed_drift, (
+        "Computed-column expression drift between migrations and ORM models — align the "
+        f"Computed() sqltext on the model or add a migration. Drift: {computed_drift}"
     )

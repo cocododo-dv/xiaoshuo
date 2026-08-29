@@ -9,14 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
-from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.request_types import BoundedJsonObject
 from novel_system.api.response import ok
 from novel_system.db.models import ReviewItem
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
 from novel_system.services.human_review_support import structured_target
-from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.style_profile import StyleProfileExtractionService, StyleProfileService
 
 router = APIRouter(tags=["style_profile"])
@@ -67,18 +66,14 @@ def create_style_profile_review_candidate(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/style-profile/review-candidate",
         payload=payload.model_dump(mode="json", exclude_none=True),
         action=lambda: _upsert_style_profile_review_candidate(session, payload),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 def _upsert_style_profile_review_candidate(

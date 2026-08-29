@@ -20,7 +20,7 @@ from novel_system.services.literary_eval import (
     new_literary_eval_run_id,
 )
 from novel_system.services.llm_client import LLMClient, load_model_routing_config
-from novel_system.services.system_config import load_llm_provider_runtime_configs
+from novel_system.services.system_config import build_runtime_llm_client, load_llm_provider_runtime_configs
 from novel_system.services.system_config import require_admin_token
 from novel_system.settings import get_settings
 
@@ -195,12 +195,12 @@ def _generator_for_mode(
             "Live literary eval requires a configured API key or credential-free local provider.",
             status_code=400,
         )
-    client = LLMClient(
-        provider=settings.llm_provider,
-        base_url=settings.llm_base_url,
-        api_key=settings.llm_api_key,
-        timeout_seconds=settings.llm_timeout_seconds,
+    # settings/provider_configs 复用上方同一份(凭据检查与构造必须一致);
+    # client_cls 走模块全局名 LLMClient,保住测试打桩点。
+    client, _enabled = build_runtime_llm_client(
+        settings=settings,
         provider_configs=provider_configs,
+        client_cls=LLMClient,
     )
     return LLMLiteraryCaseGenerator(
         client,

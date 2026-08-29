@@ -24,6 +24,7 @@ from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import normalize
 from novel_system.services.llm_client import (
     DEFAULT_PROVIDER_BASE_URLS,
+    LLMClient,
     LLMConfigurationError,
     LLMRequest,
     ProviderRuntimeConfig,
@@ -190,6 +191,35 @@ def load_llm_provider_runtime_configs() -> dict[str, ProviderRuntimeConfig]:
             provider_options=dict(provider_payload.get("provider_options") or {}),
         )
     return runtime_configs
+
+
+def build_runtime_llm_client(
+    *,
+    settings: Any,
+    provider_configs: dict[str, ProviderRuntimeConfig] | None = None,
+    client_cls: type[LLMClient] | None = None,
+) -> tuple[LLMClient | None, bool]:
+    """运行时 LLM client 的统一工厂(fail-closed):LLM 未启用返回 (None, False)。
+
+    settings 必传,由调用方 get_settings() 取得:settings 模块要读本模块的
+    活动快照,本模块反向 import settings(哪怕函数内延迟)会构成依赖环,
+    被 test_service_architecture 的全包环守卫拒绝。
+    provider_configs 供调用方先用同一份配置做凭据检查(literary_eval),
+    client_cls 保住调用方模块全局名 LLMClient 的测试打桩点。
+    """
+    if not settings.llm_enabled:
+        return None, False
+    if provider_configs is None:
+        provider_configs = load_llm_provider_runtime_configs()
+    factory = client_cls or LLMClient
+    client = factory(
+        provider=settings.llm_provider,
+        base_url=settings.llm_base_url,
+        api_key=settings.llm_api_key,
+        timeout_seconds=settings.llm_timeout_seconds,
+        provider_configs=provider_configs,
+    )
+    return client, True
 
 
 class SystemConfigService:
@@ -514,6 +544,12 @@ class SystemConfigService:
         except LLMConfigurationError:
             node_routes = {}
         node_catalog = llm_node_catalog()
+        # 存量 models 快照的 node_routing 只前滚不剪枝：节点从注册表退役后，
+        # 老安装的快照仍带着它的路由。这类目录外条目没有 spec，不该渲染成
+        # 无名路由行或计入就绪统计，单列为 stale_routes 供排查。
+        stale_routes = sorted(node_id for node_id in node_routes if node_id not in node_catalog)
+        for node_id in stale_routes:
+            del node_routes[node_id]
         for node_id, spec in node_catalog.items():
             node_routes.setdefault(
                 node_id,
@@ -565,6 +601,7 @@ class SystemConfigService:
             "node_routes": node_routes,
             "missing_active_routes": missing_active_routes,
             "blocked_routes": blocked_routes,
+            "stale_routes": stale_routes,
             "readiness": _llm_readiness_summary(providers=providers, node_routes=node_routes),
             "role_slots": _role_slot_overview(node_routes),
             "api_snapshot": api_payload.get("active_snapshot"),

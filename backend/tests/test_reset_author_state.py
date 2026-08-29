@@ -139,14 +139,16 @@ def _seed_preserved_state(session) -> None:
             updated_by="tester",
         )
     )
+    # node_id 只需命中 PRESERVED_LLM_NODE_PREFIXES 的 reference_ 前缀（历史审计痕迹保留契约）；
+    # 取遗留占位串，不要求（也不应）是现役注册节点——reference_* 节点族已删除。
     session.add(
         LlmCall(
             llm_call_id="llm_call_reference_profile",
             scope_type="system",
-            scope_id="reference_profile_synthesize",
+            scope_id="reference_legacy_audit",
             provider="mock",
             model="gpt-reference",
-            node_id="reference_profile_synthesize",
+            node_id="reference_legacy_audit",
             step="reference_profile",
             request_payload_summary={"source": "reference"},
             response_payload_summary={"ok": True},

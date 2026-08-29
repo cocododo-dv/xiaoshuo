@@ -18,7 +18,6 @@ from novel_system.services.llm_providers import (
     get_adapter,
     supported_provider_types,
 )
-from novel_system.services.llm_providers.anthropic import CLAUDE_THINKING_BUDGETS
 from novel_system.services.llm_providers.base import (
     LLMAttemptHook,
     LLMClientError,
@@ -38,12 +37,9 @@ from novel_system.services.llm_providers.base import (
     SUPPORTED_REASONING_LEVELS,
     SUPPORTED_RESPONSE_FORMATS,
 )
-from novel_system.services.llm_providers.gemini import GEMINI_THINKING_BUDGETS
 
 __all__ = [
-    "CLAUDE_THINKING_BUDGETS",
     "DEFAULT_PROVIDER_BASE_URLS",
-    "GEMINI_THINKING_BUDGETS",
     "LLMClient",
     "LLMAttemptHook",
     "LLMClientError",
@@ -66,8 +62,10 @@ __all__ = [
     "SUPPORTED_REASONING_LEVELS",
     "SUPPORTED_RESPONSE_FORMATS",
     "TaskModelConfig",
+    "build_llm_request",
     "load_model_routing_config",
     "parse_model_routing_config",
+    "resolve_node_route",
 ]
 
 
@@ -381,6 +379,71 @@ class ModelRoutingConfig:
     model_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     retry_budget: dict[str, int] = field(default_factory=dict)
     job_runtime: dict[str, Any] = field(default_factory=dict)
+
+
+def resolve_node_route(routing: Any, node_id: str) -> Any:
+    """解析一个 LLM 节点的路由配置:DB node_routing 优先,yaml task_routing 兜底。
+
+    优先级教训(不要改动顺序):``parse_model_routing_config`` 的合并是
+    setdefault——yaml task 条目赢。历史上 style_reference/_llm_helper 只读
+    task_routing,导致用户在系统设置「模型与接入」角色槽配好的
+    provider/model/api_mode 被 yaml 占位(gpt-5/responses)遮蔽,风格抽取对
+    chat-only 中转直接 404(真实回归,见 tests/test_style_reference_llm_routing.py)。
+    因此所有调用点必须先查 node_routing(系统设置同步的 DB 节点路由),
+    再退回 task_routing(config/models.yaml 的 task 默认);两处皆缺 →
+    ``KeyError(node_id)``,由调用方翻译成各自的引导错误。
+    """
+    node_routing = getattr(routing, "node_routing", None)
+    if isinstance(node_routing, dict) and node_id in node_routing:
+        return node_routing[node_id]
+    task_routing = getattr(routing, "task_routing", {})
+    if node_id in task_routing:
+        return task_routing[node_id]
+    raise KeyError(node_id)
+
+
+def build_llm_request(
+    task_config: Any,
+    *,
+    node_id: str,
+    messages: list[dict[str, str]],
+    response_schema: dict[str, Any] | None = None,
+    temperature_override: float | None = None,
+) -> LLMRequest:
+    """把一条节点路由(TaskModelConfig 或运行时等价物)翻译成 ``LLMRequest``。
+
+    单一出口的意义:历史上 5 个调用点各抄一份构造块并逐渐漂移——per-node
+    ``timeout_seconds`` 与 §7 采样字段(``frequency_penalty`` /
+    ``presence_penalty`` / ``top_p``)只有 llm_task_runner 传了,其余路径把
+    作者在节点路由里配置的值静默丢弃。所有可选字段一律 ``getattr(..., None)``
+    读取:路由未配置 → ``None`` → client / provider 使用全局默认
+    (timeout 默认不限时;只有路由显式配置正数时才给该节点重新封顶)。
+    """
+    return LLMRequest(
+        model=task_config.model,
+        messages=messages,
+        temperature=(
+            temperature_override
+            if temperature_override is not None
+            else task_config.temperature
+        ),
+        max_output_tokens=task_config.max_output_tokens,
+        response_format=task_config.response_format,
+        provider=task_config.provider,
+        timeout_seconds=getattr(task_config, "timeout_seconds", None),
+        node_id=node_id,
+        provider_id=getattr(task_config, "provider_id", None),
+        account_id=getattr(task_config, "account_id", None),
+        reasoning_level=getattr(task_config, "reasoning_level", "medium"),
+        response_schema=response_schema,
+        api_mode=getattr(task_config, "api_mode", "responses"),
+        credential_mode=getattr(task_config, "credential_mode", None),
+        provider_options=getattr(task_config, "provider_options", {}),
+        # §7 anti-mean sampling — decoding-level penalties from the node route
+        frequency_penalty=getattr(task_config, "frequency_penalty", None),
+        presence_penalty=getattr(task_config, "presence_penalty", None),
+        top_p=getattr(task_config, "top_p", None),
+    )
 
 
 class LLMClient(OnlineAccountedExecution):

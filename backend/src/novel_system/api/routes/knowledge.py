@@ -10,7 +10,10 @@ from novel_system.services.knowledge_catalog import get_knowledge, list_knowledg
 router = APIRouter(tags=["knowledge"])
 
 
+# 同一 handler 注册两条路径：/api/v1/knowledge-entries 是 domain 面的等价 URL，
+# legacy Vue 两套 URL 都在用，响应形状必须逐字一致。
 @router.get("/api/v1/knowledge")
+@router.get("/api/v1/knowledge-entries")
 def knowledge_index(
     request: Request,
     session: Session = Depends(get_session),

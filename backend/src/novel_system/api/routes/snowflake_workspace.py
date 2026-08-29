@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Callable
-
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from novel_system.api.deps import get_session
+from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.project_requests import ProjectCreateRequest
 from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
@@ -20,7 +19,6 @@ from novel_system.api.snowflake_requests import (
     SnowflakeStepGenerateRequest,
     SnowflakeStepRestoreRequest,
 )
-from novel_system.services.idempotency import execute_with_idempotency, execute_with_optional_idempotency
 from novel_system.services.snowflake_chaptering import SnowflakeChapteringService
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 
@@ -29,32 +27,6 @@ router = APIRouter(tags=["snowflake-workspace"])
 
 def _actor(request: Request) -> str:
     return getattr(request.state, "operator_ref", None) or "operator"
-
-
-def _req_id(request: Request) -> str | None:
-    return getattr(request.state, "request_id", None)
-
-
-def _mutation_response(
-    request: Request,
-    session: Session,
-    *,
-    method: str,
-    path_template: str,
-    payload: dict[str, Any],
-    action: Callable[[], dict],
-):
-    result, status = execute_with_optional_idempotency(
-        session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
-        method=method,
-        path_template=path_template,
-        payload=payload,
-        action=action,
-        actor_ref=_actor(request),
-    )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=_req_id(request), headers=headers)
 
 
 @router.get("/api/v2/projects")
@@ -72,18 +44,14 @@ def create_snowflake_workspace_project(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects",
         payload=body,
         action=lambda: SnowflakeWorkspaceService(session).create_project(body),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.get("/api/v2/projects/{project_id}/snowflake-workspace")
@@ -103,7 +71,7 @@ def generate_workspace_step(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -122,7 +90,7 @@ def generate_workspace_step_fe_candidates(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -141,7 +109,7 @@ def update_workspace_step(
     session: Session = Depends(get_session),
 ):
     body = payload or {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="PATCH",
@@ -174,7 +142,7 @@ def restore_workspace_step(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -193,7 +161,7 @@ def approve_workspace_step(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json") if payload else {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -212,7 +180,7 @@ def accept_workspace_stale_step(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -235,7 +203,7 @@ def request_workspace_assistant(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -253,7 +221,7 @@ def suggest_workspace_scene_triage(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -271,7 +239,7 @@ def save_workspace_scene_triage(
     session: Session = Depends(get_session),
 ):
     body = payload or {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -289,7 +257,7 @@ def accept_workspace_stale_scenes(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -312,7 +280,7 @@ def update_workspace_scene_plan(
     session: Session = Depends(get_session),
 ):
     body = payload or {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="PATCH",
@@ -331,7 +299,7 @@ def apply_workspace_scene_triage_repair(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json") if payload else {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -350,17 +318,14 @@ def materialize_workspace_outline(
 ):
     body = payload or {}
     actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/snowflake-workspace/materialize",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).materialize(project_id, body, actor_ref=actor_ref),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v2/projects/{project_id}/snowflake-workspace/chapter-plan/preview")
@@ -380,7 +345,7 @@ def preview_chapter_plan(
     历史项目第一次打开面板时，因此会看到归属从「未分章」变成实际章数，这是补录不是决策。
     """
     body = payload or {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -403,7 +368,7 @@ def suggest_chapter_plan(
     规则算出来的东西冒充建议是撒谎 —— 规则分章本来就以 spine_anchor 策略摆在面板上。
     """
     body = payload or {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -430,7 +395,7 @@ def save_chapter_plan(
         )
         return {**saved, "workspace": SnowflakeWorkspaceService(session).workspace(project_id)}
 
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="PATCH",
@@ -467,7 +432,7 @@ def resolve_orphaned_scene(
         )
         return {**resolved, "workspace": SnowflakeWorkspaceService(session).workspace(project_id)}
 
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -485,7 +450,7 @@ def resync_workspace_scenes(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    return _mutation_response(
+    return optional_idempotent_response(
         request,
         session,
         method="POST",
@@ -507,15 +472,11 @@ def approve_workspace_outline(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json") if payload else {}
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/snowflake-workspace/outline/approve",
         payload={"project_id": project_id, "body": body},
         action=lambda: SnowflakeWorkspaceService(session).approve_outline(project_id),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)

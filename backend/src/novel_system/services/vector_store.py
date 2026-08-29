@@ -273,10 +273,6 @@ class ChromaVectorStore:
             )
 
 
-class FileVectorStore(InMemoryVectorStore):
-    """Legacy alias kept for API compatibility with older callers."""
-
-
 _MEMORY_VECTOR_STORES: dict[str, InMemoryVectorStore] = {}
 
 

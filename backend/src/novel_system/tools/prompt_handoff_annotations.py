@@ -26,7 +26,7 @@ SHARED_UNTRUSTED_PAYLOAD_BOUNDARY = (
 BATCHES: list[dict[str, str]] = [
     {
         "id": "A",
-        "title": "批次 A · 雪花构思管线（14 个模板）",
+        "title": "批次 A · 雪花构思管线（15 个模板）",
         "intro": (
             "十步雪花法的逐步生成（10 个 `snowflake_generate_*` 模板共用节点 "
             "`snowflake_step_generate` 的路由）+ 候选发散 / 工作台助手 / 场景分诊 + 项目大纲。"
@@ -37,7 +37,7 @@ BATCHES: list[dict[str, str]] = [
     },
     {
         "id": "B",
-        "title": "批次 B · 场景生成与改写（9 个单元，去AI味主战场）",
+        "title": "批次 B · 场景生成与改写（11 个单元，去AI味主战场）",
         "intro": (
             "场景运行管线（编排：`orchestrator.py` — bundle 上下文 → 蓝图 → 中性稿 → 风格化 "
             "Best-of-N → QC → 近终稿）里的全部生成/改写节点。这些节点经 `PromptBuilder` 组装："
@@ -70,7 +70,7 @@ BATCHES: list[dict[str, str]] = [
     },
     {
         "id": "E",
-        "title": "批次 E · 作家评审（7 个单元）",
+        "title": "批次 E · 作家评审（6 个单元）",
         "intro": (
             "写作者视角的场景/章节多镜头诊断（story/character/prose/reader 四镜头共享同一模板，"
             "镜头差异经 user_prompt 上下文注入）、修订稿生成、深度评审与作者提案。"
@@ -78,9 +78,9 @@ BATCHES: list[dict[str, str]] = [
     },
     {
         "id": "F",
-        "title": "批次 F · 项目与杂项（12 个单元，含内联提示词与休眠任务）",
+        "title": "批次 F · 项目与杂项（9 个单元，含内联提示词与休眠任务）",
         "intro": (
-            "资料库派生、作者样稿画像/结构抽取、遗留 reference_* 孤儿模板、本地保留模板，"
+            "资料库派生、作者样稿画像/结构抽取、本地保留模板，"
             "以及 4 个写死在 Python 里的顾问型提示词（文学评测生成 / 事件抽取 / 一致性校验 / "
             "因果精炼——后两个休眠）。"
         ),
@@ -91,10 +91,6 @@ BATCHES: list[dict[str, str]] = [
 NO_PROMPT_NODES: dict[str, str] = {
     "archive": "local 组保留位（requires_llm=False），无模板、无调用——归档/索引是确定性流程。",
     "chapter_aggregate": "local 组保留位（requires_llm=False），无模板、无调用。",
-    "scene_quality_contract": (
-        "孤儿：路由与注册在，但无 yaml 模板、无调用点——场景质量契约由 "
-        "services/scene_quality.py 确定性生成，改写走 scene_auto_rewrite 节点。"
-    ),
 }
 
 # task_routing 中存在、但不是注册节点的键
@@ -106,7 +102,7 @@ EXTRA_ROUTING_KEYS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# 全部 39 个调用点（file + anchor → 生成时解析行号）
+# 全部 38 个调用点（file + anchor → 生成时解析行号）
 # ---------------------------------------------------------------------------
 
 
@@ -115,23 +111,22 @@ def _cs(file: str, anchor: str, nodes: list[str], purpose: str, occurrence: int 
 
 
 CALL_SITES: list[dict[str, Any]] = [
-    # -- LLMNodeRunner.run（审计路径，21 处）--
+    # -- LLMNodeRunner.run（审计路径，20 处）--
     _cs(f"{SVC}/scene_blueprint.py", 'node_id="scene_blueprint"', ["scene_blueprint"], "场景文学蓝图生成"),
     _cs(f"{SVC}/near_final.py", "node_id=CHAPTER_ARCHITECTURE_ARTIFACT", ["chapter_story_architecture"], "章级故事架构工件"),
     _cs(f"{SVC}/near_final.py", "node_id=CHARACTER_PRESSURE_ARTIFACT", ["character_pressure_blueprint"], "角色压力蓝图工件"),
     _cs(f"{SVC}/near_final.py", 'node_id="near_final_acceptance_review"', ["near_final_acceptance_review"], "场景近终稿验收评审"),
     _cs(f"{SVC}/near_final.py", 'node_id="chapter_near_final_review"', ["chapter_near_final_review"], "章级近终稿评审"),
     _cs(f"{SVC}/scene_generation.py", 'node_id="neutral_draft"', ["neutral_draft"], "中性初稿生成"),
-    _cs(f"{SVC}/scene_generation.py", 'node_id="long_form_continuation"', ["long_form_continuation"], "长文续写（每 8000 字刷新风格注入）"),
     _cs(
         f"{SVC}/scene_generation.py",
         'node_id = "style_patch" if llm_step == "soft_patch" else llm_step',
         ["style_draft", "style_patch", "scene_literary_rewrite"],
         "风格化生成/软补丁/文学化改写（动态节点，_run_style_generation）",
     ),
-    _cs(f"{SVC}/scene_generation.py", 'node_id="style_patch"', ["style_patch"], "去模板化改写 pass（_run_de_template_pass）"),
-    _cs(f"{SVC}/qc_engine.py", 'node_id="hard_qc"', ["hard_qc"], "硬 QC 闸门"),
-    _cs(f"{SVC}/qc_engine.py", 'node_id="soft_qc"', ["soft_qc"], "软 QC 闸门"),
+    _cs(f"{SVC}/scene_generation.py", 'node_id="style_patch"', ["style_patch"], "风格拯救补丁（_run_style_salvage_pass，模板 style_salvage_patch）"),
+    _cs(f"{SVC}/scene_generation.py", 'node_id="style_patch"', ["style_patch"], "去模板化/安全修复/长度补丁 pass（_run_de_template_pass；长度分支用模板 style_length_patch）", occurrence=2),
+    _cs(f"{SVC}/qc_engine.py", "node_id=step,", ["hard_qc", "soft_qc"], "硬/软 QC 闸门（统一降级出口 _qc_run_node_with_degradation，动态节点）"),
     _cs(f"{SVC}/scene_quality.py", 'node_id="scene_auto_rewrite"', ["scene_auto_rewrite"], "场景自动改写候选（内联提示词）"),
     _cs(
         f"{SVC}/writer_review.py",
@@ -162,9 +157,8 @@ CALL_SITES: list[dict[str, Any]] = [
     _cs(f"{SVC}/prose_event_extractor.py", "task_name=EXTRACT_TASK_NAME", ["extraction"], "成稿散文叙事事件抽取（别名借 extraction 路由；开关 NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED）"),
     _cs(f"{SVC}/narrative_event_log.py", 'task_name="consistency_extract"', [], "连续性 LLM 校验（休眠：无路由无注册，仅测试可达）"),
     _cs(f"{SVC}/reverse_causal_skeleton.py", 'task_name="causal_skeleton_refine"', [], "逆向因果骨架精炼（休眠：无路由无注册，仅测试可达）"),
-    # -- style_reference/_llm_helper.call_llm_node（7 处）--
+    # -- style_reference/_llm_helper.call_llm_node（6 处）--
     _cs(f"{SVC}/library_derive.py", "structured = call_llm_node(", ["library_derive"], "归档正文 → 候选实体/时间线"),
-    _cs(f"{SVC}/longform_tower.py", "structured = call_llm_node(", ["chapter_audit_adjudicate"], "章级违约裁定"),
     _cs(f"{SVC}/style_reference/profile_synthesizer.py", "return call_llm_node(", ["style_ref_synthesize_profile"], "16 sub_dim → StyleProfile 聚合"),
     _cs(f"{SVC}/style_reference/preview.py", "return call_llm_node(", ["style_ref_preview_generate"], "风格预览样本生成"),
     _cs(
@@ -179,8 +173,8 @@ CALL_SITES: list[dict[str, Any]] = [
     _cs(
         f"{SVC}/snowflake_workspace_llm.py",
         "response = execute_accounted_call(",
-        ["snowflake_step_generate", "snowflake_step_candidates", "snowflake_workspace_assistant", "snowflake_scene_triage"],
-        "雪花工作台 4 任务共用出口（_run_structured_task）",
+        ["snowflake_step_generate", "snowflake_step_candidates", "snowflake_workspace_assistant", "snowflake_scene_triage", "snowflake_chapter_plan"],
+        "雪花工作台 5 任务共用出口（_run_structured_task；分章建议 fail-closed 无 fallback）",
     ),
     _cs(
         f"{SVC}/style_reference/segmentation/llm.py",
@@ -341,9 +335,9 @@ INLINE_PROMPTS: dict[str, dict[str, Any]] = {
 FRAGMENTS: list[dict[str, Any]] = [
     {
         "key": "character_continuity",
-        "title": "角色连续性指令（追加到 5 个语言锁模板的 user_prompt 尾部）",
+        "title": "角色连续性指令（追加到 4 个语言锁模板的 user_prompt 尾部）",
         "file": f"{SVC}/prompt_builder.py",
-        "how": "PromptBuilder 对 neutral_draft / style_draft / long_form_continuation / hard_qc / soft_qc 的 task_prompt 追加语言锁后再拼本指令。",
+        "how": "PromptBuilder 对 neutral_draft / style_draft / hard_qc / soft_qc 的 task_prompt 追加语言锁后再拼本指令。",
         "import_attrs": [("novel_system.services.prompt_builder", "CHARACTER_CONTINUITY_INSTRUCTION", "指令原文")],
         "verbatim_blocks": [],
     },
@@ -351,7 +345,7 @@ FRAGMENTS: list[dict[str, Any]] = [
         "key": "runtime_language_locks",
         "title": "语言锁指令（_append_runtime_template_instruction，按模板名追加）",
         "file": f"{SVC}/prompt_builder.py",
-        "how": "5 个模板各有一条：防止中文场景被写成/译成英文、QC 输出跟随草稿语言并保护中文人名。函数内 dict，逐字如下。",
+        "how": "4 个模板各有一条：防止中文场景被写成/译成英文、QC 输出跟随草稿语言并保护中文人名。函数内 dict，逐字如下。",
         "import_attrs": [],
         "verbatim_blocks": [
             (
@@ -366,12 +360,6 @@ FRAGMENTS: list[dict[str, Any]] = [
                 "Preserve the source draft language; do not translate the scene while styling it. "
                 "If the draft or scene card is Chinese, scene_text must remain Chinese prose.",
                 ["Preserve the source draft language; do not translate the scene while styling it. "],
-            ),
-            (
-                "long_form_continuation",
-                "Preserve the source draft language; do not translate the scene while continuing it. "
-                "If the draft or scene card is Chinese, scene_text must remain Chinese prose.",
-                ["Preserve the source draft language; do not translate the scene while continuing it. "],
             ),
             (
                 "hard_qc / soft_qc",
@@ -633,6 +621,25 @@ UNITS: list[dict[str, Any]] = [
         "opt_notes": "三态边界（尤其 maybe vs rewrite）要给判例；要求每条建议附具体缺陷点而非笼统评语，供作者一键修复。",
     },
     {
+        "unit_id": "snowflake_chapter_plan_suggest",
+        "batch": "A",
+        "title": "snowflake_chapter_plan_suggest — 分章建议（节点 snowflake_chapter_plan）",
+        "node_ids": ["snowflake_chapter_plan"],
+        "template_key": "snowflake_chapter_plan_suggest",
+        "inline_key": None,
+        "adhoc_task": None,
+        "status": "活跃",
+        "priority": "P1",
+        "purpose": "把既有场景清单按阅读断点编入既有章节（只编排不改写；灾难场景与同 spine 标记章节强制对齐）。",
+        "trigger": "POST …/snowflake-workspace/chapter-plan/suggest（api/routes/snowflake_workspace.py → snowflake_chaptering.py）。",
+        "call_chain": [(f"{SVC}/snowflake_workspace_llm.py", 'task_key="snowflake_chapter_plan"', 1, "chapter_plan_suggestions")],
+        "inputs": "payload 键：project、chapters、scenes、current_assignment（面板上的 spine_anchor 确定性方案）、approved_context。",
+        "output_contract": "assignments（scene_plan_id/chapter_row_uid 逐字回显）+ rationale；经 _normalize_chapter_plan_output 对 allowed id 集合校验（撞号/幽灵场整条拒绝）。",
+        "parser_refs": [(f"{SVC}/snowflake_workspace_llm.py", "def _normalize_chapter_plan_output", 1)],
+        "failure": "fail-closed，无 fallback_payload——LLM 未配置时不伪装规则分章为 AI 建议（规则方案本就在面板上）。",
+        "opt_notes": "回显纪律是命门：id 必须逐字来自输入集合；rationale 限定「最不确定的 2-3 个断点」而非复述剧情，偏离 current_assignment 必须给理由。",
+    },
+    {
         "unit_id": "project_outline_plan",
         "batch": "A",
         "title": "project_outline_plan — 项目大纲规划",
@@ -752,7 +759,7 @@ UNITS: list[dict[str, Any]] = [
         "trigger": "场景运行管线风格阶段；软 QC patch 分支；去模板化触发（反AI味 gate 命中时）。",
         "call_chain": [
             (f"{SVC}/scene_generation.py", 'node_id = "style_patch" if llm_step == "soft_patch" else llm_step', 1, "_run_style_generation 动态节点"),
-            (f"{SVC}/scene_generation.py", 'node_id="style_patch"', 1, "_run_de_template_pass 去模板化"),
+            (f"{SVC}/scene_generation.py", 'node_id="style_patch"', 2, "_run_de_template_pass 去模板化/安全修复"),
         ],
         "inputs": (
             "PromptBuilder(style_draft) + [STYLE_REFERENCE] 注入块（绑定 Profile 时，含反抄袭红线）+ "
@@ -771,23 +778,42 @@ UNITS: list[dict[str, Any]] = [
         ),
     },
     {
-        "unit_id": "long_form_continuation",
+        "unit_id": "style_length_patch",
         "batch": "B",
-        "title": "long_form_continuation — 长文续写",
-        "node_ids": ["long_form_continuation"],
-        "template_key": "long_form_continuation",
+        "title": "style_length_patch — 段址式长度补丁（复用节点 style_patch）",
+        "node_ids": ["style_patch"],
+        "template_key": "style_length_patch",
         "inline_key": None,
         "adhoc_task": None,
         "status": "活跃",
-        "priority": "P0",
-        "purpose": "长场景/长章的分段续写，每 8000 字符重新拉取 [STYLE_REFERENCE] 注入防风格漂移（refresh_every_chars=8000）。",
-        "trigger": "场景运行管线长文分支（generate_long_form_continuation）。",
-        "call_chain": [(f"{SVC}/scene_generation.py", 'node_id="long_form_continuation"', 1, "generate_long_form_continuation")],
-        "inputs": "PromptBuilder(long_form_continuation)：前文尾部 + 上下文分节 + 语言锁；风格注入定期刷新。",
-        "output_contract": "scene_text 续段；_extract_scene_text。",
-        "parser_refs": [(f"{SVC}/scene_generation.py", 'node_id="long_form_continuation"', 1)],
-        "failure": "同 style 路径（fail-closed / AttemptTracker）。",
-        "opt_notes": "续写的病是「重启感」：开头重复设景、情绪归零。约束续段必须从前文最后一个未消化动作/情绪接力，禁重新介绍人物。",
+        "priority": "P1",
+        "purpose": "风格稿仅因字数越界被拒时的定点修长度：程序先给原文 ⟦S001⟧ 分段编号，模型只提交 1-6 条 segment_id+new_text，定位/套用/校验全在程序侧（整篇改长度会稳定退化成摘要）。",
+        "trigger": "_run_de_template_pass 的 safety_repair 分支，且拒因恰为 target_length_not_met 且 target_length_band 可解析为数值区间。",
+        "call_chain": [(f"{SVC}/scene_generation.py", 'node_id="style_patch"', 2, "_run_de_template_pass 长度补丁分支（step=\"de_template\"）")],
+        "inputs": "PromptBuilder(style_length_patch)：带段标注的被拒风格稿 + 动态收紧的 schema（_constrain_style_length_patch_schema 按可编辑段 id 收 enum）+ 修正窗口指令。",
+        "output_contract": "edits[{segment_id,new_text}]（1-6 条，段 id 限定可编辑集合、保护结尾段）；_apply_style_length_patch 确定性套用并复验长度。",
+        "parser_refs": [(f"{SVC}/scene_generation.py", "def _apply_style_length_patch", 1)],
+        "failure": "补丁非法/套用失败 → 记 AttemptTracker 走既有重试/人工链路；不静默收下坏补丁。",
+        "opt_notes": "扩写 new_text 是「插在选中段之后」、缩写是「整段替换且必须更短」——两种语义别混；禁止 new_text 里出现段标记/省略号占位。",
+    },
+    {
+        "unit_id": "style_salvage_patch",
+        "batch": "B",
+        "title": "style_salvage_patch — 单段风格拯救补丁（复用节点 style_patch）",
+        "node_ids": ["style_patch"],
+        "template_key": "style_salvage_patch",
+        "inline_key": None,
+        "adhoc_task": None,
+        "status": "活跃",
+        "priority": "P1",
+        "purpose": "整篇风格重写因极端欠长被拒后的降档拯救：在已批准中性稿上只重写一个允许的中间段来表达风格机制，其余原文逐字保留。",
+        "trigger": "_run_style_salvage_pass（风格稿被拒后的 salvage 通道，temperature_override=0.2）。",
+        "call_chain": [(f"{SVC}/scene_generation.py", 'node_id="style_patch"', 1, "_run_style_salvage_pass（step=\"style_salvage_patch\"，模板经 _constrain_style_salvage_schema 收紧）")],
+        "inputs": "PromptBuilder(style_salvage_patch)：段址标注的中性稿 + [STYLE_REFERENCE] 注入 + 每段可见字符窗口指令。",
+        "output_contract": "edits 恰 1 条（segment_id+new_text，20-600 字符）；_apply_style_salvage_patch 确定性套用并校验事实/长度/实质性改动。",
+        "parser_refs": [(f"{SVC}/scene_generation.py", "def _apply_style_salvage_patch", 1)],
+        "failure": "补丁非法 → 回退中性稿原文并落 valid=False 审计；LLM 失败 → 记失败 attempt 后按既有链路处理。",
+        "opt_notes": "「只动一段、其余逐字保留」是硬边界；new_text 要在给定字符窗口内表达风格机制而不是加情节——禁新增事实/移动事件。",
     },
     {
         "unit_id": "scene_literary_rewrite",
@@ -801,10 +827,10 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P0",
         "purpose": "近终稿阶段的整场文学化重写（比 style_draft 更激进的质量拉升，quality_strong 档）。",
         "trigger": "场景运行管线 rewrite 分支（llm_step=\"scene_literary_rewrite\" 时走专用模板）。",
-        "call_chain": [(f"{SVC}/scene_generation.py", 'template_name = "scene_literary_rewrite" if llm_step == "scene_literary_rewrite" else "style_draft"', 1, "_run_style_generation 模板切换")],
+        "call_chain": [(f"{SVC}/scene_generation.py", 'if llm_step == "scene_literary_rewrite"', 1, "_run_style_generation 模板切换")],
         "inputs": "同 style 路径（PromptBuilder + 风格注入 + 源稿正文）。",
         "output_contract": "scene_text；_extract_scene_text。",
-        "parser_refs": [(f"{SVC}/scene_generation.py", 'template_name = "scene_literary_rewrite" if llm_step == "scene_literary_rewrite" else "style_draft"', 1)],
+        "parser_refs": [(f"{SVC}/scene_generation.py", 'if llm_step == "scene_literary_rewrite"', 1)],
         "failure": "同 style 路径。",
         "opt_notes": "与 style_draft 拉开定位差：本模板允许结构级手术（调句序、并段、删冗），但必须保护事实/伏笔/必含文本——把「可动什么/不可动什么」写成清单。",
     },
@@ -859,7 +885,7 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P1",
         "purpose": "阻断级质量闸：事实/连续性/必含文本/禁词等硬约束违反检测，决定 pass/部分重写/全量重写/转人工。",
         "trigger": "场景运行管线 QC 阶段（HardQcEngine.evaluate）。",
-        "call_chain": [(f"{SVC}/qc_engine.py", 'node_id="hard_qc"', 1, "HardQcEngine.evaluate，经 PromptBuilder")],
+        "call_chain": [(f"{SVC}/qc_engine.py", "node_id=step,", 1, "HardQcEngine.evaluate → _qc_run_node_with_degradation（step=\"hard_qc\"），经 PromptBuilder")],
         "inputs": "PromptBuilder(hard_qc)：草稿 + 事实/约束/角色契约分节（hard_qc 任务型预算策略优先保事实上下文）+ QC 语言锁。",
         "output_contract": (
             "HardQCOutput（contracts/qc.py）Pydantic 校验；resolution_code / next_action 枚举由运行时对齐冻结"
@@ -882,7 +908,7 @@ UNITS: list[dict[str, Any]] = [
         "priority": "P1",
         "purpose": "风格/表达层质量评审：产出 patch 建议或放行（soft_pass/soft_patch/soft_waive/soft_block_human）。",
         "trigger": "场景运行管线 QC 阶段（SoftQcEngine.evaluate）。",
-        "call_chain": [(f"{SVC}/qc_engine.py", 'node_id="soft_qc"', 1, "SoftQcEngine.evaluate，经 PromptBuilder")],
+        "call_chain": [(f"{SVC}/qc_engine.py", "node_id=step,", 1, "SoftQcEngine.evaluate → _qc_run_node_with_degradation（step=\"soft_qc\"），经 PromptBuilder")],
         "inputs": "PromptBuilder(soft_qc)：风格草稿 + style_rule/banned_rule/校准行等分节（soft_qc allowlist 治理）+ QC 语言锁。",
         "output_contract": "SoftQCOutput Pydantic 校验；枚举冻结同上；patch 建议进 style_patch 分支的 patch_brief。",
         "parser_refs": [(f"{SVC}/qc_validator.py", "HardQCOutput.model_validate", 1)],
@@ -926,25 +952,6 @@ UNITS: list[dict[str, Any]] = [
         "parser_refs": [(f"{SVC}/near_final.py", 'node_id="chapter_near_final_review"', 1)],
         "failure": "fail-closed / 上抛。",
         "opt_notes": "章长导致输入截断风险最高的评审节点——指令应要求「先列场景清单再逐场衔接判定」，弱模型才不会只评开头。",
-    },
-    {
-        "unit_id": "chapter_audit_adjudicate",
-        "batch": "C",
-        "title": "chapter_audit_adjudicate — 章级违约裁定",
-        "node_ids": ["chapter_audit_adjudicate"],
-        "template_key": "chapter_audit_adjudicate",
-        "inline_key": None,
-        "adhoc_task": None,
-        "status": "活跃",
-        "priority": "P1",
-        "purpose": "长篇塔：判定章草稿是否违反交接契约条款/锚点事实——只判违约，证据句必须逐字摘自 chapter_prose。",
-        "trigger": "POST /api/v1/longform-tower/…/adjudicate（LongformTowerService.adjudicate_draft）。",
-        "call_chain": [(f"{SVC}/longform_tower.py", "structured = call_llm_node(", 1, "_adjudicate_violations")],
-        "inputs": f"{SHARED_UNTRUSTED_PAYLOAD_BOUNDARY} payload 键：chapter_prose、编号契约条款、anchor_hits/anchor_misses。",
-        "output_contract": "violations 数组（clause_ref/kind/severity/text/evidence_sentence/at/suggested_fix；kind 枚举 drift/stall/deflation/causal_break/unplanted_reveal/unfair_clue/overdue/arc）。",
-        "parser_refs": [(f"{SVC}/longform_tower.py", "structured = call_llm_node(", 1)],
-        "failure": "LLMNodeError → 服务降级处理。",
-        "opt_notes": "「宁缺毋滥」已写在提示词里，弱模型上反而会漏报——可加「先对每条条款给 hit/miss 草表再产 violations」的中间步骤指令提高召回。",
     },
     {
         "unit_id": "auto_critique_llm",
@@ -1321,25 +1328,6 @@ UNITS: list[dict[str, Any]] = [
         ),
     },
     {
-        "unit_id": "writer_reference_application_review",
-        "batch": "E",
-        "title": "writer_reference_application_review — 参考应用评审（孤儿）",
-        "node_ids": ["writer_reference_application_review"],
-        "template_key": "writer_reference_application_review",
-        "inline_key": None,
-        "adhoc_task": None,
-        "status": "孤儿（模板+路由+注册均在，但无任何调用点——评审「参考风格是否被正确应用」的预留功能）",
-        "priority": "P2",
-        "purpose": "（预留）评审生成文对参考风格的应用程度。与 style_ref_validate_semantic 定位重叠，接线前先想清分工。",
-        "trigger": "无。",
-        "call_chain": [],
-        "inputs": "（未接线）。",
-        "output_contract": "（未接线）。",
-        "parser_refs": [],
-        "failure": "—",
-        "opt_notes": "P2：暂不优化；若接线，建议并入 style_ref 验证家族避免双轨。",
-    },
-    {
         "unit_id": "author_proposal_generate",
         "batch": "E",
         "title": "author_proposal_generate — 作者修订提案",
@@ -1415,63 +1403,6 @@ UNITS: list[dict[str, Any]] = [
         "parser_refs": [(f"{SVC}/author_drafts.py", 'node_id="author_structure_extract"', 1)],
         "failure": "上抛/桩。",
         "opt_notes": "切分粒度定义要客观（以场景为最小单元、给切分判据），防止弱模型按段落乱切。2026-07-05.v2 已落：system_prompt 加「视角/地点/时间任一跳变」判据，task_prompt 加「禁止混用 scene/chapter 两套字段」与 uncertainty_notes 的留空判据。",
-    },
-    {
-        "unit_id": "reference_sample_ranker",
-        "batch": "F",
-        "title": "reference_sample_ranker — 参考样本排序（孤儿）",
-        "node_ids": ["reference_sample_ranker"],
-        "template_key": "reference_sample_ranker",
-        "inline_key": None,
-        "adhoc_task": None,
-        "status": "孤儿（旧 reference_learning 时代遗留：模板+路由在，无调用点；功能已被 style_reference 子系统取代）",
-        "priority": "P2",
-        "purpose": "（遗留）参考风格样本排序。",
-        "trigger": "无。",
-        "call_chain": [],
-        "inputs": "（未接线）。",
-        "output_contract": "（未接线）。",
-        "parser_refs": [],
-        "failure": "—",
-        "opt_notes": "P2：建议随遗留清理一并处置（删或归档），不投入优化轮次。",
-    },
-    {
-        "unit_id": "reference_style_structure_extract",
-        "batch": "F",
-        "title": "reference_style_structure_extract — 参考风格结构抽取（孤儿）",
-        "node_ids": ["reference_style_structure_extract"],
-        "template_key": "reference_style_structure_extract",
-        "inline_key": None,
-        "adhoc_task": None,
-        "status": "孤儿（同上，被 style_ref_extract_* 家族取代）",
-        "priority": "P2",
-        "purpose": "（遗留）参考书风格与结构抽取。",
-        "trigger": "无。",
-        "call_chain": [],
-        "inputs": "（未接线）。",
-        "output_contract": "（未接线）。",
-        "parser_refs": [],
-        "failure": "—",
-        "opt_notes": "P2：同上。",
-    },
-    {
-        "unit_id": "reference_profile_synthesize",
-        "batch": "F",
-        "title": "reference_profile_synthesize — 参考画像合成（孤儿）",
-        "node_ids": ["reference_profile_synthesize"],
-        "template_key": "reference_profile_synthesize",
-        "inline_key": None,
-        "adhoc_task": None,
-        "status": "孤儿（同上，被 style_ref_synthesize_profile 取代；仅测试引用）",
-        "priority": "P2",
-        "purpose": "（遗留）参考风格画像合成。",
-        "trigger": "无。",
-        "call_chain": [],
-        "inputs": "（未接线）。",
-        "output_contract": "（未接线）。",
-        "parser_refs": [],
-        "failure": "—",
-        "opt_notes": "P2：同上。",
     },
     {
         "unit_id": "chapter_summary",
@@ -1668,4 +1599,4 @@ NEGATIVE_EVIDENCE: list[str] = [
 ]
 
 # 生成脚本运行时须核对的调用点总数
-EXPECTED_CALL_SITE_COUNT = 39
+EXPECTED_CALL_SITE_COUNT = 37

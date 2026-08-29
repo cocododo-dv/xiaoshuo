@@ -17,6 +17,7 @@ from novel_system.services.vector_store import get_vector_store
 from tests.test_review_release import (
     approve_review,
     expected_global_collection_alias,
+    get_alias_scope,
     import_style_review,
     job_ids_for_review,
     promote_active_alias,
@@ -46,7 +47,7 @@ def test_run_reindex_rejects_stale_job_target_after_new_candidate_claim(client, 
     )
     new_row_id = approve_review(client, review_id_new, idempotency_key="approve-review-style-new-reindex-service")
 
-    alias_before = client.get("/api/v1/index/alias-scopes/style_observation:global:global").json()["data"]
+    alias_before = get_alias_scope(client, "style_observation:global:global")
     assert alias_before["candidate_alias"] == expected_global_collection_alias(new_row_id)
     documents_before = get_vector_store().load_collection(alias_before["candidate_alias"])
     indexed_ids_before = {item["id"] for item in documents_before}
@@ -57,7 +58,7 @@ def test_run_reindex_rejects_stale_job_target_after_new_candidate_claim(client, 
 
     assert exc_info.value.code == "INDEX_JOB_TARGET_STALE"
 
-    alias_after = client.get("/api/v1/index/alias-scopes/style_observation:global:global").json()["data"]
+    alias_after = get_alias_scope(client, "style_observation:global:global")
     documents_after = get_vector_store().load_collection(alias_after["candidate_alias"])
     indexed_ids_after = {item["id"] for item in documents_after}
 
@@ -299,9 +300,7 @@ def test_later_reverify_failure_can_downgrade_the_same_previously_verified_candi
         idempotency_key="verify-review-style-reverify-success",
     )
     verify_job_id = job_ids_for_review(client, review_id)["verify"]
-    alias_before = client.get(
-        "/api/v1/index/alias-scopes/style_observation:global:global"
-    ).json()["data"]
+    alias_before = get_alias_scope(client, "style_observation:global:global")
     assert alias_before["active_alias"] == active_alias_before
     assert alias_before["verify_status"] == "succeeded"
     get_vector_store().write_collection(alias_before["candidate_alias"], [])

@@ -7,23 +7,17 @@ from sqlalchemy.orm import Session
 from novel_system.api.deps import get_session
 from novel_system.api.library_requests import (
     LibraryCharacterRequest,
-    LibraryDeriveRequest,
     LibraryEntityCreateRequest,
     LibraryEntityUpdateRequest,
     LibraryRelationCreateRequest,
     LibraryTimelineEventRequest,
 )
-from novel_system.api.mutations import optional_idempotent_response
+from novel_system.api.mutations import idempotent_response, optional_idempotent_response
 from novel_system.api.request_types import EmptyRequest
 from novel_system.api.response import ok
-from novel_system.services.idempotency import execute_with_idempotency
 from novel_system.services.library import LibraryService
 
 router = APIRouter(tags=["library"])
-
-
-def _operator(request: Request) -> str:
-    return getattr(request.state, "operator_ref", None) or "operator"
 
 
 @router.get("/api/v2/projects/{project_id}/library")
@@ -40,17 +34,14 @@ def create_library_entity(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/library/entities",
         payload={"project_id": project_id, "body": body},
         action=lambda: LibraryService(session).create_entity(project_id, body),
-        actor_ref=_operator(request),
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.patch("/api/v2/projects/{project_id}/library/entities/{entity_id}")
@@ -80,17 +71,14 @@ def create_library_relation(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/library/relations",
         payload={"project_id": project_id, "body": body},
         action=lambda: LibraryService(session).create_relation(project_id, body),
-        actor_ref=_operator(request),
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.delete("/api/v2/projects/{project_id}/library/relations/{relation_id}")
@@ -133,17 +121,14 @@ def create_library_timeline_event(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/library/timeline",
         payload={"project_id": project_id, "body": body},
         action=lambda: LibraryService(session).create_timeline_event(project_id, body),
-        actor_ref=_operator(request),
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.patch("/api/v2/projects/{project_id}/library/timeline/{event_id}")
@@ -200,17 +185,14 @@ def create_library_character(
     session: Session = Depends(get_session),
 ):
     body = payload.model_dump(mode="json", exclude_unset=True)
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v2/projects/{project_id}/library/characters",
         payload={"project_id": project_id, "body": body},
         action=lambda: LibraryService(session).create_character(project_id, body),
-        actor_ref=_operator(request),
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.patch("/api/v2/projects/{project_id}/library/characters/{character_id}")
@@ -273,26 +255,4 @@ def delete_library_entity(
             "body": payload.model_dump(mode="json") if payload else {},
         },
         action=lambda: LibraryService(session).delete_entity(project_id, entity_id),
-    )
-
-
-@router.post("/api/v2/projects/{project_id}/library/derive")
-def derive_library_candidates(
-    project_id: str,
-    payload: LibraryDeriveRequest,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    """半自动派生（D5）：LLM 提取候选 → idea 卡进待办；不直接入库。LLM 未配置时静默跳过。"""
-    from novel_system.services.library_derive import LibraryDeriveService
-
-    body = payload.model_dump(mode="json", exclude_unset=True)
-    chapter_id = str(body.get("chapter_id") or "")
-    return optional_idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v2/projects/{project_id}/library/derive",
-        payload={"project_id": project_id, "body": body},
-        action=lambda: LibraryDeriveService(session).derive_from_chapter(project_id, chapter_id),
     )

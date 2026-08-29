@@ -152,20 +152,6 @@ def test_approved_chapter_catalog_and_lifecycle_writes_are_locked_but_noops_work
     assert create_scene.status_code == 409
     assert create_scene.json()["error"]["code"] == "CHAPTER_APPROVED_LOCKED"
 
-    move_noop = client.post(
-        f"/api/v2/projects/{project_id}/catalog/scenes/{first_scene['scene_id']}/move",
-        json={"to": 0},
-    )
-    assert move_noop.status_code == 200
-    assert move_noop.json()["data"]["changed"] is False
-
-    move_change = client.post(
-        f"/api/v2/projects/{project_id}/catalog/scenes/{first_scene['scene_id']}/move",
-        json={"to": 1},
-    )
-    assert move_change.status_code == 409
-    assert move_change.json()["error"]["code"] == "CHAPTER_APPROVED_LOCKED"
-
     scene_order_noop = _post(
         client,
         f"/api/v1/chapters/{chapter_id}/scene-order",

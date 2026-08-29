@@ -145,6 +145,10 @@ class TaskType(str, Enum):
     PROJECT_INIT = "project_init"
     SCENE_GENERATION = "scene_generation"
     FINE_TUNING = "fine_tuning"
+    # deprecated——「长文续写」生产路径已下线(2026-08,产品拍板不接线)。
+    # 值必须保留:存量 DB 的 StyleReferenceInjectionBinding.task_type 可能仍是
+    # 'long_form_continuation',读取/校验路径(TaskType(...) 与 Pydantic 字段)
+    # 收窄枚举会让存量行直接炸掉。仅从 UI 选项与任务卡片列表中移除。
     LONG_FORM_CONTINUATION = "long_form_continuation"
     KEY_CHAPTER = "key_chapter"
 

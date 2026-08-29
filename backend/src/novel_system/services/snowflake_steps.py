@@ -858,70 +858,6 @@ def _normalize_scene_item(item: dict[str, Any], *, index: int) -> dict[str, Any]
     return normalized
 
 
-def extract_scene_triage_items(scene_details_draft: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if not isinstance(scene_details_draft, dict):
-        return []
-    items: list[dict[str, Any]] = []
-    for index, scene in enumerate(scene_details_draft.get("scenes") or [], start=1):
-        if not isinstance(scene, dict):
-            continue
-        scene_id = str(scene.get("scene_id") or "").strip()
-        if not scene_id:
-            continue
-        diagnosis = diagnose_scene_detail(scene, index=index)
-        manual_status = _coerce_triage_status(scene.get("triage_status"))
-        effective_status = manual_status or diagnosis["recommended_status"]
-        manual_missing_fields = _coerce_string_list(scene.get("triage_missing_fields"))
-        manual_fix_steps = _coerce_string_list(scene.get("triage_fix_steps"))
-        items.append(
-            {
-                "scene_id": scene_id,
-                "title": str(scene.get("title") or scene.get("summary") or f"场景 {index:02d}").strip(),
-                "primary_form": str(scene.get("primary_form") or scene.get("scene_type") or "proactive").strip() or "proactive",
-                "scene_type": str(scene.get("primary_form") or scene.get("scene_type") or "proactive").strip() or "proactive",
-                "status": manual_status,
-                "notes": str(scene.get("triage_notes") or "").strip(),
-                "recommended_status": diagnosis["recommended_status"],
-                "effective_status": effective_status,
-                "score": diagnosis["score"],
-                "pressure_flags": diagnosis["pressure_flags"],
-                "missing_fields": manual_missing_fields or diagnosis["missing_fields"],
-                "fix_steps": manual_fix_steps or diagnosis["fix_steps"],
-                "blocking": effective_status == "rewrite",
-                "manual_override": bool(manual_status and manual_status != diagnosis["recommended_status"]),
-            }
-        )
-    return items
-
-
-def apply_scene_triage(
-    scene_details_draft: dict[str, Any] | None,
-    items: list[dict[str, Any]] | None,
-) -> dict[str, Any]:
-    draft = merge_step_draft("scene_details", scene_details_draft)
-    updates = {
-        str(item.get("scene_id") or "").strip(): {
-            "triage_status": str(item.get("status") or "").strip(),
-            "triage_notes": str(item.get("notes") or "").strip(),
-            "triage_missing_fields": _coerce_string_list(item.get("missing_fields")),
-            "triage_fix_steps": _coerce_string_list(item.get("fix_steps")),
-        }
-        for item in items or []
-        if str(item.get("scene_id") or "").strip()
-    }
-    for scene in draft.get("scenes") or []:
-        if not isinstance(scene, dict):
-            continue
-        update = updates.get(str(scene.get("scene_id") or "").strip())
-        if not update:
-            continue
-        scene["triage_status"] = update["triage_status"]
-        scene["triage_notes"] = update["triage_notes"]
-        scene["triage_missing_fields"] = update["triage_missing_fields"]
-        scene["triage_fix_steps"] = update["triage_fix_steps"]
-    return draft
-
-
 def _scene_detail_seed(scene: dict[str, Any], index: int) -> dict[str, Any]:
     scene_type = str(scene.get("primary_form") or scene.get("scene_type") or ("proactive" if index % 2 else "reactive")).strip().lower() or "proactive"
     if scene_type not in {"proactive", "reactive"}:
@@ -1376,11 +1312,6 @@ def _coerce_string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _coerce_triage_status(value: Any) -> str:
-    status = str(value or "").strip().lower()
-    return status if status in {"pass", "maybe", "rewrite"} else ""
 
 
 def _has_value(value: Any) -> bool:

@@ -17,7 +17,7 @@ from novel_system.api.request_types import BoundedJsonObject, EmptyRequest
 from novel_system.api.response import ok
 from novel_system.db.models import EvaluationExperiment, EvaluationPair, EvaluationVote
 from novel_system.services.evaluation_experiment import EvaluationExperimentService
-from novel_system.services.idempotency import execute_with_idempotency
+from novel_system.api.mutations import idempotent_response
 
 router = APIRouter(tags=["evaluation_experiments"])
 
@@ -33,7 +33,8 @@ class CreateExperimentRequest(BaseModel):
         "seed_project", "time_isolated", "external_holdout"
     ] | None = None
     snapshot_source_ref: str | None = Field(default=None, max_length=512)
-    evidence_provenance: Literal["synthetic", "human"] = "synthetic"
+    # human-only 契约（迁移 0075）：synthetic 证据通道已废除，显式传入即 422。
+    evidence_provenance: Literal["human"] = "human"
 
 
 class AddPairRequest(BaseModel):
@@ -112,10 +113,9 @@ def experiment_overview(experiment_id: str, request: Request, session: Session =
 
 @router.post("/api/v1/evaluation-experiments")
 def create_experiment(payload: CreateExperimentRequest, request: Request, session: Session = Depends(get_session)):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/evaluation-experiments",
         payload=payload.model_dump(),
@@ -130,10 +130,7 @@ def create_experiment(payload: CreateExperimentRequest, request: Request, sessio
                 evidence_provenance=payload.evidence_provenance,
             )
         ),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/evaluation-experiments/{experiment_id}/freeze")
@@ -143,28 +140,23 @@ def freeze_experiment(
     payload: EmptyRequest | None = None,
     session: Session = Depends(get_session),
 ):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/evaluation-experiments/{experiment_id}/freeze",
         payload={"experiment_id": experiment_id},
         action=lambda: _experiment_dict(
             EvaluationExperimentService(session).freeze_experiment(experiment_id)
         ),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.post("/api/v1/evaluation-experiments/{experiment_id}/pairs")
 def add_pair(experiment_id: str, payload: AddPairRequest, request: Request, session: Session = Depends(get_session)):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/evaluation-experiments/{experiment_id}/pairs",
         payload={"experiment_id": experiment_id, **payload.model_dump()},
@@ -181,10 +173,7 @@ def add_pair(experiment_id: str, payload: AddPairRequest, request: Request, sess
                 scene_function=payload.scene_function,
             )
         ),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.get("/api/v1/evaluation-experiments/{experiment_id}/next-pair")
@@ -195,10 +184,9 @@ def next_pair(experiment_id: str, request: Request, reviewer_ref: str | None = N
 
 @router.post("/api/v1/evaluation-pairs/{pair_id}/vote")
 def vote(pair_id: str, payload: VoteRequest, request: Request, session: Session = Depends(get_session)):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    result, status = execute_with_idempotency(
+    return idempotent_response(
+        request,
         session,
-        idempotency_key=request.headers.get("X-Idempotency-Key"),
         method="POST",
         path_template="/api/v1/evaluation-pairs/{pair_id}/vote",
         payload={"pair_id": pair_id, **payload.model_dump()},
@@ -210,10 +198,7 @@ def vote(pair_id: str, payload: VoteRequest, request: Request, session: Session 
                 duration_ms=payload.duration_ms,
             )
         ),
-        actor_ref=actor_ref,
     )
-    headers = {"X-Idempotency-Status": status} if status else {}
-    return ok(result, req_id=getattr(request.state, "request_id", None), headers=headers)
 
 
 @router.get("/api/v1/evaluation-experiments/{experiment_id}/report")

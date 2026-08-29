@@ -1,5 +1,7 @@
 import React from "react";
 import { I } from "./icons.jsx";
+import { agoLabel } from "./lib/ago.js";
+import { useStoreTick } from "./lib/store-utils.js";
 import { WsTrashStore } from "./ws-catalog.jsx";
 import { LIB_BY_ID, LIB_CATS, LIB_ENTRIES, libSnapshot, libSubscribe } from "./ws-library-data.jsx";
 import { LIB_REL_TYPES, LIB_SORTS, LIB_buildBacklinks, LIB_connections, LIB_degree, LIB_groupConnections, LIB_health, LIB_isCited, LIB_nextAction, LIB_sortWithPin } from "./ws-library-derive.jsx";
@@ -567,18 +569,8 @@ function DossierAction({ entry: e, onAction }) {
 }
 
 /* ---------- Trash — 真实回收站（WsTrashStore，按作品隔离） ---------- */
-function wsTrashAgo(t) {
-  const d = Date.now() - (t || 0);
-  const m = Math.floor(d / 60000);
-  if (m < 1) return "刚刚";
-  if (m < 60) return m + " 分钟前";
-  const h = Math.floor(m / 60);
-  if (h < 24) return h + " 小时前";
-  return Math.floor(h / 24) + " 天前";
-}
 function WsTrash() {
-  const [, force] = React.useState(0);
-  React.useEffect(() => (WsTrashStore ? WsTrashStore.subscribe(() => force(n => n + 1)) : undefined), []);
+  useStoreTick((fn) => (WsTrashStore ? WsTrashStore.subscribe(fn) : undefined));
   const items = WsTrashStore ? WsTrashStore.list() : [];
 
   const restore = (id) => {
@@ -622,7 +614,7 @@ function WsTrash() {
                   <tr key={it.id}>
                     <td><span className="pill text-xs">{it.kind || "内容"}</span></td>
                     <td className="text-serif fw-600">{it.title}</td>
-                    <td className="text-muted text-sm">{wsTrashAgo(it.removedAt)}</td>
+                    <td className="text-muted text-sm">{agoLabel(it.removedAt || 0)}</td>
                     <td>
                       <div className="flex gap-2">
                         <button className="btn btn-quiet btn-sm" onClick={() => restore(it.id)}>恢复</button>
