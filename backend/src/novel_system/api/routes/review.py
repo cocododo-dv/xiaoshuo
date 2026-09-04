@@ -28,7 +28,7 @@ from novel_system.services.human_review_support import (
     human_review_linked_target,
     structured_target_from_replay_result,
 )
-from novel_system.services.knowledge_registry import descriptor_for_item_type
+from novel_system.services.knowledge_registry import all_descriptors, descriptor_for_item_type
 from novel_system.services.pagination import paginate_select, resolve_pagination_request
 from novel_system.services.review_cards import ReviewCardService
 from novel_system.services.versioning import (
@@ -43,6 +43,19 @@ router = APIRouter(tags=["review"])
 Identifier = Annotated[str, Field(min_length=1, max_length=255)]
 OptionalIdentifier = Annotated[str, Field(max_length=255)]
 CardListItem = Annotated[str, Field(max_length=4000)]
+
+# 由本路由直接落库、不经知识注册表物化的两种候选类型(见 _approve_review_with_style_profile_gate)。
+_ROUTE_HANDLED_ITEM_TYPES = ("author_preference_profile", "longform_structure_guidance")
+# legacy 候选创建只接受批准时有落点的 item_type:注册表之外的值批准时会 KeyError,
+# 与其留下永远批不了的行,不如在创建边界就回绝。
+SUPPORTED_REVIEW_ITEM_TYPES: tuple[str, ...] = tuple(
+    sorted(
+        {
+            *(item_type for descriptor in all_descriptors() for item_type in descriptor.item_types),
+            *_ROUTE_HANDLED_ITEM_TYPES,
+        }
+    )
+)
 
 
 class ReviewCardCreateRequest(StrictRequestModel):
@@ -321,6 +334,14 @@ def _upsert_review_item(session: Session, payload: dict) -> dict:
     review_id = payload.get("review_id")
     if not isinstance(review_id, str) or not review_id:
         raise DomainError("REVIEW_ID_REQUIRED", "missing review_id", status_code=400)
+    item_type = payload.get("item_type")
+    if item_type not in SUPPORTED_REVIEW_ITEM_TYPES:
+        raise DomainError(
+            "REVIEW_ITEM_TYPE_INVALID",
+            f"item_type {item_type!r} has no approval target; expected one of {list(SUPPORTED_REVIEW_ITEM_TYPES)}",
+            status_code=400,
+            details={"item_type": item_type, "supported_item_types": list(SUPPORTED_REVIEW_ITEM_TYPES)},
+        )
 
     item = session.get(ReviewItem, review_id)
     if item is None:
@@ -799,7 +820,9 @@ def _style_profile_baseline(session: Session | None, item: ReviewItem) -> dict |
         return None
     try:
         descriptor = descriptor_for_item_type(item.item_type)
-    except DomainError:
+    except (DomainError, KeyError):
+        # 注册表外的 item_type 没有基线可比(与 _release_state 的处理一致);
+        # 交给物化服务以 REVIEW_ITEM_TYPE_UNSUPPORTED 回绝,而不是在风险门前 KeyError。
         return None
 
     registries = session.execute(

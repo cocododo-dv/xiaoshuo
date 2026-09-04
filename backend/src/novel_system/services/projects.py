@@ -1718,10 +1718,17 @@ def _run_project_chapter_job_worker(
         # Startup recovery may be invoked concurrently by multiple ASGI
         # workers.  Losing the durable chapter-job CAS is a benign duplicate
         # dispatch and must never overwrite the winning worker with FAILED.
-        if exc.code in {"RUN_JOB_IN_PROGRESS", "RUN_JOB_NOT_CLAIMABLE"}:
+        # RUN_OWNER_LEASE_LOST is the same situation observed after the claim:
+        # another worker replaced this one, and the job now belongs to it.
+        if exc.code in {"RUN_JOB_IN_PROGRESS", "RUN_JOB_NOT_CLAIMABLE", "RUN_OWNER_LEASE_LOST"}:
             return
         _mark_project_chapter_job_failed(
-            job_id, project_id, chapter_id, exc.code, exc.message
+            job_id,
+            project_id,
+            chapter_id,
+            exc.code,
+            exc.message,
+            author_action=_domain_error_author_action(exc),
         )
     except Exception as exc:  # pragma: no cover - defensive worker boundary
         session.rollback()
@@ -1736,8 +1743,20 @@ def _run_project_chapter_job_worker(
         session.close()
 
 
+def _domain_error_author_action(exc: DomainError) -> dict[str, Any] | None:
+    details = exc.details if isinstance(exc.details, dict) else None
+    action = details.get("author_action") if details else None
+    return dict(action) if isinstance(action, dict) else None
+
+
 def _mark_project_chapter_job_failed(
-    job_id: str, project_id: str, chapter_id: str, error_code: str, error_text: str
+    job_id: str,
+    project_id: str,
+    chapter_id: str,
+    error_code: str,
+    error_text: str,
+    *,
+    author_action: dict[str, Any] | None = None,
 ) -> None:
     session = SessionLocal()
     try:
@@ -1748,7 +1767,17 @@ def _mark_project_chapter_job_failed(
             job.error_text = error_text
             job.finished_at = utcnow()
             summary = dict(job.result_summary_json or {})
-            summary["latest_error"] = {"code": error_code, "message": error_text}
+            latest_error: dict[str, Any] = {"code": error_code, "message": error_text}
+            # ChapterRunnerService 在 claim 后失败时已把带 author_action 的 latest_error
+            # 提交进任务行；这里是同一错误的二次落库，不能把作者指引覆盖掉。
+            previous = summary.get("latest_error")
+            action = author_action
+            if action is None and isinstance(previous, dict) and previous.get("code") == error_code:
+                previous_action = previous.get("author_action")
+                action = dict(previous_action) if isinstance(previous_action, dict) else None
+            if action:
+                latest_error["author_action"] = action
+            summary["latest_error"] = latest_error
             job.result_summary_json = summary
         project = session.get(StoryProject, project_id)
         if project is not None and project.current_chapter_id == chapter_id:

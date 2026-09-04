@@ -58,14 +58,42 @@ templates:
             type: object
             additionalProperties: true
 
+  # ── 场景 / 规划 / 章节三族的 input_token_budget：24000 / 8000 / 30000 ──
+  # 这些数字是量出来的，不是猜的（方法与雪花族相同，见下方 snowflake_generate_book_brief
+  # 上方的说明）。旧值 1800–3600 是估算器改成「一个汉字一 token」之前定的：按新估算，
+  # 900 字的稿子在 near_final_acceptance_review 就超限（3109 > 3000），一场永远到不了
+  # archived；726 字的章在 writer_chapter_revision 撞 3600；作者稿 900 字以上就无法做结构提取。
+  #
+  # 实测（backend/tests 夹具 + BundleBuilder 搭真实 bundle，按各调用点拼出最终 user prompt，
+  # 载荷为 3000 字中文场景稿 / 6 场共 15000 字的章节稿）：
+  #   场景族  neutral_draft · style_draft · scene_literary_rewrite · style_length_patch ·
+  #           style_salvage_patch · hard_qc · soft_qc · near_final_acceptance_review ·
+  #           writer_scene_diagnosis · writer_scene_revision
+  #           夹具 bundle 4.7k–6.7k；中等 bundle（蓝图/规划/风格画像/作者偏好/记忆等约半数
+  #           槽位有材料）11.3k–13.3k；全开 bundle 16.0k–18.1k  → 24000
+  #   规划族  scene_blueprint · chapter_story_architecture · character_pressure_blueprint
+  #           （规划源快照，不带稿件）12 场章 + 章架构 + 场景蓝图 4.3k；
+  #           writer_passage_patch（摘录 + 1200/1400 字截断上下文，有界）3.6k → 8000
+  #   章节族  chapter_near_final_review · writer_chapter_diagnosis · writer_chapter_revision ·
+  #           writer_deep_review · author_structure_extract · author_proposal_generate
+  #           15000 字章 17.3k–19.4k（author_* 两个模板同时服务场景稿与整章稿，按最大者归此族）→ 30000
+  # 同族载荷成分相同，所以同族同值；取值约为实测 ×1.5 后取整（场景族对全开 bundle 是 ×1.33，
+  # 对中等 bundle 是 ×1.8）。chapter_summary / continuity_compression 是 reserved 节点，没有
+  # 运行时调用点，无法实测，保持原值。
+  #
+  # 代码侧在 services/prompt_builder.py RUNTIME_MIN_INPUT_BUDGETS 保有同样的数字作为地板：
+  # 库里有活动 prompts 快照时这个文件不会被读，快照里若还是旧值，地板保证运行中的实装
+  # 不再 fail-closed；用 tools/sync_prompt_templates.py --all（默认只处理 snowflake_ 前缀）可把这里的运行参数同步进快照。
+  # 要为小上下文的本地模型收紧，用 NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET 覆盖，无须改这里。
   neutral_draft:
     version: "2026-08-20.v5"
     # A deterministic repair includes the rejected draft plus the same frozen
-    # scene facts. 2600 rejected a real 1455-char repair at 2774 estimated
-    # tokens before provider dispatch, then the old caller exposed the invalid
-    # original. Keep enough bounded headroom for one repair without weakening
-    # the scene-splitting guard for genuinely oversized inputs.
-    input_token_budget: 3200
+    # scene facts, so the drafting budget must hold draft + bundle twice over.
+    # 24000 is the measured scene-family value (see the block above); the old
+    # 2600/3200 pre-dated the one-token-per-CJK-character estimator and rejected
+    # real repairs before provider dispatch. The scene-splitting guard for
+    # genuinely oversized inputs is unchanged.
+    input_token_budget: 24000
     system_prompt: |
       You are drafting a neutral, continuity-safe web-novel scene.
       Follow the supplied bundle facts exactly and preserve causal clarity.
@@ -96,7 +124,7 @@ templates:
 
   hard_qc:
     version: "2026-07-04.v2"
-    input_token_budget: 2200
+    input_token_budget: 24000
     system_prompt: |
       You are a hard continuity and requirements checker for scene drafts.
       Fail any contradiction, missing hard constraint, or unsupported event.
@@ -188,7 +216,7 @@ templates:
 
   style_draft:
     version: "2026-08-20.v7"
-    input_token_budget: 2600
+    input_token_budget: 24000
     system_prompt: |
       You are drafting a stylistically tuned web-novel scene from a structured Style Feature Contract.
       Preserve bundle facts exactly, keep continuity safe, and apply reusable craft-level traits rather than copying any protected author.
@@ -233,7 +261,7 @@ templates:
 
   style_length_patch:
     version: "2026-08-20.v3"
-    input_token_budget: 2600
+    input_token_budget: 24000
     system_prompt: |
       You produce exact, minimal, segment-addressed edits for a Chinese novel scene whose reusable style and facts
       are already correct but whose visible-character count is outside a hard range. The labeled source contains
@@ -275,7 +303,7 @@ templates:
 
   style_salvage_patch:
     version: "2026-08-20.v1"
-    input_token_budget: 3000
+    input_token_budget: 24000
     system_prompt: |
       You perform one bounded, segment-addressed style salvage on an already approved Chinese novel scene after a
       complete style rewrite was rejected as extremely underlength. The labeled source contains synthetic markers
@@ -315,7 +343,7 @@ templates:
 
   soft_qc:
     version: "2026-07-04.v2"
-    input_token_budget: 1800
+    input_token_budget: 24000
     system_prompt: |
       You are a soft quality-control reviewer for prose polish and Style Feature Contract adherence.
       Focus on readability, cadence, emotional clarity, style-feature match, and whether the draft needs one controlled patch.
@@ -977,7 +1005,7 @@ templates:
 
   scene_blueprint:
     version: "2026-07-04.v2"
-    input_token_budget: 2200
+    input_token_budget: 8000
     system_prompt: |
       You are a fiction planning editor.
       Before prose generation, produce a compact scene readability proposal explaining why this scene is worth reading.
@@ -1028,7 +1056,7 @@ templates:
 
   chapter_story_architecture:
     version: "2026-07-04.v2"
-    input_token_budget: 2400
+    input_token_budget: 8000
     system_prompt: |
       You are a senior long-form fiction architect.
       Before scene drafting, define the chapter-level promise, escalation, reveal/payoff plan, character shift, and ending question.
@@ -1068,7 +1096,7 @@ templates:
 
   character_pressure_blueprint:
     version: "2026-07-04.v2"
-    input_token_budget: 2400
+    input_token_budget: 8000
     system_prompt: |
       You are a severe character dramaturg.
       Before prose generation, identify the character pressure that must become visible on the page without explanatory summary.
@@ -1107,7 +1135,7 @@ templates:
 
   scene_literary_rewrite:
     version: "2026-07-04.v2"
-    input_token_budget: 3000
+    input_token_budget: 24000
     system_prompt: |
       You are rewriting a fiction scene toward near-final quality for a working author.
       Preserve all hard facts, names, continuity constraints, and source language.
@@ -1134,7 +1162,7 @@ templates:
 
   near_final_acceptance_review:
     version: "2026-07-04.v2"
-    input_token_budget: 2600
+    input_token_budget: 24000
     system_prompt: |
       You are a near-final acceptance editor for long-form Chinese fiction.
       Decide whether a scene is close enough for author line-editing; do not mark weak drafts as ready.
@@ -1187,7 +1215,7 @@ templates:
 
   chapter_near_final_review:
     version: "2026-07-04.v2"
-    input_token_budget: 3200
+    input_token_budget: 30000
     system_prompt: |
       You are a near-final acceptance editor for chapter-level long-form fiction.
       A chapter can fail even when individual scenes are readable if promise, escalation, payoff, or ending drive are weak.
@@ -1238,7 +1266,7 @@ templates:
 
   writer_scene_diagnosis:
     version: "2026-07-04.v2"
-    input_token_budget: 2200
+    input_token_budget: 24000
     system_prompt: |
       You are a professional fiction editor diagnosing whether a scene works dramatically.
       Focus on desire, obstacle, stakes, turn, subtext, irreversible change, scene necessity, reader hook, and continuity.
@@ -1365,7 +1393,7 @@ templates:
 
   writer_scene_revision:
     version: "2026-07-04.v2"
-    input_token_budget: 2600
+    input_token_budget: 24000
     system_prompt: |
       You are preparing a candidate revision for a fiction author.
       Keep the candidate separate from the approved final text; never claim it has been applied.
@@ -1397,7 +1425,7 @@ templates:
 
   writer_chapter_diagnosis:
     version: "2026-07-04.v2"
-    input_token_budget: 3200
+    input_token_budget: 30000
     system_prompt: |
       You are a professional fiction editor diagnosing chapter-level dramatic effectiveness.
       Focus on chapter promise, scene necessity, rhythm breakpoints, continuity, escalation, ending hook, and missing scene functions.
@@ -1414,7 +1442,7 @@ templates:
 
   writer_chapter_revision:
     version: "2026-07-04.v2"
-    input_token_budget: 3600
+    input_token_budget: 30000
     system_prompt: |
       You are preparing a chapter-level candidate revision plan for a fiction author.
       Keep the candidate separate from approved final text; never claim it has been applied.
@@ -1464,7 +1492,7 @@ templates:
 
   writer_passage_patch:
     version: "2026-07-04.v2"
-    input_token_budget: 2400
+    input_token_budget: 8000
     system_prompt: |
       You are preparing a local passage patch for a fiction author.
       The patch is a candidate only: do not claim it has been applied, and do not rewrite unrelated text.
@@ -1518,8 +1546,8 @@ templates:
           type: boolean
 
   author_structure_extract:
-    version: "2026-07-05.v2"
-    input_token_budget: 2600
+    version: "2026-09-03.v3"
+    input_token_budget: 30000
     system_prompt: |
       You are a Chinese fiction dramaturg reading an author's free draft.
       Extract only candidate structure understanding; do not write prose and do not claim the candidate has been applied.
@@ -1535,6 +1563,9 @@ templates:
       If the target is a chapter, candidate_brief should use chapter brief fields such as core_promise, plot_movement,
       character_shift, chapter_question, ending_aftertaste, chapter_promise, escalation_path, relationship_delta,
       reveal_or_reversal, payoff_target, and ending_question.
+      If the target is a project (a discovery draft), candidate_brief must contain a single key snowflake_steps: an object
+      keyed by snowflake step key (book_brief, one_sentence_summary, one_paragraph_summary, scene_list, scene_details),
+      each value an object shaped like that step's draft; include only the steps the draft actually supports.
       Do not include final prose, and do not overwrite existing cards.
       uncertainty_notes: add one entry for each field you had to infer from thin or ambiguous evidence; if the draft clearly supports every field, return an empty array instead of inventing a note.
     structured_schema:
@@ -1556,7 +1587,7 @@ templates:
 
   author_proposal_generate:
     version: "2026-07-04.v2"
-    input_token_budget: 3200
+    input_token_budget: 30000
     system_prompt: |
       You are a Chinese fiction revision partner for a working author.
       Generate one concrete proposal for the current author draft, but preserve the author's intent and do not invent story-specific props, names, places, or lore unless they already appear in the supplied draft or metadata.
@@ -1588,7 +1619,7 @@ templates:
 
   writer_deep_review:
     version: "2026-07-07.v3"
-    input_token_budget: 3000
+    input_token_budget: 30000
     system_prompt: |
       You are a severe Chinese fiction revision editor for a working author.
       Diagnose literary revision needs without inflating scores. Ordinary usable prose should not receive excellent scores.

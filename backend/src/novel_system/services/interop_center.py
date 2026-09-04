@@ -35,6 +35,39 @@ from novel_system.services.knowledge_registry import descriptor_for_object_type
 from novel_system.services.scene_digest import scene_card_digest
 
 
+_VALIDATION_ERROR_LIMIT = 32
+
+
+def _validation_error_details(exc: ValidationError) -> list[dict[str, Any]]:
+    """把 pydantic 校验错误压成可 JSON 序列化的最小定位信息。
+
+    ``exc.errors()`` 默认附带 ``ctx``(model_validator 抛出的 ValueError 实例本体)和
+    ``input``(整份 worksheet)。前者进了 ``DomainError.details`` 会让错误信封在
+    ``json.dumps`` 时炸掉,本该是 400 的契约错误变成 500 INTERNAL_ERROR;后者只是把
+    作者刚贴进来的原文原样回显。``loc``/``msg``/``type`` 已足够定位到出错字段。
+    """
+    items = exc.errors(include_url=False, include_context=False, include_input=False)
+    # 与 api/app.py 的 RequestValidationError 处理一致：最多回 32 条，多出的只报数量，
+    # 免得一份严重畸形的工作表把错误信封撑成一整页。
+    errors = [
+        {
+            "loc": list(item.get("loc", ())),
+            "msg": str(item.get("msg", "")),
+            "type": str(item.get("type", "")),
+        }
+        for item in items[:_VALIDATION_ERROR_LIMIT]
+    ]
+    if len(items) > _VALIDATION_ERROR_LIMIT:
+        errors.append(
+            {
+                "loc": [],
+                "msg": f"{len(items) - _VALIDATION_ERROR_LIMIT} more validation errors omitted",
+                "type": "truncated",
+            }
+        )
+    return errors
+
+
 @dataclass(frozen=True)
 class _SourceRefSpec:
     source_ref_key: str
@@ -205,7 +238,7 @@ class InteropCenterService:
                 "BUNDLE_SNAPSHOT_SCHEMA_INVALID",
                 "worksheet payload did not match the bundle worksheet contract",
                 status_code=400,
-                details={"errors": exc.errors()},
+                details={"errors": _validation_error_details(exc)},
             ) from exc
 
         computed_hash = compute_bundle_hash_projection(envelope.snapshot.to_hash_projection())
@@ -263,7 +296,7 @@ class InteropCenterService:
                 "BUNDLE_SNAPSHOT_SCHEMA_INVALID",
                 f"bundle {bundle.bundle_id} stored an invalid snapshot",
                 status_code=409,
-                details={"errors": exc.errors()},
+                details={"errors": _validation_error_details(exc)},
             ) from exc
         return BundleWorksheetEnvelopeV1(
             bundle_id=bundle.bundle_id,

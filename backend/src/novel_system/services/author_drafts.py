@@ -28,6 +28,7 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.canonical_manuscripts import canonicalize_author_text
 from novel_system.services.chapter_approval import require_author_target_mutation_allowed
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
@@ -40,6 +41,7 @@ from novel_system.services.llm_task_runner import (
 )
 from novel_system.services.manuscript_html import sanitize_manuscript_html
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.snowflake_steps import get_step_definition
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.writer_briefs import (
     empty_chapter_writer_brief,
@@ -60,6 +62,17 @@ AUTHOR_DRAFT_EVENT_TYPES = {
 }
 
 _RUNTIME_FINAL_UNAVAILABLE = object()
+
+# 发现稿「提取结构」允许导入的雪花步骤；提示词契约、归一化与错误提示共用这一份。
+PROJECT_DISCOVERY_STEP_KEYS = (
+    "book_brief",
+    "one_sentence_summary",
+    "one_paragraph_summary",
+    "scene_list",
+    "scene_details",
+)
+# 骨架里不给模型看的字段：系统默认策略，不是要从稿子里提取的东西。
+_PROJECT_STEP_SKELETON_OMIT = {"book_brief": {"safety_rules"}}
 
 DESK_DEFAULT_MODE = "write_first"
 AUTHOR_PROPOSAL_TRIAD = ("structure_candidate", "passage_candidate", "language_candidate")
@@ -396,10 +409,14 @@ class AuthorDraftService:
         source = self._source_for_target(draft.object_type, draft.object_id)
         source_content = sanitize_manuscript_html(source["content"])
         changed_fields = []
-        if draft.content != source_content:
+        # 草稿是富文本 HTML，运行终稿是纯文本（promote-canonical 写入 FinalScene 的正是
+        # canonicalize 后的草稿）。两边按同一规则归一化再比较，否则 promote 之后紧接着
+        # derive 会把同一份文字当成新修订、并把刚确认的草稿标成 canonical_dirty。
+        # 文字没变就不改写来源指针：草稿的出处仍是作者本人，不能被改标成 AI 稿。
+        if canonicalize_author_text(draft.content or "") != canonicalize_author_text(source_content):
             changed_fields.append("author_draft.content")
-        if draft.source_text_ref != source["source_text_ref"]:
-            changed_fields.append("author_draft.source_text_ref")
+            if draft.source_text_ref != source["source_text_ref"]:
+                changed_fields.append("author_draft.source_text_ref")
         require_author_target_mutation_allowed(
             self.session,
             object_type=draft.object_type,
@@ -1081,6 +1098,10 @@ class AuthorDraftService:
         target = self._target_payload(draft.object_type, draft.object_id)
         snapshot = _structure_extract_snapshot(draft, target)
         prompt = PromptBuilder().build(snapshot, "author_structure_extract")
+        if draft.object_type == "project":
+            # 发现稿的 snowflake_steps 契约随代码走：prompts.yaml 一旦被系统配置快照接管，
+            # 仓库模板文字就不再生效，而归一化硬性要求 snowflake_steps，不能只靠模板描述。
+            prompt = {**prompt, "user_prompt": _append_project_step_contract(prompt["user_prompt"])}
         bundle_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
         runner = LLMNodeRunner(self.session)
         execution_step_key = f"author_structure_extract:{draft.draft_id}"
@@ -2386,7 +2407,12 @@ def _structure_extract_snapshot(draft: AuthorDraft, target: dict[str, Any]) -> d
                 "object_id": draft.object_id,
                 "source_draft_id": draft.draft_id,
                 "source_text_ref": f"author_draft:{draft.draft_id}",
-                "author_draft": draft.content or "",
+                # 稿件正文只在 user prompt 的「Current Author Draft」出现一次（见
+                # _structure_extract_user_prompt）；这里留哈希与字数，把 bundle_hash
+                # 仍绑定到稿件内容。之前两处都放全文，整章稿的输入估算翻倍
+                # （15000 字章 ≈ 31k tok），章节族 30000 的预算也兜不住。
+                "author_draft_sha256": hashlib.sha256((draft.content or "").encode("utf-8")).hexdigest(),
+                "author_draft_chars": len(draft.content or ""),
                 "current_writer_brief": target.get("current_writer_brief") or {},
             },
             ensure_ascii=False,
@@ -2444,6 +2470,40 @@ def _structure_extract_user_prompt(base_prompt: str, *, draft: AuthorDraft, targ
     )
 
 
+def _project_step_skeleton(step_key: str) -> dict[str, Any]:
+    """从雪花步骤目录派生该步草稿骨架，避免在提示词里手工维护一份会漂移的字段表。
+
+    列表型字段给出一条编辑器模板项，去掉系统分配的只读键（scene_id/chapter_id/row_uid）。"""
+    step = get_step_definition(step_key)
+    skeleton = dict(step.get("default_draft") or {})
+    for key in _PROJECT_STEP_SKELETON_OMIT.get(step_key, ()):
+        skeleton.pop(key, None)
+    for field in (step.get("editor") or {}).get("fields") or []:
+        template = field.get("template") if isinstance(field, dict) else None
+        if not isinstance(template, dict) or not isinstance(field.get("key"), str):
+            continue
+        readonly = set(field.get("readonly_fields") or [])
+        skeleton[field["key"]] = [{name: value for name, value in template.items() if name not in readonly}]
+    return skeleton
+
+
+def _append_project_step_contract(user_prompt: str) -> str:
+    """发现稿目标：告诉模型 candidate_brief 必须是 snowflake_steps，并给出每一步的字段骨架。"""
+    skeleton = {step_key: _project_step_skeleton(step_key) for step_key in PROJECT_DISCOVERY_STEP_KEYS}
+    return "\n".join(
+        [
+            user_prompt,
+            "",
+            "## Project Discovery Target Contract",
+            "This target is a project discovery draft, not a scene or chapter. candidate_brief must contain exactly one key,",
+            "snowflake_steps: an object keyed by snowflake step key. Include only the steps the draft actually supports and",
+            "omit the rest instead of inventing them. Each step value is an object shaped like the skeleton below",
+            "(list fields show one item template; keep English keys, write string values in Chinese).",
+            json.dumps(skeleton, ensure_ascii=False, sort_keys=True),
+        ]
+    )
+
+
 def _normalize_structure_payload(payload: Any, *, draft: AuthorDraft, target: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise DomainError(
@@ -2453,18 +2513,30 @@ def _normalize_structure_payload(payload: Any, *, draft: AuthorDraft, target: di
             details={"node_id": "author_structure_extract", "object_type": draft.object_type},
         )
     if draft.object_type == "project":
+        raw_brief = payload.get("candidate_brief")
         raw_steps = payload.get("snowflake_steps")
+        if not isinstance(raw_steps, dict) and isinstance(raw_brief, dict):
+            nested = raw_brief.get("snowflake_steps")
+            # 模型也可能把步骤键直接铺在 candidate_brief 里；少一层包装不该让整次提取作废。
+            raw_steps = nested if isinstance(nested, dict) else raw_brief
         if not isinstance(raw_steps, dict):
-            raw_steps = payload.get("candidate_brief", {}).get("snowflake_steps") if isinstance(payload.get("candidate_brief"), dict) else None
-        if not isinstance(raw_steps, dict):
+            raw_steps = {}
+        snowflake_steps = {
+            key: value for key, value in raw_steps.items() if key in PROJECT_DISCOVERY_STEP_KEYS and isinstance(value, dict)
+        }
+        if not snowflake_steps:
+            # fail-closed：没有任何可导入的步骤就不落候选，并说明收到了什么、期望什么。
             raise DomainError(
                 "AUTHOR_STRUCTURE_OUTPUT_INVALID",
-                "author structure extraction response is missing snowflake_steps",
+                "author structure extraction response has no usable snowflake_steps for the project discovery draft",
                 status_code=502,
-                details={"node_id": "author_structure_extract", "object_type": draft.object_type},
+                details={
+                    "node_id": "author_structure_extract",
+                    "object_type": draft.object_type,
+                    "received_keys": sorted(str(key) for key in raw_steps),
+                    "expected_step_keys": sorted(PROJECT_DISCOVERY_STEP_KEYS),
+                },
             )
-        allowed = {"book_brief", "one_sentence_summary", "one_paragraph_summary", "scene_list", "scene_details"}
-        snowflake_steps = {key: value for key, value in raw_steps.items() if key in allowed and isinstance(value, dict)}
         notes = payload.get("uncertainty_notes")
         uncertainty_notes = [str(item).strip() for item in notes if str(item).strip()] if isinstance(notes, list) else []
         rationale = payload.get("rationale")

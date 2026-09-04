@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 from sqlalchemy.orm import Session
 
+from novel_system.services.errors import DomainError
 from novel_system.services.llm_accounting import (
     LLMCallContext,
     execute_accounted_call,
@@ -35,6 +36,15 @@ DIMENSION_WEIGHTS = {
     "summary_ending": 0.03,
     "image_homogeneity": 0.01,
 }
+
+
+class LiteraryEvalLLMResponseInvalid(DomainError, ValueError):
+    """模型返回的 JSON 不满足 literary eval 输出契约。
+
+    同时继承 ValueError:本模块对"值不合法"一贯抛 ValueError,CLI(tools/literary_eval.py)
+    与既有调用方按 ValueError 捕获;继承 DomainError 则让 /literary-eval/run 路由走
+    错误信封(409 + 字段定位 + llm_call_id),而不是塌成 500 INTERNAL_ERROR。
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,7 +292,21 @@ class LLMLiteraryCaseGenerator:
                 error_code="LLM_RESPONSE_INVALID_SCHEMA",
                 error_text="literary eval llm response missing scene_text",
             )
-            raise ValueError("literary eval llm response missing scene_text")
+            # 与 chapter_plan_llm / snowflake_workspace_llm 的 *_LLM_RESPONSE_INVALID_SCHEMA
+            # 同一套 details 形状,前端按 error_code / next_action 统一处理。
+            raise LiteraryEvalLLMResponseInvalid(
+                "LITERARY_EVAL_LLM_RESPONSE_INVALID_SCHEMA",
+                "literary eval llm response missing scene_text",
+                status_code=409,
+                details={
+                    "llm_call_id": llm_call_id,
+                    "node_id": "literary_eval_live",
+                    "case_id": case.case_id,
+                    "error_code": "LLM_RESPONSE_INVALID_SCHEMA",
+                    "missing_field": "scene_text",
+                    "next_action": "retry_or_adjust_prompt_schema",
+                },
+            )
         return {
             "generated_text": scene_text.strip(),
             "provider": response.provider,

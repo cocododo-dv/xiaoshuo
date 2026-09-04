@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from novel_system.db.models import ReviewItem, VersionRegistry
+from novel_system.db.models import ReindexJob, ReviewItem, VerifyJob, VersionRegistry
 from novel_system.services.errors import DomainError
 from novel_system.services.knowledge_registry import descriptor_for_item_type
 from novel_system.services.versioning.base import VersioningServiceBase
@@ -14,8 +14,58 @@ class ReviewMaterializationService(VersioningServiceBase):
         review = self.session.get(ReviewItem, review_id)
         if review is None:
             raise DomainError("REVIEW_NOT_FOUND", f"review {review_id} not found", status_code=404)
+        if review.status == "approved":
+            # 同一幂等 key 的重放由幂等层回放,走不到这里;能到这里的是换了 key 的二次批准。
+            # 向量类型再物化一次会以固定 id(reindex_/verify_{review_id})再 INSERT 一对 job,
+            # 在 flush 时撞 UNIQUE → IntegrityError 裸 500;直接以冲突回绝并回显既有物化结果。
+            raise DomainError(
+                "REVIEW_ALREADY_APPROVED",
+                f"review {review_id} is already approved",
+                status_code=409,
+                details={
+                    "review_id": review_id,
+                    "materialize_status": review.materialize_status,
+                    "approved_item_row_id": review.approved_item_row_id,
+                    "approved_item_id": review.approved_item_id,
+                },
+            )
 
-        descriptor = descriptor_for_item_type(review.item_type)
+        try:
+            descriptor = descriptor_for_item_type(review.item_type)
+        except KeyError as exc:
+            # 注册表外的 item_type(历史遗留行 / 卡片行 fe_card)没有物化落点:
+            # 作者可见的 409,而不是 KeyError 500。
+            raise DomainError(
+                "REVIEW_ITEM_TYPE_UNSUPPORTED",
+                f"review item type {review.item_type!r} has no materialization target",
+                status_code=409,
+                details={"review_id": review_id, "item_type": review.item_type},
+            ) from exc
+        if descriptor.storage_kind == "vector":
+            # 同一 review 的索引 job id 是固定的(见 base._create_vector_jobs);候选被拒后再批准
+            # 会在 v2 行之后再 INSERT 同 id 的 job,同样撞 UNIQUE。向量候选目前不支持二次批准:
+            # 在改动任何行之前就以 409 回绝,提示作者提交新候选。
+            existing_job_ids = [
+                job_id
+                for job_id, model_cls in (
+                    (f"reindex_{review_id}", ReindexJob),
+                    (f"verify_{review_id}", VerifyJob),
+                )
+                if self.session.get(model_cls, job_id) is not None
+            ]
+            if existing_job_ids:
+                raise DomainError(
+                    "REVIEW_REAPPROVE_UNSUPPORTED",
+                    f"review {review_id} was already materialized once; a rejected vector candidate "
+                    "cannot be approved again — submit a new candidate instead",
+                    status_code=409,
+                    details={
+                        "review_id": review_id,
+                        "status": review.status,
+                        "materialize_status": review.materialize_status,
+                        "existing_job_ids": existing_job_ids,
+                    },
+                )
         payload = dict(review.candidate_payload_json or {})
         review.status = "approved"
 

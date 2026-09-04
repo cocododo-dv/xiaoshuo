@@ -22,10 +22,13 @@ from novel_system.db.models import (
     SceneRunState,
     WriterEvaluation,
 )
+from novel_system.services.author_actions import author_action
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.llm_accounting import LLMCallContext
 from novel_system.services.llm_task_runner import (
+    SCENE_SPLIT_RECOMMENDATION,
+    LLMNodeContinuityError,
     LLMNodeExecutionError,
     LLMNodeRunner,
     current_llm_execution_id,
@@ -35,6 +38,12 @@ from novel_system.services.scene_lookup import require_chapter, require_scene
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief, normalize_scene_writer_brief
 
 WRITER_RUBRIC_ID = "drama_effectiveness_v1"
+
+# 修订腿失败时挂在聚合评审 findings 上的阻塞项维度。诊断结果照常入库，
+# 只是"修订候选不可用 + 原因"作为一条 blocker finding 持久化，GET 与 run 响应
+# 都从它派生 revision_blocker，作家刷新页面后原因不会丢。
+REVISION_BLOCKER_DIMENSION = "writer_revision_candidate"
+REVISION_PAYLOAD_INVALID_CODE = "WRITER_REVISION_PAYLOAD_INVALID"
 
 WRITER_RUBRIC_DIMENSIONS: tuple[str, ...] = (
     "desire",
@@ -171,13 +180,26 @@ class WriterReviewService:
             lens_results=diagnosis["lens_results"],
         )
         self._supersede_open_candidates("scene", scene.scene_id)
-        revision_payload = self._run_scene_revision(
-            scene=scene,
-            bundle=bundle,
-            source=source,
-            diagnosis_payload=payload,
-            evaluation=evaluation,
-        )
+        try:
+            revision_payload = self._run_scene_revision(
+                scene=scene,
+                bundle=bundle,
+                source=source,
+                diagnosis_payload=payload,
+                evaluation=evaluation,
+            )
+        except (LLMNodeExecutionError, WriterReviewPayloadError) as exc:
+            # 诊断已成功（并在 runner 预拒时已随账本提交）；修订 prompt 比诊断多带一份
+            # 诊断 JSON，最容易撞上连续性预算。修订腿失败不能把整次评审炸成 500：
+            # 与诊断腿同样受控降级——评审入库、候选标记不可用、200 带回阻塞原因。
+            return self._revision_unavailable_result(
+                object_type="scene",
+                object_id=scene.scene_id,
+                chapter_id=scene.chapter_id,
+                evaluation=evaluation,
+                node_id="writer_scene_revision",
+                exc=exc,
+            )
         candidate = self._create_candidate(
             evaluation=evaluation,
             revision_type="scene_revision",
@@ -243,13 +265,24 @@ class WriterReviewService:
             lens_results=diagnosis["lens_results"],
         )
         self._supersede_open_candidates("chapter", chapter.chapter_id)
-        revision_payload = self._run_chapter_revision(
-            chapter=chapter,
-            bundle=bundle,
-            source=source,
-            diagnosis_payload=payload,
-            evaluation=evaluation,
-        )
+        try:
+            revision_payload = self._run_chapter_revision(
+                chapter=chapter,
+                bundle=bundle,
+                source=source,
+                diagnosis_payload=payload,
+                evaluation=evaluation,
+            )
+        except (LLMNodeExecutionError, WriterReviewPayloadError) as exc:
+            # 同场景路径：章级修订 prompt 携带整章正文 + 诊断 JSON，超预算时受控降级。
+            return self._revision_unavailable_result(
+                object_type="chapter",
+                object_id=chapter.chapter_id,
+                chapter_id=chapter.chapter_id,
+                evaluation=evaluation,
+                node_id="writer_chapter_revision",
+                exc=exc,
+            )
         candidate = self._create_candidate(
             evaluation=evaluation,
             revision_type="chapter_revision",
@@ -440,6 +473,55 @@ class WriterReviewService:
             "lens_evaluations": lens_evaluations,
             "candidate_count": len(candidates),
             "candidates": [self.serialize_revision(candidate) for candidate in candidates],
+            "revision_blocker": _revision_blocker_from_evaluation(latest),
+        }
+
+    def _revision_unavailable_result(
+        self,
+        *,
+        object_type: str,
+        object_id: str,
+        chapter_id: str,
+        evaluation: WriterEvaluation,
+        node_id: str,
+        exc: LLMNodeExecutionError | WriterReviewPayloadError,
+    ) -> dict[str, Any]:
+        """修订腿失败的受控降级：阻塞原因落到聚合评审，候选置空，返回 200 载荷。
+
+        选择 200 而非 409：唯一的 UI 消费方（Vue ``WriterReviewCard`` /
+        ``runWriterReview``）在异常分支只显示 error.message、不重新加载评审，
+        作家会看不到刚落库的诊断；200 + ``revision_blocker`` 则与诊断腿被阻塞时
+        的既有形状一致（evaluation + ``candidates: []``），问题列表直接渲染 blocker。
+        """
+        blocker = _revision_blocker(
+            exc,
+            node_id=node_id,
+            object_type=object_type,
+            object_id=object_id,
+            chapter_id=chapter_id,
+        )
+        finding = {
+            "dimension": REVISION_BLOCKER_DIMENSION,
+            "severity": "blocker",
+            "issue": f"修订候选未生成：{blocker['message']}",
+            "recommendation": blocker["author_action"]["message"]
+            if blocker.get("author_action")
+            else "请检查模型路由或模型输出后重新运行作家诊断；本次不伪造修订候选。",
+            "evidence_excerpt": "",
+            "evidence_location": node_id,
+            "why_it_matters": "诊断结论仍然有效，但没有可采纳的候选稿，需要作者决定拆分或重跑。",
+            "lens": "aggregate",
+            "revision_blocker": blocker,
+        }
+        # JSON 列不追踪原地修改，整体重新赋值才会写回。
+        evaluation.findings_json = [*(evaluation.findings_json or []), finding]
+        evaluation.requires_human_review = 1
+        self.session.flush()
+        return {
+            **self._review_payload(object_type, object_id),
+            "evaluation": self.serialize_evaluation(evaluation),
+            "candidates": [],
+            "revision_blocker": blocker,
         }
 
     def _create_evaluation(
@@ -819,11 +901,16 @@ class WriterReviewService:
             source_draft_row_id=source.get("source_text_ref"),
             source_draft_content=source.get("content"),
         )
-        return _validate_scene_revision_payload(
-            node_result.response.structured_output,
-            source=source,
-            evaluation=evaluation,
-        )
+        try:
+            return _validate_scene_revision_payload(
+                node_result.response.structured_output,
+                source=source,
+                evaluation=evaluation,
+            )
+        except WriterReviewPayloadError as exc:
+            # 让降级载荷能指回这次已记账的调用。
+            exc.llm_call_id = node_result.llm_call_id
+            raise
 
     def _run_chapter_revision(
         self,
@@ -868,11 +955,15 @@ class WriterReviewService:
             execution_step_key=execution_step_key,
             context=context,
         )
-        return _validate_chapter_revision_payload(
-            node_result.response.structured_output,
-            source=source,
-            evaluation=evaluation,
-        )
+        try:
+            return _validate_chapter_revision_payload(
+                node_result.response.structured_output,
+                source=source,
+                evaluation=evaluation,
+            )
+        except WriterReviewPayloadError as exc:
+            exc.llm_call_id = node_result.llm_call_id
+            raise
 
     def _create_evaluation_from_payload(
         self,
@@ -1128,11 +1219,101 @@ class WriterReviewService:
 
 
 class WriterReviewPayloadError(ValueError):
-    pass
+    # 修订腿在校验前已完成记账调用；由 _run_*_revision 回填，便于降级载荷指回该调用。
+    llm_call_id: str | None = None
 
 
 def _finding_with_lens(finding: dict[str, Any], lens: str) -> dict[str, Any]:
     return {**finding, "lens": finding.get("lens") or lens}
+
+
+def _revision_blocker_from_evaluation(evaluation: WriterEvaluation | None) -> dict[str, Any] | None:
+    if evaluation is None:
+        return None
+    for finding in evaluation.findings_json or []:
+        if isinstance(finding, dict) and finding.get("dimension") == REVISION_BLOCKER_DIMENSION:
+            blocker = finding.get("revision_blocker")
+            if isinstance(blocker, dict):
+                return blocker
+    return None
+
+
+def _revision_blocker(
+    exc: LLMNodeExecutionError | WriterReviewPayloadError,
+    *,
+    node_id: str,
+    object_type: str,
+    object_id: str,
+    chapter_id: str,
+) -> dict[str, Any]:
+    """把修订节点的失败归一成可持久化、可渲染的 revision_blocker。"""
+    if isinstance(exc, LLMNodeContinuityError):
+        continuity_warning = dict(exc.continuity_warning or {})
+        evidence = [
+            f"{'章节' if object_type == 'chapter' else '场景'}：{object_id}",
+            f"错误：{exc.error_code}",
+            f"节点：{node_id}",
+        ]
+        estimated = continuity_warning.get("estimated_input_tokens")
+        target = continuity_warning.get("target_input_tokens")
+        if estimated or target:
+            evidence.append(f"估算输入 {estimated or '?'} tokens / 预算 {target or '?'} tokens")
+        if object_type == "chapter":
+            action = author_action(
+                "修订候选未生成：章节上下文太重",
+                "作家诊断已完成，但整章修订 prompt 超出连续性预算，本次没有生成修订计划。"
+                "请改为逐场运行作家诊断，或拆分章节后重试。",
+                target_view="workbench",
+                target_ref=f"chapter:{chapter_id}",
+                primary_button_label="去场景工作台",
+                evidence_summary=evidence,
+            )
+        else:
+            # 与 chapter_runner 的 CONTINUITY_BUDGET_EXCEEDED 引导保持同一落点。
+            action = author_action(
+                "修订候选未生成：上下文太重",
+                "作家诊断已完成，但修订 prompt 超出连续性预算，本次没有生成修订候选。"
+                "请先拆分场景或缩短正文，再重新运行作家诊断。",
+                target_view="snowflake-workbench",
+                target_ref=f"scene_card:{object_id}",
+                primary_button_label="拆分场景",
+                evidence_summary=evidence,
+            )
+        return {
+            "status": "unavailable",
+            "code": exc.error_code,
+            "message": exc.message,
+            "node_id": node_id,
+            "llm_call_id": exc.llm_call_id,
+            "retryable": False,
+            "continuity_warning": continuity_warning,
+            "recommended_action": SCENE_SPLIT_RECOMMENDATION,
+            "author_action": action,
+        }
+    if isinstance(exc, LLMNodeExecutionError):
+        response_summary = exc.response_summary if isinstance(exc.response_summary, dict) else {}
+        return {
+            "status": "unavailable",
+            "code": exc.error_code,
+            "message": exc.message,
+            "node_id": node_id,
+            "llm_call_id": exc.llm_call_id,
+            "retryable": bool(exc.retryable),
+            "continuity_warning": None,
+            "recommended_action": response_summary.get("recommended_action"),
+            "author_action": None,
+        }
+    return {
+        "status": "unavailable",
+        "code": REVISION_PAYLOAD_INVALID_CODE,
+        "message": str(exc),
+        "node_id": node_id,
+        "llm_call_id": exc.llm_call_id,
+        "retryable": True,
+        "continuity_warning": None,
+        "recommended_action": "Re-run the writer review; the revision node returned a payload outside its schema.",
+        "author_action": None,
+    }
 
 
 def _aggregate_lens_payloads(lens_results: list[dict[str, Any]]) -> dict[str, Any]:
