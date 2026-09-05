@@ -153,7 +153,6 @@ def _install_fake_runner(monkeypatch):
             }
 
     monkeypatch.setattr("novel_system.services.chapter_runner.Orchestrator", FakeOrchestrator)
-    monkeypatch.setattr("novel_system.services.chapter_runner.ChapterRuntimeService", FakeChapterRuntimeService)
     return calls
 
 

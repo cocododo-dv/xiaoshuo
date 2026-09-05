@@ -702,25 +702,12 @@ class NearFinalAcceptanceService:
         payload: dict[str, Any],
         llm_call_id: str | None,
     ) -> WriterEvaluation:
-        from novel_system.services.model_independence import (
-            judge_independence,
-            observed_correlated_judge,
-        )
-
-        independence_evidence = observed_correlated_judge(
-            self.session,
-            scene_id,
-            chapter_id=chapter_id if scene_id is None else None,
-        )
-        if independence_evidence is None:
-            independence_evidence = judge_independence(self.session)
         raw_contract_field_refs = payload.get("contract_field_refs")
         contract_field_refs = (
             dict(raw_contract_field_refs)
             if isinstance(raw_contract_field_refs, dict)
             else {}
         )
-        contract_field_refs["_model_independence"] = independence_evidence
         evaluation = WriterEvaluation(
             evaluation_id=f"near_final_eval_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}",
             object_type=object_type,

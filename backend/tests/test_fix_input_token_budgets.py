@@ -268,22 +268,10 @@ def test_repo_prompt_budgets_match_runtime_floors() -> None:
     assert SCENE_INPUT_TOKEN_BUDGET == 24000
     assert PLANNING_INPUT_TOKEN_BUDGET == 8000
     assert CHAPTER_INPUT_TOKEN_BUDGET == 30000
-    for name in ("neutral_draft", "style_draft", "hard_qc", "soft_qc", "near_final_acceptance_review", "writer_scene_revision"):
+    for name in ("neutral_draft", "style_draft", "hard_qc", "soft_qc", "near_final_acceptance_review"):
         assert RUNTIME_MIN_INPUT_BUDGETS[name] == SCENE_INPUT_TOKEN_BUDGET
-    for name in ("chapter_near_final_review", "writer_chapter_revision", "author_structure_extract", "writer_deep_review"):
+    for name in ("chapter_near_final_review", "writer_deep_review"):
         assert RUNTIME_MIN_INPUT_BUDGETS[name] == CHAPTER_INPUT_TOKEN_BUDGET
-
-
-def test_runtime_floor_protects_a_stale_prompts_snapshot(tmp_path: Path) -> None:
-    builder = PromptBuilder(_write_stale_prompts(tmp_path))
-    snapshot = _rich_scene_snapshot()
-
-    assert builder.build(snapshot, "near_final_acceptance_review")["token_budget"]["target_input_tokens"] == SCENE_INPUT_TOKEN_BUDGET
-    assert builder.build(snapshot, "writer_chapter_revision")["token_budget"]["target_input_tokens"] == CHAPTER_INPUT_TOKEN_BUDGET
-    assert builder.build(snapshot, "author_structure_extract")["token_budget"]["target_input_tokens"] == CHAPTER_INPUT_TOKEN_BUDGET
-    # 地板只托底，不压顶：显式 max_input_tokens 与族外模板保持原样
-    assert builder.build(snapshot, "hard_qc", max_input_tokens=60)["token_budget"]["target_input_tokens"] == 60
-    assert builder.build(snapshot, "project_outline_plan")["token_budget"]["target_input_tokens"] == 3000
 
 
 # ---------------------------------------------------------------------------
@@ -298,17 +286,6 @@ def test_near_final_acceptance_review_fits_a_3000_char_chinese_draft() -> None:
     assert budget["target_input_tokens"] == SCENE_INPUT_TOKEN_BUDGET
     # 稿件本身就接近旧预算：这正是 900 字都过不去的原因
     assert estimate_tokens(SCENE_DRAFT) > 2900
-
-
-def test_writer_scene_revision_fits_a_3000_char_chinese_draft() -> None:
-    prompt = PromptBuilder().build(_rich_scene_snapshot(), "writer_scene_revision")
-    final_user_prompt = writer_review_module._writer_revision_user_prompt(
-        prompt["user_prompt"],
-        object_type="scene",
-        source={"content": SCENE_DRAFT, "source_text_ref": "final_scene:x"},
-        diagnosis_payload=_diagnosis_payload(),
-    )
-    _assert_fits(prompt, final_user_prompt, stale_budget=STALE_BUDGETS["writer_scene_revision"])
 
 
 def test_hard_qc_and_style_draft_fit_a_3000_char_chinese_draft() -> None:
@@ -357,52 +334,9 @@ def _author_target(object_type: str) -> dict:
     }
 
 
-@pytest.mark.parametrize(
-    ("object_type", "content"),
-    [("scene", SCENE_DRAFT), ("chapter", CHAPTER_TEXT)],
-    ids=["scene-3000", "chapter-15000"],
-)
-def test_author_structure_extract_fits_scene_and_chapter_drafts(object_type: str, content: str) -> None:
-    draft = AuthorDraft(
-        draft_id="author_draft_budget_test",
-        object_type=object_type,
-        object_id="CH001_SC02" if object_type == "scene" else "CH001",
-        source_text_ref="test",
-        content=content,
-    )
-    target = _author_target(object_type)
-    snapshot = author_drafts_module._structure_extract_snapshot(draft, target)
-    prompt = PromptBuilder().build(snapshot, "author_structure_extract")
-    final_user_prompt = author_drafts_module._structure_extract_user_prompt(prompt["user_prompt"], draft=draft, target=target)
-
-    budget = _assert_fits(prompt, final_user_prompt, stale_budget=STALE_BUDGETS["author_structure_extract"])
-    assert budget["target_input_tokens"] == CHAPTER_INPUT_TOKEN_BUDGET
-    # 稿件正文只出现一次（之前 inline digest 与 user prompt 各放一份，整章稿的估算翻倍到 31k）
-    assert final_user_prompt.count(DRAFT_MARKER) == 1
-    digest = json.loads(snapshot["inline_digests"]["scene_summary"])
-    assert "author_draft" not in digest
-    assert digest["author_draft_chars"] == len(content)
-    assert len(digest["author_draft_sha256"]) == 64
-
-
 # ---------------------------------------------------------------------------
 # 章节族：15000 字章
 # ---------------------------------------------------------------------------
-
-
-def test_writer_chapter_revision_fits_a_15000_char_chapter() -> None:
-    assert 14900 <= len(CHAPTER_TEXT) <= 15200
-    prompt = PromptBuilder().build(_chapter_review_snapshot(CHAPTER_TEXT), "writer_chapter_revision")
-    final_user_prompt = writer_review_module._writer_revision_user_prompt(
-        prompt["user_prompt"],
-        object_type="chapter",
-        source={"content": CHAPTER_TEXT, "source_text_ref": "chapter_memory:x"},
-        diagnosis_payload=_diagnosis_payload(),
-    )
-    budget = _assert_fits(prompt, final_user_prompt, stale_budget=STALE_BUDGETS["writer_chapter_revision"])
-    assert budget["target_input_tokens"] == CHAPTER_INPUT_TOKEN_BUDGET
-    # 章节族的头寸：15000 字章实测约 19k，30000 仍留有 ×1.5 的余量
-    assert budget["estimated_input_tokens"] < CHAPTER_INPUT_TOKEN_BUDGET / 1.5
 
 
 def test_chapter_near_final_review_fits_a_15000_char_chapter() -> None:
@@ -422,11 +356,10 @@ def test_env_override_tightens_every_measured_family(monkeypatch: pytest.MonkeyP
     builder = PromptBuilder()
 
     assert builder.build(snapshot, "hard_qc")["token_budget"]["target_input_tokens"] == 6000
-    assert builder.build(snapshot, "writer_chapter_revision")["token_budget"]["target_input_tokens"] == 6000
+    assert builder.build(snapshot, "chapter_near_final_review")["token_budget"]["target_input_tokens"] == 6000
     assert builder.build(snapshot, "scene_blueprint")["token_budget"]["target_input_tokens"] == 6000
     # 显式 max_input_tokens 仍然最优先；族外模板不受影响；雪花族不走这里
     assert builder.build(snapshot, "hard_qc", max_input_tokens=60)["token_budget"]["target_input_tokens"] == 60
-    assert builder.build(snapshot, "project_outline_plan")["token_budget"]["target_input_tokens"] == 3000
     assert builder.build(snapshot, "snowflake_generate_book_brief")["token_budget"]["target_input_tokens"] == 24000
 
     monkeypatch.setenv(SCENE_INPUT_TOKEN_BUDGET_ENV, "0")

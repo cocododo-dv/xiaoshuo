@@ -14,8 +14,6 @@ from novel_system.db.models import ChapterRunJob, HumanReviewEvent, SceneCard, S
 from novel_system.db.session import SessionLocal
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.author_actions import author_action
-from novel_system.services.project_backtracks import ProjectBacktrackService
-from novel_system.services.chapter_runtime import ChapterRuntimeService
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import owner_lease_ttl_seconds
@@ -754,67 +752,6 @@ class ChapterRunnerService:
         human_review_error = self._scene_human_review_error(scene_id)
         if human_review_error is not None:
             return human_review_error
-        pending_backtracks = [
-            item
-            for item in ProjectBacktrackService(self.session).pending_for_chapter(chapter_id)
-            if item.scene_id in {None, scene_id}
-        ]
-        if pending_backtracks:
-            first_item = pending_backtracks[0]
-            return {
-                "code": "CHAPTER_RUN_BACKTRACK_REQUIRED",
-                "message": f"chapter run is blocked by pending replanning work: {first_item.scope}",
-                "author_action": author_action(
-                    "章节需要先处理返工",
-                    "当前章节还有待处理返工项。处理完这些结构问题后，章节起草会继续。",
-                    target_view="review",
-                    target_ref=f"backtrack_item:{first_item.item_id}",
-                    primary_button_label="去待处理建议",
-                    evidence_summary=[f"章节：{chapter_id}", f"范围：{first_item.scope}"],
-                ),
-            }
-        chapter_state = ChapterRuntimeService(self.session).chapter_state_payload(chapter_id)
-        manual_hold_reason = chapter_state.get("manual_hold_reason")
-        if isinstance(manual_hold_reason, str) and manual_hold_reason.strip():
-            return {
-                "code": "CHAPTER_RUN_MANUAL_HOLD",
-                "message": "chapter run is blocked by manual hold",
-                "author_action": author_action(
-                    "章节被手动暂停",
-                    "当前章节处于人工暂停状态，请先解除暂停或处理暂停原因。",
-                    target_view="workbench",
-                    target_ref=f"chapter:{chapter_id}",
-                    primary_button_label="去场景工作台",
-                    evidence_summary=[f"章节：{chapter_id}", f"原因：{manual_hold_reason.strip()}"],
-                ),
-            }
-        if chapter_state.get("chapter_backfill_pending_count", 0):
-            return {
-                "code": "CHAPTER_RUN_BACKFILL_PENDING",
-                "message": "chapter run is blocked by pending staged backfill",
-                "author_action": author_action(
-                    "章节有待回填内容",
-                    "当前章节还有标记内容等待回填，先处理这些占位，再继续章节起草。",
-                    target_view="workbench",
-                    target_ref=f"chapter:{chapter_id}",
-                    primary_button_label="去场景工作台",
-                    evidence_summary=[f"章节：{chapter_id}", "状态：待回填"],
-                ),
-            }
-        aggregate_block_reason = chapter_state.get("aggregate_block_reason")
-        if aggregate_block_reason and aggregate_block_reason != "none":
-            return {
-                "code": "CHAPTER_RUN_AGGREGATE_BLOCKED",
-                "message": f"chapter run is blocked by aggregate gate: {aggregate_block_reason}",
-                "author_action": author_action(
-                    "章节汇总暂时被阻塞",
-                    "章节汇总门还没有放行，请先检查当前章节的场景完成度和回填状态。",
-                    target_view="workbench",
-                    target_ref=f"chapter:{chapter_id}",
-                    primary_button_label="去场景工作台",
-                    evidence_summary=[f"章节：{chapter_id}", f"阻塞：{aggregate_block_reason}"],
-                ),
-            }
         return None
 
     def _scene_human_review_error(self, scene_id: str | None) -> dict[str, Any] | None:

@@ -118,7 +118,7 @@ def test_sync_missing_prunes_stale_route_bound_to_deleted_provider(client, monke
         headers=ADMIN_HEADERS,
         json={
             "node_routing": {
-                "project_outline_plan": _route("legacy_provider"),
+                "snowflake_step_candidates": _route("legacy_provider"),
                 RETIRED_NODE_ID: _route("legacy_provider"),
             },
             "activate": True,
@@ -132,11 +132,11 @@ def test_sync_missing_prunes_stale_route_bound_to_deleted_provider(client, monke
     )
     assert delete_response.status_code == 200
     # 退役节点不需要重绑,不该出现在「孤儿路由」提示里
-    assert delete_response.json()["data"]["orphaned_route_node_ids"] == ["project_outline_plan"]
+    assert delete_response.json()["data"]["orphaned_route_node_ids"] == ["snowflake_step_candidates"]
 
     before = client.get("/api/v1/system-config/llm").json()["data"]
     assert before["stale_routes"] == [RETIRED_NODE_ID]
-    assert before["node_routes"]["project_outline_plan"]["ready"] is False
+    assert before["node_routes"]["snowflake_step_candidates"]["ready"] is False
 
     response = client.post(
         "/api/v1/system-config/llm/node-routes/sync-missing",
@@ -149,7 +149,7 @@ def test_sync_missing_prunes_stale_route_bound_to_deleted_provider(client, monke
     assert payload["snapshot"]["active"] is True
     assert RETIRED_NODE_ID not in payload["snapshot"]["parsed"]["node_routing"]
     assert RETIRED_NODE_ID not in payload["snapshot"]["parsed"]["task_routing"]
-    assert "project_outline_plan" in payload["synced_node_ids"]
+    assert "snowflake_step_candidates" in payload["synced_node_ids"]
 
     after = client.get("/api/v1/system-config/llm").json()["data"]
     assert after["stale_routes"] == []
@@ -225,7 +225,7 @@ def test_node_routes_activation_ignores_stale_entries_and_reports_them(client, m
         headers=ADMIN_HEADERS,
         json={
             "node_routing": {
-                "project_outline_plan": _route("local_qwen"),
+                "snowflake_step_candidates": _route("local_qwen"),
                 # 指向根本不存在的服务:修复前激活校验对它报 CONFIG_ROUTE_PROVIDER_MISSING
                 RETIRED_NODE_ID: _route("deleted_provider", model="gpt-old"),
             },
@@ -239,7 +239,7 @@ def test_node_routes_activation_ignores_stale_entries_and_reports_them(client, m
 
     overview = client.get("/api/v1/system-config/llm").json()["data"]
     assert overview["stale_routes"] == [RETIRED_NODE_ID]
-    assert overview["node_routes"]["project_outline_plan"]["ready"] is True
+    assert overview["node_routes"]["snowflake_step_candidates"]["ready"] is True
 
 
 def test_node_routes_activation_still_rejects_unbound_active_nodes(client, monkeypatch) -> None:
@@ -251,7 +251,7 @@ def test_node_routes_activation_still_rejects_unbound_active_nodes(client, monke
         "/api/v1/system-config/llm/node-routes",
         headers=ADMIN_HEADERS,
         json={
-            "node_routing": {"project_outline_plan": _route("deleted_provider")},
+            "node_routing": {"snowflake_step_candidates": _route("deleted_provider")},
             "activate": True,
         },
     )
@@ -272,14 +272,14 @@ def test_node_routes_save_rejects_invalid_route_field_as_domain_error(client, mo
         "/api/v1/system-config/llm/node-routes",
         headers=ADMIN_HEADERS,
         json={
-            "node_routing": {"project_outline_plan": _route("local_qwen", **{field: value})},
+            "node_routing": {"snowflake_step_candidates": _route("local_qwen", **{field: value})},
             "activate": True,
         },
     )
     assert response.status_code == 422, response.json()
     error = response.json()["error"]
     assert error["code"] == "CONFIG_ROUTE_INVALID"
-    assert "project_outline_plan" in error["message"]
+    assert "snowflake_step_candidates" in error["message"]
     assert field in error["message"]
     assert value in error["message"]
 

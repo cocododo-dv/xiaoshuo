@@ -75,8 +75,6 @@ RUNTIME_MIN_INPUT_BUDGETS = {
     "hard_qc": SCENE_INPUT_TOKEN_BUDGET,
     "soft_qc": SCENE_INPUT_TOKEN_BUDGET,
     "near_final_acceptance_review": SCENE_INPUT_TOKEN_BUDGET,
-    "writer_scene_diagnosis": SCENE_INPUT_TOKEN_BUDGET,
-    "writer_scene_revision": SCENE_INPUT_TOKEN_BUDGET,
     # 规划族 + 局部改写（载荷有界）
     "scene_blueprint": PLANNING_INPUT_TOKEN_BUDGET,
     "chapter_story_architecture": PLANNING_INPUT_TOKEN_BUDGET,
@@ -84,10 +82,7 @@ RUNTIME_MIN_INPUT_BUDGETS = {
     "writer_passage_patch": PLANNING_INPUT_TOKEN_BUDGET,
     # 章节族（author_* 两个模板同时服务场景稿与整章稿，按最大者归章节族）
     "chapter_near_final_review": CHAPTER_INPUT_TOKEN_BUDGET,
-    "writer_chapter_diagnosis": CHAPTER_INPUT_TOKEN_BUDGET,
-    "writer_chapter_revision": CHAPTER_INPUT_TOKEN_BUDGET,
     "writer_deep_review": CHAPTER_INPUT_TOKEN_BUDGET,
-    "author_structure_extract": CHAPTER_INPUT_TOKEN_BUDGET,
     "author_proposal_generate": CHAPTER_INPUT_TOKEN_BUDGET,
 }
 CHARACTER_CONTINUITY_INSTRUCTION = (
